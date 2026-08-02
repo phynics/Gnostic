@@ -39,7 +39,7 @@ test: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; swift test $(SWIFT_LOCKED_ARGS) | tee .testing/swift-test.log && rg -q "Test run with [1-9][0-9]* tests passed" .testing/swift-test.log'
 
 container-smoke: image
-	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh swift --version
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
 
 verify: build test
 

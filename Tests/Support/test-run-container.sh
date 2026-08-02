@@ -157,6 +157,40 @@ test_failing_child_releases_lock() {
     [ ! -d "$build_dir.lock" ] || fail "failing child releases build lock"
 }
 
+test_container_smoke_delegates_to_smoke_script() {
+    runtime="$fixture_dir/smoke-fake-runtime"
+    captured="$fixture_dir/smoke-runtime-arguments"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/container-smoke.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_RUNTIME_ARGUMENTS="$captured" \
+        BUILD_DIR="$fixture_dir/smoke-build" \
+        SPM_CACHE_DIR="$fixture_dir/smoke-cache" \
+        IMAGE=fixture-image \
+        make -C "$root_dir" container-smoke
+    assert_status 0 "$run_status" "make container-smoke fake runtime invocation"
+    assert_contains "/workspace/Scripts/container-smoke.sh" "$captured" "container smoke script delegation"
+}
+
+test_repository_container_smoke_script_is_executable() {
+    [ -x "$root_dir/Scripts/container-smoke.sh" ] || fail "repository container smoke script is executable"
+}
+
+test_absent_container_smoke_script_fails_directly() {
+    output="$fixture_dir/absent-container-smoke.out"
+    run_capture "$output" "$root_dir/Scripts/absent-container-smoke.sh"
+    if [ "$run_status" -eq 0 ]; then
+        fail "absent container smoke script fails directly"
+    fi
+}
+
 test_tooling_only_make_targets_fail_for_missing_manifest() {
     for target in resolve build test verify; do
         output="$fixture_dir/make-$target.out"
@@ -171,6 +205,9 @@ test_missing_runtime_fails
 test_invalid_build_lock_fails
 test_runtime_receives_each_mount_once
 test_failing_child_releases_lock
+test_container_smoke_delegates_to_smoke_script
+test_repository_container_smoke_script_is_executable
+test_absent_container_smoke_script_fails_directly
 test_tooling_only_make_targets_fail_for_missing_manifest
 
 if [ "$failures" -gt 0 ]; then
@@ -178,4 +215,4 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 
-echo "6 harness tests passed"
+echo "9 harness tests passed"

@@ -1,0 +1,24 @@
+{
+  "name": "Gnostic",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localEnv:HOME}/.cache/gnostic/swiftpm/swift-6.3.3-linux,target=/workspace/.swiftpm-cache,type=bind"
+  ],
+  "containerEnv": {
+    "GNOSTIC_DEVCONTAINER": "1",
+    "SPM_CACHE_DIR": "/workspace/.swiftpm-cache"
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "sswg.swift-lang"
+      ]
+    }
+  }
+}
