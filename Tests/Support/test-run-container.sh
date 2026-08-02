@@ -33,16 +33,46 @@ assert_contains() {
     fi
 }
 
-assert_line_once() {
-    expected=$1
-    file=$2
-    name=$3
+assert_bind_once() {
+    host_path=$1
+    destination=$2
+    expected="$host_path:$destination"
+    file=$3
+    name=$4
     if [ ! -f "$file" ]; then
         fail "$name (runtime did not record arguments)"
         return
     fi
-    count=$(awk -v expected="$expected" '$0 == expected { count++ } END { print count + 0 }' "$file")
-    [ "$count" = "1" ] || fail "$name (expected once, got $count)"
+    count=$(awk -v expected="$expected" '
+        $0 == expected { payload_count++; if (previous == "-v") paired_count++ }
+        { previous = $0 }
+        END { print payload_count + 0 ":" paired_count + 0 }
+    ' "$file")
+    [ "$count" = "1:1" ] || fail "$name (expected one -v $expected bind, got $count)"
+}
+
+assert_precedes() {
+    earlier=$1
+    later=$2
+    file=$3
+    name=$4
+    if [ ! -f "$file" ]; then
+        fail "$name (runtime did not record arguments)"
+        return
+    fi
+    order=$(awk -v earlier="$earlier" -v later="$later" '
+        $0 == earlier && !earlier_line { earlier_line = NR }
+        $0 == later && !later_line { later_line = NR }
+        END { print earlier_line + 0 ":" later_line + 0 }
+    ' "$file")
+    case $order in
+        *:0|0:*) fail "$name (missing arguments: $order)" ;;
+        *)
+            earlier_line=${order%%:*}
+            later_line=${order#*:}
+            [ "$earlier_line" -lt "$later_line" ] || fail "$name (order: $order)"
+            ;;
+    esac
 }
 
 run_capture() {
@@ -64,6 +94,7 @@ test_direct_command_preserves_exit_status() {
 test_missing_runtime_fails() {
     output="$fixture_dir/runtime.out"
     run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
         CONTAINER_RUNTIME= \
         BUILD_DIR="$fixture_dir/runtime-build" \
         "$root_dir/.devcontainer/run.sh" true
@@ -97,6 +128,7 @@ EOF
 
     output="$fixture_dir/mounts.out"
     run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
         CONTAINER_RUNTIME="$runtime" \
         FAKE_RUNTIME_ARGUMENTS="$captured" \
         BUILD_DIR="$build_dir" \
@@ -106,10 +138,11 @@ EOF
         "$root_dir/.devcontainer/run.sh" swift --version
     assert_status 0 "$run_status" "fake runtime invocation"
 
-    assert_line_once "$root_dir:/workspace" "$captured" "repository bind"
-    assert_line_once "$build_dir:/workspace/.build" "$captured" "build bind"
-    assert_line_once "$cache_dir:/workspace/.swiftpm-cache" "$captured" "SwiftPM cache bind"
-    assert_line_once "$extra_dir:/extra:ro" "$captured" "extra bind"
+    assert_bind_once "$root_dir" /workspace "$captured" "repository bind"
+    assert_bind_once "$build_dir" /workspace/.build "$captured" "build bind"
+    assert_bind_once "$cache_dir" /workspace/.swiftpm-cache "$captured" "SwiftPM cache bind"
+    assert_bind_once "$extra_dir" /extra:ro "$captured" "extra bind"
+    assert_precedes "$extra_dir:/extra:ro" fixture-image "$captured" "extra bind precedes image"
 }
 
 test_failing_child_releases_lock() {
