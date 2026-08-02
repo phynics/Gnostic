@@ -1,0 +1,53 @@
+#!/bin/sh
+
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+runtime=${CONTAINER_RUNTIME:-}
+image=${IMAGE:-gnostic-dev}
+workdir=${WORKDIR:-/workspace}
+build_dir=${BUILD_DIR:-"$root_dir/.build"}
+spm_cache_dir=${SPM_CACHE_DIR:-"${HOME}/.cache/gnostic/swiftpm/swift-6.3.3-linux"}
+build_lock=${BUILD_LOCK:-1}
+extra_container_mounts=${EXTRA_CONTAINER_MOUNTS:-}
+
+# BUILD_DIR/SPM_CACHE_DIR may be given relative to the caller's cwd (CI
+# passes ".build" and ".swiftpm-cache"); container runtimes require
+# absolute host paths for bind mounts, so resolve them before use.
+mkdir -p "$build_dir"
+build_dir=$(cd "$build_dir" && pwd)
+lock_dir="${build_dir}.lock"
+
+if [ "$build_lock" = "1" ]; then
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+        sleep 1
+    done
+
+    cleanup() {
+        rmdir "$lock_dir" 2>/dev/null || true
+    }
+    trap cleanup EXIT INT TERM
+elif [ "$build_lock" != "0" ]; then
+    echo "BUILD_LOCK must be 0 or 1, got: $build_lock" >&2
+    exit 2
+fi
+
+if [ "${GNOSTIC_DEVCONTAINER:-0}" = "1" ]; then
+    "$@"
+    exit $?
+fi
+
+if [ -z "$runtime" ]; then
+    echo "No podman or docker runtime found" >&2
+    exit 1
+fi
+
+mkdir -p "$spm_cache_dir"
+spm_cache_dir=$(cd "$spm_cache_dir" && pwd)
+"$runtime" run --rm \
+    -v "$root_dir:$workdir" \
+    -v "$build_dir:$workdir/.build" \
+    -v "$spm_cache_dir:$workdir/.swiftpm-cache" \
+    -w "$workdir" \
+    $extra_container_mounts \
+    "$image" "$@"
