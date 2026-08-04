@@ -34,10 +34,3 @@ After `Package.swift` lands:
 make worktree-bootstrap
 make verify
 ```
-
-## Planning
-
-Work is tracked in GitHub Issues and the Gnostic Roadmap project. See `AGENTS.md` for the complete workflow.
-
-- https://github.com/phynics/Gnostic/issues
-- https://github.com/users/phynics/projects/6
