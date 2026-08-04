@@ -1,0 +1,264 @@
+// Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
+
+import Foundation
+import Axoloty
+import GnosticCore
+import PKShared
+import PositronicKit
+import Testing
+
+@Suite("Gnostic workspace provider")
+struct WorkspaceProviderTests {
+    @Test("catalog lists provider-scoped entries for network inspection")
+    func catalogListsNetworkObjects() async {
+        let catalog = NetworkCatalog()
+        #expect(await catalog.networkObjects().isEmpty)
+    }
+
+    @Test("attachment service refuses unapproved discovered workspaces")
+    @MainActor
+    func attachmentRequiresApproval() async throws {
+        let catalog = NetworkCatalog()
+        let store = InMemoryWorkspacePersistence()
+        let manager = TimelineManager(
+            stores: .init(
+                timelineStore: InMemoryTimelinePersistence(),
+                messageStore: InMemoryMessageStore(),
+                workspaceStore: store,
+                toolPersistence: InMemoryToolPersistence()
+            ),
+            workspaceProfile: .noWorkspace
+        )
+        let timeline = try await manager.createTimeline()
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager)
+
+        await #expect(throws: DiscoveredWorkspaceAttachmentError.self) {
+            try await service.attach(workspaceID: UUID(), to: timeline.id, approved: false)
+        }
+    }
+
+    @Test("network management API lists and inspects without attaching") @MainActor
+    func networkManagementInspection() async throws {
+        let catalog = NetworkCatalog()
+        let store = InMemoryWorkspacePersistence()
+        let manager = TimelineManager(workspaceProfile: .noWorkspace)
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager)
+        #expect(await service.listNetworkObjects().isEmpty)
+        #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
+    }
+
+    @Test("public network tools expose exact IDs and approval metadata") @MainActor
+    func publicNetworkToolsMetadataAndInvalidInput() async throws {
+        let service = DiscoveredWorkspaceAttachmentService(
+            catalog: NetworkCatalog(),
+            workspaceStore: InMemoryWorkspacePersistence(),
+            timelineManager: TimelineManager(workspaceProfile: .noWorkspace)
+        )
+        let list = ListNetworkObjectsTool(service: service).toAnyTool()
+        let inspect = InspectNetworkObjectTool(service: service).toAnyTool()
+        let attach = AttachWorkspaceTool(service: service).toAnyTool()
+        #expect(list.callName == "list_network_objects")
+        #expect(inspect.callName == "inspect_network_object")
+        #expect(attach.callName == "attach_workspace")
+        #expect(!list.requiresPermission)
+        #expect(!inspect.requiresPermission)
+        #expect(attach.requiresPermission)
+        #expect((try await list.execute(parameters: [:])).success)
+        #expect(!(try await inspect.execute(parameters: [:])).success)
+        #expect(!(try await attach.execute(parameters: [:])).success)
+    }
+
+    @Test("attachment imports a discovered runtime workspace, attaches it, and readvertises the timeline") @MainActor
+    func attachmentImportsAndReadvertises() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000003")!
+        let catalog = NetworkCatalog()
+        let payload = """
+        {"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{},"requiresPermission":false}]}
+        """
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+        let store = InMemoryWorkspacePersistence()
+        let manager = TimelineManager(
+            stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
+            workspaceProfile: .noWorkspace,
+            workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") }
+        )
+        let timeline = try await manager.createTimeline()
+        let recorder = TimelineRecorder()
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager) { recorder.record($0) }
+
+        let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
+        #expect(reference.location == .runtime)
+        #expect(reference.tools.map(\.toolID) == ["custom"])
+        #expect(try await manager.getWorkspaces(for: timeline.id).primary?.id == workspaceID)
+        #expect(recorder.ids == [timeline.id])
+    }
+
+    @Test("provider preserves advertised custom definitions and dispatches the addressed tool")
+    func providerDispatchesAdvertisedTool() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000001")!
+        let definition = WorkspaceToolDefinition(
+            id: "search_notes",
+            name: "Search notes",
+            description: "Searches remote notes.",
+            parametersSchema: ["query": AnyCodable("string")]
+        )
+        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
+            #expect(toolID == "search_notes")
+            #expect(arguments["query"] == AnyCodable("wave 2"))
+            return .success("found")
+        }
+
+        #expect(await provider.listTools() == [.custom(definition: definition)])
+        let result = try await provider.invoke(
+            WorkspaceInvocation(workspaceID: workspaceID, toolID: "search_notes", arguments: ["query": AnyCodable("wave 2")])
+        )
+        #expect(result.success)
+        #expect(result.output == "found")
+    }
+
+    @Test("remote proxy exposes advertised custom tools and rejects direct file access")
+    func proxyExposesToolsWithoutFilesystemFallback() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000002")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://remote")!,
+            location: .runtime,
+            tools: [.custom(WorkspaceToolDefinition(id: "inspect", name: "Inspect", description: "Inspects remote state."))]
+        )
+        let proxy = AxolotyWorkspace(reference: reference, catalog: NetworkCatalog(), invoke: { _ in .success("unused") })
+
+        #expect(try await proxy.listTools() == reference.tools)
+        await #expect(throws: WorkspaceError.self) { try await proxy.readFile(path: "never-local") }
+    }
+
+    @Test("deadvertised workspace refuses execution before transport")
+    func deadvertisedWorkspaceRefusesExecution() async throws {
+        let id = UUID(uuidString: "B31D0000-0000-4000-8000-000000000004")!
+        let catalog = NetworkCatalog()
+        let payload = """
+        {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+        """
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+        let called = InvocationRecorder()
+        let reference = WorkspaceReference(id: id, uri: WorkspaceURI(parsing: "workspace://remote")!, location: .runtime, tools: [.custom(WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote"))])
+        let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in await called.record(); return .success("unexpected") }
+        #expect(await proxy.healthCheck())
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "remote", objectIds: [id.uuidString]))
+        let isHealthy = await proxy.healthCheck()
+        #expect(!isHealthy)
+        await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "custom", parameters: [:]) }
+        let wasCalled = await called.value
+        #expect(!wasCalled)
+    }
+
+    @Test("ambiguous and malformed workspaces are unhealthy and never invoke transport")
+    func unsafeCatalogStatesRefuseExecution() async throws {
+        let id = UUID(uuidString: "B31D0000-0000-4000-8000-000000000005")!
+        let catalog = NetworkCatalog()
+        let malformed = CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Bad", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"uri\":\"workspace://bad\",\"isAvailable\":true,\"tools\":[{\"name\":\"missing\"}]}")
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "a", object: malformed))
+        let recorder = InvocationRecorder()
+        let reference = WorkspaceReference(id: id, uri: WorkspaceURI(parsing: "workspace://bad")!, location: .runtime, tools: [.custom(WorkspaceToolDefinition(id: "x", name: "X", description: "X"))])
+        let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in await recorder.record(); return .success("unexpected") }
+        let malformedHealth = await proxy.healthCheck()
+        #expect(!malformedHealth)
+        await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "x", parameters: [:]) }
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "a", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "b", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
+        let ambiguousHealth = await proxy.healthCheck()
+        #expect(!ambiguousHealth)
+        await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "x", parameters: [:]) }
+        let invoked = await recorder.value
+        #expect(!invoked)
+    }
+
+    @Test("remote invocation maps transport and decoding failures to workspace errors")
+    func remoteInvocationMapsFailures() async throws {
+        let catalog = NetworkCatalog()
+        let reference = try await availableWorkspaceReference(catalog: catalog)
+
+        for failure: any Error in [
+            AxolotyError.runtime(code: .timedOut, reason: "The unary call timed out"),
+            RemoteCallFailure(code: -32602, message: "Invalid params"),
+            AxolotyError.decodingFailure(type: "ReturnEvent", reason: "Malformed", payload: nil),
+        ] {
+            let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in throw failure }
+            await #expect(throws: WorkspaceError.self) {
+                try await proxy.executeTool(id: "custom", parameters: [:])
+            }
+        }
+    }
+
+    @Test("remote invocation preserves caller cancellation")
+    func remoteInvocationPreservesCancellation() async throws {
+        let catalog = NetworkCatalog()
+        let reference = try await availableWorkspaceReference(catalog: catalog)
+        let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in throw CancellationError() }
+
+        await #expect(throws: CancellationError.self) {
+            try await proxy.executeTool(id: "custom", parameters: [:])
+        }
+    }
+
+    @Test("Mosquitto unary Call Return invokes an arbitrary workspace tool") @MainActor
+    func brokerUnaryWorkspaceInvocation() async throws {
+        let caller = makeBrokerManager("caller")
+        let remote = makeBrokerManager("remote")
+        defer { caller.stop(); remote.stop() }
+        try await startBrokerManager(caller)
+        try await startBrokerManager(remote)
+        let id = UUID()
+        let provider = WorkspaceProvider(workspaceID: id, tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
+            #expect(toolID == "custom")
+            return .success("broker-result")
+        }
+        let registration = try await provider.register(on: remote)
+        defer { registration.cancel() }
+        let payload = try JSONEncoder().encode(WorkspaceInvocation(workspaceID: id, toolID: "custom", arguments: [:]))
+        let response = try await caller.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: payload, as: UTF8.self), timeout: .seconds(3))
+        let result = try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
+        #expect(result.success)
+        #expect(result.output == "broker-result")
+    }
+}
+
+private final class TimelineRecorder: @unchecked Sendable {
+    private(set) var ids: [UUID] = []
+    func record(_ timeline: Timeline) { ids.append(timeline.id) }
+}
+
+private actor InvocationRecorder {
+    private(set) var value = false
+    func record() { value = true }
+}
+
+private func availableWorkspaceReference(catalog: NetworkCatalog) async throws -> WorkspaceReference {
+    let id = UUID()
+    let payload = """
+    {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+    """
+    await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+    return WorkspaceReference(
+        id: id,
+        uri: WorkspaceURI(parsing: "workspace://remote")!,
+        location: .runtime,
+        tools: [.custom(WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote"))]
+    )
+}
+
+@MainActor
+private func makeBrokerManager(_ name: String) -> CommunicationManager {
+    let options = CommunicationOptions(namespace: "gnostic-workspace-tests", shouldEnableCrossNamespacing: false, mqttClientOptions: MQTTClientOptions(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false), shouldAutoStart: false)
+    return try! CommunicationManager(identity: Identity(name: name), communicationOptions: options, commonOptions: nil)
+}
+
+@MainActor
+private func startBrokerManager(_ manager: CommunicationManager) async throws {
+    let stream = await manager.observeCommunicationStateStream()
+    var iterator = stream.makeAsyncIterator()
+    try manager.start()
+    while let state = await iterator.next() {
+        if state == .online { return }
+    }
+    throw CancellationError()
+}

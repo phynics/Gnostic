@@ -244,7 +244,7 @@ struct ProjectionAndCatalogTests {
         }
 
         try await subscription.start()
-        try await Task.sleep(for: .milliseconds(20))
+        try await waitForUnavailableWorkspace(catalog, id: workspaceID)
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
     }
 
@@ -333,6 +333,14 @@ private actor RecordedSubscriptionFilters {
 }
 
 private enum SubscriptionTestError: Error { case failed }
+
+private func waitForUnavailableWorkspace(_ catalog: NetworkCatalog, id: UUID) async throws {
+    for _ in 0..<20 {
+        if await catalog.workspaceAttachmentStatus(id: id) == .unavailable { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw CancellationError()
+}
 
 private actor SubscriptionAttempts {
     private var hasFailed = false

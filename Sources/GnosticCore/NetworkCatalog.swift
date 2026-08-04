@@ -181,6 +181,15 @@ public actor NetworkCatalog {
         entries[id]?[providerID]
     }
 
+    /// Returns every currently advertised object, preserving provider scope for inspection.
+    public func networkObjects() -> [NetworkCatalogEntry] {
+        entries.values
+            .flatMap { $0.values }
+            .sorted {
+                ($0.objectID.uuidString, $0.providerID) < ($1.objectID.uuidString, $1.providerID)
+            }
+    }
+
     /// Returns whether a workspace can be attached without ambiguity.
     ///
     /// - Parameter id: The workspace identifier.
