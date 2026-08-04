@@ -172,6 +172,34 @@ struct WorkspaceProviderTests {
         #expect(!invoked)
     }
 
+    @Test("remote invocation maps transport and decoding failures to workspace errors")
+    func remoteInvocationMapsFailures() async throws {
+        let catalog = NetworkCatalog()
+        let reference = try await availableWorkspaceReference(catalog: catalog)
+
+        for failure: any Error in [
+            AxolotyError.runtime(code: .timedOut, reason: "The unary call timed out"),
+            RemoteCallFailure(code: -32602, message: "Invalid params"),
+            AxolotyError.decodingFailure(type: "ReturnEvent", reason: "Malformed", payload: nil),
+        ] {
+            let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in throw failure }
+            await #expect(throws: WorkspaceError.self) {
+                try await proxy.executeTool(id: "custom", parameters: [:])
+            }
+        }
+    }
+
+    @Test("remote invocation preserves caller cancellation")
+    func remoteInvocationPreservesCancellation() async throws {
+        let catalog = NetworkCatalog()
+        let reference = try await availableWorkspaceReference(catalog: catalog)
+        let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in throw CancellationError() }
+
+        await #expect(throws: CancellationError.self) {
+            try await proxy.executeTool(id: "custom", parameters: [:])
+        }
+    }
+
     @Test("Mosquitto unary Call Return invokes an arbitrary workspace tool") @MainActor
     func brokerUnaryWorkspaceInvocation() async throws {
         let caller = makeBrokerManager("caller")
@@ -202,6 +230,20 @@ private final class TimelineRecorder: @unchecked Sendable {
 private actor InvocationRecorder {
     private(set) var value = false
     func record() { value = true }
+}
+
+private func availableWorkspaceReference(catalog: NetworkCatalog) async throws -> WorkspaceReference {
+    let id = UUID()
+    let payload = """
+    {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+    """
+    await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+    return WorkspaceReference(
+        id: id,
+        uri: WorkspaceURI(parsing: "workspace://remote")!,
+        location: .runtime,
+        tools: [.custom(WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote"))]
+    )
 }
 
 @MainActor

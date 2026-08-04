@@ -60,7 +60,14 @@ public struct AxolotyWorkspace: Workspace, Sendable {
         guard reference.tools.contains(where: { $0.toolID == id }) else {
             throw WorkspaceError.toolExecutionNotSupported
         }
-        return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, toolID: id, arguments: parameters))
+        do {
+            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, toolID: id, arguments: parameters))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Do not expose transport or decode implementation errors through Workspace.
+            throw WorkspaceError.connectionFailed
+        }
     }
 
     /// Remote workspace proxies do not expose direct filesystem access.

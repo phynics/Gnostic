@@ -4,7 +4,7 @@ Gnostic bridges PositronicKit orchestration with Axoloty networking.
 
 ## Status
 
-Early proof of concept. Package code remains on `codex/gno-002` until Axoloty ships a remotely consumable release tracked by phynics/Axoloty#420.
+Early proof of concept. Axoloty's remotely consumable release is available through `0.3.0`.
 
 ## Discovered workspaces
 
