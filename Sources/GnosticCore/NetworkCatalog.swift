@@ -199,7 +199,7 @@ public actor NetworkCatalog {
 
     private func dynamicProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {
         guard let payload = snapshot.payload,
-              let fields = try? JSONDecoder().decode([String: NetworkDynamicValue].self, from: payload) else {
+              let fields = try? JSONDecoder().decode([String: NetworkDynamicValue].self, from: Data(payload.utf8)) else {
             return [:]
         }
         let known = Self.corePropertyNames.union(Self.knownPropertyNames[snapshot.objectType] ?? [])
@@ -209,7 +209,7 @@ public actor NetworkCatalog {
     private func workspaceDescriptor(from snapshot: CoatyObjectSnapshot, id: UUID) -> NetworkWorkspaceDescriptor? {
         guard snapshot.objectType == GnosticObjectType.workspace,
               let payload = snapshot.payload,
-              let object = try? JSONDecoder().decode(GnosticWorkspaceObject.self, from: payload),
+              let object = try? JSONDecoder().decode(GnosticWorkspaceObject.self, from: Data(payload.utf8)),
               object.objectId.string == id.uuidString.lowercased() else {
             return nil
         }

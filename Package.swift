@@ -12,8 +12,8 @@ let package = Package(
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.2.0"),
-        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.3.0"),
+        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.3.0"),
+        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.4.0"),
     ],
     targets: [
         .target(

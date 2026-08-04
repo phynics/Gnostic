@@ -187,6 +187,28 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .malformed)
     }
 
+    @Test("malformed workspace ingress is rejected by Axoloty without trapping")
+    func malformedWorkspaceIngressIsRejectedWithoutTrapping() {
+        _ = GnosticWorkspaceObject.objectType
+        let malformedPayload = """
+        {
+          "object": {
+            "objectId": "\(workspaceID.uuidString.lowercased())",
+            "coreType": "CoatyObject",
+            "objectType": "me.atkn.gnostic.Workspace",
+            "name": "Malformed workspace",
+            "uri": "workspace://alpha",
+            "isAvailable": true,
+            "tools": [{"name": "No identifier"}]
+          }
+        }
+        """
+
+        #expect(throws: AxolotyError.self) {
+            let _: AdvertiseEvent = try PayloadCoder.decode(malformedPayload)
+        }
+    }
+
     @Test("catalog marks a workspace claimed by two providers as ambiguous")
     func catalogMarksWorkspaceClaimedByTwoProvidersAsAmbiguous() async {
         let catalog = NetworkCatalog()
@@ -218,8 +240,9 @@ struct ProjectionAndCatalogTests {
         )
     }
 
-    private func payload(_ object: [String: Any]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: object)
+    private func payload(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try #require(String(data: data, encoding: .utf8))
     }
 }
 
