@@ -209,6 +209,24 @@ struct ProjectionAndCatalogTests {
         }
     }
 
+    @Test("subscription registers only canonical Gnostic object types") @MainActor
+    func subscriptionRegistersOnlyCanonicalGnosticObjectTypes() async throws {
+        let recorded = RecordedSubscriptionFilters()
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog) { objectType in
+            await recorded.append(objectType)
+            return AsyncStream { $0.finish() }
+        }
+
+        try await subscription.start()
+
+        #expect(await recorded.filters == [
+            "me.atkn.gnostic.Agent",
+            "me.atkn.gnostic.Timeline",
+            "me.atkn.gnostic.Workspace",
+        ])
+    }
+
     @Test("catalog marks a workspace claimed by two providers as ambiguous")
     func catalogMarksWorkspaceClaimedByTwoProvidersAsAmbiguous() async {
         let catalog = NetworkCatalog()
@@ -262,5 +280,13 @@ private final class RecordedAdvertisements: @unchecked Sendable {
 
     func appendReadvertised(_ object: CoatyObject) {
         readvertised.append(object)
+    }
+}
+
+private actor RecordedSubscriptionFilters {
+    private(set) var filters: [String] = []
+
+    func append(_ filter: String) {
+        filters.append(filter)
     }
 }
