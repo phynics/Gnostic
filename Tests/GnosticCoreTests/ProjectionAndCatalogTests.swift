@@ -216,7 +216,7 @@ struct ProjectionAndCatalogTests {
         let subscription = GnosticSubscription(catalog: catalog) { objectType in
             await recorded.append(objectType)
             return AsyncStream { $0.finish() }
-        }
+        } observeDeadvertise: { AsyncStream { $0.finish() } }
 
         try await subscription.start()
 
@@ -224,6 +224,47 @@ struct ProjectionAndCatalogTests {
             "me.atkn.gnostic.Agent",
             "me.atkn.gnostic.Timeline",
             "me.atkn.gnostic.Workspace",
+        ])
+    }
+
+    @Test("subscription forwards deadvertise lifecycle events") @MainActor
+    func subscriptionForwardsDeadvertiseLifecycleEvents() async throws {
+        let catalog = NetworkCatalog()
+        let advertised = workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a")
+        let subscription = GnosticSubscription(catalog: catalog) { _ in
+            AsyncStream { continuation in
+                continuation.yield(advertised)
+                continuation.finish()
+            }
+        } observeDeadvertise: {
+            AsyncStream { continuation in
+                continuation.yield(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: [self.workspaceID.uuidString]))
+                continuation.finish()
+            }
+        }
+
+        try await subscription.start()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
+    }
+
+    @Test("subscription clears partial acquisition failures and retries") @MainActor
+    func subscriptionClearsPartialAcquisitionFailuresAndRetries() async throws {
+        let attempts = SubscriptionAttempts()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            if await attempts.shouldFail(for: objectType) { throw SubscriptionTestError.failed }
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: { AsyncStream { $0.finish() } }
+
+        await #expect(throws: SubscriptionTestError.self) { try await subscription.start() }
+        try await subscription.start()
+
+        #expect(await attempts.filters == [
+            GnosticObjectType.agent,
+            GnosticObjectType.timeline,
+            GnosticObjectType.agent,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
         ])
     }
 
@@ -288,5 +329,19 @@ private actor RecordedSubscriptionFilters {
 
     func append(_ filter: String) {
         filters.append(filter)
+    }
+}
+
+private enum SubscriptionTestError: Error { case failed }
+
+private actor SubscriptionAttempts {
+    private var hasFailed = false
+    private(set) var filters: [String] = []
+
+    func shouldFail(for filter: String) -> Bool {
+        filters.append(filter)
+        guard filter == GnosticObjectType.timeline, !hasFailed else { return false }
+        hasFailed = true
+        return true
     }
 }

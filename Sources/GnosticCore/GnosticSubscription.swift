@@ -14,22 +14,27 @@ public final class GnosticSubscription {
 
     private let catalog: NetworkCatalog
     private let observe: @MainActor @Sendable (String) async throws -> AsyncStream<AdvertiseEventSnapshot>
+    private let observeDeadvertise: @MainActor @Sendable () async -> AsyncStream<DeadvertiseEventSnapshot>
     private var tasks: [Task<Void, Never>] = []
 
     /// Creates a subscription owner using a scoped Axoloty observation operation.
     public init(
         catalog: NetworkCatalog,
-        observe: @escaping @MainActor @Sendable (String) async throws -> AsyncStream<AdvertiseEventSnapshot>
+        observe: @escaping @MainActor @Sendable (String) async throws -> AsyncStream<AdvertiseEventSnapshot>,
+        observeDeadvertise: @escaping @MainActor @Sendable () async -> AsyncStream<DeadvertiseEventSnapshot>
     ) {
         self.catalog = catalog
         self.observe = observe
+        self.observeDeadvertise = observeDeadvertise
     }
 
     /// Creates a subscription owner backed by an Axoloty communication manager.
     public convenience init(catalog: NetworkCatalog, communicationManager: CommunicationManager) {
-        self.init(catalog: catalog) { objectType in
+        self.init(catalog: catalog, observe: { objectType in
             try await communicationManager.observeAdvertiseStream(withObjectType: objectType)
-        }
+        }, observeDeadvertise: {
+            await communicationManager.observeDeadvertiseStream()
+        })
     }
 
     deinit { tasks.forEach { $0.cancel() } }
@@ -37,11 +42,16 @@ public final class GnosticSubscription {
     /// Starts one scoped subscription for each canonical Gnostic object type.
     public func start() async throws {
         guard tasks.isEmpty else { return }
-        for objectType in Self.objectTypes {
-            let stream = try await observe(objectType)
-            tasks.append(Task { [catalog] in
-                for await event in stream { await catalog.ingest(event) }
-            })
+        do {
+            for objectType in Self.objectTypes {
+                let stream = try await observe(objectType)
+                tasks.append(Task { [catalog] in for await event in stream { await catalog.ingest(event) } })
+            }
+            let stream = await observeDeadvertise()
+            tasks.append(Task { [catalog] in for await event in stream { await catalog.ingest(event) } })
+        } catch {
+            stop()
+            throw error
         }
     }
 
