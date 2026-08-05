@@ -105,9 +105,19 @@ private struct FixtureScenario {
         print("fixture workspace discovered: \(workspaceID.uuidString.lowercased())")
 
         let store = InMemoryWorkspacePersistence()
+        let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
+            let encoded = try JSONEncoder().encode(invocation)
+            let response = try await consumer.communication.call(
+                operation: WorkspaceProvider.invocationOperation,
+                parameters: String(decoding: encoded, as: UTF8.self),
+                timeout: .seconds(3)
+            )
+            return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
+        }
         let manager = TimelineManager(
             stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
-            workspaceProfile: .noWorkspace
+            workspaceProfile: .noWorkspace,
+            workspaceCreator: factory
         )
         let timeline = try await manager.createTimeline()
         let readvertised = TimelineReadvertisement()
