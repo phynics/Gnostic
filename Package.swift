@@ -10,6 +10,7 @@ let package = Package(
     ],
     products: [
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
+        .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.3.0"),
@@ -26,6 +27,15 @@ let package = Package(
         ),
         .testTarget(
             name: "GnosticCoreTests",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "PositronicKit", package: "PositronicKit"),
+                .product(name: "PKShared", package: "PositronicKit"),
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticRunner",
             dependencies: [
                 "GnosticCore",
                 .product(name: "Axoloty", package: "Axoloty"),
