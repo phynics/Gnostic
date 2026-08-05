@@ -44,22 +44,23 @@ struct RunnerFixtureE2ETests {
         lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: fixtureReference(id: workspaceID)))
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()
-        let manager = TimelineManager(stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()), workspaceProfile: .noWorkspace, workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { invocation in
+        let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
             let encoded = try JSONEncoder().encode(invocation)
             let response = try await consumer.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
-        })
+        }
+        let manager = TimelineManager(
+            stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
+            workspaceProfile: .noWorkspace,
+            workspaceCreator: factory
+        )
         let timeline = try await manager.createTimeline()
         let readvertised = TimelineRecorder()
         let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager) { readvertised.record($0) }
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
         let reference = try #require(try await manager.getWorkspaces(for: timeline.id).primary)
-        let workspace = try AxolotyWorkspaceFactory(catalog: catalog) { invocation in
-            let encoded = try JSONEncoder().encode(invocation)
-            let response = try await consumer.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
-            return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
-        }.create(from: reference)
+        let workspace = try factory.create(from: reference)
         #expect((try await workspace.executeTool(id: "list_files", parameters: [:])).output == "README.md")
         #expect((try await workspace.executeTool(id: "read_file", parameters: [:])).output == "fixture contents")
         #expect((try await workspace.executeTool(id: "workspace_echo", parameters: ["value": AnyCodable("network")])).output == "network")
