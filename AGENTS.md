@@ -3,7 +3,7 @@
 ## Canonical workflow
 
 - GitHub Issues and the `Gnostic Roadmap` project are the sole planning record.
-- Do not create or commit local plans, specifications, tickets, or planning directories. Record designs, decisions, implementation plans, dependencies, acceptance criteria, and exact validation commands in the owning GitHub issue instead.
+- Do not commit local plans, specifications, tickets, or planning directories. Record designs, decisions, implementation plans, dependencies, acceptance criteria, and exact validation commands in the owning GitHub issue instead.
 - Before planning new work, inspect open issues, recently closed issues, merged pull requests, and the Roadmap so completed or superseded work is not planned again.
 - Epics own outcomes and child work-plan issues. Treat historical `design-reference` issues as context, not active requirements.
 - Keep the tracker truthful throughout the work: issue state, issue-body status and checklists, dependency text, and Roadmap status must agree with the code and pull-request state.
@@ -25,7 +25,7 @@
 
 ## Build and test
 
-- Never run native host `swift` commands. Use `make resolve`, `make build`, `make test`, `make verify`, or `make shell`.
+- Never run native host `swift` commands. Use the repository targets, including `make resolve`, `make build`, `make test`, `make verify`, `make runner-smoke`, `make container-smoke`, and `make shell`.
 - Broker-backed tests use the container's Mosquitto service and deterministic deadlines.
 - `make verify` must fail when zero tests execute.
 - For production-code changes, the full local gate is `make verify` followed by `make runner-smoke`.
