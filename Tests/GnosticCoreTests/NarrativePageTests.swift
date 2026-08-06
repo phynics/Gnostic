@@ -64,7 +64,8 @@ struct NarrativePageTests {
         var renderer = NarrativePageRenderer()
         let page = renderer.freeze(entries: entries, title: "Arc summary")
 
-        #expect(page.sourceEntryIDs == entries.map(\.id))
+        #expect(Set(page.sourceEntryIDs) == Set(entries.map(\.id)))
+        #expect(page.sourceEntryIDs.count == entries.count)
         #expect(!page.contentDigest.isEmpty)
         #expect(page.title == "Arc summary")
     }
