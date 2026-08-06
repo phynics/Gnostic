@@ -115,6 +115,3 @@ private struct AnyEncodable: Encodable {
     init(_ base: any Encodable) { self.base = base }
     func encode(to encoder: Encoder) throws { try base.encode(to: encoder) }
 }
-
-extension Dictionary: Encodable where Key == String, Value == NetworkDynamicValue {}
-extension Array: Encodable where Element == NetworkDynamicValue {}
