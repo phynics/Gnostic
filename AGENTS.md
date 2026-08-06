@@ -20,8 +20,8 @@
 - The completed PoC projects PositronicKit Agent, Timeline, and Workspace objects; discovers, inspects, imports, and attaches an unambiguous advertised Workspace; invokes its tools through Axoloty unary Call/Return; and readvertises the changed Timeline.
 - The deterministic runner fixture covers discovery, approved attachment, `list_files`, `read_file`, and `workspace_echo` through Mosquitto without LLM or broker credentials.
 - `Package.swift` pins Axoloty `0.3.0` and PositronicKit `3.4.0` exactly. These releases include the former Axoloty #418, #419, and #420 blockers.
-- The verified baseline is 23 Swift Testing tests in 3 suites plus the passing runner fixture smoke scenario.
-- Current builds warn about deprecated PositronicKit `Id`-spelling APIs and the absent optional `pkfastembed` pkg-config file. Do not mistake these known warnings for validation failures; remove this note when the warnings are resolved.
+- The verified baseline is 73 Swift Testing tests in 9 suites plus the passing runner fixture smoke scenario (includes the GNO-005–GNO-010 narrative/context stack).
+- Current builds show one external warning family from the PositronicKit dependency: SwiftPM cannot locate the optional `pkfastembed` pkg-config file for PK's `CPKFastEmbed` system target (and macOS hosts additionally report pkg-config being absent). This is PositronicKit-owned (its `Package.swift` declares `pkgConfig: "pkfastembed"` unconditionally) and is not resolved from this repository; do not vendor a copy of the dependency to silence it, and do not mistake it for a Gnostic validation failure. All warnings attributable to Gnostic sources and tests are resolved.
 
 ## Build and test
 

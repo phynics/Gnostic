@@ -54,8 +54,8 @@ public final class GnosticAgentObject: CoatyObject {
     /// - Parameter agent: The PositronicKit agent to expose on the network.
     public init(agent: AgentInstance) {
         agentDescription = agent.description
-        primaryWorkspaceID = agent.primaryWorkspaceId
-        privateTimelineID = agent.privateTimelineId
+        primaryWorkspaceID = agent.primaryWorkspaceID
+        privateTimelineID = agent.privateTimelineID
         lastActiveAt = agent.lastActiveAt
         createdAt = agent.createdAt
         updatedAt = agent.updatedAt

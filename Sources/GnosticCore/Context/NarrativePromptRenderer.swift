@@ -101,7 +101,7 @@ public struct NarrativePromptRenderer: Sendable {
     public mutating func checkpoint() -> Bool {
         guard !checkpointed else { return false }
         lastRequiresHardReset = true
-        journal.compact()
+        _ = journal.compact()
         checkpointed = true
         return true
     }
