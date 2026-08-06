@@ -207,7 +207,7 @@ struct ChatREPLTests {
 
         let result = try await session.run(line: "echo network")
 
-        guard case .text(let text) = result else {
+        guard case .text = result else {
             Issue.record("expected text result, got \(result)")
             return
         }
