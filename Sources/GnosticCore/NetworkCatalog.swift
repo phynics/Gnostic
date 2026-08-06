@@ -79,11 +79,34 @@ public struct NetworkCatalogEntry: Sendable {
     /// The object name supplied by Axoloty.
     public let name: String
 
+    /// Known projection fields (core Coaty fields excluded), retained for
+    /// inspection without re-decoding the raw payload.
+    public let knownProperties: [String: NetworkDynamicValue]
+
     /// Dynamic fields that are not part of Gnostic's known projection.
     public let dynamicProperties: [String: NetworkDynamicValue]
 
     /// A parsed workspace descriptor when this is a well-formed workspace.
     public let workspace: NetworkWorkspaceDescriptor?
+
+    /// Creates a catalogued entry.
+    public init(
+        objectID: UUID,
+        objectType: String,
+        providerID: String,
+        name: String,
+        knownProperties: [String: NetworkDynamicValue],
+        dynamicProperties: [String: NetworkDynamicValue],
+        workspace: NetworkWorkspaceDescriptor?
+    ) {
+        self.objectID = objectID
+        self.objectType = objectType
+        self.providerID = providerID
+        self.name = name
+        self.knownProperties = knownProperties
+        self.dynamicProperties = dynamicProperties
+        self.workspace = workspace
+    }
 }
 
 /// The attachable, safe subset of an advertised workspace.
@@ -99,6 +122,14 @@ public struct NetworkWorkspaceDescriptor: Sendable {
 
     /// The workspace's safe tool descriptions.
     public let tools: [GnosticWorkspaceTool]
+
+    /// Creates a workspace descriptor.
+    public init(id: UUID, uri: String, isAvailable: Bool, tools: [GnosticWorkspaceTool]) {
+        self.id = id
+        self.uri = uri
+        self.isAvailable = isAvailable
+        self.tools = tools
+    }
 }
 
 /// The result of checking whether a workspace is safe and unique enough to attach.
@@ -144,6 +175,7 @@ public actor NetworkCatalog {
         }
 
         let providerID = event.sourceId ?? Self.anonymousProviderID
+        let knownProperties = knownProperties(from: snapshot)
         let dynamicProperties = dynamicProperties(from: snapshot)
         let workspace = workspaceDescriptor(from: snapshot, id: objectID)
         let entry = NetworkCatalogEntry(
@@ -151,6 +183,7 @@ public actor NetworkCatalog {
             objectType: snapshot.objectType,
             providerID: providerID,
             name: snapshot.name,
+            knownProperties: knownProperties,
             dynamicProperties: dynamicProperties,
             workspace: workspace
         )
@@ -213,6 +246,15 @@ public actor NetworkCatalog {
         }
         let known = Self.corePropertyNames.union(Self.knownPropertyNames[snapshot.objectType] ?? [])
         return fields.filter { !known.contains($0.key) }
+    }
+
+    private func knownProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {
+        guard let payload = snapshot.payload,
+              let fields = try? JSONDecoder().decode([String: NetworkDynamicValue].self, from: Data(payload.utf8)) else {
+            return [:]
+        }
+        let known = Self.knownPropertyNames[snapshot.objectType] ?? []
+        return fields.filter { known.contains($0.key) }
     }
 
     private func workspaceDescriptor(from snapshot: CoatyObjectSnapshot, id: UUID) -> NetworkWorkspaceDescriptor? {

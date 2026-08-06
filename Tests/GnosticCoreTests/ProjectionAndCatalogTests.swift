@@ -160,6 +160,9 @@ struct ProjectionAndCatalogTests {
         let entry = try #require(await catalog.object(id: workspaceID, providerID: "provider-a"))
 
         #expect(entry.dynamicProperties["futureCapability"] == .object(["mode": .string("experimental")]))
+        #expect(entry.knownProperties["uri"] == .string("workspace://alpha"))
+        #expect(entry.knownProperties["isAvailable"] == .bool(true))
+        #expect(entry.knownProperties["objectId"] == nil, "Coaty core fields are not known projection fields")
     }
 
     @Test("catalog keeps malformed workspace inspectable but unavailable for attachment")
