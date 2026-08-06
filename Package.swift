@@ -64,6 +64,10 @@ let package = Package(
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
+                .product(name: "PKOpenAIProvider", package: "PositronicKit"),
+                .product(name: "PKOpenRouterProvider", package: "PositronicKit"),
+                .product(name: "PKOllamaProvider", package: "PositronicKit"),
+                .product(name: "PKAnthropicProvider", package: "PositronicKit"),
             ]
         ),
         .testTarget(
