@@ -22,6 +22,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
+                .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
             ]
         ),
@@ -31,6 +32,7 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
+                .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
             ]
         ),
