@@ -126,6 +126,17 @@ public enum InspectError: Error, Sendable, LocalizedError {
         case let .connectionFailed(detail): "Connection failed: \(detail)"
         }
     }
+
+    /// A machine-readable reason label for diagnostics.
+    public var reasonCode: String {
+        switch self {
+        case .malformedUUID: "malformedUUID"
+        case .notFound: "notFound"
+        case .ambiguous: "ambiguous"
+        case .brokerUnreachable: "brokerUnreachable"
+        case .connectionFailed: "connectionFailed"
+        }
+    }
 }
 
 /// Plain broker connection values decoupled from ArgumentParser wrappers.
