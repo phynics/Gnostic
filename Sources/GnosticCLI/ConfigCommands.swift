@@ -19,9 +19,7 @@ struct ConfigCommand: AsyncParsableCommand {
         )
 
         func run() async throws {
-            let store = CLIConfigurationStore()
-            let configuration = try store.load()
-            print(store.redactedDescription(for: configuration))
+            try ConfigCommandLogic.show()
         }
     }
 
@@ -39,11 +37,7 @@ struct ConfigCommand: AsyncParsableCommand {
         var value: String
 
         func run() async throws {
-            guard let parsedKey = ConfigurationKey(rawValue: key) else {
-                throw CLIConfigurationError.unknownKey(key)
-            }
-            try CLIConfigurationStore().setValue(value, for: parsedKey)
-            print("Set \(parsedKey.rawValue).")
+            try ConfigCommandLogic.set(key: key, value: value)
         }
     }
 
@@ -55,7 +49,34 @@ struct ConfigCommand: AsyncParsableCommand {
         )
 
         func run() async throws {
-            print(CLIConfigurationStore().path().path)
+            try ConfigCommandLogic.path()
         }
+    }
+}
+
+/// The testable logic behind the `config` subcommands.
+///
+/// Each function accepts an explicit store and output sink so tests exercise
+/// the exact code the commands run without touching ArgumentParser's Codable
+/// synthesis.
+public enum ConfigCommandLogic {
+    /// `config show`
+    public static func show(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
+        let configuration = try store.load()
+        writeOutput(store.redactedDescription(for: configuration))
+    }
+
+    /// `config set <key> <value>`
+    public static func set(key: String, value: String, store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
+        guard let parsedKey = ConfigurationKey(rawValue: key) else {
+            throw CLIConfigurationError.unknownKey(key)
+        }
+        try store.setValue(value, for: parsedKey)
+        writeOutput("Set \(parsedKey.rawValue).")
+    }
+
+    /// `config path`
+    public static func path(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
+        writeOutput(store.path().path)
     }
 }

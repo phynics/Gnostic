@@ -122,25 +122,79 @@ struct ChatREPLTests {
         let timeline = try await kit.timelineManager.createTimeline()
         let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: lines)
+        let sink = OutputSink()
         let repl = ChatREPL(
             session: session,
             timelineID: timeline.id,
             approval: StubApprovalPolicy(decision: approval ?? { true }),
-            readLine: { iterator.next() }
+            readLine: { iterator.next() },
+            writeOutput: { sink.append($0) }
         )
         return (session, repl)
     }
 
     @Test("a scripted session runs a conversation and prints the final text") @MainActor
     func scriptedConversation() async throws {
-        let (_, repl) = try await makeSessionAndREPL(lines: [
-            "hello",
-            "/quit",
-        ])
+        let kit = PositronicKit(languageModel: StubLanguageModel())
+        let timeline = try await kit.timelineManager.createTimeline()
+        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let iterator = LineIterator(lines: ["hello", "/quit"])
+        let sink = OutputSink()
+        let repl = ChatREPL(
+            session: session,
+            timelineID: timeline.id,
+            approval: StubApprovalPolicy(decision: { true }),
+            readLine: { iterator.next() },
+            writeOutput: { sink.append($0) }
+        )
         await repl.run()
-        // The REPL ran a turn; the stub emitted tool call then text. No crash means
-        // the turn path executed; we assert observable state via the session API.
-        #expect(true)
+        let output = sink.lines
+        // The stub's second call emits the final assistant text; the tool call
+        // round-trip happened in between. Output must contain assistant text and bye.
+        #expect(output.contains(where: { $0.contains("Echo received: network") }))
+        #expect(output.last == "bye.")
+    }
+
+    @Test("failed turns keep the loop alive") @MainActor
+    func failedTurnKeepsLoopAlive() async throws {
+        let kit = PositronicKit(languageModel: StubLanguageModel(shouldFail: true))
+        let timeline = try await kit.timelineManager.createTimeline()
+        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let iterator = LineIterator(lines: ["hello", "hello again", "/quit"])
+        let sink = OutputSink()
+        let repl = ChatREPL(
+            session: session,
+            timelineID: timeline.id,
+            approval: StubApprovalPolicy(decision: { true }),
+            readLine: { iterator.next() },
+            writeOutput: { sink.append($0) }
+        )
+        await repl.run()
+        let output = sink.lines
+        // Two failing turns each surface an Error line, then /quit prints bye.
+        let errorLines = output.filter { $0.hasPrefix("Error:") }
+        #expect(errorLines.count >= 1)
+        #expect(output.last == "bye.")
+    }
+
+    @Test("slash commands dispatch") @MainActor
+    func slashCommands() async throws {
+        let kit = PositronicKit(languageModel: StubLanguageModel())
+        let timeline = try await kit.timelineManager.createTimeline()
+        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let iterator = LineIterator(lines: ["/timeline", "/quit"])
+        let sink = OutputSink()
+        let repl = ChatREPL(
+            session: session,
+            timelineID: timeline.id,
+            approval: StubApprovalPolicy(decision: { true }),
+            readLine: { iterator.next() },
+            writeOutput: { sink.append($0) }
+        )
+        await repl.run()
+        let output = sink.lines
+        #expect(output.contains { $0.hasPrefix("timeline:") })
+        #expect(output.last == "bye.")
     }
 
     @Test("ChatSession drives a tool call then the final text through PositronicKit") @MainActor
@@ -177,24 +231,6 @@ struct ChatREPLTests {
         }
         #expect(await echo.invocations() == 1)
         #expect(await echo.lastValue() == "network")
-    }
-
-    @Test("failed turns keep the loop alive") @MainActor
-    func failedTurnKeepsLoopAlive() async throws {
-        let (_, repl) = try await makeSessionAndREPL(shouldFail: true, lines: [
-            "hello",
-            "hello again",
-            "/quit",
-        ])
-        await repl.run()
-        #expect(true)
-    }
-
-    @Test("slash commands dispatch") @MainActor
-    func slashCommands() async throws {
-        let (_, repl) = try await makeSessionAndREPL(lines: ["/timeline", "/quit"])
-        await repl.run()
-        #expect(true)
     }
 }
 
@@ -245,5 +281,21 @@ struct StubApprovalPolicy: ToolApprovalPolicy {
     let decision: @Sendable () -> Bool
     func requestApproval(tool _: AnyTool, arguments _: [String: AnyCodable]) async -> ToolApprovalDecision {
         decision() ? .approve : .deny
+    }
+}
+
+/// An append-only output accumulator for REPL output assertions.
+final class OutputSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var lines: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ line: String) {
+        lock.lock(); defer { lock.unlock() }
+        storage.append(line)
     }
 }
