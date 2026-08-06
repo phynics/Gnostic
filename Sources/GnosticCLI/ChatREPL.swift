@@ -14,6 +14,7 @@ public final class ChatREPL: Sendable {
     private let timelineID: UUID
     private let approval: any ToolApprovalPolicy
     private let readLine: @Sendable () -> String?
+    private let writeOutput: @Sendable (String) -> Void
 
     /// Creates a REPL.
     ///
@@ -23,16 +24,19 @@ public final class ChatREPL: Sendable {
     ///   - approval: The permissioned-tool gate (unused by `ChatSession` but
     ///     retained for parity with the interactive path).
     ///   - readLine: The line source.
+    ///   - writeOutput: The text sink (defaults to `print`).
     public init(
         session: ChatSession,
         timelineID: UUID,
         approval: any ToolApprovalPolicy,
-        readLine: @escaping @Sendable () -> String?
+        readLine: @escaping @Sendable () -> String?,
+        writeOutput: @escaping @Sendable (String) -> Void = { print($0) }
     ) {
         self.session = session
         self.timelineID = timelineID
         self.approval = approval
         self.readLine = readLine
+        self.writeOutput = writeOutput
     }
 
     /// Runs the loop until `/quit` or the line source ends.
@@ -47,29 +51,29 @@ public final class ChatREPL: Sendable {
             do {
                 let result = try await session.run(line: trimmed)
                 switch result {
-                case .text(let text): print(text)
-                case .failed(let message): print("Error: \(message)")
+                case .text(let text): writeOutput(text)
+                case .failed(let message): writeOutput("Error: \(message)")
                 case .quit: return
-                case .timeline: print("timeline: \(timelineID.uuidString.lowercased())")
+                case .timeline: writeOutput("timeline: \(timelineID.uuidString.lowercased())")
                 }
             } catch {
-                print("Error: \(String(describing: error))")
+                writeOutput("Error: \(String(describing: error))")
             }
         }
-        print("bye.")
+        writeOutput("bye.")
     }
 
     /// Handles a slash command; returns true when the REPL should exit.
     private func handleCommand(_ line: String) -> Bool {
         switch line {
         case "/quit", "/exit":
-            print("bye.")
+            writeOutput("bye.")
             return true
         case "/timeline":
-            print("timeline: \(timelineID.uuidString.lowercased())")
+            writeOutput("timeline: \(timelineID.uuidString.lowercased())")
             return false
         default:
-            print("Unknown command '\(line)'. Try /quit or /timeline.")
+            writeOutput("Unknown command '\(line)'. Try /quit or /timeline.")
             return false
         }
     }
