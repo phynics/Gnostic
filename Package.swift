@@ -42,9 +42,18 @@ let package = Package(
             name: "GnosticRunner",
             dependencies: [
                 "GnosticCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticRunnerTests",
+            dependencies: [
+                "GnosticRunner",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Axoloty", package: "Axoloty"),
             ]
         ),
         .executableTarget(

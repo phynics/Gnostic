@@ -1,52 +1,134 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import ArgumentParser
 import Foundation
 import Axoloty
 import GnosticCore
 import PKShared
 import PositronicKit
 
+/// The `gnostic-runner` executable.
 @main
-struct GnosticRunner {
-    static func main() async {
-        let configuration = RunnerConfiguration(environment: ProcessInfo.processInfo.environment, arguments: CommandLine.arguments)
-        do {
-            if configuration.scenario {
-                try await FixtureScenario(configuration: configuration).run()
-            } else {
-                let runtime = try RunnerRuntime(configuration: configuration)
-                defer { runtime.shutdown() }
-                try await runtime.start()
-                print("gnostic-runner online at \(configuration.host):\(configuration.port) namespace \(configuration.namespace)")
-                await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
-                    _ = continuation
-                }
+struct GnosticRunner: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "gnostic-runner",
+        abstract: "Advertise Gnostic objects and drive the agent-network PoC."
+    )
+
+    @Option(help: "MQTT broker host (defaults to GNOSTIC_HOST or 127.0.0.1).")
+    var host: String?
+
+    @Option(help: "MQTT broker port (defaults to GNOSTIC_PORT or 1883).")
+    var port: Int?
+
+    @Option(help: "MQTT namespace (defaults to GNOSTIC_NAMESPACE or gnostic).")
+    var namespace: String?
+
+    @Flag(help: "Run the deterministic fixture scenario instead of the online runner.")
+    var scenario = false
+
+    @MainActor
+    func run() async throws {
+        let configuration = try RunnerConfiguration.resolve(
+            flags: RunnerParsingFlags(host: host, port: port, namespace: namespace),
+            environment: ProcessInfo.processInfo.environment
+        )
+        if scenario {
+            try await FixtureScenario(configuration: configuration).run()
+        } else {
+            let runtime = try RunnerRuntime(configuration: configuration)
+            defer { runtime.shutdown() }
+            try await runtime.start()
+            print("gnostic-runner online at \(configuration.host):\(configuration.port) namespace \(configuration.namespace)")
+            await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
+                _ = continuation
             }
-        } catch {
-            print("gnostic-runner failed: \(error)")
-            exit(1)
         }
     }
 }
 
-struct RunnerConfiguration: Sendable {
-    let host: String
-    let port: Int
-    let namespace: String
-    let scenario: Bool
+/// Structured parsing failures for the runner's command-line configuration.
+public enum RunnerParsingError: Error, Sendable, LocalizedError {
+    /// The port value is not a valid 1–65535 integer.
+    case invalidPort(String)
 
-    init(environment: [String: String], arguments: [String]) {
-        host = Self.value(named: "host", environment: environment, arguments: arguments) ?? "127.0.0.1"
-        port = Int(Self.value(named: "port", environment: environment, arguments: arguments) ?? "1883") ?? 1883
-        namespace = Self.value(named: "namespace", environment: environment, arguments: arguments) ?? "gnostic"
-        scenario = arguments.contains("--scenario")
+    /// A stable, human-readable description of the failure.
+    public var errorDescription: String? {
+        switch self {
+        case let .invalidPort(value):
+            "Invalid port '\(value)': expected an integer between 1 and 65535."
+        }
     }
 
-    private static func value(named name: String, environment: [String: String], arguments: [String]) -> String? {
-        if let index = arguments.firstIndex(of: "--\(name)"), arguments.indices.contains(index + 1) {
-            return arguments[index + 1]
+    /// A machine-readable reason label for diagnostics.
+    public var reasonCode: String {
+        switch self {
+        case .invalidPort: "invalidPort"
         }
-        return environment["GNOSTIC_\(name.uppercased())"]
+    }
+}
+
+/// The fully-resolved runner configuration after precedence resolution.
+public struct RunnerConfiguration: Sendable {
+    public let host: String
+    public let port: Int
+    public let namespace: String
+    public let scenario: Bool
+
+    /// Resolves flags (highest priority), then environment, then defaults.
+    ///
+    /// - Parameters:
+    ///   - flags: The parsed command-line flag values.
+    ///   - environment: Process environment.
+    /// - Returns: The resolved configuration.
+    /// - Throws: `RunnerParsingError.invalidPort` when the effective port is
+    ///   not a valid 1–65535 integer.
+    public static func resolve(
+        flags: RunnerParsingFlags,
+        environment: [String: String]
+    ) throws -> RunnerConfiguration {
+        let host = flags.host
+            ?? environment["GNOSTIC_HOST"]
+            ?? "127.0.0.1"
+        let namespace = flags.namespace
+            ?? environment["GNOSTIC_NAMESPACE"]
+            ?? "gnostic"
+
+        let port: Int
+        if let flag = flags.port {
+            port = flag
+        } else if let raw = environment["GNOSTIC_PORT"] {
+            guard let parsed = Int(raw), (1...65535).contains(parsed) else {
+                throw RunnerParsingError.invalidPort(raw)
+            }
+            port = parsed
+        } else {
+            port = 1883
+        }
+        guard (1...65535).contains(port) else {
+            throw RunnerParsingError.invalidPort(String(port))
+        }
+
+        return RunnerConfiguration(
+            host: host,
+            port: port,
+            namespace: namespace,
+            scenario: false
+        )
+    }
+}
+
+/// The flag surface exposed by `GnosticRunner`, decoupled from the argument
+/// scanner for testability.
+public struct RunnerParsingFlags: Sendable {
+    public var host: String?
+    public var port: Int?
+    public var namespace: String?
+
+    public init(host: String? = nil, port: Int? = nil, namespace: String? = nil) {
+        self.host = host
+        self.port = port
+        self.namespace = namespace
     }
 }
 
