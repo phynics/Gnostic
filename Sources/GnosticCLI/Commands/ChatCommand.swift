@@ -3,6 +3,10 @@
 import ArgumentParser
 import Foundation
 import GnosticCore
+import PKAnthropicProvider
+import PKOllamaProvider
+import PKOpenAIProvider
+import PKOpenRouterProvider
 import PKShared
 import PositronicKit
 
@@ -30,7 +34,9 @@ struct ChatCommand: AsyncParsableCommand {
 
         // Build the model from the CLI configuration. When no provider is set,
         // fall back to an unconfigured model so the REPL can still start and
-        // surface a structured error per turn.
+        // surface a structured error per turn. With a provider set, wire the
+        // per-provider client factory so the LLM service can actually create
+        // a transport client for the active provider.
         let model = configuration.llmConfiguration().map { configured in
             LLMService.configured(from: configured)
         } ?? UnconfiguredLLMService() as any LanguageModel
@@ -64,6 +70,34 @@ struct ChatCommand: AsyncParsableCommand {
         print("gnostic chat — timeline \(timelineID.uuidString.lowercased())")
         print("Type a message, /quit to exit, /timeline to show the timeline ID.")
         await repl.run()
+    }
+}
+
+extension LLMService {
+    /// Returns a model configured from a PK LLM configuration, wiring the
+    /// provider's client factory so the active provider resolves to a real
+    /// transport client instead of `clientNotResolved`.
+    static func configured(from configuration: LLMConfiguration) -> any LanguageModel {
+        LLMService(
+            configuration: configuration,
+            clientFactory: { config in
+                let provider = config.activeProvider
+                switch provider {
+                case .openAI, .openAICompatible:
+                    let client = PKOpenAIProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
+                    return (client, nil, nil)
+                case .openRouter:
+                    let client = PKOpenRouterProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
+                    return (client, nil, nil)
+                case .ollama:
+                    let client = PKOllamaProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
+                    return (client, nil, nil)
+                case .anthropic:
+                    let client = PKAnthropicProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
+                    return (client, nil, nil)
+                }
+            }
+        )
     }
 }
 
