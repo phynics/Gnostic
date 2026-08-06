@@ -11,10 +11,12 @@ let package = Package(
     products: [
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
+        .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.3.0"),
         .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.4.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
     targets: [
         .target(
@@ -43,6 +45,25 @@ let package = Package(
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticCLI",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "PositronicKit", package: "PositronicKit"),
+                .product(name: "PKShared", package: "PositronicKit"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticCLITests",
+            dependencies: [
+                "GnosticCLI",
+                "GnosticCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Axoloty", package: "Axoloty"),
             ]
         ),
     ],
