@@ -39,8 +39,8 @@ public final class GnosticTimelineObject: CoatyObject {
         title = timeline.title
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
-        attachedAgentID = timeline.attachedAgentInstanceId
-        attachedWorkspaceIDs = timeline.attachedWorkspaceIds
+        attachedAgentID = timeline.attachedAgentInstanceID
+        attachedWorkspaceIDs = timeline.attachedWorkspaceIDs
         createdAt = timeline.createdAt
         updatedAt = timeline.updatedAt
         super.init(

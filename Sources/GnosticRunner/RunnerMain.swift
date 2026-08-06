@@ -136,7 +136,7 @@ private struct FixtureScenario {
             toolIDs: ["list_files", "read_file", "workspace_echo"],
             workspaceIDs: [workspaceID]
         )
-        await narrative.capture.capture(input: NarrativeCaptureInput(
+        _ = await narrative.capture.capture(input: NarrativeCaptureInput(
             taskID: "fixture",
             outcome: .success,
             affectsLaterBehavior: true,

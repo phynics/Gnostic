@@ -80,7 +80,7 @@ struct RunnerFixtureE2ETests {
             sensitiveValueHandler: { _ in false }
         )
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!
-        await capture.capture(input: NarrativeCaptureInput(
+        _ = await capture.capture(input: NarrativeCaptureInput(
             taskID: "e2e",
             outcome: .success,
             affectsLaterBehavior: true,

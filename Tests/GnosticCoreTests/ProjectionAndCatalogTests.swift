@@ -22,8 +22,8 @@ struct ProjectionAndCatalogTests {
             id: agentID,
             name: "Atlas",
             description: "Coordinates analysis.",
-            primaryWorkspaceId: workspaceID,
-            privateTimelineId: timelineID,
+            primaryWorkspaceID: workspaceID,
+            privateTimelineID: timelineID,
             lastActiveAt: updateDate,
             createdAt: creationDate,
             updatedAt: updateDate,
@@ -35,8 +35,8 @@ struct ProjectionAndCatalogTests {
             createdAt: creationDate,
             updatedAt: updateDate,
             workingDirectory: "/private/worktree",
-            attachedWorkspaceIds: [workspaceID, attachedWorkspaceID],
-            attachedAgentInstanceId: agentID,
+            attachedWorkspaceIDs: [workspaceID, attachedWorkspaceID],
+            attachedAgentInstanceID: agentID,
             isPrivate: true
         )
         let workspace = WorkspaceReference(
@@ -93,13 +93,13 @@ struct ProjectionAndCatalogTests {
             id: agentID,
             name: "Atlas",
             description: "Coordinates analysis.",
-            privateTimelineId: timelineID
+            privateTimelineID: timelineID
         )
-        let initialTimeline = Timeline(id: timelineID, attachedAgentInstanceId: agentID)
+        let initialTimeline = Timeline(id: timelineID, attachedAgentInstanceID: agentID)
         let changedTimeline = Timeline(
             id: timelineID,
-            attachedWorkspaceIds: [workspaceID],
-            attachedAgentInstanceId: agentID
+            attachedWorkspaceIDs: [workspaceID],
+            attachedAgentInstanceID: agentID
         )
         let workspace = WorkspaceReference(
             id: workspaceID,

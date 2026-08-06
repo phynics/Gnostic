@@ -55,7 +55,7 @@ public actor NarrativeCaptureService {
     ///
     /// - Parameter input: The completed-task input.
     public func capture(input: NarrativeCaptureInput) async -> CaptureOutcome {
-        if input.outcome == .failure, !(await proposer.shouldRecordFailingCall(for: input)) {
+        if input.outcome == .failure, !proposer.shouldRecordFailingCall(for: input) {
             return .notRecorded
         }
         guard let proposal = await proposer.propose(for: input) else {
