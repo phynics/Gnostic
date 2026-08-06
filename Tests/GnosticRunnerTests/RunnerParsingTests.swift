@@ -65,3 +65,14 @@ struct RunnerParsingTests {
         }
     }
 }
+
+@Suite("Runner parse error surface")
+struct RunnerParseErrorSurfaceTests {
+    @Test("RunnerParsingError exposes stable descriptions and reason codes")
+    func runnerParsingErrorSurface() {
+        let invalid = RunnerParsingError.invalidPort("abc")
+        #expect(invalid.errorDescription?.contains("abc") == true)
+        #expect(invalid.errorDescription?.contains("port") == true)
+        #expect(invalid.reasonCode == "invalidPort")
+    }
+}

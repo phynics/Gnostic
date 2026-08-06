@@ -92,8 +92,29 @@ struct InspectCommandsTests {
         }
         defer { readvertise.cancel() }
 
-        try await Task.sleep(for: .milliseconds(500))
+        // Poll until a collect sample sees the workspace (bounded) instead of
+        // relying on a fixed settle sleep, so slow hosts cannot miss the window.
+        let deadline = ContinuousClock.now + .seconds(5)
+        var observed = false
+        while ContinuousClock.now < deadline {
+            if try await !collect(workspaceID: workspaceID).isEmpty {
+                observed = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        #expect(observed)
+
         try await body(workspaceID)
+    }
+
+    /// A minimal collect that returns matching workspace entries.
+    @MainActor
+    private func collect(workspaceID: UUID) async throws -> [NetworkCatalogEntry] {
+        let entries = try await InspectSession(
+            values: .init(host: "127.0.0.1", port: 1883, namespace: namespace, observeSeconds: 0.8)
+        ).collect()
+        return entries.filter { $0.objectID == workspaceID }
     }
 }
 
