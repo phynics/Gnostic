@@ -133,7 +133,7 @@ public struct RunnerParsingFlags: Sendable {
 }
 
 @MainActor
-private final class RunnerRuntime {
+final class RunnerRuntime {
     let container: Container
     let communication: CommunicationManager
     let lifecycle: ObjectLifecycleController
