@@ -16,16 +16,27 @@ public enum ChatTurnResult: Sendable, Equatable {
     case timeline(UUID)
 }
 
+/// The turn-execution seam the REPL depends on.
+///
+/// Both the local `ChatSession` (PositronicKit-backed) and the remote session
+/// (Axoloty `agent.chat`) satisfy it, so `ChatREPL` is transport-agnostic.
+public protocol ChatTurnRunning: Sendable {
+    /// The timeline the session talks to.
+    var timelineID: UUID { get }
+    /// Runs one user line and returns the outcome.
+    func run(line: String) async throws -> ChatTurnResult
+}
+
 /// A minimal, scriptable chat turn engine.
 ///
 /// Owns one PositronicKit timeline and runs `run(_:)` turns, extracting the
 /// final assistant text from the event stream. Result and error surfaces are
 /// deliberately small so tests can script full conversations through the same
 /// code paths as the interactive REPL.
-public final class ChatSession: Sendable {
+public final class ChatSession: Sendable, ChatTurnRunning {
     private let kit: PositronicKit
     private let tools: [any Tool]
-    private let timelineID: UUID
+    public let timelineID: UUID
 
     /// Creates a session over an existing kit and timeline.
     ///

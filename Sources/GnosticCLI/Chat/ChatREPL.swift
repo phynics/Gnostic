@@ -8,9 +8,9 @@ import PositronicKit
 ///
 /// Reads lines from an injectable source (stdin in production, a scripted
 /// iterator in tests), dispatches slash-commands, and runs turns through a
-/// `ChatSession`. Unhandled errors keep the REPL alive.
+/// `ChatTurnRunning` session. Unhandled errors keep the REPL alive.
 public final class ChatREPL: Sendable {
-    private let session: ChatSession
+    private let session: any ChatTurnRunning
     private let timelineID: UUID
     private let approval: any ToolApprovalPolicy
     private let readLine: @Sendable () -> String?
@@ -19,14 +19,14 @@ public final class ChatREPL: Sendable {
     /// Creates a REPL.
     ///
     /// - Parameters:
-    ///   - session: The turn engine.
+    ///   - session: The turn engine (local or remote).
     ///   - timelineID: The active timeline shown by `/timeline`.
-    ///   - approval: The permissioned-tool gate (unused by `ChatSession` but
+    ///   - approval: The permissioned-tool gate (unused by the turn engine but
     ///     retained for parity with the interactive path).
     ///   - readLine: The line source.
     ///   - writeOutput: The text sink (defaults to `print`).
     public init(
-        session: ChatSession,
+        session: any ChatTurnRunning,
         timelineID: UUID,
         approval: any ToolApprovalPolicy,
         readLine: @escaping @Sendable () -> String?,
@@ -72,9 +72,61 @@ public final class ChatREPL: Sendable {
         case "/timeline":
             writeOutput("timeline: \(timelineID.uuidString.lowercased())")
             return false
-        default:
-            writeOutput("Unknown command '\(line)'. Try /quit or /timeline.")
+        case "/workspaces":
+            Task {
+                await showWorkspaces()
+            }
             return false
+        default:
+            if line.hasPrefix("/attach ") {
+                let id = String(line.dropFirst("/attach ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { await mutateWorkspace(id: id, attach: true) }
+                return false
+            }
+            if line.hasPrefix("/detach ") {
+                let id = String(line.dropFirst("/detach ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { await mutateWorkspace(id: id, attach: false) }
+                return false
+            }
+            writeOutput("Unknown command '\(line)'. Try /quit, /timeline, /workspaces, /attach <id>, /detach <id>.")
+            return false
+        }
+    }
+
+    private func showWorkspaces() async {
+        guard let remote = session as? RemoteChatSession else {
+            writeOutput("Workspace commands are only available against a serve agent.")
+            return
+        }
+        do {
+            let attached = try await remote.attachedWorkspaceIDs()
+            if attached.isEmpty {
+                writeOutput("(no attached workspaces)")
+            } else {
+                writeOutput("attached:")
+                for id in attached { writeOutput("  \(id.uuidString.lowercased())") }
+            }
+            let attachable = try await remote.attachableWorkspaces()
+            if !attachable.isEmpty {
+                writeOutput("attachable:")
+                for w in attachable { writeOutput("  \(w.id.uuidString.lowercased()) \(w.name)") }
+            }
+        } catch {
+            writeOutput("Error: \(String(describing: error))")
+        }
+    }
+
+    private func mutateWorkspace(id: String, attach: Bool) async {
+        guard let remote = session as? RemoteChatSession,
+              let workspaceID = UUID(uuidString: id) else {
+            writeOutput("Invalid workspace id '\(id)' or no serve agent.")
+            return
+        }
+        do {
+            let ok = attach ? try await remote.attach(workspaceID) : try await remote.detach(workspaceID)
+            writeOutput(ok ? (attach ? "attached \(id)" : "detached \(id)") : "operation denied")
+        } catch {
+            writeOutput("Error: \(String(describing: error))")
         }
     }
 }

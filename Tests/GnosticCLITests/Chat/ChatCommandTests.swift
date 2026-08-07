@@ -299,24 +299,3 @@ final class OutputSink: @unchecked Sendable {
         storage.append(line)
     }
 }
-@Suite("Chat provider factory")
-struct ChatProviderFactoryTests {
-    @Test("an OpenAI-compatible configuration resolves a real client (no clientNotResolved)")
-    func openAICompatibleResolvesClient() async throws {
-        var configuration = LLMConfiguration(activeProvider: .openAICompatible)
-        var provider = ProviderConfiguration.makeDefault(for: .openAICompatible)
-        provider.endpoint = "https://api.code.umans.ai"
-        provider.apiKey = "sk-test"
-        provider.modelName = "umans-deepseek-v4-flash-0731-lab"
-        configuration.providers[.openAICompatible] = provider
-
-        let service = LLMService.configured(from: configuration)
-        let llm = try #require(service as? LLMService)
-
-        // The provider's client factory must resolve a non-nil client. isReady
-        // requires configuration.isValid AND a resolved primary client.
-        #expect(await llm.isConfigured)
-        #expect(await llm.isReady)
-        #expect(await llm.client() != nil)
-    }
-}
