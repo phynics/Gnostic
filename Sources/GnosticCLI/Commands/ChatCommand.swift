@@ -35,8 +35,13 @@ struct ChatCommand: AsyncParsableCommand {
         defer { client.stop() }
         try await client.connect()
 
-        // Discover the served agent's timeline from its advertisement.
-        let timelineID = try await client.discoverServedTimeline()
+        // Discover the served agent's canonical timeline, then list the serve's
+        // timelines and select one as active. With multi-timeline ownership, the
+        // enumeration source is timeline.list; default to the first timeline (or
+        // the advertised default when none is listed yet).
+        let defaultID = try await client.discoverServedTimeline()
+        let timelines = try await client.listTimelines()
+        let timelineID = timelines.first?.timelineID ?? defaultID
 
         let session = RemoteChatSession(client: client, timelineID: timelineID)
         let repl = ChatREPL(
@@ -46,7 +51,7 @@ struct ChatCommand: AsyncParsableCommand {
             readLine: { readLine(strippingNewline: true) }
         )
         print("gnostic chat — timeline \(timelineID.uuidString.lowercased())")
-        print("Type a message, /quit to exit, /timeline, /workspaces, /attach <id>, /detach <id>.")
+        print("Type a message, /quit to exit, or /timeline, /timelines, /new, /use <id>, /rename <title>, /workspaces, /attach <id>, /detach <id>.")
         await repl.run()
     }
 }

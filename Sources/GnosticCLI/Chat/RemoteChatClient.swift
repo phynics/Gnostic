@@ -113,6 +113,37 @@ public final class RemoteChatClient: Sendable {
         return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
+    /// Creates a new timeline on the serve and returns its status.
+    public func createTimeline(title: String) async throws -> TimelineStatus {
+        let payload = try JSONEncoder().encode(TimelineCreateRequest(title: title))
+        let response = try await manager.call(
+            operation: TimelineManagementProvider.createOperation,
+            parameters: String(decoding: payload, as: UTF8.self),
+            timeout: timeout
+        )
+        return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
+    }
+
+    /// Lists every timeline the serve manages.
+    public func listTimelines() async throws -> [TimelineStatus] {
+        let response = try await manager.call(
+            operation: TimelineManagementProvider.listOperation,
+            timeout: timeout
+        )
+        return try JSONDecoder().decode(TimelineListResult.self, from: Data(response.result.utf8)).timelines
+    }
+
+    /// Renames a timeline and returns its updated status.
+    public func updateTimeline(timelineID: UUID, title: String) async throws -> TimelineStatus {
+        let payload = try JSONEncoder().encode(TimelineUpdateRequest(timelineID: timelineID, title: title))
+        let response = try await manager.call(
+            operation: TimelineManagementProvider.updateOperation,
+            parameters: String(decoding: payload, as: UTF8.self),
+            timeout: timeout
+        )
+        return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
+    }
+
     /// Lists attachable workspaces.
     public func listWorkspaces() async throws -> [WorkspaceListing] {
         let response = try await manager.call(

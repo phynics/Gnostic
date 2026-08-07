@@ -86,6 +86,42 @@ struct RemoteChatClientTests {
         }
     }
 
+    @Test("timeline create/list/rename resolve over the broker") @MainActor
+    func timelineManagementOverBroker() async throws {
+        let namespace = "remote-chat-timeline-tests"
+        let serve = try await serveRuntime(namespace: namespace, approveMode: .auto)
+        defer { serve.shutdown() }
+        try await serve.start()
+        await serve.advertise(agent: AgentInstance(name: "serve", description: "test", privateTimelineID: serve.servedTimelineID), workspaces: [])
+
+        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { client.stop() }
+        try await client.connect()
+
+        // The serve already created a default timeline at startup; list it.
+        let initial = try await client.listTimelines()
+        #expect(initial.contains { $0.timelineID == serve.servedTimelineID })
+
+        // Create + activate a second timeline via the session.
+        let session = RemoteChatSession(client: client, timelineID: serve.servedTimelineID)
+        try await session.createActivateTimeline(title: "Research")
+        #expect(session.timelineID != serve.servedTimelineID)
+
+        // Rename the active timeline.
+        let renamed = try await session.renameActiveTimeline(title: "Renamed Topic")
+        #expect(renamed.title == "Renamed Topic")
+        #expect(renamed.timelineID == session.timelineID)
+
+        // Both timelines are now listed.
+        let after = try await client.listTimelines()
+        #expect(after.count == initial.count + 1)
+        #expect(after.contains { $0.timelineID == session.timelineID && $0.title == "Renamed Topic" })
+
+        // Switching back to the first timeline targets it.
+        session.switchTimeline(to: serve.servedTimelineID)
+        #expect(session.timelineID == serve.servedTimelineID)
+    }
+
     private func poll(
         timeout: Duration,
         _ condition: @escaping @Sendable () async throws -> Bool
