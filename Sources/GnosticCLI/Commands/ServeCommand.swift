@@ -3,6 +3,7 @@
 import ArgumentParser
 import Foundation
 import GnosticCore
+import Logging
 import PKShared
 import PositronicKit
 
@@ -26,9 +27,20 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Approval mode for workspace attach/detach: auto or deny.")
     var approveMode: String = "auto"
 
+    @Option(name: .long, help: "Log level: debug, info, warning, or error (default info).")
+    var logLevel: String = "info"
+
     /// Runs the serve process until interrupted.
     @MainActor
     func run() async throws {
+        // Configure SwiftLog so serve emits timestamped, parseable records.
+        let level = Logger.Level(rawValue: logLevel.lowercased()) ?? .info
+        LoggingSystem.bootstrap { label in
+            var handler = StreamLogHandler.standardOutput(label: label)
+            handler.logLevel = level
+            return handler
+        }
+
         let store = CLIConfigurationStore()
         let stored = try store.load()
         let host = self.host ?? stored.mqttHost

@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import Logging
 import PKShared
 import PositronicKit
 
@@ -44,6 +45,7 @@ public final class ServeRuntime {
     private let workspaceOps: WorkspaceOpsProvider
 
     private let timelineID: UUID
+    private let logger: Logger
     private var registrations: [CallHandlerRegistration] = []
     private var heartbeat: Task<Void, Never>?
     private var advertisedAgent: AgentInstance?
@@ -55,12 +57,14 @@ public final class ServeRuntime {
         port: Int,
         namespace: String,
         approveMode: ServeApproveMode = .auto,
-        languageModel: any LanguageModel = UnconfiguredLLMService()
+        languageModel: any LanguageModel = UnconfiguredLLMService(),
+        logger: Logger = ServeLogging.makeLogger()
     ) async throws {
         self.host = host
         self.port = port
         self.namespace = namespace
         self.approveMode = approveMode
+        self.logger = logger
 
         // Provider container: advertises objects and hosts unary handlers.
         container = try Container.resolve(
@@ -112,26 +116,59 @@ public final class ServeRuntime {
             timelineManager: kit.timelineManager
         ) { _ in }
 
-        // Wire the unary operations.
-        agentChat = AgentChatProvider { [kit] request in
-            let text = try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
-            return AgentChatResult(text: text)
+        // Wire the unary operations, each emitting started/succeeded/denied/failed
+        // trace records for operator traceability.
+        agentChat = AgentChatProvider { [kit, logger] request in
+            ServeTrace.operationStarted(logger: logger, operation: AgentChatProvider.chatOperation, timelineID: request.timelineID, workspaceID: nil)
+            do {
+                let text = try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
+                ServeTrace.operationSucceeded(logger: logger, operation: AgentChatProvider.chatOperation, timelineID: request.timelineID, workspaceID: nil)
+                return AgentChatResult(text: text)
+            } catch {
+                ServeTrace.operationFailed(logger: logger, operation: AgentChatProvider.chatOperation, timelineID: request.timelineID, workspaceID: nil, error: String(describing: error))
+                throw error
+            }
         }
-        timelineStatus = TimelineStatusProvider { [kit] request in
-            let status = try await ServeRuntime.timelineStatus(kit: kit, timelineID: request.timelineID)
-            return status
+        timelineStatus = TimelineStatusProvider { [kit, logger] request in
+            ServeTrace.operationStarted(logger: logger, operation: TimelineStatusProvider.statusOperation, timelineID: request.timelineID, workspaceID: nil)
+            do {
+                let status = try await ServeRuntime.timelineStatus(kit: kit, timelineID: request.timelineID)
+                ServeTrace.operationSucceeded(logger: logger, operation: TimelineStatusProvider.statusOperation, timelineID: request.timelineID, workspaceID: nil)
+                return status
+            } catch {
+                ServeTrace.operationFailed(logger: logger, operation: TimelineStatusProvider.statusOperation, timelineID: request.timelineID, workspaceID: nil, error: String(describing: error))
+                throw error
+            }
         }
         workspaceOps = WorkspaceOpsProvider(
             list: { [catalog] in await ServeRuntime.attachableWorkspaces(catalog: catalog) },
-            attach: { [attachmentService, approveMode, kit, projector, timelineID] request in
-                try await attachmentService.attach(workspaceID: request.workspaceID, to: request.timelineID, approved: approveMode == .auto)
-                serveReadvertiseTimeline(kit: kit, projector: projector, timelineID: timelineID)
-                return true
+            attach: { [attachmentService, approveMode, kit, projector, timelineID, logger] request in
+                ServeTrace.operationStarted(logger: logger, operation: WorkspaceOpsProvider.attachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID)
+                do {
+                    if approveMode != .auto {
+                        ServeTrace.operationDenied(logger: logger, operation: WorkspaceOpsProvider.attachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID, reason: "approvalRequired")
+                        return false
+                    }
+                    try await attachmentService.attach(workspaceID: request.workspaceID, to: request.timelineID, approved: true)
+                    serveReadvertiseTimeline(kit: kit, projector: projector, timelineID: timelineID)
+                    ServeTrace.operationSucceeded(logger: logger, operation: WorkspaceOpsProvider.attachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID)
+                    return true
+                } catch {
+                    ServeTrace.operationFailed(logger: logger, operation: WorkspaceOpsProvider.attachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID, error: String(describing: error))
+                    throw error
+                }
             },
-            detach: { [kit, projector, timelineID] request in
-                try await kit.timelineManager.detachWorkspace(request.workspaceID, from: request.timelineID)
-                serveReadvertiseTimeline(kit: kit, projector: projector, timelineID: timelineID)
-                return true
+            detach: { [kit, projector, timelineID, logger] request in
+                ServeTrace.operationStarted(logger: logger, operation: WorkspaceOpsProvider.detachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID)
+                do {
+                    try await kit.timelineManager.detachWorkspace(request.workspaceID, from: request.timelineID)
+                    serveReadvertiseTimeline(kit: kit, projector: projector, timelineID: timelineID)
+                    ServeTrace.operationSucceeded(logger: logger, operation: WorkspaceOpsProvider.detachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID)
+                    return true
+                } catch {
+                    ServeTrace.operationFailed(logger: logger, operation: WorkspaceOpsProvider.detachOperation, timelineID: request.timelineID, workspaceID: request.workspaceID, error: String(describing: error))
+                    throw error
+                }
             }
         )
     }
@@ -153,6 +190,7 @@ public final class ServeRuntime {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+        ServeTrace.advertised(logger: logger, objects: 1, timelineID: timelineID)
     }
 
     /// Advertises the canonical Agent, Timeline, and (optionally) workspaces.
@@ -160,6 +198,7 @@ public final class ServeRuntime {
         advertisedAgent = agent
         advertisedWorkspaces = workspaces
         await readvertiseAll()
+        ServeTrace.advertised(logger: logger, objects: 1 + workspaces.count, timelineID: timelineID)
     }
 
     /// The id of the served timeline.
@@ -176,6 +215,7 @@ public final class ServeRuntime {
 
     /// Shuts the runtime down cleanly (cancels registrations, stops, deadvertises).
     public func shutdown() {
+        ServeTrace.shutdown(logger: logger)
         heartbeat?.cancel()
         registrations.forEach { $0.cancel() }
         subscription.stop()
