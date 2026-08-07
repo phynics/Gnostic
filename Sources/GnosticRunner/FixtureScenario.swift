@@ -55,7 +55,7 @@ struct FixtureScenario {
         )
         let timeline = try await manager.createTimeline()
         let readvertised = TimelineReadvertisement()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager) { readvertised.record($0) }
+        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager) { readvertised.record($0) }
         let reference = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
         let remote = AxolotyWorkspace(reference: reference, catalog: catalog, communication: consumer.communication, timeout: .seconds(3))
         try await invoke(remote, id: "list_files", arguments: [:], expected: "README.md")

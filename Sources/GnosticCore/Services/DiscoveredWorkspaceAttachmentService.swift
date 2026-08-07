@@ -18,19 +18,18 @@ public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
 @MainActor
 public final class DiscoveredWorkspaceAttachmentService {
     private let catalog: NetworkCatalog
-    private let workspaceStore: any WorkspaceStore
     private let timelineManager: TimelineManager
     private let readvertiseTimeline: ((Timeline) -> Void)?
 
-    /// Creates the attachment bridge using the runtime's normal workspace store and timeline manager.
+    /// Creates the attachment bridge using the runtime's timeline manager.
+    /// Workspace references are imported into the manager's own store via
+    /// `TimelineManager.importWorkspace`, so attach validates correctly.
     public init(
         catalog: NetworkCatalog,
-        workspaceStore: any WorkspaceStore,
         timelineManager: TimelineManager,
         readvertiseTimeline: ((Timeline) -> Void)? = nil
     ) {
         self.catalog = catalog
-        self.workspaceStore = workspaceStore
         self.timelineManager = timelineManager
         self.readvertiseTimeline = readvertiseTimeline
     }
@@ -73,7 +72,7 @@ public final class DiscoveredWorkspaceAttachmentService {
                 requiresPermission: $0.requiresPermission
             )) }
         )
-        try await workspaceStore.saveWorkspace(reference)
+        try await timelineManager.importWorkspace(reference)
         try await timelineManager.attachWorkspace(reference.id, to: timelineID)
         if let timeline = try await timelineManager.listTimelines().first(where: { $0.id == timelineID }) {
             readvertiseTimeline?(timeline)

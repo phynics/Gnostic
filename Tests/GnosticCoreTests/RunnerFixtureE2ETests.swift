@@ -56,7 +56,7 @@ struct RunnerFixtureE2ETests {
         )
         let timeline = try await manager.createTimeline()
         let readvertised = TimelineRecorder()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager) { readvertised.record($0) }
+        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager) { readvertised.record($0) }
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
         let reference = try #require(try await manager.getWorkspaces(for: timeline.id).primary)
