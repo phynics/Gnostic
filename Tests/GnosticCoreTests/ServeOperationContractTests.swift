@@ -79,6 +79,51 @@ struct ServeOperationContractTests {
         #expect(try resultText(detachResponse) == "true")
         #expect(await recorder.attached.isEmpty)
     }
+
+    @Test("timeline create/list/update route to the injected closures")
+    func timelineManagementContract() async throws {
+        let createdID = UUID()
+        let provider = TimelineManagementProvider(
+            create: { title in TimelineStatus(timelineID: createdID, title: title, attachedWorkspaceIDs: []) },
+            list: {
+                [TimelineStatus(timelineID: createdID, title: "Existing", attachedWorkspaceIDs: [])]
+            },
+            update: { request in TimelineStatus(timelineID: request.timelineID, title: request.title, attachedWorkspaceIDs: []) }
+        )
+
+        // create
+        let createResponse = try await provider.handle(operation: TimelineManagementProvider.createOperation, parameters: payload(TimelineCreateRequest(title: "Research")))
+        let created = try JSONDecoder().decode(TimelineStatus.self, from: Data(try resultText(createResponse).utf8))
+        #expect(created.title == "Research")
+        #expect(created.timelineID == createdID)
+
+        // list
+        let listResponse = try await provider.handle(operation: TimelineManagementProvider.listOperation, parameters: nil)
+        let list = try JSONDecoder().decode(TimelineListResult.self, from: Data(try resultText(listResponse).utf8))
+        #expect(list.timelines.count == 1)
+        #expect(list.timelines.first?.title == "Existing")
+
+        // update (rename)
+        let updateResponse = try await provider.handle(operation: TimelineManagementProvider.updateOperation, parameters: payload(TimelineUpdateRequest(timelineID: createdID, title: "Renamed")))
+        let updated = try JSONDecoder().decode(TimelineStatus.self, from: Data(try resultText(updateResponse).utf8))
+        #expect(updated.title == "Renamed")
+        #expect(updated.timelineID == createdID)
+    }
+
+    @Test("timeline ops reject malformed payloads")
+    func timelineManagementRejectsMalformed() async throws {
+        let provider = TimelineManagementProvider(
+            create: { _ in TimelineStatus(timelineID: UUID(), title: "x", attachedWorkspaceIDs: []) },
+            list: { [] },
+            update: { _ in TimelineStatus(timelineID: UUID(), title: "x", attachedWorkspaceIDs: []) }
+        )
+        let bad = try await provider.handle(operation: TimelineManagementProvider.createOperation, parameters: "not-json")
+        guard case .failure(let code, _, _) = bad else {
+            Issue.record("expected failure for malformed create payload")
+            return
+        }
+        #expect(code == 400)
+    }
 }
 
 /// Records attach/detach calls across the Sendable closures.

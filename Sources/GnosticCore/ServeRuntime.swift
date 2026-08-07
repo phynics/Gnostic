@@ -42,6 +42,7 @@ public final class ServeRuntime {
     private let projector: OrchestrationProjector
     private let agentChat: AgentChatProvider
     private let timelineStatus: TimelineStatusProvider
+    private let timelineManagement: TimelineManagementProvider
     private let workspaceOps: WorkspaceOpsProvider
 
     private let timelineID: UUID
@@ -171,6 +172,12 @@ public final class ServeRuntime {
                 }
             }
         )
+
+        timelineManagement = TimelineManagementProvider(
+            create: { [kit] title in try await ServeRuntime.createTimeline(kit: kit, title: title) },
+            list: { [kit] in try await ServeRuntime.listTimelines(kit: kit) },
+            update: { [kit] request in try await ServeRuntime.renameTimeline(kit: kit, timelineID: request.timelineID, title: request.title) }
+        )
     }
 
     /// Starts the container, subscribes the observer, and registers all ops.
@@ -179,6 +186,7 @@ public final class ServeRuntime {
         try await subscription.start()
         registrations.append(try await agentChat.register(on: communication))
         registrations.append(try await timelineStatus.register(on: communication))
+        registrations += try await timelineManagement.register(on: communication)
         try await workspaceOps.register(on: communication)
 
         // Re-advertise periodically so late subscribers (chat/inspect) observe
@@ -260,6 +268,35 @@ public final class ServeRuntime {
         }
         if let lastError { throw ServeRuntimeError.containerFailed(lastError) }
         return finalText.isEmpty ? "(empty reply)" : finalText
+    }
+
+    private static func createTimeline(kit: PositronicKit, title: String) async throws -> TimelineStatus {
+        let timeline = try await kit.timelineManager.createTimeline(title: title)
+        return self.mapTimeline(timeline)
+    }
+
+    private static func listTimelines(kit: PositronicKit) async throws -> [TimelineStatus] {
+        let timelines = try await kit.timelineManager.listTimelines()
+        return timelines.map(Self.mapTimeline)
+    }
+
+    private static func renameTimeline(kit: PositronicKit, timelineID: UUID, title: String) async throws -> TimelineStatus {
+        try await kit.timelineManager.updateTimelineTitle(id: timelineID, title: title)
+        let timelines = try await kit.timelineManager.listTimelines()
+        guard let timeline = timelines.first(where: { $0.id == timelineID }) else {
+            throw ServeRuntimeError.timelineCreationFailed
+        }
+        return Self.mapTimeline(timeline)
+    }
+
+    private static func mapTimeline(_ timeline: Timeline) -> TimelineStatus {
+        TimelineStatus(
+            timelineID: timeline.id,
+            title: timeline.title,
+            attachedWorkspaceIDs: timeline.attachedWorkspaceIDs,
+            isArchived: timeline.isArchived,
+            isPrivate: timeline.isPrivate
+        )
     }
 
     private static func timelineStatus(kit: PositronicKit, timelineID: UUID) async throws -> TimelineStatus {

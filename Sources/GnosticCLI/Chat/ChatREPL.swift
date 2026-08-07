@@ -70,7 +70,17 @@ public final class ChatREPL: Sendable {
             writeOutput("bye.")
             return true
         case "/timeline":
-            writeOutput("timeline: \(timelineID.uuidString.lowercased())")
+            writeOutput("timeline: \(activeTimelineID.uuidString.lowercased())")
+            return false
+        case "/timelines":
+            Task {
+                await showTimelines()
+            }
+            return false
+        case "/new":
+            Task {
+                await createAndActivateTimeline()
+            }
             return false
         case "/workspaces":
             Task {
@@ -78,6 +88,16 @@ public final class ChatREPL: Sendable {
             }
             return false
         default:
+            if line.hasPrefix("/use ") {
+                let id = String(line.dropFirst("/use ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                switchTimeline(id: id)
+                return false
+            }
+            if line.hasPrefix("/rename ") {
+                let title = String(line.dropFirst("/rename ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { await renameActiveTimeline(title: title) }
+                return false
+            }
             if line.hasPrefix("/attach ") {
                 let id = String(line.dropFirst("/attach ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
                 Task { await mutateWorkspace(id: id, attach: true) }
@@ -88,8 +108,71 @@ public final class ChatREPL: Sendable {
                 Task { await mutateWorkspace(id: id, attach: false) }
                 return false
             }
-            writeOutput("Unknown command '\(line)'. Try /quit, /timeline, /workspaces, /attach <id>, /detach <id>.")
+            writeOutput("Unknown command '\(line)'. Try /quit, /timeline, /timelines, /new, /use <id>, /rename <title>, /workspaces, /attach <id>, /detach <id>.")
             return false
+        }
+    }
+
+    /// The effective active timeline id: the session's when it is a remote
+    /// session (which can switch), otherwise the REPL's initial timeline.
+    private var activeTimelineID: UUID {
+        (session as? RemoteChatSession)?.timelineID ?? timelineID
+    }
+
+    private func showTimelines() async {
+        guard let remote = session as? RemoteChatSession else {
+            writeOutput("Timeline commands are only available against a serve agent.")
+            return
+        }
+        do {
+            let timelines = try await remote.listTimelines()
+            if timelines.isEmpty {
+                writeOutput("(no timelines)")
+                return
+            }
+            let active = activeTimelineID
+            for tl in timelines {
+                let marker = tl.timelineID == active ? "* " : "  "
+                writeOutput("\(marker)\(tl.timelineID.uuidString.lowercased()) \(tl.title)")
+            }
+        } catch {
+            writeOutput("Error: \(String(describing: error))")
+        }
+    }
+
+    private func createAndActivateTimeline() async {
+        guard let remote = session as? RemoteChatSession else {
+            writeOutput("Timeline commands are only available against a serve agent.")
+            return
+        }
+        do {
+            let status = try await remote.createActivateTimeline(title: "New Conversation")
+            writeOutput("created + active: \(status.timelineID.uuidString.lowercased()) \(status.title)")
+        } catch {
+            writeOutput("Error: \(String(describing: error))")
+        }
+    }
+
+    private func switchTimeline(id: String) {
+        guard let remote = session as? RemoteChatSession,
+              let timelineID = UUID(uuidString: id) else {
+            writeOutput("Invalid timeline id '\(id)' or no serve agent.")
+            return
+        }
+        remote.switchTimeline(to: timelineID)
+        writeOutput("active timeline \(timelineID.uuidString.lowercased())")
+    }
+
+    private func renameActiveTimeline(title: String) async {
+        guard let remote = session as? RemoteChatSession else {
+            writeOutput("Timeline commands are only available against a serve agent.")
+            return
+        }
+        do {
+            let status = try await remote.renameActiveTimeline(title: title)
+            writeOutput("renamed: \(status.timelineID.uuidString.lowercased()) \(status.title)")
+        } catch {
+            writeOutput("Error: \(String(describing: error))")
         }
     }
 
