@@ -26,6 +26,7 @@ let package = Package(
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
+                .product(name: "PKUtilities", package: "PositronicKit"),
             ]
         ),
         .testTarget(
