@@ -30,7 +30,7 @@ struct WorkspaceProviderTests {
             workspaceProfile: .noWorkspace
         )
         let timeline = try await manager.createTimeline()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager)
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager)
 
         await #expect(throws: DiscoveredWorkspaceAttachmentError.self) {
             try await service.attach(workspaceID: UUID(), to: timeline.id, approved: false)
@@ -40,9 +40,8 @@ struct WorkspaceProviderTests {
     @Test("network management API lists and inspects without attaching") @MainActor
     func networkManagementInspection() async throws {
         let catalog = NetworkCatalog()
-        let store = InMemoryWorkspacePersistence()
         let manager = TimelineManager(workspaceProfile: .noWorkspace)
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager)
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager)
         #expect(await service.listNetworkObjects().isEmpty)
         #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
     }
@@ -51,7 +50,6 @@ struct WorkspaceProviderTests {
     func publicNetworkToolsMetadataAndInvalidInput() async throws {
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: NetworkCatalog(),
-            workspaceStore: InMemoryWorkspacePersistence(),
             timelineManager: TimelineManager(workspaceProfile: .noWorkspace)
         )
         let list = ListNetworkObjectsTool(service: service).toAnyTool()
@@ -84,7 +82,7 @@ struct WorkspaceProviderTests {
         )
         let timeline = try await manager.createTimeline()
         let recorder = TimelineRecorder()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, workspaceStore: store, timelineManager: manager) { recorder.record($0) }
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager) { recorder.record($0) }
 
         let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
         #expect(reference.location == .runtime)

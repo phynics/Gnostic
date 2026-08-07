@@ -107,9 +107,7 @@ public final class ServeRuntime {
             }
         )
 
-        attachmentService = DiscoveredWorkspaceAttachmentService(
-            catalog: catalog,
-            workspaceStore: InMemoryWorkspacePersistence(),
+        attachmentService = DiscoveredWorkspaceAttachmentService(catalog: catalog,
             timelineManager: kit.timelineManager
         ) { _ in }
 
