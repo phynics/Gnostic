@@ -36,7 +36,13 @@ struct ServeCommand: AsyncParsableCommand {
         let namespace = self.namespace ?? stored.mqttNamespace
         let mode: ServeApproveMode = approveMode.lowercased() == "deny" ? .deny : .auto
 
-        let runtime = try await ServeRuntime(host: host, port: port, namespace: namespace, approveMode: mode)
+        // Serve chat turns run against the configured LLM from ~/.gnostic/config.json.
+        // When no provider/model is configured, the serve still starts and each
+        // agent.chat turn returns the unconfigured-LLM structured failure.
+        let model: any LanguageModel = stored.llmConfiguration().map(ConfiguredLLMService.make)
+            ?? UnconfiguredLLMService()
+
+        let runtime = try await ServeRuntime(host: host, port: port, namespace: namespace, approveMode: mode, languageModel: model)
         do {
             try await runtime.start()
 
@@ -47,7 +53,6 @@ struct ServeCommand: AsyncParsableCommand {
                 description: "Serves Gnostic network operations.",
                 privateTimelineID: runtime.servedTimelineID
             )
-            let timeline = try await runtime.currentTimeline()
             let workspace = WorkspaceReference(
                 id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!,
                 uri: WorkspaceURI(parsing: "workspace://serve")!,

@@ -2,7 +2,6 @@
 
 import Axoloty
 import Foundation
-import GnosticCore
 import PKShared
 import PositronicKit
 
@@ -55,7 +54,8 @@ public final class ServeRuntime {
         host: String,
         port: Int,
         namespace: String,
-        approveMode: ServeApproveMode = .auto
+        approveMode: ServeApproveMode = .auto,
+        languageModel: any LanguageModel = UnconfiguredLLMService()
     ) async throws {
         self.host = host
         self.port = port
@@ -86,9 +86,10 @@ public final class ServeRuntime {
         communication = try container.communicationManager.serveUnwrap()
         lifecycle = try container.getController(name: "ObjectLifecycleController").serveUnwrap()
 
-        // PositronicKit runtime: owns the timeline + chat turns. No LLM in the
-        // credential-free fixture; the command injects the configured model.
-        kit = PositronicKit(languageModel: UnconfiguredLLMService())
+        // PositronicKit runtime: owns the timeline + chat turns. The command
+        // injects the configured model; tests/fixture use the unconfigured
+        // credential-free service.
+        kit = PositronicKit(languageModel: languageModel)
         let timeline = try await kit.timelineManager.createTimeline()
         timelineID = timeline.id
 
@@ -112,7 +113,7 @@ public final class ServeRuntime {
         ) { _ in }
 
         // Wire the unary operations.
-        agentChat = AgentChatProvider { [kit, timelineID] request in
+        agentChat = AgentChatProvider { [kit] request in
             let text = try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
             return AgentChatResult(text: text)
         }
@@ -194,10 +195,13 @@ public final class ServeRuntime {
     // MARK: - Turn logic (mirrors ChatSession; owned by serve)
 
     private static func runTurn(kit: PositronicKit, timelineID: UUID, message: String) async throws -> String {
+        // Include the tools enabled on the served timeline so turns can invoke
+        // the attached workspace's tools (echo/list/read) rather than empty.
+        let tools = await kit.timelineManager.enabledTools(for: timelineID)
         let stream = try await kit.run(ChatRunRequest(
             timelineID: timelineID,
             message: message,
-            tools: [],
+            tools: tools,
             maxTurns: 5
         ))
         var finalText = ""
