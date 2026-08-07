@@ -93,24 +93,10 @@ public final class ServeRuntime {
         timelineID = timeline.id
 
         // Consumer side: a catalog of advertised objects (for workspace.list and
-        // attach) fed by a subscription over the same broker.
+        // attach) fed by a subscription on the same manager that advertises, so
+        // the serve observes its own canonical objects (fixture pattern).
         catalog = NetworkCatalog()
-        let observer = try CommunicationManager(
-            identity: Identity(name: "gnostic-serve-observer"),
-            communicationOptions: CommunicationOptions(
-                namespace: namespace,
-                shouldEnableCrossNamespacing: false,
-                mqttClientOptions: MQTTClientOptions(
-                    host: host,
-                    port: UInt16(port),
-                    shouldTryMDNSDiscovery: false,
-                    autoReconnect: false
-                ),
-                shouldAutoStart: false
-            ),
-            commonOptions: nil
-        )
-        subscription = GnosticSubscription(catalog: catalog, communicationManager: observer)
+        subscription = GnosticSubscription(catalog: catalog, communicationManager: communication)
 
         projector = OrchestrationProjector(
             advertise: { [lifecycle] object in

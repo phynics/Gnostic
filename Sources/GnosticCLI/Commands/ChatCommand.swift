@@ -3,18 +3,15 @@
 import ArgumentParser
 import Foundation
 import GnosticCore
-import PKAnthropicProvider
-import PKOllamaProvider
-import PKOpenAIProvider
-import PKOpenRouterProvider
-import PKShared
-import PositronicKit
 
-/// `gnostic chat` — an interactive REPL backed by PositronicKit.
+/// `gnostic chat` — a pure Axoloty client for `gnostic serve`.
+///
+/// Contains no PositronicKit runtime and no local-chat fallback; every turn and
+/// workspace operation is a unary Call/Return over the Axoloty stack.
 struct ChatCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "chat",
-        abstract: "Start an interactive chat with the configured LLM."
+        abstract: "Chat with a serve agent over the Axoloty stack."
     )
 
     @Option(name: .long, help: "MQTT broker host (overrides config).")
@@ -26,41 +23,22 @@ struct ChatCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT namespace (overrides config).")
     var namespace: String?
 
-    /// Runs the interactive REPL.
     @MainActor
     func run() async throws {
         let store = CLIConfigurationStore()
-        let configuration = try store.load()
+        let stored = try store.load()
+        let host = self.host ?? stored.mqttHost
+        let port = self.port ?? stored.mqttPort
+        let namespace = self.namespace ?? stored.mqttNamespace
 
-        // Build the model from the CLI configuration. When no provider is set,
-        // fall back to an unconfigured model so the REPL can still start and
-        // surface a structured error per turn. With a provider set, wire the
-        // per-provider client factory so the LLM service can actually create
-        // a transport client for the active provider.
-        let model = configuration.llmConfiguration().map { configured in
-            LLMService.configured(from: configured)
-        } ?? UnconfiguredLLMService() as any LanguageModel
+        let client = try RemoteChatClient(host: host, port: port, namespace: namespace)
+        defer { client.stop() }
+        try await client.connect()
 
-        let kit = PositronicKit(languageModel: model)
-        let timeline = try await kit.timelineManager.createTimeline()
-        let timelineID = timeline.id
+        // Discover the served agent's timeline from its advertisement.
+        let timelineID = try await client.discoverServedTimeline()
 
-        // Wire the Gnostic network management tools. The attachment service
-        // uses a catalog populated by a subscription; for the first slice the
-        // tools are registered with an empty in-memory store so they remain
-        // honest about what they observed.
-        let attachmentService = DiscoveredWorkspaceAttachmentService(
-            catalog: NetworkCatalog(),
-            workspaceStore: InMemoryWorkspacePersistence(),
-            timelineManager: kit.timelineManager
-        ) { _ in }
-        let tools: [any Tool] = [
-            ListNetworkObjectsTool(service: attachmentService),
-            InspectNetworkObjectTool(service: attachmentService),
-            AttachWorkspaceTool(service: attachmentService),
-        ]
-
-        let session = ChatSession(kit: kit, tools: tools, timelineID: timelineID)
+        let session = RemoteChatSession(client: client, timelineID: timelineID)
         let repl = ChatREPL(
             session: session,
             timelineID: timelineID,
@@ -68,36 +46,7 @@ struct ChatCommand: AsyncParsableCommand {
             readLine: { readLine(strippingNewline: true) }
         )
         print("gnostic chat — timeline \(timelineID.uuidString.lowercased())")
-        print("Type a message, /quit to exit, /timeline to show the timeline ID.")
+        print("Type a message, /quit to exit, /timeline, /workspaces, /attach <id>, /detach <id>.")
         await repl.run()
     }
 }
-
-extension LLMService {
-    /// Returns a model configured from a PK LLM configuration, wiring the
-    /// provider's client factory so the active provider resolves to a real
-    /// transport client instead of `clientNotResolved`.
-    static func configured(from configuration: LLMConfiguration) -> any LanguageModel {
-        LLMService(
-            configuration: configuration,
-            clientFactory: { config in
-                let provider = config.activeProvider
-                switch provider {
-                case .openAI, .openAICompatible:
-                    let client = PKOpenAIProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (client, nil, nil)
-                case .openRouter:
-                    let client = PKOpenRouterProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (client, nil, nil)
-                case .ollama:
-                    let client = PKOllamaProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (client, nil, nil)
-                case .anthropic:
-                    let client = PKAnthropicProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (client, nil, nil)
-                }
-            }
-        )
-    }
-}
-
