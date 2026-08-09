@@ -121,6 +121,15 @@ struct BridgeSubprocessTests {
         #expect(toolResult.success)
         #expect(toolResult.output == "subprocess")
 
+        let chatParams: AnyCodable = .dictionary([
+            "message": .string("hello"),
+            "timelineID": .string(serve.servedTimelineID.uuidString),
+        ])
+        try send(JSONRPCRequest(id: .number(10), method: "gnostic.ascendant.chat", params: chatParams))
+        let chat = try await readResponse(from: output)
+        #expect(chat.error == nil)
+        #expect(try decodeResult(String.self, from: chat) == "Echo received: network")
+
         let permissionParams = try AnyCodable.from(WorkspaceInvokeSmoke(
             workspaceID: workspaceID,
             providerID: listed.providerID,
