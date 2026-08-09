@@ -29,7 +29,11 @@ public struct BridgeServer: Sendable {
     /// Reads LF-delimited messages until stdin closes or the broker is lost.
     public func run() async throws {
         while !client.hasLostConnection {
-            let data = FileHandle.standardInput.readData(ofLength: 16 * 1024)
+            // JSON-RPC frames are intentionally small and may arrive one at a
+            // time; consume whatever is currently available from the pipe.
+            let data = await Task.detached {
+                FileHandle.standardInput.availableData
+            }.value
             if data.isEmpty { break }
             await session.receive(data)
             if await session.currentState() == .stopped { break }

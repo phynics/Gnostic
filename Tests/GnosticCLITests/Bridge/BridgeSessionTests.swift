@@ -24,6 +24,7 @@ struct BridgeSessionTests {
         #expect(try output.responses().last?.result != nil)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":3,"method":"unknown"}"#))
+        try await waitForResponseCount(3, output: output)
         #expect(try output.responses().last?.error?.code == JSONRPCErrorCode.methodNotFound.rawValue)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#))
@@ -45,6 +46,16 @@ struct BridgeSessionTests {
         await session.receive(frame(#"{"jsonrpc":"2.0","method":"gnostic.timeline.list"}"#))
         #expect(try output.responses().count == 1)
     }
+}
+
+private func waitForResponseCount(_ expected: Int, output: BridgeOutputCapture) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(1)
+    while clock.now < deadline {
+        if try output.responses().count >= expected { return }
+        await Task.yield()
+    }
+    Issue.record("timed out waiting for \(expected) bridge responses")
 }
 
 private func frame(_ json: String) -> Data {

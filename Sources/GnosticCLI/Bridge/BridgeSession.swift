@@ -123,20 +123,22 @@ public actor BridgeSession {
 
     private func start(_ request: JSONRPCRequest) async {
         guard let id = request.id else { return }
-        let task = Task { [handler, weak self] in
+        let task = Task.detached { [handler, weak self] in
             do {
                 let result = try await handler(request)
+                guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, result: result))
             } catch is CancellationError {
                 await self?.complete(id: id, response: nil)
             } catch let error as BridgeMethodError {
+                guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, error: self?.errorObject(for: error) ?? JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
             } catch {
+                guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, error: JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
             }
         }
         requests[id] = task
-        await task.value
     }
 
     private func complete(id: JSONRPCIdentifier, response: JSONRPCResponse?) {
