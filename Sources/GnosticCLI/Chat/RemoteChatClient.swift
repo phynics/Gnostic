@@ -4,16 +4,29 @@ import Axoloty
 import Foundation
 import GnosticCore
 import PKShared
+import PositronicKit
 
 /// Failures produced by the remote chat client.
 public enum RemoteChatClientError: Error, Sendable, LocalizedError {
     case brokerUnreachable(String)
     case noServedAgent
+    case workspaceUnavailable
+    case workspaceAmbiguous
+    case timelineNotAttached
+    case approvalRequired
+    case toolNotAdvertised
+    case invalidWorkspaceURI
 
     public var errorDescription: String? {
         switch self {
         case let .brokerUnreachable(detail): "Could not reach the MQTT broker: \(detail)"
         case .noServedAgent: "No served agent was discovered. Start `gnostic serve` first."
+        case .workspaceUnavailable: "The workspace is not currently available."
+        case .workspaceAmbiguous: "The workspace is advertised by more than one provider."
+        case .timelineNotAttached: "The workspace is not attached to the requested timeline."
+        case .approvalRequired: "This tool requires explicit approval."
+        case .toolNotAdvertised: "The requested tool is not advertised by the workspace."
+        case .invalidWorkspaceURI: "The workspace advertised an invalid URI."
         }
     }
 }
@@ -30,6 +43,8 @@ public final class RemoteChatClient: Sendable {
     private let subscription: GnosticSubscription
     private let namespace: String
     private let timeout: Duration
+    private var stateTask: Task<Void, Never>?
+    private var connectionLost = false
 
     /// Creates a client bound to a broker namespace.
     public init(host: String, port: Int, namespace: String, timeout: Duration = .seconds(5)) throws {
@@ -62,6 +77,15 @@ public final class RemoteChatClient: Sendable {
         while let state = await iterator.next() {
             if state == .online {
                 try await subscription.start()
+                connectionLost = false
+                stateTask?.cancel()
+                stateTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let states = await self.manager.observeCommunicationStateStream()
+                    for await state in states {
+                        if state != .online { self.connectionLost = true }
+                    }
+                }
                 return
             }
         }
@@ -70,8 +94,68 @@ public final class RemoteChatClient: Sendable {
 
     /// Stops the client's manager and subscriptions.
     public func stop() {
+        stateTask?.cancel()
+        stateTask = nil
         subscription.stop()
         manager.stop()
+    }
+
+    /// Whether the underlying broker connection has been lost since connect.
+    public var hasLostConnection: Bool { connectionLost }
+
+    /// Refreshes the catalog using Axoloty's active discover request.
+    public func refreshCatalog() async {
+        await subscription.discover(using: manager, timeout: timeout)
+    }
+
+    /// Returns provider-scoped discovered objects from the current catalog.
+    public func listNetworkObjects() async -> [NetworkCatalogEntry] {
+        await refreshCatalog()
+        return await catalog.networkObjects()
+    }
+
+    /// Invokes an advertised workspace tool through the existing Axoloty connection.
+    public func invokeWorkspace(
+        workspaceID: UUID,
+        providerID: String,
+        timelineID: UUID,
+        toolID: String,
+        parameters: [String: AnyCodable],
+        approved: Bool
+    ) async throws -> ToolResult {
+        await refreshCatalog()
+        guard let entry = await catalog.object(id: workspaceID, providerID: providerID),
+              let descriptor = entry.workspace else {
+            throw RemoteChatClientError.workspaceUnavailable
+        }
+        guard case let .available(currentProvider, _) = await catalog.workspaceAttachmentStatus(id: workspaceID) else {
+            let status = await catalog.workspaceAttachmentStatus(id: workspaceID)
+            if case .ambiguous = status { throw RemoteChatClientError.workspaceAmbiguous }
+            throw RemoteChatClientError.workspaceUnavailable
+        }
+        guard currentProvider == providerID, descriptor.isAvailable else {
+            throw RemoteChatClientError.workspaceUnavailable
+        }
+        let timeline = try await timelineStatus(timelineID: timelineID)
+        guard timeline.attachedWorkspaceIDs.contains(workspaceID) else {
+            throw RemoteChatClientError.timelineNotAttached
+        }
+        guard let tool = descriptor.tools.first(where: { $0.id == toolID }) else {
+            throw RemoteChatClientError.toolNotAdvertised
+        }
+        guard !tool.requiresPermission || approved else {
+            throw RemoteChatClientError.approvalRequired
+        }
+        guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+            throw RemoteChatClientError.invalidWorkspaceURI
+        }
+        let workspace = AxolotyWorkspace(
+            reference: reference,
+            catalog: catalog,
+            communication: manager,
+            timeout: timeout
+        )
+        return try await workspace.executeTool(id: toolID, parameters: parameters)
     }
 
     /// Discovers the served Agent's timeline ID from advertised objects.
@@ -170,3 +254,7 @@ public final class RemoteChatClient: Sendable {
         return response.result == "true"
     }
 }
+
+/// The long-lived bridge client name. The chat client remains source-compatible
+/// for the interactive command while both surfaces share one Axoloty connection.
+public typealias GnosticRemoteClient = RemoteChatClient

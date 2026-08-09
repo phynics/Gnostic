@@ -4,7 +4,8 @@ Gnostic bridges PositronicKit orchestration with Axoloty networking.
 
 ## Status
 
-Early proof of concept. Axoloty's remotely consumable release is available through `0.3.0`.
+Early proof of concept. The package uses the released PositronicKit `3.4.2`
+surface and the Axoloty discovery revision that follows the `0.3.0` release.
 
 ## Discovered workspaces
 
@@ -18,6 +19,15 @@ Attached workspaces expose only their advertised custom tool definitions. Tool
 calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` Call/Return
 operation; direct file APIs are intentionally unsupported. Deadvertised,
 malformed, or ambiguous advertisements cannot be attached or executed.
+
+## JSON-RPC bridge
+
+`gnostic bridge` is a long-lived JSON-RPC 2.0 stdio frontend for pi and other
+process hosts. It reads one LF-delimited request per line from stdin and writes
+responses to stdout, while sharing exactly one Axoloty/MQTT connection for
+discovery, timeline operations, chat, workspace attachment, and approved
+workspace-tool invocation. Logs never use stdout. Start it with the configured
+broker or override `--host`, `--port`, and `--namespace`.
 
 ## Development
 

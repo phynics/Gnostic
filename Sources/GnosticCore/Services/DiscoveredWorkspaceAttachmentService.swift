@@ -55,23 +55,9 @@ public final class DiscoveredWorkspaceAttachmentService {
         guard let descriptor = await catalog.networkObjects().first(where: {
             $0.objectID == workspaceID && $0.workspace?.uri == uri
         })?.workspace,
-            let workspaceURI = WorkspaceURI(parsing: descriptor.uri) else {
+            let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
             throw DiscoveredWorkspaceAttachmentError.invalidURI
         }
-
-        let reference = WorkspaceReference(
-            id: descriptor.id,
-            uri: workspaceURI,
-            location: .runtime,
-            tools: descriptor.tools.map { .custom(WorkspaceToolDefinition(
-                id: $0.id,
-                name: $0.name,
-                description: $0.toolDescription,
-                parametersSchema: $0.parametersSchema,
-                usageExample: $0.usageExample,
-                requiresPermission: $0.requiresPermission
-            )) }
-        )
         try await timelineManager.importWorkspace(reference)
         try await timelineManager.attachWorkspace(reference.id, to: timelineID)
         if let timeline = try await timelineManager.listTimelines().first(where: { $0.id == timelineID }) {
