@@ -45,6 +45,16 @@ public actor NetworkCatalog {
         entries[objectID, default: [:]][providerID] = entry
     }
 
+    /// Ingests a resolved object returned by an active discover request.
+    ///
+    /// Resolve responses carry the same immutable object snapshot as an
+    /// advertisement, so they share the catalog's provider-scoped projection
+    /// and replacement semantics.
+    public func ingest(_ event: ResponseEventSnapshot) {
+        guard let object = event.object else { return }
+        ingest(AdvertiseEventSnapshot(sourceId: event.sourceId, object: object))
+    }
+
     /// Ingests a deadvertisement and removes only entries owned by its provider.
     ///
     /// - Parameter event: The immutable Axoloty deadvertisement snapshot.

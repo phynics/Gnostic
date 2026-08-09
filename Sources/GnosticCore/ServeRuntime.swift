@@ -48,7 +48,7 @@ public final class ServeRuntime {
     private let timelineID: UUID
     private let logger: Logger
     private var registrations: [CallHandlerRegistration] = []
-    private var heartbeat: Task<Void, Never>?
+    private var discoverResponder: DiscoverResponderRegistration?
     private var advertisedAgent: AgentInstance?
     private var advertisedWorkspaces: [WorkspaceReference] = []
 
@@ -189,14 +189,9 @@ public final class ServeRuntime {
         registrations += try await timelineManagement.register(on: communication)
         try await workspaceOps.register(on: communication)
 
-        // Re-advertise periodically so late subscribers (chat/inspect) observe
-        // the served objects. Advertisements are one-shot publishes; a persistent
-        // server heartbeats them, like Coaty's identity announcements.
-        heartbeat = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.readvertiseAll()
-                try? await Task.sleep(for: .seconds(1))
-            }
+        discoverResponder = await communication.registerDiscoverResponder { [weak self] request in
+            guard let self else { return }
+            try await self.respond(to: request)
         }
         ServeTrace.advertised(logger: logger, objects: 1, timelineID: timelineID)
     }
@@ -205,7 +200,7 @@ public final class ServeRuntime {
     public func advertise(agent: AgentInstance, workspaces: [WorkspaceReference]) async {
         advertisedAgent = agent
         advertisedWorkspaces = workspaces
-        await readvertiseAll()
+        await advertiseAll()
         ServeTrace.advertised(logger: logger, objects: 1 + workspaces.count, timelineID: timelineID)
     }
 
@@ -224,20 +219,42 @@ public final class ServeRuntime {
     /// Shuts the runtime down cleanly (cancels registrations, stops, deadvertises).
     public func shutdown() {
         ServeTrace.shutdown(logger: logger)
-        heartbeat?.cancel()
+        discoverResponder?.cancel()
+        discoverResponder = nil
         registrations.forEach { $0.cancel() }
         subscription.stop()
         container.shutdown()
     }
 
-    private func readvertiseAll() async {
+    private func advertiseAll() async {
         guard let agent = advertisedAgent else { return }
         do {
             let timeline = try await currentTimeline()
             projector.advertise(agent: agent, timeline: timeline, workspaces: advertisedWorkspaces)
         } catch {
-            // Heartbeat failures are non-fatal; the next tick retries.
+            // Advertisement failures are non-fatal; the caller can retry.
         }
+    }
+
+    /// Resolves the currently advertised Gnostic objects for a late subscriber.
+    private func respond(to request: DiscoverRequest) async throws {
+        let requestedTypes = request.snapshot.objectTypes
+        let objects = try await discoverableObjects()
+        for object in objects {
+            guard requestedTypes == nil || requestedTypes?.contains(object.objectType) == true else { continue }
+            try request.resolve(object: object)
+        }
+    }
+
+    /// Builds fresh projections so Resolve responses reflect current timeline
+    /// attachment state while preserving the advertised identities.
+    private func discoverableObjects() async throws -> [CoatyObject] {
+        guard let agent = advertisedAgent else { return [] }
+        let timeline = try await currentTimeline()
+        return [
+            GnosticAgentObject(agent: agent),
+            GnosticTimelineObject(timeline: timeline),
+        ] + advertisedWorkspaces.map(GnosticWorkspaceObject.init(workspace:))
     }
 
     // MARK: - Turn logic (mirrors ChatSession; owned by serve)

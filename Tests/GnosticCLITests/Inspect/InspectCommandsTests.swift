@@ -62,9 +62,8 @@ struct InspectCommandsTests {
         } else { Issue.record("expected ambiguous") }
     }
 
-    /// Seeds a workspace advertisement and keeps readvertising it while the
-    /// closure runs, mirroring a live runner that readvertises on state change
-    /// (one-shot advertisements are missed by late subscribers).
+    /// Seeds a one-shot workspace advertisement and registers the generic
+    /// discover responder used by late subscribers.
     @MainActor
     private func withSeededWorkspace(_ body: @escaping (UUID) async throws -> Void) async throws {
         let provider = try InspectContainer.provider(namespace: namespace)
@@ -80,20 +79,18 @@ struct InspectCommandsTests {
             tools: [.custom(.init(id: "echo", name: "Echo", description: "Echoes input."))],
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         ))
-        lifecycle.advertiseDiscoverableObject(object: object)
         try await provider.startAndWaitUntilReady()
-
-        // Readvertise during the closure so late subscribers observe it.
-        let readvertise = Task {
-            while !Task.isCancelled {
-                lifecycle.advertiseDiscoverableObject(object: object)
-                try? await Task.sleep(for: .milliseconds(250))
-            }
+        let communication = try #require(provider.communicationManager)
+        let responder = await communication.registerDiscoverResponder { request in
+            guard request.snapshot.objectTypes?.contains(GnosticObjectType.workspace) == true else { return }
+            try request.resolve(object: object)
         }
-        defer { readvertise.cancel() }
+        defer { responder.cancel() }
 
-        // Poll until a collect sample sees the workspace (bounded) instead of
-        // relying on a fixed settle sleep, so slow hosts cannot miss the window.
+        lifecycle.advertiseDiscoverableObject(object: object)
+
+        // Poll until a collect sample sees the workspace (bounded), proving the
+        // client issued an active discovery request rather than waiting for ads.
         let deadline = ContinuousClock.now + .seconds(5)
         var observed = false
         while ContinuousClock.now < deadline {

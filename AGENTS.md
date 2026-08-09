@@ -17,10 +17,10 @@
 ## Current baseline
 
 - `main` contains the standalone Swift package, `GnosticCore`, and the `gnostic-runner` executable.
-- The completed PoC projects PositronicKit Agent, Timeline, and Workspace objects; discovers, inspects, imports, and attaches an unambiguous advertised Workspace; invokes its tools through Axoloty unary Call/Return; and readvertises the changed Timeline.
+- The completed PoC projects PositronicKit Agent, Timeline, and Workspace objects; discovers, inspects, imports, and attaches an unambiguous advertised Workspace; invokes its tools through Axoloty unary Call/Return; actively discovers late subscribers; and readvertises the changed Timeline.
 - The deterministic runner fixture covers discovery, approved attachment, `list_files`, `read_file`, and `workspace_echo` through Mosquitto without LLM or broker credentials.
-- `Package.swift` pins Axoloty `0.3.0` and PositronicKit `3.4.0` exactly. These releases include the former Axoloty #418, #419, and #420 blockers.
-- The verified baseline is 73 Swift Testing tests in 9 suites plus the passing runner fixture smoke scenario (includes the GNO-005–GNO-010 narrative/context stack).
+- `Package.swift` normally pins released semantic versions. During GNO-advonce development it records the exact Axoloty main revision `f18e867c7ac4affd65f0c12708ed928afbeb475f` because the merged public discover-responder API is not released yet; PositronicKit is pinned to `3.4.2` exactly. The owning GitHub issue records this temporary, deterministic exception.
+- The verified baseline is 127 Swift Testing tests in 23 suites plus the passing runner fixture smoke scenario (includes the GNO-005–GNO-010 narrative/context stack).
 - Current builds show one external warning family from the PositronicKit dependency: SwiftPM cannot locate the optional `pkfastembed` pkg-config file for PK's `CPKFastEmbed` system target (and macOS hosts additionally report pkg-config being absent). This is PositronicKit-owned (its `Package.swift` declares `pkgConfig: "pkfastembed"` unconditionally) and is not resolved from this repository; do not vendor a copy of the dependency to silence it, and do not mistake it for a Gnostic validation failure. All warnings attributable to Gnostic sources and tests are resolved.
 
 ## Build and test
@@ -34,8 +34,8 @@
 
 ## Dependencies
 
-- Commit released semantic-version pins for Axoloty and PositronicKit.
-- A local-path override is allowed only for unreleased development and must be reverted before commit.
+- Commit released semantic-version pins for Axoloty and PositronicKit by default. An unreleased exact revision is allowed only when a user-authorized, merged upstream API is required; record the revision and release follow-up in the owning GitHub issue and replace it with a released pin when available.
+- Do not use local-path dependency overrides in committed work.
 - Record active external blockers in the owning GitHub issue and remove them when a released dependency resolves them.
 
 ## Swift conventions
