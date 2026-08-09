@@ -55,6 +55,34 @@ public final class GnosticSubscription {
         }
     }
 
+    /// Publishes one active discover request and ingests its correlated
+    /// Resolve responses for a bounded window.
+    ///
+    /// The response stream remains open for the lifetime of the request, so
+    /// the deadline task ends collection explicitly. Every response is
+    /// retained through the same catalog path as an advertisement.
+    public func discover(
+        using communicationManager: CommunicationManager,
+        timeout: Duration = .seconds(5)
+    ) async {
+        let stream = await communicationManager.publishDiscover(
+            DiscoverEvent.with(objectTypes: Self.objectTypes)
+        )
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [catalog] in
+                for await response in stream {
+                    await catalog.ingest(response)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
     /// Cancels all active subscriptions and releases their Axoloty stream lifetimes.
     public func stop() {
         tasks.forEach { $0.cancel() }

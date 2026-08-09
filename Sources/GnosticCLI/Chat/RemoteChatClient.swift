@@ -76,17 +76,14 @@ public final class RemoteChatClient: Sendable {
 
     /// Discovers the served Agent's timeline ID from advertised objects.
     public func discoverServedTimeline() async throws -> UUID {
-        // Poll briefly for the Agent advertisement (serve heartbeats it).
-        for _ in 0..<20 {
-            let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
-            if let timeline = agents.lazy.compactMap({ entry -> UUID? in
-                guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
-                      let id = UUID(uuidString: raw) else { return nil }
-                return id
-            }).first {
-                return timeline
-            }
-            try? await Task.sleep(for: .milliseconds(100))
+        await subscription.discover(using: manager, timeout: timeout)
+        let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
+        if let timeline = agents.lazy.compactMap({ entry -> UUID? in
+            guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
+                  let id = UUID(uuidString: raw) else { return nil }
+            return id
+        }).first {
+            return timeline
         }
         throw RemoteChatClientError.noServedAgent
     }

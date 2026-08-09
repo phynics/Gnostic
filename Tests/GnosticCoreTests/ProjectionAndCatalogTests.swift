@@ -136,6 +136,26 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
     }
 
+    @Test("catalog ingests a resolved object snapshot")
+    func catalogIngestsResolvedObjectSnapshot() async throws {
+        let catalog = NetworkCatalog()
+        let advertised = workspaceSnapshot(uri: "workspace://resolved", sourceID: "provider-a")
+        let response = ResponseEventSnapshot(
+            eventType: "resolve",
+            sourceId: advertised.sourceId,
+            correlationId: "correlation-1",
+            payload: "{}",
+            object: advertised.object
+        )
+
+        await catalog.ingest(response)
+
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .available(
+            providerID: "provider-a",
+            uri: "workspace://resolved"
+        ))
+    }
+
     @Test("catalog retains unknown dynamic object fields for inspection")
     func catalogRetainsUnknownDynamicObjectFieldsForInspection() async throws {
         let catalog = NetworkCatalog()

@@ -14,7 +14,9 @@ let package = Package(
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.3.0"),
+        // Temporary development override for GNO-advonce (#64): the public
+        // discover-responder API is merged on Axoloty main but not released.
+        .package(url: "https://github.com/phynics/Axoloty.git", revision: "f18e867c7ac4affd65f0c12708ed928afbeb475f"),
         .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.4.2"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],

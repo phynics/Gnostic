@@ -44,8 +44,7 @@ final class InspectSession {
         do {
             try await start(manager)
             try await subscription.start()
-            // Bound the discovery window deterministically.
-            try await Task.sleep(for: .seconds(values.observeSeconds))
+            await subscription.discover(using: manager, timeout: .seconds(values.observeSeconds))
             let entries = await catalog.networkObjects()
             subscription.stop()
             manager.stop()
