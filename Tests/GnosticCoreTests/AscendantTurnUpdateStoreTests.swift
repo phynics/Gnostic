@@ -28,7 +28,7 @@ struct AscendantTurnUpdateStoreTests {
         let timelineID = UUID()
         await store.start(timelineID: timelineID, clientTurnID: "turn-2")
         for index in 0..<4 {
-            _ = await store.append(timelineID: timelineID, clientTurnID: "turn-2", kind: "assistant_text", text: "(index)")
+            _ = await store.append(timelineID: timelineID, clientTurnID: "turn-2", kind: "assistant_text", text: "\(index)")
         }
 
         let replay = await store.replay(timelineID: timelineID, clientTurnID: "turn-2", afterSequence: 0)
