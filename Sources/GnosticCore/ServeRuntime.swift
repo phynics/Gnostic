@@ -92,19 +92,24 @@ public final class ServeRuntime {
         communication = try container.communicationManager.serveUnwrap()
         lifecycle = try container.getController(name: "ObjectLifecycleController").serveUnwrap()
 
-        // PositronicKit runtime: owns the timeline + chat turns. The command
-        // injects the configured model; tests/fixture use the unconfigured
-        // credential-free service.
-        kit = PositronicKit(languageModel: languageModel)
-        let timeline = try await kit.timelineManager.createTimeline()
-        timelineID = timeline.id
-        turnCoordinator = AscendantTurnCoordinator()
-
         // Consumer side: a catalog of advertised objects (for workspace.list and
         // attach) fed by a subscription on the same manager that advertises, so
         // the serve observes its own canonical objects (fixture pattern).
         catalog = NetworkCatalog()
         subscription = GnosticSubscription(catalog: catalog, communicationManager: communication)
+
+        // PositronicKit runtime: owns the timeline + chat turns. Its workspace
+        // factory is the bridge back to this serve's unary provider, so an
+        // attached workspace remains executable inside an Ascendant turn.
+        let workspaceFactory = AxolotyWorkspaceFactory(catalog: catalog, communication: communication, timeout: .seconds(10))
+        kit = PositronicKit(configuration: .init(
+            provider: .init(languageModel: languageModel),
+            persistence: .inMemory(),
+            runtime: .init(workspaceCreator: workspaceFactory)
+        ))
+        let timeline = try await kit.timelineManager.createTimeline()
+        timelineID = timeline.id
+        turnCoordinator = AscendantTurnCoordinator()
 
         projector = OrchestrationProjector(
             advertise: { [lifecycle] object in

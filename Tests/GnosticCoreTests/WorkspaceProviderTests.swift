@@ -218,6 +218,60 @@ struct WorkspaceProviderTests {
         #expect(result.success)
         #expect(result.output == "broker-result")
     }
+
+    @Test("workspace invocation selects the attached provider and rejects forged returns") @MainActor
+    func brokerWorkspaceInvocationPreservesProviderIdentity() async throws {
+        let namespace = "gnostic-workspace-routing-\(UUID().uuidString.lowercased())"
+        let caller = makeBrokerManager("caller", namespace: namespace)
+        let target = makeBrokerManager("target", namespace: namespace)
+        let competing = makeBrokerManager("competing", namespace: namespace)
+        defer {
+            caller.stop()
+            target.stop()
+            competing.stop()
+        }
+        try await startBrokerManager(caller)
+        try await startBrokerManager(target)
+        try await startBrokerManager(competing)
+
+        let targetRegistration = try await target.registerCallHandler(
+            operation: WorkspaceProvider.invocationOperation,
+            context: target.identity
+        ) { _ in
+            try await Task.sleep(for: .milliseconds(100))
+            let result = try JSONEncoder().encode(ToolResult.success("target"))
+            return .success(result: String(decoding: result, as: UTF8.self))
+        }
+        defer { targetRegistration.cancel() }
+        let competingRegistration = try await competing.registerCallHandler(
+            operation: WorkspaceProvider.invocationOperation,
+            context: competing.identity
+        ) { _ in
+            .failure(code: 499, message: "non-target provider")
+        }
+        defer { competingRegistration.cancel() }
+
+        let catalog = NetworkCatalog()
+        let reference = try await availableWorkspaceReference(catalog: catalog, providerID: target.identity.objectId.string)
+        let workspace = AxolotyWorkspace(reference: reference, catalog: catalog, communication: caller, timeout: .seconds(3))
+
+        let selected = try await workspace.executeTool(id: "custom", parameters: [:])
+        #expect(selected.output == "target")
+
+        targetRegistration.cancel()
+        let forgedRegistration = try await competing.registerCallHandler(
+            operation: WorkspaceProvider.invocationOperation,
+            context: target.identity
+        ) { _ in
+            let result = try JSONEncoder().encode(ToolResult.success("forged"))
+            return .success(result: String(decoding: result, as: UTF8.self))
+        }
+        defer { forgedRegistration.cancel() }
+
+        await #expect(throws: WorkspaceError.self) {
+            try await workspace.executeTool(id: "custom", parameters: [:])
+        }
+    }
 }
 
 private final class TimelineRecorder: @unchecked Sendable {
@@ -230,12 +284,12 @@ private actor InvocationRecorder {
     func record() { value = true }
 }
 
-private func availableWorkspaceReference(catalog: NetworkCatalog) async throws -> WorkspaceReference {
+private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: String = "remote") async throws -> WorkspaceReference {
     let id = UUID()
     let payload = """
     {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
     """
-    await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+    await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
     return WorkspaceReference(
         id: id,
         uri: WorkspaceURI(parsing: "workspace://remote")!,
@@ -245,8 +299,8 @@ private func availableWorkspaceReference(catalog: NetworkCatalog) async throws -
 }
 
 @MainActor
-private func makeBrokerManager(_ name: String) -> CommunicationManager {
-    let options = CommunicationOptions(namespace: "gnostic-workspace-tests", shouldEnableCrossNamespacing: false, mqttClientOptions: MQTTClientOptions(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false), shouldAutoStart: false)
+private func makeBrokerManager(_ name: String, namespace: String = "gnostic-workspace-tests") -> CommunicationManager {
+    let options = CommunicationOptions(namespace: namespace, shouldEnableCrossNamespacing: false, mqttClientOptions: MQTTClientOptions(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false), shouldAutoStart: false)
     return try! CommunicationManager(identity: Identity(name: name), communicationOptions: options, commonOptions: nil)
 }
 

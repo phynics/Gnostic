@@ -48,9 +48,9 @@ final class StubLanguageModel: LanguageModel, @unchecked Sendable {
         if shouldFail {
             return failingStream()
         }
-        let isFirstCall = await counter.nextCall() == 1
+        let callNumber = await counter.nextCall()
 
-        if isFirstCall {
+        if callNumber == 1 {
             // Emit a tool call to workspace_echo.
             let args = #"{"value":"network"}"#
             let chunk = LLMStreamChunk(
@@ -73,6 +73,13 @@ final class StubLanguageModel: LanguageModel, @unchecked Sendable {
         }
 
         // Second call: final text after the tool result.
+        if callNumber == 2 {
+            guard messages.contains(where: {
+                $0.role == .tool && $0.toolCallID == "call_1" && $0.content == "network"
+            }) else {
+                return failingStream()
+            }
+        }
         let text = "Echo received: network"
         let chunk = LLMStreamChunk(
             id: "c2",
@@ -137,7 +144,8 @@ struct ChatREPLTests {
     func scriptedConversation() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
         let timeline = try await kit.timelineManager.createTimeline()
-        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let echo = EchoTool()
+        let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["hello", "/quit"])
         let sink = OutputSink()
         let repl = ChatREPL(
@@ -152,6 +160,7 @@ struct ChatREPLTests {
         // The stub's second call emits the final assistant text; the tool call
         // round-trip happened in between. Output must contain assistant text and bye.
         #expect(output.contains(where: { $0.contains("Echo received: network") }))
+        #expect(await echo.invocations() == 1)
         #expect(output.last == "bye.")
     }
 
