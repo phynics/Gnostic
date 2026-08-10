@@ -175,10 +175,19 @@ final class ACPDispatcher: Sendable {
             }
             return .dictionary(["stopReason": .string("end_turn")])
         }
-        let result = try await client.chat(message: text, timelineID: record.timelineID, clientTurnID: turnID)
-        let replay = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text)
+        let (result, lastSequence) = try await streamPrompt(
+            message: text,
+            record: record,
+            turnID: turnID
+        )
+        let replay = try? await client.replay(
+            timelineID: record.timelineID,
+            clientTurnID: turnID,
+            message: text,
+            afterSequence: lastSequence
+        )
         let updates = replay?.updates ?? []
-        if updates.isEmpty {
+        if updates.isEmpty, lastSequence == 0 {
             publishUpdate(sessionID: record.id, turnID: turnID, sequence: 1, kind: "assistant_text", text: result.text, replayed: result.replayed)
         } else {
             for update in updates {
@@ -194,6 +203,76 @@ final class ACPDispatcher: Sendable {
         }
         try await registry.touch(id: record.id)
         return .dictionary(["stopReason": .string("end_turn")])
+    }
+
+    /// The Ascendant operation remains an authoritative unary completion, but
+    /// replay is polled while it is active so ACP clients receive live updates
+    /// instead of a burst after the call returns.
+    private func streamPrompt(
+        message: String,
+        record: ACPSessionRecord,
+        turnID: String
+    ) async throws -> (AgentChatResult, Int) {
+        let chat = Task {
+            try await client.chat(
+                message: message,
+                timelineID: record.timelineID,
+                clientTurnID: turnID
+            )
+        }
+        defer { chat.cancel() }
+        var lastSequence = 0
+
+        while true {
+            try Task.checkCancellation()
+            let outcome = await withTaskGroup(of: PromptWaitOutcome.self) { group in
+                group.addTask {
+                    do {
+                        return .completed(try await chat.value)
+                    } catch {
+                        return .failed(String(describing: error))
+                    }
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .milliseconds(40))
+                    return .poll
+                }
+                let first = await group.next() ?? .poll
+                group.cancelAll()
+                return first
+            }
+
+            if let replay = try? await client.replay(
+                timelineID: record.timelineID,
+                clientTurnID: turnID,
+                message: message,
+                afterSequence: lastSequence
+            ) {
+                for update in replay.updates {
+                    publishUpdate(
+                        sessionID: record.id,
+                        turnID: turnID,
+                        sequence: update.sequence,
+                        kind: update.kind,
+                        text: update.text,
+                        replayed: false
+                    )
+                    lastSequence = max(lastSequence, update.sequence)
+                }
+            }
+
+            switch outcome {
+            case .completed(let result): return (result, lastSequence)
+            case .failed(let detail): throw BridgeMethodError.invalidState(detail)
+            case .poll: break
+            }
+        }
+    }
+
+    private enum PromptWaitOutcome: Sendable {
+        case completed(AgentChatResult)
+        case failed(String)
+        case poll
     }
 
     private func publishUpdate(

@@ -8,13 +8,34 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     public let sequence: Int
     public let kind: String
     public let text: String?
+    public let toolStates: [String]
     public let terminal: Bool
 
-    public init(sequence: Int, kind: String, text: String? = nil, terminal: Bool = false) {
+    public init(
+        sequence: Int,
+        kind: String,
+        text: String? = nil,
+        toolStates: [String] = [],
+        terminal: Bool = false
+    ) {
         self.sequence = sequence
         self.kind = kind
         self.text = text
+        self.toolStates = toolStates
         self.terminal = terminal
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sequence, kind, text, toolStates, terminal
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sequence = try container.decode(Int.self, forKey: .sequence)
+        kind = try container.decode(String.self, forKey: .kind)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        toolStates = try container.decodeIfPresent([String].self, forKey: .toolStates) ?? []
+        terminal = try container.decode(Bool.self, forKey: .terminal)
     }
 }
 
@@ -69,7 +90,7 @@ public actor AscendantTurnUpdateStore {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
         self.maxEvents = max(2, maxEvents)
-        self.maxBytes = max(1, maxBytes)
+        self.maxBytes = max(256, maxBytes)
     }
 
     public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) {
@@ -91,7 +112,10 @@ public actor AscendantTurnUpdateStore {
     ) -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
-        let update = AscendantTurnUpdate(sequence: entry.nextSequence, kind: kind, text: text, terminal: terminal)
+        let update = Self.bounded(
+            AscendantTurnUpdate(sequence: entry.nextSequence, kind: kind, text: text, terminal: terminal),
+            maxBytes: maxBytes / 2
+        )
         entry.nextSequence += 1
         entry.updates.append(update)
         entry.bytes += Self.encodedSize(update)
@@ -99,8 +123,10 @@ public actor AscendantTurnUpdateStore {
 
         if entry.updates.count > maxEvents || entry.bytes > maxBytes {
             var snapshotText = ""
+            var snapshotToolStates: [String] = []
             var snapshotSequence = 0
-            while entry.updates.count >= maxEvents || entry.bytes > maxBytes {
+            // Reserve half of the byte budget for the accumulated snapshot.
+            while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
                 guard entry.updates.count > 1 else { break }
                 let removed = entry.updates.removeFirst()
                 entry.bytes -= Self.encodedSize(removed)
@@ -108,14 +134,19 @@ public actor AscendantTurnUpdateStore {
                 if removed.kind == "assistant_text" || removed.kind == "assistant_text_snapshot" {
                     snapshotText += removed.text ?? ""
                 }
+                if removed.kind == "tool_state", let text = removed.text {
+                    snapshotToolStates.append(text)
+                }
+                snapshotToolStates += removed.toolStates
                 entry.compacted = true
             }
-            if !snapshotText.isEmpty {
-                let snapshot = AscendantTurnUpdate(
+            if !snapshotText.isEmpty || !snapshotToolStates.isEmpty {
+                let snapshot = Self.bounded(AscendantTurnUpdate(
                     sequence: snapshotSequence,
                     kind: "assistant_text_snapshot",
-                    text: snapshotText
-                )
+                    text: snapshotText.isEmpty ? nil : snapshotText,
+                    toolStates: snapshotToolStates
+                ), maxBytes: max(1, maxBytes - entry.bytes))
                 entry.updates.insert(snapshot, at: 0)
                 entry.bytes += Self.encodedSize(snapshot)
             }
@@ -140,6 +171,33 @@ public actor AscendantTurnUpdateStore {
 
     private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {
         (try? JSONEncoder().encode(update).count) ?? 0
+    }
+
+    private static func bounded(_ update: AscendantTurnUpdate, maxBytes: Int) -> AscendantTurnUpdate {
+        var text = update.text
+        var toolStates = update.toolStates
+        var candidate = update
+        while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
+            text = String(current.prefix(current.count / 2))
+            candidate = AscendantTurnUpdate(
+                sequence: update.sequence,
+                kind: update.kind,
+                text: text,
+                toolStates: toolStates,
+                terminal: update.terminal
+            )
+        }
+        while encodedSize(candidate) > maxBytes, !toolStates.isEmpty {
+            toolStates.removeFirst()
+            candidate = AscendantTurnUpdate(
+                sequence: update.sequence,
+                kind: update.kind,
+                text: text,
+                toolStates: toolStates,
+                terminal: update.terminal
+            )
+        }
+        return candidate
     }
 
     private static func messageDigest(_ message: String) -> UInt64 {
