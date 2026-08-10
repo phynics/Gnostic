@@ -46,6 +46,31 @@ struct BridgeSessionTests {
         await session.receive(frame(#"{"jsonrpc":"2.0","method":"gnostic.timeline.list"}"#))
         #expect(try output.responses().count == 1)
     }
+
+    @Test("domain failures retain a stable Gnostic error code")
+    func domainErrorData() async throws {
+        let output = BridgeOutputCapture()
+        let session = BridgeSession(handler: { _ in
+            throw RemoteChatClientError.approvalRequired
+        }, output: output.append)
+
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"gnostic.workspace.invoke"}"#))
+        try await waitForResponseCount(2, output: output)
+        let response = try #require(output.responses().last)
+        #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
+        #expect(response.error?.data == .dictionary(["gnosticCode": .string("approvalRequired")]))
+    }
+
+    @Test("exit stops the session")
+    func exitIsTerminal() async throws {
+        let output = BridgeOutputCapture()
+        let session = BridgeSession(handler: { _ in .boolean(true) }, output: output.append)
+
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"exit"}"#))
+        #expect(await session.currentState() == .stopped)
+        #expect(try output.responses().last?.result != nil)
+    }
 }
 
 private func waitForResponseCount(_ expected: Int, output: BridgeOutputCapture) async throws {

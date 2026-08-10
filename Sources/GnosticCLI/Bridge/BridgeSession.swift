@@ -21,16 +21,32 @@ public actor BridgeSession {
     }
 
     public typealias RequestHandler = @Sendable (JSONRPCRequest) async throws -> AnyCodable
+    public typealias InitializeHandler = @Sendable () async throws -> AnyCodable
     public typealias Output = @Sendable (Data) -> Void
 
     private var framer = LFMessageFramer()
     private var state: State = .awaitingInitialize
     private var requests: [JSONRPCIdentifier: Task<Void, Never>] = [:]
     private let handler: RequestHandler
+    private let initializeHandler: InitializeHandler
     private let output: Output
 
     public init(handler: @escaping RequestHandler, output: @escaping Output) {
+        self.init(handler: handler, output: output, initialize: {
+            .dictionary([
+                "protocolVersion": .string("1"),
+                "capabilities": .dictionary(["cancellation": .boolean(true)]),
+            ])
+        })
+    }
+
+    public init(
+        handler: @escaping RequestHandler,
+        output: @escaping Output,
+        initialize: @escaping InitializeHandler
+    ) {
         self.handler = handler
+        initializeHandler = initialize
         self.output = output
     }
 
@@ -72,6 +88,8 @@ public actor BridgeSession {
             await initialize(request)
         case "shutdown":
             await shutdown(request)
+        case "exit":
+            await exit(request)
         case "$/cancelRequest":
             cancel(request)
         default:
@@ -92,12 +110,16 @@ public actor BridgeSession {
             respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "session is already initialized"))
             return
         }
-        state = .initialized
-        let result: AnyCodable = .dictionary([
-            "protocolVersion": .string("1"),
-            "capabilities": .dictionary(["cancellation": .boolean(true)]),
-        ])
-        respondIfNeeded(to: request, result: result)
+        do {
+            let result = try await initializeHandler()
+            state = .initialized
+            respondIfNeeded(to: request, result: result)
+        } catch {
+            respondIfNeeded(to: request, error: JSONRPCErrorObject(
+                code: JSONRPCErrorCode.internalError.rawValue,
+                message: "Initialization failed"
+            ))
+        }
     }
 
     private func shutdown(_ request: JSONRPCRequest) async {
@@ -107,6 +129,12 @@ public actor BridgeSession {
         }
         state = .stopped
         cancelAll()
+        respondIfNeeded(to: request, result: .dictionary([:]))
+    }
+
+    private func exit(_ request: JSONRPCRequest) async {
+        cancelAll()
+        state = .stopped
         respondIfNeeded(to: request, result: .dictionary([:]))
     }
 
@@ -123,6 +151,10 @@ public actor BridgeSession {
 
     private func start(_ request: JSONRPCRequest) async {
         guard let id = request.id else { return }
+        guard requests[id] == nil else {
+            respondIfNeeded(to: request, error: errorObject(code: .invalidRequest, message: "request id is already in flight"))
+            return
+        }
         let task = Task.detached { [handler, weak self] in
             do {
                 let result = try await handler(request)
@@ -131,6 +163,9 @@ public actor BridgeSession {
             } catch is CancellationError {
                 await self?.complete(id: id, response: nil)
             } catch let error as BridgeMethodError {
+                guard !Task.isCancelled else { return }
+                await self?.complete(id: id, response: JSONRPCResponse(id: id, error: self?.errorObject(for: error) ?? JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
+            } catch let error as RemoteChatClientError {
                 guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, error: self?.errorObject(for: error) ?? JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
             } catch {
@@ -177,6 +212,19 @@ public actor BridgeSession {
         case let .invalidState(message): errorObject(code: .invalidState, message: message)
         case let .internalError(message): errorObject(code: .internalError, message: message)
         }
+    }
+
+    private func errorObject(for error: RemoteChatClientError) -> JSONRPCErrorObject {
+        let code: JSONRPCErrorCode = switch error {
+        case .brokerUnreachable: .internalError
+        case .noServedAgent, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached: .invalidState
+        case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI: .invalidParams
+        }
+        return JSONRPCErrorObject(
+            code: code.rawValue,
+            message: error.errorDescription ?? "Gnostic operation failed",
+            data: .dictionary(["gnosticCode": .string(error.gnosticCode)])
+        )
     }
 
     private func identifier(from value: AnyCodable) -> JSONRPCIdentifier? {

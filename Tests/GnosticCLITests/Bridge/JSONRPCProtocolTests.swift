@@ -53,6 +53,16 @@ struct JSONRPCProtocolTests {
         #expect(decodedResponse == response)
     }
 
+    @Test("responses for parse failures carry a JSON null id")
+    func nilResponseIDIsExplicit() throws {
+        let response = JSONRPCResponse(
+            id: nil,
+            error: JSONRPCErrorObject(code: JSONRPCErrorCode.parseError.rawValue, message: "Invalid JSON")
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(response)) as? [String: Any])
+        #expect(object["id"] is NSNull)
+    }
+
     @Test("request rejects a non-2.0 protocol version")
     func requestRejectsWrongVersion() {
         let data = Data(#"{"jsonrpc":"1.0","id":1,"method":"noop"}"#.utf8)

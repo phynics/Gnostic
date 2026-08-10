@@ -142,7 +142,7 @@ public struct JSONRPCResponse: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(jsonrpc, forKey: .jsonrpc)
-        if let id { try container.encode(id, forKey: .id) }
+        try container.encode(id, forKey: .id)
         if let result { try container.encode(result, forKey: .result) }
         if let error { try container.encode(error, forKey: .error) }
     }

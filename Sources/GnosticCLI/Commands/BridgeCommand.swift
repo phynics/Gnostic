@@ -30,7 +30,6 @@ struct BridgeCommand: AsyncParsableCommand {
             namespace: namespace ?? stored.mqttNamespace
         )
         defer { client.stop() }
-        try await client.connect()
         try await BridgeServer(client: client).run()
     }
 }

@@ -36,11 +36,13 @@ struct BridgeSubprocessTests {
             WorkspaceToolDefinition(id: "slow_echo", name: "Slow echo", description: "Waits before echoing."),
             WorkspaceToolDefinition(id: "permissioned", name: "Permissioned", description: "Requires approval.", requiresPermission: true),
         ]
+        let invocation = InvocationProbe()
         let provider = WorkspaceProvider(workspaceID: workspaceID, tools: tools) { toolID, arguments in
             switch toolID {
             case "workspace_echo":
                 return .success(arguments["value"]?.value as? String ?? "")
             case "slow_echo":
+                await invocation.markStarted()
                 try await Task.sleep(for: .seconds(5))
                 return .success(arguments["value"]?.value as? String ?? "")
             case "permissioned":
@@ -150,7 +152,7 @@ struct BridgeSubprocessTests {
             approved: false
         ))
         try send(JSONRPCRequest(id: .number(7), method: "gnostic.workspace.invoke", params: slowParams))
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(timeout: .seconds(10)) { await invocation.hasStarted }
         let cancelParams: AnyCodable = .dictionary(["id": .number(7)])
         try send(JSONRPCRequest(id: nil, method: "$/cancelRequest", params: cancelParams))
 
@@ -158,6 +160,8 @@ struct BridgeSubprocessTests {
         let afterCancellation = try await readResponse(from: output)
         #expect(afterCancellation.id == .number(8))
         #expect(afterCancellation.error == nil)
+        // Axoloty Call/Return has no remote cancellation frame. The bridge
+        // cancels its local wait and suppresses the id-7 response.
 
         try send(JSONRPCRequest(id: .number(9), method: "shutdown"))
         #expect(try await readResponse(from: output).error == nil)
@@ -168,6 +172,13 @@ struct BridgeSubprocessTests {
 
 private enum BridgeSmokeError: Error {
     case timeout
+}
+
+private actor InvocationProbe {
+    private var started = false
+
+    func markStarted() { started = true }
+    var hasStarted: Bool { started }
 }
 
 private struct WorkspaceMutationSmoke: Codable {
@@ -238,4 +249,17 @@ private func waitForTermination(_ process: Process) async throws {
         try await Task.sleep(for: .milliseconds(50))
     }
     guard !process.isRunning else { throw BridgeSmokeError.timeout }
+}
+
+private func waitUntil(
+    timeout: Duration,
+    condition: @escaping @Sendable () async -> Bool
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
+        if await condition() { return }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    throw BridgeSmokeError.timeout
 }

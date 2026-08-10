@@ -29,6 +29,20 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
         case .invalidWorkspaceURI: "The workspace advertised an invalid URI."
         }
     }
+
+    /// Stable machine-readable code for JSON-RPC clients.
+    public var gnosticCode: String {
+        switch self {
+        case .brokerUnreachable: "brokerUnreachable"
+        case .noServedAgent: "noServedAgent"
+        case .workspaceUnavailable: "workspaceUnavailable"
+        case .workspaceAmbiguous: "workspaceAmbiguous"
+        case .timelineNotAttached: "timelineNotAttached"
+        case .approvalRequired: "approvalRequired"
+        case .toolNotAdvertised: "toolNotAdvertised"
+        case .invalidWorkspaceURI: "invalidWorkspaceURI"
+        }
+    }
 }
 
 /// A pure-Axoloty client for `gnostic serve`'s network operations.
@@ -38,16 +52,20 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
 /// PositronicKit runtime.
 @MainActor
 public final class RemoteChatClient: Sendable {
+    public let host: String
+    public let port: Int
+    public let namespace: String
     private let manager: CommunicationManager
     private let catalog: NetworkCatalog
     private let subscription: GnosticSubscription
-    private let namespace: String
     private let timeout: Duration
     private var stateTask: Task<Void, Never>?
     private var connectionLost = false
 
     /// Creates a client bound to a broker namespace.
     public init(host: String, port: Int, namespace: String, timeout: Duration = .seconds(5)) throws {
+        self.host = host
+        self.port = port
         self.namespace = namespace
         self.timeout = timeout
         manager = try CommunicationManager(
