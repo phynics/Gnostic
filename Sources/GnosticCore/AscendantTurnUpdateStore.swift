@@ -75,7 +75,7 @@ public actor AscendantTurnUpdateStore {
         guard entries[key] == nil else { return }
         entries[key] = Entry(
             updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false,
-            messageDigest: message.map(Self.messageDigest)
+            messageDigest: message.map { Self.messageDigest($0) }
         )
     }
 

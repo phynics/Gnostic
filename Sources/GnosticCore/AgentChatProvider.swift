@@ -125,7 +125,8 @@ public struct AgentChatProvider: Sendable {
             let encoded = try JSONEncoder().encode(result)
             return .success(result: String(decoding: encoded, as: UTF8.self))
         } catch let error as AscendantTurnError {
-            if let replayStore, let clientTurnID = request.clientTurnID {
+            if let replayStore, let clientTurnID = request.clientTurnID,
+               !isAdmissionOnlyError(error) {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
             }
             return .failure(code: error.statusCode, message: error.localizedDescription)
@@ -134,6 +135,13 @@ public struct AgentChatProvider: Sendable {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
             }
             return .failure(code: 500, message: String(describing: error))
+        }
+    }
+
+    private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
+        switch error {
+        case .conflict, .replayUnavailable: return true
+        case .failed, .cancelled: return false
         }
     }
 
