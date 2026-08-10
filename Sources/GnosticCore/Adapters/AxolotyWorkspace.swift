@@ -36,13 +36,7 @@ public struct AxolotyWorkspace: Workspace, Sendable {
         timeout: Duration = .seconds(10)
     ) {
         self.init(reference: reference, catalog: catalog) { invocation in
-            let data = try JSONEncoder().encode(invocation)
-            let response = try await communication.call(
-                operation: WorkspaceProvider.invocationOperation,
-                parameters: String(decoding: data, as: UTF8.self),
-                timeout: timeout
-            )
-            return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
+            try await invokeWorkspace(invocation, communication: communication, timeout: timeout)
         }
     }
 
@@ -56,12 +50,14 @@ public struct AxolotyWorkspace: Workspace, Sendable {
 
     /// Executes an advertised tool only while its workspace remains uniquely catalogued.
     public func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
-        guard await healthCheck() else { throw WorkspaceError.connectionFailed }
+        guard case let .available(providerID, _) = await catalog.workspaceAttachmentStatus(id: self.id) else {
+            throw WorkspaceError.connectionFailed
+        }
         guard reference.tools.contains(where: { $0.toolID == id }) else {
             throw WorkspaceError.toolExecutionNotSupported
         }
         do {
-            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, toolID: id, arguments: parameters))
+            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters))
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -97,8 +93,41 @@ public struct AxolotyWorkspaceFactory: WorkspaceFactory, Sendable {
         self.invoke = invoke
     }
 
+    /// Creates catalog-backed proxies that route to the selected provider.
+    @MainActor
+    public init(catalog: NetworkCatalog, communication: CommunicationManager, timeout: Duration = .seconds(10)) {
+        self.init(catalog: catalog) { invocation in
+            try await invokeWorkspace(invocation, communication: communication, timeout: timeout)
+        }
+    }
+
     /// Creates the runtime proxy used by `WorkspaceToolWrapper` and `TimelineToolRegistry`.
     public func create(from reference: WorkspaceReference) throws -> any Workspace {
         AxolotyWorkspace(reference: reference, catalog: catalog, invoke: invoke)
     }
+}
+
+@MainActor
+private func invokeWorkspace(
+    _ invocation: WorkspaceInvocation,
+    communication: CommunicationManager,
+    timeout: Duration
+) async throws -> ToolResult {
+    guard let providerID = invocation.providerID else {
+        throw WorkspaceError.connectionFailed
+    }
+    let data = try JSONEncoder().encode(invocation)
+    let response = try await communication.call(
+        operation: WorkspaceProvider.invocationOperation,
+        parameters: String(decoding: data, as: UTF8.self),
+        context: ObjectFilter(condition: ObjectFilterCondition(
+            property: ObjectFilterProperty("objectId"),
+            expression: .equals(FilterOperand(providerID.lowercased()))
+        )),
+        timeout: timeout
+    )
+    guard response.sourceId?.lowercased() == providerID.lowercased() else {
+        throw WorkspaceError.connectionFailed
+    }
+    return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
 }

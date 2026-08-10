@@ -10,6 +10,9 @@ public struct WorkspaceInvocation: Codable, Sendable {
     /// The stable identifier of the advertised workspace.
     public let workspaceID: UUID
 
+    /// The catalog provider identity selected for this invocation.
+    public let providerID: String?
+
     /// The advertised custom tool identifier.
     public let toolID: String
 
@@ -17,8 +20,9 @@ public struct WorkspaceInvocation: Codable, Sendable {
     public let arguments: [String: AnyCodable]
 
     /// Creates an invocation payload.
-    public init(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) {
+    public init(workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: AnyCodable]) {
         self.workspaceID = workspaceID
+        self.providerID = providerID
         self.toolID = toolID
         self.arguments = arguments
     }
@@ -67,7 +71,7 @@ public actor WorkspaceProvider {
     /// Registers this provider with Axoloty's released unary Call handler.
     @MainActor
     public func register(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.invocationOperation) { [self] request in
+        try await communication.registerCallHandler(operation: Self.invocationOperation, context: communication.identity) { [self] request in
             try await handle(parameters: request.parameters)
         }
     }

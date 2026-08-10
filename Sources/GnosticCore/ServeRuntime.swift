@@ -101,15 +101,7 @@ public final class ServeRuntime {
         // PositronicKit runtime: owns the timeline + chat turns. Its workspace
         // factory is the bridge back to this serve's unary provider, so an
         // attached workspace remains executable inside an Ascendant turn.
-        let workspaceFactory = AxolotyWorkspaceFactory(catalog: catalog) { [communication] invocation in
-            let encoded = try JSONEncoder().encode(invocation)
-            let response = try await communication.call(
-                operation: WorkspaceProvider.invocationOperation,
-                parameters: String(decoding: encoded, as: UTF8.self),
-                timeout: .seconds(10)
-            )
-            return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
-        }
+        let workspaceFactory = AxolotyWorkspaceFactory(catalog: catalog, communication: communication, timeout: .seconds(10))
         kit = PositronicKit(configuration: .init(
             provider: .init(languageModel: languageModel),
             persistence: .inMemory(),
