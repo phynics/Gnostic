@@ -40,6 +40,7 @@ public final class ServeRuntime {
     private let subscription: GnosticSubscription
     private let attachmentService: DiscoveredWorkspaceAttachmentService
     private let projector: OrchestrationProjector
+    private let turnCoordinator: AscendantTurnCoordinator
     private let agentChat: AgentChatProvider
     private let timelineStatus: TimelineStatusProvider
     private let timelineManagement: TimelineManagementProvider
@@ -97,6 +98,7 @@ public final class ServeRuntime {
         kit = PositronicKit(languageModel: languageModel)
         let timeline = try await kit.timelineManager.createTimeline()
         timelineID = timeline.id
+        turnCoordinator = AscendantTurnCoordinator()
 
         // Consumer side: a catalog of advertised objects (for workspace.list and
         // attach) fed by a subscription on the same manager that advertises, so
@@ -119,14 +121,41 @@ public final class ServeRuntime {
 
         // Wire the unary operations, each emitting started/succeeded/denied/failed
         // trace records for operator traceability.
-        agentChat = AgentChatProvider { [kit, logger] request in
-            ServeTrace.operationStarted(logger: logger, operation: AgentChatProvider.chatOperation, timelineID: request.timelineID, workspaceID: nil)
+        agentChat = AgentChatProvider { [kit, logger, turnCoordinator] request in
+            ServeTrace.operationStarted(
+                logger: logger,
+                operation: AgentChatProvider.chatOperation,
+                timelineID: request.timelineID,
+                workspaceID: nil,
+                clientTurnID: request.clientTurnID
+            )
             do {
-                let text = try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
-                ServeTrace.operationSucceeded(logger: logger, operation: AgentChatProvider.chatOperation, timelineID: request.timelineID, workspaceID: nil)
-                return AgentChatResult(text: text)
+                let result = try await turnCoordinator.execute(request) {
+                    try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
+                }
+                ServeTrace.operationSucceeded(
+                    logger: logger,
+                    operation: AgentChatProvider.chatOperation,
+                    timelineID: request.timelineID,
+                    workspaceID: nil,
+                    clientTurnID: request.clientTurnID,
+                    replayed: result.replayed
+                )
+                return result
             } catch {
-                ServeTrace.operationFailed(logger: logger, operation: AgentChatProvider.chatOperation, timelineID: request.timelineID, workspaceID: nil, error: String(describing: error))
+                let isConflict = (error as? AscendantTurnError).map { turnError in
+                    if case .conflict = turnError { return true }
+                    return false
+                } ?? false
+                ServeTrace.operationFailed(
+                    logger: logger,
+                    operation: AgentChatProvider.chatOperation,
+                    timelineID: request.timelineID,
+                    workspaceID: nil,
+                    error: String(describing: error),
+                    clientTurnID: request.clientTurnID,
+                    conflict: isConflict
+                )
                 throw error
             }
         }

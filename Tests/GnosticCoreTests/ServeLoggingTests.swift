@@ -79,6 +79,34 @@ struct ServeLoggingTests {
         #expect(record.metadata["workspace"] == .string(workspace.uuidString.lowercased()))
     }
 
+    @Test("identified chat traces carry replay and conflict fields")
+    func identifiedChatFields() {
+        let (logger, handler) = makeCapturingLogger()
+        let timeline = UUID()
+        ServeTrace.operationSucceeded(
+            logger: logger,
+            operation: "me.atkn.gnostic.agent.chat",
+            timelineID: timeline,
+            workspaceID: nil,
+            clientTurnID: "pi:entry-1",
+            replayed: true
+        )
+        ServeTrace.operationFailed(
+            logger: logger,
+            operation: "me.atkn.gnostic.agent.chat",
+            timelineID: timeline,
+            workspaceID: nil,
+            error: "conflict",
+            clientTurnID: "pi:entry-1",
+            conflict: true
+        )
+
+        #expect(handler.records[0].metadata["clientTurnID"] == .string("pi:entry-1"))
+        #expect(handler.records[0].metadata["replayed"] == .stringConvertible(true))
+        #expect(handler.records[1].metadata["clientTurnID"] == .string("pi:entry-1"))
+        #expect(handler.records[1].metadata["conflict"] == .stringConvertible(true))
+    }
+
     @Test("denials and failures log at warning/error with reason")
     func denialAndFailureLevels() {
         let (logger, handler) = makeCapturingLogger()

@@ -26,11 +26,45 @@ struct ServeOperationContractTests {
     @Test("agent.chat decodes the request, runs the closure, and encodes the result")
     func agentChatContract() async throws {
         let provider = AgentChatProvider { request in
-            AgentChatResult(text: "echo: \(request.message)")
+            AgentChatResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
         }
-        let response = try await provider.handle(parameters: payload(AgentChatRequest(message: "hello over mqtt", timelineID: UUID())))
+        let request = AgentChatRequest(message: "hello over mqtt", timelineID: UUID(), clientTurnID: "pi:entry-1")
+        let response = try await provider.handle(parameters: payload(request))
         let result = try JSONDecoder().decode(AgentChatResult.self, from: Data(try resultText(response).utf8))
         #expect(result.text == "echo: hello over mqtt")
+        #expect(result.clientTurnID == request.clientTurnID)
+        #expect(!result.replayed)
+    }
+
+    @Test("agent.chat conflict is a structured failure")
+    func agentChatConflictContract() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        let provider = AgentChatProvider { request in
+            try await coordinator.execute(request) { "echo: \(request.message)" }
+        }
+        let timelineID = UUID()
+        let first = AgentChatRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
+        let conflict = AgentChatRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-1")
+
+        _ = try await provider.handle(parameters: payload(first))
+        let response = try await provider.handle(parameters: payload(conflict))
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured conflict failure")
+            return
+        }
+        #expect(code == 409)
+        #expect(message.contains("clientTurnID turn-1"))
+    }
+
+    @Test("agent.chat result decoder accepts the legacy text-only response")
+    func agentChatLegacyResultDecodes() throws {
+        let result = try JSONDecoder().decode(
+            AgentChatResult.self,
+            from: Data(#"{"text":"legacy"}"#.utf8)
+        )
+        #expect(result.text == "legacy")
+        #expect(result.clientTurnID == nil)
+        #expect(!result.replayed)
     }
 
     @Test("agent.chat rejects a malformed payload")
@@ -39,6 +73,18 @@ struct ServeOperationContractTests {
         let response = try await provider.handle(parameters: "not-json")
         guard case .failure(let code, _, _) = response else {
             Issue.record("expected failure for malformed payload")
+            return
+        }
+        #expect(code == 400)
+    }
+
+    @Test("agent.chat rejects a blank client turn id")
+    func agentChatRejectsBlankTurnID() async throws {
+        let provider = AgentChatProvider { _ in AgentChatResult(text: "unused") }
+        let request = AgentChatRequest(message: "hello", timelineID: UUID(), clientTurnID: "  ")
+        let response = try await provider.handle(parameters: payload(request))
+        guard case let .failure(code, _, _) = response else {
+            Issue.record("expected failure for a blank client turn id")
             return
         }
         #expect(code == 400)

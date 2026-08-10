@@ -192,13 +192,26 @@ public final class RemoteChatClient: Sendable {
 
     /// Runs one chat turn over `agent.chat`.
     public func chat(message: String, timelineID: UUID) async throws -> String {
-        let payload = try JSONEncoder().encode(AgentChatRequest(message: message, timelineID: timelineID))
+        try await chat(message: message, timelineID: timelineID, clientTurnID: nil).text
+    }
+
+    /// Runs an identified chat turn and returns replay metadata. Supplying a
+    /// stable id enables serve-lifetime deduplication; `nil` preserves the
+    /// legacy non-idempotent request shape.
+    public func chat(
+        message: String,
+        timelineID: UUID,
+        clientTurnID: String?
+    ) async throws -> AgentChatResult {
+        let payload = try JSONEncoder().encode(
+            AgentChatRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
+        )
         let response = try await manager.call(
             operation: AgentChatProvider.chatOperation,
             parameters: String(decoding: payload, as: UTF8.self),
             timeout: timeout
         )
-        return try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8)).text
+        return try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
     }
 
     /// Reads the served timeline's attachment state.

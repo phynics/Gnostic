@@ -8,19 +8,70 @@ import PKShared
 public struct AgentChatRequest: Codable, Sendable {
     public let message: String
     public let timelineID: UUID
+    public let clientTurnID: String?
 
-    public init(message: String, timelineID: UUID) {
+    public init(message: String, timelineID: UUID, clientTurnID: String? = nil) {
         self.message = message
         self.timelineID = timelineID
+        self.clientTurnID = clientTurnID
     }
 }
 
 /// The wire result of a remote `agent.chat` turn.
 public struct AgentChatResult: Codable, Sendable {
+    public let clientTurnID: String?
     public let text: String
+    public let replayed: Bool
 
-    public init(text: String) {
+    public init(clientTurnID: String? = nil, text: String, replayed: Bool = false) {
+        self.clientTurnID = clientTurnID
         self.text = text
+        self.replayed = replayed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case clientTurnID
+        case text
+        case replayed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID)
+        text = try container.decode(String.self, forKey: .text)
+        // Older serves returned only `{text}`. Keep that response readable while
+        // new callers receive the explicit replay marker.
+        replayed = try container.decodeIfPresent(Bool.self, forKey: .replayed) ?? false
+    }
+}
+
+/// Terminal failures retained by the serve-lifetime turn coordinator.
+public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
+    case conflict(timelineID: UUID, clientTurnID: String)
+    case failed(timelineID: UUID, clientTurnID: String, detail: String)
+    case cancelled(timelineID: UUID, clientTurnID: String)
+    case replayUnavailable(timelineID: UUID, clientTurnID: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .conflict(timelineID, clientTurnID):
+            "clientTurnID \(clientTurnID) was already used with different content on Timeline \(timelineID.uuidString.lowercased())"
+        case let .failed(_, _, detail):
+            detail
+        case let .cancelled(_, clientTurnID):
+            "agent.chat turn \(clientTurnID) was cancelled"
+        case let .replayUnavailable(_, clientTurnID):
+            "the replay result for agent.chat turn \(clientTurnID) is no longer retained; the turn will not be rerun"
+        }
+    }
+
+    public var statusCode: Int {
+        switch self {
+        case .conflict: 409
+        case .failed: 500
+        case .cancelled: 499
+        case .replayUnavailable: 410
+        }
     }
 }
 
@@ -45,10 +96,16 @@ public struct AgentChatProvider: Sendable {
               let request = try? JSONDecoder().decode(AgentChatRequest.self, from: Data(parameters.utf8)) else {
             return .failure(code: 400, message: "Invalid agent.chat payload")
         }
+        if let clientTurnID = request.clientTurnID,
+           clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .failure(code: 400, message: "clientTurnID must not be empty")
+        }
         do {
             let result = try await executor(request)
             let encoded = try JSONEncoder().encode(result)
             return .success(result: String(decoding: encoded, as: UTF8.self))
+        } catch let error as AscendantTurnError {
+            return .failure(code: error.statusCode, message: error.localizedDescription)
         } catch {
             return .failure(code: 500, message: String(describing: error))
         }
