@@ -132,6 +132,26 @@ struct BridgeSubprocessTests {
         #expect(chat.error == nil)
         #expect(try decodeResult(String.self, from: chat) == "Echo received: network")
 
+        // Identified bridge turns expose the idempotent result envelope. A
+        // retry must replay the first terminal result without another model
+        // invocation or Timeline mutation.
+        let identifiedChatParams: AnyCodable = .dictionary([
+            "message": .string("identified hello"),
+            "timelineID": .string(serve.servedTimelineID.uuidString),
+            "clientTurnID": .string("pi:bridge:entry-1"),
+        ])
+        try send(JSONRPCRequest(id: .number(11), method: "gnostic.ascendant.chat", params: identifiedChatParams))
+        let identified = try decodeResult(BridgeChatSmokeResult.self, from: await readResponse(from: output))
+        #expect(identified.clientTurnID == "pi:bridge:entry-1")
+        #expect(!identified.replayed)
+        #expect(identified.text == "Echo received: network")
+
+        try send(JSONRPCRequest(id: .number(12), method: "gnostic.ascendant.chat", params: identifiedChatParams))
+        let replay = try decodeResult(BridgeChatSmokeResult.self, from: await readResponse(from: output))
+        #expect(replay.clientTurnID == identified.clientTurnID)
+        #expect(replay.text == identified.text)
+        #expect(replay.replayed)
+
         let permissionParams = try AnyCodable.from(WorkspaceInvokeSmoke(
             workspaceID: workspaceID,
             providerID: listed.providerID,
@@ -199,6 +219,12 @@ private struct BridgeWorkspaceSmokeSummary: Decodable {
     let id: UUID
     let providerID: String
     let tools: [BridgeToolSmokeSummary]
+}
+
+private struct BridgeChatSmokeResult: Decodable {
+    let clientTurnID: String?
+    let text: String
+    let replayed: Bool
 }
 
 private struct BridgeToolSmokeSummary: Decodable {

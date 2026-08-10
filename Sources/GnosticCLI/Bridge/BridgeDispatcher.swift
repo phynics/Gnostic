@@ -23,6 +23,16 @@ public final class BridgeDispatcher: Sendable {
             guard let timelineID = UUID(uuidString: input.timelineID) else {
                 throw BridgeMethodError.invalidParams("timelineID must be a UUID")
             }
+            if let clientTurnID = input.clientTurnID {
+                let result = try await client.chat(
+                    message: input.message,
+                    timelineID: timelineID,
+                    clientTurnID: clientTurnID
+                )
+                return try any(result)
+            }
+            // Preserve the established string result for legacy `gnostic chat`
+            // callers while the identified bridge path exposes replay metadata.
             return try await any(client.chat(message: input.message, timelineID: timelineID))
         case "gnostic.timeline.list":
             return try await any(client.listTimelines())
@@ -123,6 +133,7 @@ public final class BridgeDispatcher: Sendable {
 private struct ChatInput: Codable, Sendable {
     let message: String
     let timelineID: String
+    let clientTurnID: String?
 }
 
 private struct TimelineIDInput: Codable, Sendable { let timelineID: String }

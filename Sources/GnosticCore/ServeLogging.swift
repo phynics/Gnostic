@@ -60,7 +60,11 @@ public enum ServeTrace {
 
     // MARK: Operations
     public static func operationStarted(
-        logger: Logger, operation: String, timelineID: UUID?, workspaceID: UUID?
+        logger: Logger,
+        operation: String,
+        timelineID: UUID?,
+        workspaceID: UUID?,
+        clientTurnID: String? = nil
     ) {
         var metadata: Logger.Metadata = ["operation": .string(operation)]
         if let timelineID {
@@ -69,11 +73,19 @@ public enum ServeTrace {
         if let workspaceID {
             metadata["workspace"] = .string(workspaceID.uuidString.lowercased())
         }
+        if let clientTurnID {
+            metadata["clientTurnID"] = .string(clientTurnID)
+        }
         logger.debug("operation started", metadata: metadata)
     }
 
     public static func operationSucceeded(
-        logger: Logger, operation: String, timelineID: UUID?, workspaceID: UUID?
+        logger: Logger,
+        operation: String,
+        timelineID: UUID?,
+        workspaceID: UUID?,
+        clientTurnID: String? = nil,
+        replayed: Bool? = nil
     ) {
         var metadata: Logger.Metadata = ["operation": .string(operation), "result": .string("success")]
         if let timelineID {
@@ -81,6 +93,12 @@ public enum ServeTrace {
         }
         if let workspaceID {
             metadata["workspace"] = .string(workspaceID.uuidString.lowercased())
+        }
+        if let clientTurnID {
+            metadata["clientTurnID"] = .string(clientTurnID)
+        }
+        if let replayed {
+            metadata["replayed"] = .stringConvertible(replayed)
         }
         logger.info("operation succeeded", metadata: metadata)
     }
@@ -100,7 +118,13 @@ public enum ServeTrace {
     }
 
     public static func operationFailed(
-        logger: Logger, operation: String, timelineID: UUID?, workspaceID: UUID?, error: String
+        logger: Logger,
+        operation: String,
+        timelineID: UUID?,
+        workspaceID: UUID?,
+        error: String,
+        clientTurnID: String? = nil,
+        conflict: Bool? = nil
     ) {
         var metadata: Logger.Metadata = ["operation": .string(operation), "result": .string("error")]
         if let timelineID {
@@ -108,6 +132,12 @@ public enum ServeTrace {
         }
         if let workspaceID {
             metadata["workspace"] = .string(workspaceID.uuidString.lowercased())
+        }
+        if let clientTurnID {
+            metadata["clientTurnID"] = .string(clientTurnID)
+        }
+        if let conflict {
+            metadata["conflict"] = .stringConvertible(conflict)
         }
         metadata["error"] = .string(error)
         logger.error("operation failed", metadata: metadata)
