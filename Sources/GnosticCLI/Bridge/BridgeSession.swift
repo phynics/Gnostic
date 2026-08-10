@@ -43,12 +43,16 @@ public actor BridgeSession {
     public init(
         handler: @escaping RequestHandler,
         output: @escaping Output,
-        initialize: @escaping InitializeHandler
+        initialize: @escaping InitializeHandler,
+        notification: @escaping Output = { _ in }
     ) {
         self.handler = handler
         initializeHandler = initialize
         self.output = output
+        self.notification = notification
     }
+
+    private let notification: Output
 
     public func currentState() -> State { state }
 
@@ -69,6 +73,14 @@ public actor BridgeSession {
         }
         cancelAll()
         state = .stopped
+    }
+
+    /// Emits a JSON-RPC notification without an id. ACP uses notifications for
+    /// streamed session updates while the prompt request remains in flight.
+    public func sendNotification(method: String, params: AnyCodable? = nil) {
+        let request = JSONRPCRequest(id: nil, method: method, params: params)
+        guard let data = try? JSONEncoder().encode(request) else { return }
+        notification(data + Data([0x0A]))
     }
 
     private func receiveFrame(_ frame: Data) async {

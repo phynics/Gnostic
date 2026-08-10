@@ -1,0 +1,261 @@
+// Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
+
+import Foundation
+import GnosticCore
+import PKShared
+
+/// Translates stable ACP v1 requests into Gnostic's existing remote object and
+/// Timeline operations. ACP remains an adapter: no ACP identifiers are stored
+/// in the Gnostic object advertisements.
+@MainActor
+final class ACPDispatcher: Sendable {
+    private struct Ascendant {
+        let id: UUID
+        let name: String
+        let timelineID: UUID
+    }
+
+    private let client: GnosticRemoteClient
+    private let registry: ACPSessionRegistry
+    private let requestedAscendantID: UUID?
+    private let publish: @Sendable (String, AnyCodable) -> Void
+    private var ascendant: Ascendant?
+
+    init(
+        client: GnosticRemoteClient,
+        registry: ACPSessionRegistry,
+        requestedAscendantID: UUID?,
+        publish: @escaping @Sendable (String, AnyCodable) -> Void
+    ) {
+        self.client = client
+        self.registry = registry
+        self.requestedAscendantID = requestedAscendantID
+        self.publish = publish
+    }
+
+    func initialize() async throws -> AnyCodable {
+        ascendant = try await resolveAscendant()
+        return .dictionary([
+            "protocolVersion": .number(Double(ACPProtocol.version)),
+            "agentCapabilities": .dictionary([
+                "loadSession": .boolean(false),
+                "promptCapabilities": .dictionary([
+                    "image": .boolean(false),
+                    "audio": .boolean(false),
+                    "embeddedContext": .boolean(false),
+                ]),
+                "sessionCapabilities": .dictionary([
+                    "resume": .dictionary([:]),
+                    "list": .dictionary([:]),
+                    "close": .dictionary([:]),
+                ]),
+            ]),
+            "agentInfo": .dictionary([
+                "name": .string("gnostic-acp"),
+                "title": .string("Gnostic ACP"),
+                "version": .string("0.1.0"),
+            ]),
+        ])
+    }
+
+    func handle(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        switch request.method {
+        case "session/new":
+            return try await newSession(request.params)
+        case "session/resume":
+            return try await resumeSession(request.params)
+        case "session/list":
+            return try await listSessions(request.params)
+        case "session/close":
+            return try await closeSession(request.params)
+        case "session/prompt":
+            return try await prompt(request.params)
+        case "session/load", "session/delete", "session/fork":
+            throw BridgeMethodError.methodNotFound("\(request.method) is not advertised by gnostic acp")
+        default:
+            throw BridgeMethodError.methodNotFound(request.method)
+        }
+    }
+
+    private func newSession(_ params: AnyCodable?) async throws -> AnyCodable {
+        let input: ACPSessionParameters = try decode(params)
+        try validate(cwd: input.cwd)
+        try rejectMCP(input.mcpServers)
+        let selected = try selectedAscendant()
+        let status = try await client.createTimeline(title: "ACP \(URL(fileURLWithPath: input.cwd).lastPathComponent)")
+        let record = try await registry.create(
+            profileFingerprint: profileFingerprint(for: selected),
+            ascendantID: selected.id,
+            timelineID: status.timelineID,
+            cwd: input.cwd,
+            title: status.title
+        )
+        return .dictionary([
+            "sessionId": .string(record.id),
+            "_meta": .dictionary([
+                "gnosticAscendantID": .string(selected.id.uuidString.lowercased()),
+                "gnosticTimelineID": .string(record.timelineID.uuidString.lowercased()),
+            ]),
+        ])
+    }
+
+    private func resumeSession(_ params: AnyCodable?) async throws -> AnyCodable {
+        let input: ACPResumeParameters = try decode(params)
+        try validate(cwd: input.cwd)
+        try rejectMCP(input.mcpServers)
+        let record = try await requireSession(id: input.sessionID, cwd: input.cwd)
+        _ = try await client.timelineStatus(timelineID: record.timelineID)
+        try await registry.touch(id: record.id)
+        return .dictionary([:])
+    }
+
+    private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
+        let input: ACPListParameters = try decode(params ?? .dictionary([:]))
+        let records = await registry.list(cwd: input.cwd)
+        let sessions = records.map { record in
+            AnyCodable.dictionary([
+                "sessionId": .string(record.id),
+                "cwd": .string(record.cwd),
+                "title": .string(record.title),
+                "updatedAt": .string(Self.iso8601(record.updatedAt)),
+            ])
+        }
+        return .dictionary(["sessions": .array(sessions)])
+    }
+
+    private func closeSession(_ params: AnyCodable?) async throws -> AnyCodable {
+        let input: ACPCloseParameters = try decode(params)
+        guard await registry.record(id: input.sessionID) != nil else {
+            throw BridgeMethodError.invalidParams("unknown ACP session")
+        }
+        _ = try await registry.close(id: input.sessionID)
+        return .dictionary([:])
+    }
+
+    private func prompt(_ params: AnyCodable?) async throws -> AnyCodable {
+        let input: ACPPromptParameters = try decode(params)
+        guard let text = input.text else {
+            throw BridgeMethodError.invalidParams("session/prompt accepts non-empty text content only")
+        }
+        let record = try await requireSession(id: input.sessionID, cwd: nil)
+        let turnID = input.clientTurnID ?? "acp:\(record.id):\(UUID().uuidString.lowercased())"
+        let result = try await client.chat(message: text, timelineID: record.timelineID, clientTurnID: turnID)
+        let replay = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID)
+        let updates = replay?.updates ?? []
+        if updates.isEmpty {
+            publishUpdate(sessionID: record.id, turnID: turnID, sequence: 1, kind: "assistant_text", text: result.text, replayed: result.replayed)
+        } else {
+            for update in updates {
+                publishUpdate(
+                    sessionID: record.id,
+                    turnID: turnID,
+                    sequence: update.sequence,
+                    kind: update.kind,
+                    text: update.text,
+                    replayed: result.replayed
+                )
+            }
+        }
+        try await registry.touch(id: record.id)
+        return .dictionary(["stopReason": .string("end_turn")])
+    }
+
+    private func publishUpdate(
+        sessionID: String,
+        turnID: String,
+        sequence: Int,
+        kind: String,
+        text: String?,
+        replayed: Bool
+    ) {
+        guard kind == "assistant_text" else { return }
+        let updateName = "agent_message_chunk"
+        var update: [String: AnyCodable] = [
+            "sessionUpdate": .string(updateName),
+            "_meta": .dictionary([
+                "clientTurnID": .string(turnID),
+                "sequence": .number(Double(sequence)),
+                "kind": .string(kind),
+                "replayed": .boolean(replayed),
+            ]),
+        ]
+        if let text {
+            update["content"] = .dictionary(["type": .string("text"), "text": .string(text)])
+        }
+        publish("session/update", .dictionary([
+            "sessionId": .string(sessionID),
+            "update": .dictionary(update),
+        ]))
+    }
+
+    private func resolveAscendant() async throws -> Ascendant {
+        let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.agent }
+        let candidates = entries.compactMap { entry -> Ascendant? in
+            guard let raw = entry.knownProperties["privateTimelineID"],
+                  case let .string(timelineRaw) = raw,
+                  let timelineID = UUID(uuidString: timelineRaw) else { return nil }
+            return Ascendant(id: entry.objectID, name: entry.name, timelineID: timelineID)
+        }
+        let selected: Ascendant?
+        if let requestedAscendantID {
+            selected = candidates.first { $0.id == requestedAscendantID }
+        } else if candidates.count == 1 {
+            selected = candidates.first
+        } else {
+            selected = nil
+        }
+        guard let selected else {
+            if requestedAscendantID != nil { throw BridgeMethodError.invalidState("requested Ascendant was not discovered") }
+            throw BridgeMethodError.invalidState("select one Ascendant with --ascendant")
+        }
+        return selected
+    }
+
+    private func selectedAscendant() throws -> Ascendant {
+        guard let ascendant else { throw BridgeMethodError.invalidState("ACP agent is not initialized") }
+        return ascendant
+    }
+
+    private func requireSession(id: String, cwd: String?) async throws -> ACPSessionRecord {
+        guard let record = await registry.record(id: id) else {
+            throw BridgeMethodError.invalidParams("unknown ACP session")
+        }
+        if let cwd, cwd != record.cwd {
+            throw BridgeMethodError.invalidParams("session cwd does not match its original binding")
+        }
+        let selected = try selectedAscendant()
+        guard record.ascendantID == selected.id,
+              record.profileFingerprint == profileFingerprint(for: selected) else {
+            throw BridgeMethodError.invalidState("session is bound to a different Ascendant or namespace")
+        }
+        return record
+    }
+
+    private func profileFingerprint(for ascendant: Ascendant) -> String {
+        "\(client.namespace):\(ascendant.id.uuidString.lowercased())"
+    }
+
+    private func validate(cwd: String) throws {
+        guard !cwd.isEmpty, URL(fileURLWithPath: cwd).path.hasPrefix("/") else {
+            throw BridgeMethodError.invalidParams("cwd must be an absolute path")
+        }
+    }
+
+    private func rejectMCP(_ servers: [AnyCodable]?) throws {
+        guard let servers, !servers.isEmpty else { return }
+        throw BridgeMethodError.invalidParams("client-supplied MCP servers are not supported by gnostic acp yet")
+    }
+
+    private func decode<T: Decodable>(_ params: AnyCodable?) throws -> T {
+        guard let params,
+              let data = try? JSONEncoder().encode(params),
+              let value = try? JSONDecoder().decode(T.self, from: data) else {
+            throw BridgeMethodError.invalidParams("invalid ACP method parameters")
+        }
+        return value
+    }
+
+    private static func iso8601(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+}

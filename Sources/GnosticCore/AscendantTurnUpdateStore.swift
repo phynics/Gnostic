@@ -1,0 +1,106 @@
+// Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
+
+import Foundation
+
+/// A replayable, transport-neutral update emitted for an identified Ascendant
+/// turn. The ACP adapter maps these values to `session/update` notifications.
+public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
+    public let sequence: Int
+    public let kind: String
+    public let text: String?
+    public let terminal: Bool
+
+    public init(sequence: Int, kind: String, text: String? = nil, terminal: Bool = false) {
+        self.sequence = sequence
+        self.kind = kind
+        self.text = text
+        self.terminal = terminal
+    }
+}
+
+public struct AscendantTurnReplay: Codable, Sendable, Equatable {
+    public let updates: [AscendantTurnUpdate]
+    public let compacted: Bool
+    public let terminal: Bool
+
+    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool) {
+        self.updates = updates
+        self.compacted = compacted
+        self.terminal = terminal
+    }
+}
+
+/// Keeps bounded identified-turn updates for one serve lifetime. It never
+/// stores prompt text or tool arguments beyond the bounded update payload.
+public actor AscendantTurnUpdateStore {
+    private struct Key: Hashable, Sendable {
+        let timelineID: UUID
+        let clientTurnID: String
+    }
+
+    private struct Entry: Sendable {
+        var updates: [AscendantTurnUpdate]
+        var nextSequence: Int
+        var bytes: Int
+        var terminal: Bool
+        var compacted: Bool
+    }
+
+    private let maxEvents: Int
+    private let maxBytes: Int
+    private var entries: [Key: Entry] = [:]
+
+    public init(maxEvents: Int = 1_024, maxBytes: Int = 1_048_576) {
+        self.maxEvents = max(1, maxEvents)
+        self.maxBytes = max(1, maxBytes)
+    }
+
+    public func start(timelineID: UUID, clientTurnID: String) {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
+        guard entries[key] == nil else { return }
+        entries[key] = Entry(
+            updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false
+        )
+    }
+
+    @discardableResult
+    public func append(
+        timelineID: UUID,
+        clientTurnID: String,
+        kind: String,
+        text: String? = nil,
+        terminal: Bool = false
+    ) -> AscendantTurnUpdate {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
+        var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false)
+        let update = AscendantTurnUpdate(sequence: entry.nextSequence, kind: kind, text: text, terminal: terminal)
+        entry.nextSequence += 1
+        entry.updates.append(update)
+        entry.bytes += Self.encodedSize(update)
+        entry.terminal = entry.terminal || terminal
+
+        while entry.updates.count > maxEvents || entry.bytes > maxBytes {
+            guard entry.updates.count > 1 else { break }
+            let removed = entry.updates.removeFirst()
+            entry.bytes -= Self.encodedSize(removed)
+            entry.compacted = true
+        }
+        entries[key] = entry
+        return update
+    }
+
+    public func replay(timelineID: UUID, clientTurnID: String, afterSequence: Int = 0) -> AscendantTurnReplay {
+        guard let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID)] else {
+            return AscendantTurnReplay(updates: [], compacted: false, terminal: false)
+        }
+        return AscendantTurnReplay(
+            updates: entry.updates.filter { $0.sequence > afterSequence },
+            compacted: entry.compacted && afterSequence < (entry.updates.first?.sequence ?? 0),
+            terminal: entry.terminal
+        )
+    }
+
+    private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {
+        (try? JSONEncoder().encode(update).count) ?? 0
+    }
+}

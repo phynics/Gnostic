@@ -56,6 +56,29 @@ struct ServeOperationContractTests {
         #expect(message.contains("clientTurnID turn-1"))
     }
 
+    @Test("agent.chat.replay returns bounded identified-turn updates")
+    func agentChatReplayContract() async throws {
+        let timelineID = UUID()
+        let store = AscendantTurnUpdateStore()
+        let provider = AgentChatProvider(
+            execute: { request in
+                AgentChatResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
+            },
+            replayStore: store
+        )
+        let request = AgentChatRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-replay")
+        _ = try await provider.handle(parameters: payload(request))
+
+        let replayRequest = AgentChatReplayRequest(timelineID: timelineID, clientTurnID: "turn-replay")
+        let response = try await provider.handleReplay(parameters: payload(replayRequest))
+        let replay = try JSONDecoder().decode(
+            AscendantTurnReplay.self,
+            from: Data(try resultText(response).utf8)
+        )
+        #expect(replay.updates.map(\.kind) == ["assistant_text", "completion"])
+        #expect(replay.terminal)
+    }
+
     @Test("agent.chat result decoder accepts the legacy text-only response")
     func agentChatLegacyResultDecodes() throws {
         let result = try JSONDecoder().decode(

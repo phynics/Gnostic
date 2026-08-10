@@ -41,6 +41,7 @@ public final class ServeRuntime {
     private let attachmentService: DiscoveredWorkspaceAttachmentService
     private let projector: OrchestrationProjector
     private let turnCoordinator: AscendantTurnCoordinator
+    private let turnUpdates: AscendantTurnUpdateStore
     private let agentChat: AgentChatProvider
     private let timelineStatus: TimelineStatusProvider
     private let timelineManagement: TimelineManagementProvider
@@ -110,6 +111,7 @@ public final class ServeRuntime {
         let timeline = try await kit.timelineManager.createTimeline()
         timelineID = timeline.id
         turnCoordinator = AscendantTurnCoordinator()
+        turnUpdates = AscendantTurnUpdateStore()
 
         projector = OrchestrationProjector(
             advertise: { [lifecycle] object in
@@ -126,7 +128,7 @@ public final class ServeRuntime {
 
         // Wire the unary operations, each emitting started/succeeded/denied/failed
         // trace records for operator traceability.
-        agentChat = AgentChatProvider { [kit, logger, turnCoordinator] request in
+        agentChat = AgentChatProvider(execute: { [kit, logger, turnCoordinator] request in
             ServeTrace.operationStarted(
                 logger: logger,
                 operation: AgentChatProvider.chatOperation,
@@ -163,7 +165,7 @@ public final class ServeRuntime {
                 )
                 throw error
             }
-        }
+        }, replayStore: turnUpdates)
         timelineStatus = TimelineStatusProvider { [kit, logger] request in
             ServeTrace.operationStarted(logger: logger, operation: TimelineStatusProvider.statusOperation, timelineID: request.timelineID, workspaceID: nil)
             do {
@@ -219,6 +221,7 @@ public final class ServeRuntime {
         try await container.startAndWaitUntilReady()
         try await subscription.start()
         registrations.append(try await agentChat.register(on: communication))
+        registrations.append(try await agentChat.registerReplay(on: communication))
         registrations.append(try await timelineStatus.register(on: communication))
         registrations += try await timelineManagement.register(on: communication)
         try await workspaceOps.register(on: communication)

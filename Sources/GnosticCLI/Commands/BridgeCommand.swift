@@ -22,6 +22,7 @@ struct BridgeCommand: AsyncParsableCommand {
 
     @MainActor
     func run() async throws {
+        FileHandle.standardError.write(Data("warning: `gnostic bridge` is deprecated; use `gnostic acp` instead.\n".utf8))
         let store = CLIConfigurationStore()
         let stored = try store.load()
         let client = try GnosticRemoteClient(
