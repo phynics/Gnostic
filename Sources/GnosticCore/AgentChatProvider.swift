@@ -109,16 +109,26 @@ public struct AgentChatProvider: Sendable {
             }
             let result = try await executor(request)
             if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
-                _ = await replayStore.append(
+                let replay = await replayStore.replay(
                     timelineID: request.timelineID,
-                    clientTurnID: clientTurnID,
-                    kind: "assistant_text",
-                    text: result.text
+                    clientTurnID: clientTurnID
                 )
+                let streamed = replay.updates.contains {
+                    $0.kind == "assistant_text" || $0.kind == "assistant_text_snapshot"
+                }
+                if !streamed {
+                    _ = await replayStore.append(
+                        timelineID: request.timelineID,
+                        clientTurnID: clientTurnID,
+                        kind: "assistant_text",
+                        text: result.text
+                    )
+                }
                 _ = await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: "completion",
+                    text: result.text,
                     terminal: true
                 )
             }

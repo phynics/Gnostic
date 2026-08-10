@@ -66,7 +66,9 @@ public actor AscendantTurnUpdateStore {
     private var entries: [Key: Entry] = [:]
 
     public init(maxEvents: Int = 1_024, maxBytes: Int = 1_048_576) {
-        self.maxEvents = max(1, maxEvents)
+        // Compacted replay needs room for both a snapshot and the newest (often
+        // terminal) update.
+        self.maxEvents = max(2, maxEvents)
         self.maxBytes = max(1, maxBytes)
     }
 
@@ -95,11 +97,28 @@ public actor AscendantTurnUpdateStore {
         entry.bytes += Self.encodedSize(update)
         entry.terminal = entry.terminal || terminal
 
-        while entry.updates.count > maxEvents || entry.bytes > maxBytes {
-            guard entry.updates.count > 1 else { break }
-            let removed = entry.updates.removeFirst()
-            entry.bytes -= Self.encodedSize(removed)
-            entry.compacted = true
+        if entry.updates.count > maxEvents || entry.bytes > maxBytes {
+            var snapshotText = ""
+            var snapshotSequence = 0
+            while entry.updates.count >= maxEvents || entry.bytes > maxBytes {
+                guard entry.updates.count > 1 else { break }
+                let removed = entry.updates.removeFirst()
+                entry.bytes -= Self.encodedSize(removed)
+                snapshotSequence = max(snapshotSequence, removed.sequence)
+                if removed.kind == "assistant_text" || removed.kind == "assistant_text_snapshot" {
+                    snapshotText += removed.text ?? ""
+                }
+                entry.compacted = true
+            }
+            if !snapshotText.isEmpty {
+                let snapshot = AscendantTurnUpdate(
+                    sequence: snapshotSequence,
+                    kind: "assistant_text_snapshot",
+                    text: snapshotText
+                )
+                entry.updates.insert(snapshot, at: 0)
+                entry.bytes += Self.encodedSize(snapshot)
+            }
         }
         entries[key] = entry
         return update

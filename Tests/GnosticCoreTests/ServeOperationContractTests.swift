@@ -77,6 +77,38 @@ struct ServeOperationContractTests {
         )
         #expect(replay.updates.map(\.kind) == ["assistant_text", "completion"])
         #expect(replay.terminal)
+        #expect(replay.updates.last?.text == "echo: hello")
+    }
+
+    @Test("agent.chat keeps streamed text without appending a duplicate final message")
+    func agentChatStreamReplayContract() async throws {
+        let timelineID = UUID()
+        let store = AscendantTurnUpdateStore()
+        let provider = AgentChatProvider(
+            execute: { request in
+                _ = await store.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID!,
+                    kind: "assistant_text",
+                    text: "hel"
+                )
+                _ = await store.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID!,
+                    kind: "assistant_text",
+                    text: "lo"
+                )
+                return AgentChatResult(clientTurnID: request.clientTurnID, text: "hello")
+            },
+            replayStore: store
+        )
+        _ = try await provider.handle(parameters: payload(
+            AgentChatRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
+        ))
+
+        let replay = await store.replay(timelineID: timelineID, clientTurnID: "turn-stream")
+        #expect(replay.updates.map(\.kind) == ["assistant_text", "assistant_text", "completion"])
+        #expect(replay.updates.compactMap(\.text) == ["hel", "lo", "hello"])
     }
 
     @Test("agent.chat result decoder accepts the legacy text-only response")

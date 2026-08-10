@@ -158,7 +158,9 @@ final class ACPDispatcher: Sendable {
             if existing.conflict {
                 throw BridgeMethodError.invalidParams("clientTurnID was already used with different content")
             }
-            if let error = existing.updates.last(where: { $0.kind == "error" || $0.kind == "cancelled" }) {
+            if let error = existing.updates.last(where: {
+                $0.kind == "error" || $0.kind == "cancelled" || $0.kind == "cancellation"
+            }) {
                 throw BridgeMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             for update in existing.updates {
@@ -202,7 +204,7 @@ final class ACPDispatcher: Sendable {
         text: String?,
         replayed: Bool
     ) {
-        guard kind == "assistant_text" else { return }
+        guard kind == "assistant_text" || kind == "assistant_text_snapshot" else { return }
         let updateName = "agent_message_chunk"
         var update: [String: AnyCodable] = [
             "sessionUpdate": .string(updateName),
