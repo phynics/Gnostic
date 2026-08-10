@@ -58,6 +58,21 @@ struct ServeCommand: AsyncParsableCommand {
         do {
             try await runtime.start()
 
+            let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
+            let workspaceTools = [
+                WorkspaceToolDefinition(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."),
+            ]
+            let workspaceProvider = WorkspaceProvider(workspaceID: workspaceID, tools: workspaceTools) { toolID, arguments in
+                switch toolID {
+                case "workspace_echo":
+                    return .success(arguments["value"]?.value as? String ?? "")
+                default:
+                    return .failure("unknown served workspace tool")
+                }
+            }
+            let providerRegistration = try await runtime.register(workspaceProvider: workspaceProvider)
+            defer { providerRegistration.cancel() }
+
             // Advertise the served Agent, Timeline, and (for the fixture path) a
             // workspace with echo tools so chat can attach and invoke it.
             let agent = AgentInstance(
@@ -66,10 +81,10 @@ struct ServeCommand: AsyncParsableCommand {
                 privateTimelineID: runtime.servedTimelineID
             )
             let workspace = WorkspaceReference(
-                id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!,
+                id: workspaceID,
                 uri: WorkspaceURI(parsing: "workspace://serve")!,
                 location: .runtime,
-                tools: [.custom(.init(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."))],
+                tools: workspaceTools.map(ToolReference.custom),
                 createdAt: Date()
             )
             await runtime.advertise(agent: agent, workspaces: [workspace])

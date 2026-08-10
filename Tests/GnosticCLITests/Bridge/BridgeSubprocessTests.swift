@@ -40,6 +40,7 @@ struct BridgeSubprocessTests {
         let provider = WorkspaceProvider(workspaceID: workspaceID, tools: tools) { toolID, arguments in
             switch toolID {
             case "workspace_echo":
+                await invocation.markEchoInvoked()
                 return .success(arguments["value"]?.value as? String ?? "")
             case "slow_echo":
                 await invocation.markStarted()
@@ -131,6 +132,7 @@ struct BridgeSubprocessTests {
         let chat = try await readResponse(from: output)
         #expect(chat.error == nil)
         #expect(try decodeResult(String.self, from: chat) == "Echo received: network")
+        #expect(await invocation.echoInvocations == 2)
 
         // Identified bridge turns expose the idempotent result envelope. A
         // retry must replay the first terminal result without another model
@@ -196,8 +198,10 @@ private enum BridgeSmokeError: Error {
 
 private actor InvocationProbe {
     private var started = false
+    private(set) var echoInvocations = 0
 
     func markStarted() { started = true }
+    func markEchoInvoked() { echoInvocations += 1 }
     var hasStarted: Bool { started }
 }
 
