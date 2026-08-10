@@ -130,14 +130,8 @@ public final class ServeRuntime {
                 clientTurnID: request.clientTurnID
             )
             do {
-                let result: AgentChatResult
-                if request.clientTurnID == nil {
-                    let text = try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
-                    result = AgentChatResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
-                } else {
-                    result = try await turnCoordinator.execute(request) {
-                        try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
-                    }
+                let result = try await turnCoordinator.execute(request) {
+                    try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
                 }
                 ServeTrace.operationSucceeded(
                     logger: logger,

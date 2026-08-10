@@ -100,6 +100,36 @@ struct AscendantTurnCoordinatorTests {
         #expect(await probe.order == ["first", "other", "second"])
     }
 
+    @Test("legacy turns without ids still share the Timeline lane")
+    func legacyTurnsSerialize() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        let probe = TurnProbe()
+        let timelineID = UUID()
+        let firstRequest = AgentChatRequest(message: "first", timelineID: timelineID)
+        let secondRequest = AgentChatRequest(message: "second", timelineID: timelineID)
+
+        let first = Task {
+            try await coordinator.execute(firstRequest) {
+                await probe.enter("first")
+                try await Task.sleep(for: .milliseconds(80))
+                await probe.leave()
+                return "first"
+            }
+        }
+        await probe.waitForStarts(1)
+        let second = Task {
+            try await coordinator.execute(secondRequest) {
+                await probe.enter("second")
+                await probe.leave()
+                return "second"
+            }
+        }
+
+        _ = try await (first.value, second.value)
+        #expect(await probe.maxActive == 1)
+        #expect(await probe.order == ["first", "second"])
+    }
+
     @Test("canceling a caller does not duplicate an admitted turn")
     func lostCallerDoesNotRetryTheTurn() async throws {
         let coordinator = AscendantTurnCoordinator()
@@ -162,6 +192,31 @@ struct AscendantTurnCoordinatorTests {
             }
         }
 
+        #expect(await probe.starts == 2)
+    }
+
+    @Test("evicted results retain a non-retryable identity tombstone")
+    func evictedResultsNeverRerun() async throws {
+        let coordinator = AscendantTurnCoordinator(completedCapacity: 1)
+        let probe = TurnProbe()
+        let first = AgentChatRequest(message: "first", timelineID: UUID(), clientTurnID: "turn-1")
+        let second = AgentChatRequest(message: "second", timelineID: UUID(), clientTurnID: "turn-2")
+
+        _ = try await coordinator.execute(first) {
+            await probe.enter("first")
+            return "one"
+        }
+        _ = try await coordinator.execute(second) {
+            await probe.enter("second")
+            return "two"
+        }
+
+        await #expect(throws: AscendantTurnError.self) {
+            _ = try await coordinator.execute(first) {
+                await probe.enter("rerun")
+                return "must not run"
+            }
+        }
         #expect(await probe.starts == 2)
     }
 }

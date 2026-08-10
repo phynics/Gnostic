@@ -78,6 +78,18 @@ struct ServeOperationContractTests {
         #expect(code == 400)
     }
 
+    @Test("agent.chat rejects a blank client turn id")
+    func agentChatRejectsBlankTurnID() async throws {
+        let provider = AgentChatProvider { _ in AgentChatResult(text: "unused") }
+        let request = AgentChatRequest(message: "hello", timelineID: UUID(), clientTurnID: "  ")
+        let response = try await provider.handle(parameters: payload(request))
+        guard case let .failure(code, _, _) = response else {
+            Issue.record("expected failure for a blank client turn id")
+            return
+        }
+        #expect(code == 400)
+    }
+
     @Test("timeline.status decodes the timeline id and returns the status")
     func timelineStatusContract() async throws {
         let timelineID = UUID()

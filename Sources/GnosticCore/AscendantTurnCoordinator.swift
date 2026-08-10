@@ -31,6 +31,7 @@ public actor AscendantTurnCoordinator {
     private let completedCapacity: Int
     private var inFlight: [Key: InFlight] = [:]
     private var completed: [Key: Completed] = [:]
+    private var tombstones: [Key: UInt64] = [:]
     private var completionOrder: [Key] = []
     private var timelineTails: [UUID: Task<Void, Never>] = [:]
 
@@ -47,9 +48,10 @@ public actor AscendantTurnCoordinator {
         _ request: AgentChatRequest,
         operation: @escaping TurnOperation
     ) async throws -> AgentChatResult {
-        guard let clientTurnID = request.clientTurnID,
+        guard let clientTurnID = request.clientTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !clientTurnID.isEmpty else {
-            let text = try await operation()
+            let task = enqueue(timelineID: request.timelineID, operation: operation)
+            let text = try await task.value
             return AgentChatResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
         }
 
@@ -74,9 +76,17 @@ public actor AscendantTurnCoordinator {
             }
         }
 
-        let predecessor = timelineTails[request.timelineID]
-        let task = Task<String, Error> {
-            _ = await predecessor?.value
+        if let tombstone = tombstones[key] {
+            guard tombstone == messageDigest else {
+                throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
+            }
+            throw AscendantTurnError.replayUnavailable(
+                timelineID: request.timelineID,
+                clientTurnID: clientTurnID
+            )
+        }
+
+        let task = enqueue(timelineID: request.timelineID) {
             do {
                 return try await operation()
             } catch is CancellationError {
@@ -96,7 +106,6 @@ public actor AscendantTurnCoordinator {
         }
 
         inFlight[key] = InFlight(messageDigest: messageDigest, task: task)
-        timelineTails[request.timelineID] = Task { _ = await task.result }
 
         // Completion is observed independently of the requesting Call/Return;
         // this makes a lost caller unable to remove the dedupe record early.
@@ -142,6 +151,7 @@ public actor AscendantTurnCoordinator {
     ) {
         guard inFlight[key] != nil else { return }
         inFlight.removeValue(forKey: key)
+        tombstones[key] = Self.messageDigest(request.message)
 
         let outcome: CachedOutcome
         switch result {
@@ -188,5 +198,18 @@ public actor AscendantTurnCoordinator {
             digest &*= 1_099_511_628_211
         }
         return digest
+    }
+
+    private func enqueue(
+        timelineID: UUID,
+        operation: @escaping TurnOperation
+    ) -> Task<String, Error> {
+        let predecessor = timelineTails[timelineID]
+        let task = Task<String, Error> {
+            _ = await predecessor?.value
+            return try await operation()
+        }
+        timelineTails[timelineID] = Task { _ = await task.result }
+        return task
     }
 }

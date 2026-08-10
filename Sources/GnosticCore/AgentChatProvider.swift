@@ -50,6 +50,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
     case conflict(timelineID: UUID, clientTurnID: String)
     case failed(timelineID: UUID, clientTurnID: String, detail: String)
     case cancelled(timelineID: UUID, clientTurnID: String)
+    case replayUnavailable(timelineID: UUID, clientTurnID: String)
 
     public var errorDescription: String? {
         switch self {
@@ -59,6 +60,8 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
             detail
         case let .cancelled(_, clientTurnID):
             "agent.chat turn \(clientTurnID) was cancelled"
+        case let .replayUnavailable(_, clientTurnID):
+            "the replay result for agent.chat turn \(clientTurnID) is no longer retained; the turn will not be rerun"
         }
     }
 
@@ -67,6 +70,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .conflict: 409
         case .failed: 500
         case .cancelled: 499
+        case .replayUnavailable: 410
         }
     }
 }
@@ -91,6 +95,10 @@ public struct AgentChatProvider: Sendable {
         guard let parameters,
               let request = try? JSONDecoder().decode(AgentChatRequest.self, from: Data(parameters.utf8)) else {
             return .failure(code: 400, message: "Invalid agent.chat payload")
+        }
+        if let clientTurnID = request.clientTurnID,
+           clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .failure(code: 400, message: "clientTurnID must not be empty")
         }
         do {
             let result = try await executor(request)

@@ -24,6 +24,9 @@ public final class BridgeDispatcher: Sendable {
                 throw BridgeMethodError.invalidParams("timelineID must be a UUID")
             }
             if let clientTurnID = input.clientTurnID {
+                guard !clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw BridgeMethodError.invalidParams("clientTurnID must not be empty")
+                }
                 let result = try await client.chat(
                     message: input.message,
                     timelineID: timelineID,
