@@ -204,6 +204,13 @@ public final class ServeRuntime {
         ServeTrace.advertised(logger: logger, objects: 1 + workspaces.count, timelineID: timelineID)
     }
 
+    /// Registers an externally-owned workspace provider on the serve's single
+    /// Axoloty connection. This is used by deterministic integration fixtures
+    /// that keep a provider alive while exercising a real bridge subprocess.
+    public func register(workspaceProvider: WorkspaceProvider) async throws -> CallHandlerRegistration {
+        try await workspaceProvider.register(on: communication)
+    }
+
     /// The id of the served timeline.
     public var servedTimelineID: UUID { timelineID }
 
