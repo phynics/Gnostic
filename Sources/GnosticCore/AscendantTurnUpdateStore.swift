@@ -22,11 +22,25 @@ public struct AscendantTurnReplay: Codable, Sendable, Equatable {
     public let updates: [AscendantTurnUpdate]
     public let compacted: Bool
     public let terminal: Bool
+    public let conflict: Bool
 
-    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool) {
+    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false) {
         self.updates = updates
         self.compacted = compacted
         self.terminal = terminal
+        self.conflict = conflict
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case updates, compacted, terminal, conflict
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        updates = try container.decode([AscendantTurnUpdate].self, forKey: .updates)
+        compacted = try container.decode(Bool.self, forKey: .compacted)
+        terminal = try container.decode(Bool.self, forKey: .terminal)
+        conflict = try container.decodeIfPresent(Bool.self, forKey: .conflict) ?? false
     }
 }
 
@@ -44,6 +58,7 @@ public actor AscendantTurnUpdateStore {
         var bytes: Int
         var terminal: Bool
         var compacted: Bool
+        var messageDigest: UInt64?
     }
 
     private let maxEvents: Int
@@ -55,11 +70,12 @@ public actor AscendantTurnUpdateStore {
         self.maxBytes = max(1, maxBytes)
     }
 
-    public func start(timelineID: UUID, clientTurnID: String) {
+    public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         guard entries[key] == nil else { return }
         entries[key] = Entry(
-            updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false
+            updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false,
+            messageDigest: message.map(Self.messageDigest)
         )
     }
 
@@ -72,7 +88,7 @@ public actor AscendantTurnUpdateStore {
         terminal: Bool = false
     ) -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
-        var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false)
+        var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
         let update = AscendantTurnUpdate(sequence: entry.nextSequence, kind: kind, text: text, terminal: terminal)
         entry.nextSequence += 1
         entry.updates.append(update)
@@ -89,9 +105,12 @@ public actor AscendantTurnUpdateStore {
         return update
     }
 
-    public func replay(timelineID: UUID, clientTurnID: String, afterSequence: Int = 0) -> AscendantTurnReplay {
+    public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) -> AscendantTurnReplay {
         guard let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID)] else {
             return AscendantTurnReplay(updates: [], compacted: false, terminal: false)
+        }
+        if let message, let digest = entry.messageDigest, digest != Self.messageDigest(message) {
+            return AscendantTurnReplay(updates: [], compacted: false, terminal: true, conflict: true)
         }
         return AscendantTurnReplay(
             updates: entry.updates.filter { $0.sequence > afterSequence },
@@ -102,5 +121,14 @@ public actor AscendantTurnUpdateStore {
 
     private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {
         (try? JSONEncoder().encode(update).count) ?? 0
+    }
+
+    private static func messageDigest(_ message: String) -> UInt64 {
+        var digest: UInt64 = 14_695_981_039_346_656_037
+        for byte in message.utf8 {
+            digest ^= UInt64(byte)
+            digest &*= 1_099_511_628_211
+        }
+        return digest
     }
 }

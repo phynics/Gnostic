@@ -79,15 +79,15 @@ final class ACPDispatcher: Sendable {
 
     private func newSession(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPSessionParameters = try decode(params)
-        try validate(cwd: input.cwd)
+        let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
         let selected = try selectedAscendant()
-        let status = try await client.createTimeline(title: "ACP \(URL(fileURLWithPath: input.cwd).lastPathComponent)")
+        let status = try await client.createTimeline(title: "ACP \(URL(fileURLWithPath: cwd).lastPathComponent)")
         let record = try await registry.create(
             profileFingerprint: profileFingerprint(for: selected),
             ascendantID: selected.id,
             timelineID: status.timelineID,
-            cwd: input.cwd,
+            cwd: cwd,
             title: status.title
         )
         return .dictionary([
@@ -101,9 +101,9 @@ final class ACPDispatcher: Sendable {
 
     private func resumeSession(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPResumeParameters = try decode(params)
-        try validate(cwd: input.cwd)
+        let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
-        let record = try await requireSession(id: input.sessionID, cwd: input.cwd)
+        let record = try await requireSession(id: input.sessionID, cwd: cwd)
         _ = try await client.timelineStatus(timelineID: record.timelineID)
         try await registry.touch(id: record.id)
         return .dictionary([:])
@@ -111,14 +111,22 @@ final class ACPDispatcher: Sendable {
 
     private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPListParameters = try decode(params ?? .dictionary([:]))
-        let records = await registry.list(cwd: input.cwd)
-        let sessions = records.map { record in
-            AnyCodable.dictionary([
+        let cwd = try input.cwd.map { try canonicalCWD($0) }
+        let selected = try selectedAscendant()
+        let fingerprint = profileFingerprint(for: selected)
+        let records = await registry.list(cwd: cwd)
+        var sessions: [AnyCodable] = []
+        for record in records where record.profileFingerprint == fingerprint && record.ascendantID == selected.id {
+            // Registry entries survive process restarts, but a deleted remote
+            // Timeline must not be presented as resumable. Keep the metadata on
+            // disk for diagnostics while omitting it from the ACP result.
+            guard (try? await client.timelineStatus(timelineID: record.timelineID)) != nil else { continue }
+            sessions.append(.dictionary([
                 "sessionId": .string(record.id),
                 "cwd": .string(record.cwd),
                 "title": .string(record.title),
                 "updatedAt": .string(Self.iso8601(record.updatedAt)),
-            ])
+            ]))
         }
         return .dictionary(["sessions": .array(sessions)])
     }
@@ -139,8 +147,34 @@ final class ACPDispatcher: Sendable {
         }
         let record = try await requireSession(id: input.sessionID, cwd: nil)
         let turnID = input.clientTurnID ?? "acp:\(record.id):\(UUID().uuidString.lowercased())"
+
+        // A reconnect may retry a completed turn after the coordinator's
+        // terminal-result cache has expired. The replay store is authoritative
+        // for the bounded update stream, so consume it before attempting
+        // admission and never risk a second Timeline mutation.
+        if input.clientTurnID != nil,
+           let existing = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text),
+           existing.terminal {
+            if existing.conflict {
+                throw BridgeMethodError.invalidParams("clientTurnID was already used with different content")
+            }
+            if let error = existing.updates.last(where: { $0.kind == "error" || $0.kind == "cancelled" }) {
+                throw BridgeMethodError.invalidState(error.text ?? "ACP turn did not complete")
+            }
+            for update in existing.updates {
+                publishUpdate(
+                    sessionID: record.id,
+                    turnID: turnID,
+                    sequence: update.sequence,
+                    kind: update.kind,
+                    text: update.text,
+                    replayed: true
+                )
+            }
+            return .dictionary(["stopReason": .string("end_turn")])
+        }
         let result = try await client.chat(message: text, timelineID: record.timelineID, clientTurnID: turnID)
-        let replay = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID)
+        let replay = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text)
         let updates = replay?.updates ?? []
         if updates.isEmpty {
             publishUpdate(sessionID: record.id, turnID: turnID, sequence: 1, kind: "assistant_text", text: result.text, replayed: result.replayed)
@@ -235,10 +269,11 @@ final class ACPDispatcher: Sendable {
         "\(client.namespace):\(ascendant.id.uuidString.lowercased())"
     }
 
-    private func validate(cwd: String) throws {
+    private func canonicalCWD(_ cwd: String) throws -> String {
         guard !cwd.isEmpty, URL(fileURLWithPath: cwd).path.hasPrefix("/") else {
             throw BridgeMethodError.invalidParams("cwd must be an absolute path")
         }
+        return URL(fileURLWithPath: cwd).standardizedFileURL.path
     }
 
     private func rejectMCP(_ servers: [AnyCodable]?) throws {

@@ -220,10 +220,11 @@ public final class RemoteChatClient: Sendable {
     public func replay(
         timelineID: UUID,
         clientTurnID: String,
+        message: String? = nil,
         afterSequence: Int = 0
     ) async throws -> AscendantTurnReplay {
         let payload = try JSONEncoder().encode(
-            AgentChatReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, afterSequence: afterSequence)
+            AgentChatReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
         )
         let response = try await manager.call(
             operation: AgentChatProvider.replayOperation,

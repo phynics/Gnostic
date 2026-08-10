@@ -105,7 +105,7 @@ public struct AgentChatProvider: Sendable {
         }
         do {
             if let replayStore, let clientTurnID = request.clientTurnID {
-                await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID)
+                await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID, message: request.message)
             }
             let result = try await executor(request)
             if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
@@ -147,8 +147,12 @@ public struct AgentChatProvider: Sendable {
         let replay = await replayStore.replay(
             timelineID: request.timelineID,
             clientTurnID: request.clientTurnID,
+            message: request.message,
             afterSequence: request.afterSequence
         )
+        if replay.conflict {
+            return .failure(code: 409, message: "clientTurnID was already used with different content")
+        }
         let encoded = try JSONEncoder().encode(replay)
         return .success(result: String(decoding: encoded, as: UTF8.self))
     }
@@ -171,11 +175,13 @@ public struct AgentChatProvider: Sendable {
 public struct AgentChatReplayRequest: Codable, Sendable {
     public let timelineID: UUID
     public let clientTurnID: String
+    public let message: String?
     public let afterSequence: Int
 
-    public init(timelineID: UUID, clientTurnID: String, afterSequence: Int = 0) {
+    public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) {
         self.timelineID = timelineID
         self.clientTurnID = clientTurnID
+        self.message = message
         self.afterSequence = afterSequence
     }
 }
