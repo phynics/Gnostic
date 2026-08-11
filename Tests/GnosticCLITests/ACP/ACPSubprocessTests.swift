@@ -9,8 +9,71 @@ import Testing
 
 @testable import GnosticCLI
 
-@Suite("ACP subprocess")
+@Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
+    @Test("profile discovery emits deterministic source profiles", .timeLimit(.minutes(1)))
+    @MainActor
+    func discoversProfiles() async throws {
+        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
+        let namespace = "acp-profiles-\(UUID().uuidString.lowercased())"
+        let lowerID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
+        let lowerServe = try await ServeRuntime(
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            approveMode: .auto,
+            languageModel: RepeatingToolLanguageModel()
+        )
+        defer { lowerServe.shutdown() }
+        try await lowerServe.start()
+        await lowerServe.advertise(agent: AgentInstance(
+            id: lowerID,
+            name: "Lower Ascendant",
+            description: "ACP profile fixture",
+            privateTimelineID: lowerServe.servedTimelineID
+        ), workspaces: [])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = [
+            "acp", "profiles", "--json",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", namespace,
+        ]
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let standardError = String(
+            decoding: error.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+
+        let bundle = try JSONDecoder().decode(ACPProfileBundle.self, from: data)
+        #expect(bundle.version == 1)
+        #expect(bundle.profiles.map(\.id) == [
+            "gnostic-10000000-0000-4000-8000-000000000001",
+        ], Comment(rawValue: standardError))
+        #expect(bundle.profiles.map(\.name) == ["Lower Ascendant"])
+        #expect(bundle.profiles.allSatisfy { $0.command == "gnostic" && $0.env.isEmpty })
+        let lowerProfile = try #require(bundle.profiles.first)
+        #expect(lowerProfile.args == [
+            "acp",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", namespace,
+            "--ascendant", lowerID.uuidString.lowercased(),
+        ])
+        let envelope = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(Set(envelope.keys) == ["version", "profiles"])
+    }
+
     @Test("official ACP client completes the stable session lifecycle", .timeLimit(.minutes(1)))
     @MainActor
     func officialClientLifecycle() async throws {

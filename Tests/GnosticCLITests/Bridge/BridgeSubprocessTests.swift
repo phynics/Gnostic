@@ -77,9 +77,10 @@ struct BridgeSubprocessTests {
         ]
         let input = Pipe()
         let output = Pipe()
+        let error = Pipe()
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = error
         try process.run()
         defer {
             if process.isRunning { process.terminate() }
@@ -189,6 +190,11 @@ struct BridgeSubprocessTests {
         #expect(try await readResponse(from: output).error == nil)
         try await waitForTermination(process)
         #expect(process.terminationStatus == 0)
+        let standardError = String(
+            decoding: error.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(standardError.contains("`gnostic bridge` is deprecated; use `gnostic acp` instead."))
     }
 }
 
