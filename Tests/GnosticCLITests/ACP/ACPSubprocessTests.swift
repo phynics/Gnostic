@@ -28,12 +28,31 @@ struct ACPSubprocessTests {
         )
         defer { serve.shutdown() }
         try await serve.start()
+        let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
+        let tool = WorkspaceToolDefinition(
+            id: "workspace_echo",
+            name: "Workspace echo",
+            description: "Echoes fixture input.",
+            requiresPermission: true
+        )
+        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
+            .success(arguments["value"]?.value as? String ?? "")
+        }
+        let registration = try await serve.register(workspaceProvider: provider)
+        defer { registration.cancel() }
+        let workspace = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://pi-acp-client-smoke")!,
+            location: .runtime,
+            tools: [.custom(tool)],
+            createdAt: Date()
+        )
         await serve.advertise(agent: AgentInstance(
             id: agentID,
             name: "pi-acp-client",
             description: "Generic Pi ACP client fixture",
             privateTimelineID: serve.servedTimelineID
-        ), workspaces: [])
+        ), workspaces: [workspace])
 
         let sourceArguments = [
             "acp", "profiles", "--json",
@@ -50,17 +69,37 @@ struct ACPSubprocessTests {
             decoding: try JSONEncoder().encode(sourceArguments),
             as: UTF8.self
         )
-        childEnvironment["GNOSTIC_STATE_HOME"] = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gnostic-pi-acp-state-\(UUID().uuidString)").path
+        let fixtureState = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-pi-acp-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureState) }
+        let timelineFile = fixtureState.appendingPathComponent("timeline")
+        let attachedFile = fixtureState.appendingPathComponent("attached")
+        childEnvironment["GNOSTIC_STATE_HOME"] = fixtureState.appendingPathComponent("registry").path
+        childEnvironment["GNOSTIC_PI_ACP_TIMELINE_FILE"] = timelineFile.path
+        childEnvironment["GNOSTIC_PI_ACP_ATTACHED_FILE"] = attachedFile.path
         process.environment = childEnvironment
         let output = Pipe()
         let error = Pipe()
         process.standardOutput = output
         process.standardError = error
         try process.run()
+        let attachTask = Task { @MainActor in
+            let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+            defer { client.stop() }
+            try await client.connect()
+            try await poll(timeout: .seconds(30)) {
+                guard FileManager.default.fileExists(atPath: timelineFile.path) else { return false }
+                return try await client.listWorkspaces().contains { $0.id == workspaceID }
+            }
+            let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
+            let timelineID = try #require(UUID(uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)))
+            #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+            try Data("ready\n".utf8).write(to: attachedFile, options: .atomic)
+        }
         while process.isRunning {
             try await Task.sleep(for: .milliseconds(50))
         }
+        let attachResult = await attachTask.result
         let standardOutput = String(
             decoding: output.fileHandleForReading.readDataToEndOfFile(),
             as: UTF8.self
@@ -71,6 +110,8 @@ struct ACPSubprocessTests {
         )
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
         #expect(standardOutput.contains("pi-acp-client Gnostic lifecycle passed"))
+        #expect(standardOutput.contains("pi-acp-client Workspace tool turn passed"))
+        try attachResult.get()
     }
 
     @Test("profile discovery emits deterministic source profiles", .timeLimit(.minutes(1)))
