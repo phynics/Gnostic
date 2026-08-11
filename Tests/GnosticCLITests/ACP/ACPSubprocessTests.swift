@@ -11,6 +11,69 @@ import Testing
 
 @Suite("ACP subprocess")
 struct ACPSubprocessTests {
+    @Test("official ACP client completes the stable session lifecycle", .timeLimit(.minutes(1)))
+    @MainActor
+    func officialClientLifecycle() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["GNOSTIC_ACP_BINARY"] != nil,
+              let fixture = environment["GNOSTIC_ACP_OFFICIAL_CLIENT"] else { return }
+        let namespace = "acp-official-\(UUID().uuidString.lowercased())"
+        let agentID = UUID()
+        let serve = try await ServeRuntime(
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            approveMode: .auto,
+            languageModel: RepeatingToolLanguageModel()
+        )
+        defer { serve.shutdown() }
+        try await serve.start()
+        await serve.advertise(agent: AgentInstance(
+            id: agentID,
+            name: "official-acp-client",
+            description: "Official ACP SDK lifecycle fixture",
+            privateTimelineID: serve.servedTimelineID
+        ), workspaces: [])
+
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-official-acp-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let arguments = [
+            "acp",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", namespace,
+            "--ascendant", agentID.uuidString,
+        ]
+        let argumentsData = try JSONEncoder().encode(arguments)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/node")
+        process.arguments = [fixture]
+        var childEnvironment = environment
+        childEnvironment["GNOSTIC_ACP_ARGS"] = String(decoding: argumentsData, as: UTF8.self)
+        childEnvironment["GNOSTIC_ACP_CWD"] = "/tmp/gnostic-official-acp-client"
+        childEnvironment["GNOSTIC_STATE_HOME"] = stateURL.path
+        process.environment = childEnvironment
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let standardOutput = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let standardError = String(
+            decoding: error.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        #expect(standardOutput.contains("official ACP client lifecycle passed"))
+    }
+
     @Test(
         "ACP initializes, creates a session, and completes a permissioned Workspace turn",
         .timeLimit(.minutes(1))
