@@ -194,12 +194,31 @@ struct ACPSubprocessTests {
         )
         defer { serve.shutdown() }
         try await serve.start()
+        let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000002")!
+        let tool = WorkspaceToolDefinition(
+            id: "workspace_echo",
+            name: "Workspace echo",
+            description: "Echoes fixture input.",
+            requiresPermission: true
+        )
+        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
+            .success(arguments["value"]?.value as? String ?? "")
+        }
+        let registration = try await serve.register(workspaceProvider: provider)
+        defer { registration.cancel() }
+        let workspace = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://official-acp-client-smoke")!,
+            location: .runtime,
+            tools: [.custom(tool)],
+            createdAt: Date()
+        )
         await serve.advertise(agent: AgentInstance(
             id: agentID,
             name: "official-acp-client",
             description: "Official ACP SDK lifecycle fixture",
             privateTimelineID: serve.servedTimelineID
-        ), workspaces: [])
+        ), workspaces: [workspace])
 
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-official-acp-state-\(UUID().uuidString)")
@@ -219,12 +238,30 @@ struct ACPSubprocessTests {
         childEnvironment["GNOSTIC_ACP_ARGS"] = String(decoding: argumentsData, as: UTF8.self)
         childEnvironment["GNOSTIC_ACP_CWD"] = "/tmp/gnostic-official-acp-client"
         childEnvironment["GNOSTIC_STATE_HOME"] = stateURL.path
+        let timelineFile = stateURL.appendingPathComponent("timeline")
+        let attachedFile = stateURL.appendingPathComponent("attached")
+        childEnvironment["GNOSTIC_ACP_TIMELINE_FILE"] = timelineFile.path
+        childEnvironment["GNOSTIC_ACP_ATTACHED_FILE"] = attachedFile.path
         process.environment = childEnvironment
         let output = Pipe()
         let error = Pipe()
         process.standardOutput = output
         process.standardError = error
         try process.run()
+        let attachTask = Task { @MainActor in
+            let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+            defer { client.stop() }
+            try await client.connect()
+            try await poll(timeout: .seconds(30)) {
+                FileManager.default.fileExists(atPath: timelineFile.path)
+            }
+            let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
+            let timelineID = try #require(UUID(
+                uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
+            #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+            try Data("ready\n".utf8).write(to: attachedFile, options: .atomic)
+        }
         while process.isRunning {
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -238,6 +275,8 @@ struct ACPSubprocessTests {
         )
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
         #expect(standardOutput.contains("official ACP client lifecycle passed"))
+        #expect(standardOutput.contains("official ACP client permission and cancellation passed"))
+        try await attachTask.value
     }
 
     @Test(
