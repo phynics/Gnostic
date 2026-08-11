@@ -71,6 +71,23 @@ struct BridgeSessionTests {
         #expect(await session.currentState() == .stopped)
         #expect(try output.responses().last?.result != nil)
     }
+
+    @Test("stable request cancellation returns the ACP cancelled error")
+    func stableRequestCancellation() async throws {
+        let output = BridgeOutputCapture()
+        let session = BridgeSession(handler: { _ in
+            try await Task.sleep(for: .seconds(10))
+            return .boolean(true)
+        }, output: output.append)
+
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"long.running"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"id":2}}"#))
+        try await waitForResponseCount(2, output: output)
+        let response = try #require(output.responses().last)
+        #expect(response.id == .number(2))
+        #expect(response.error?.code == -32800)
+    }
 }
 
 private func waitForResponseCount(_ expected: Int, output: BridgeOutputCapture) async throws {

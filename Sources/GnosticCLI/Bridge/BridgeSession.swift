@@ -110,8 +110,12 @@ public actor BridgeSession {
             await shutdown(request)
         case "exit":
             await exit(request)
+        case "$/cancel_request":
+            cancel(request, respond: true)
         case "$/cancelRequest":
-            cancel(request)
+            // Retained only for the deprecated custom bridge protocol during
+            // its compatibility window. Stable ACP uses `$/cancel_request`.
+            cancel(request, respond: false)
         default:
             guard state == .initialized else {
                 respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "initialize must complete first"))
@@ -158,7 +162,7 @@ public actor BridgeSession {
         respondIfNeeded(to: request, result: .dictionary([:]))
     }
 
-    private func cancel(_ request: JSONRPCRequest) {
+    private func cancel(_ request: JSONRPCRequest, respond: Bool) {
         guard let params = request.params,
               case let .dictionary(fields) = params,
               let idValue = fields["id"],
@@ -166,7 +170,14 @@ public actor BridgeSession {
             respondIfNeeded(to: request, error: errorObject(code: .invalidParams, message: "cancel request requires an id"))
             return
         }
-        requests[id]?.cancel()
+        guard let task = requests.removeValue(forKey: id) else { return }
+        task.cancel()
+        if respond {
+            emit(JSONRPCResponse(
+                id: id,
+                error: JSONRPCErrorObject(code: -32800, message: "Request cancelled")
+            ))
+        }
     }
 
     private func start(_ request: JSONRPCRequest) async {

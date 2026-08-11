@@ -400,21 +400,26 @@ struct ACPSubprocessTests {
             }
         }
 
+        try send(JSONRPCRequest(id: nil, method: "session/cancel", params: .dictionary([
+            "sessionId": .string(sessionID),
+        ])))
+        let cancelledPermission = JSONRPCResponse(
+            id: secondPermissionRequest?.id,
+            result: .dictionary([
+                "outcome": .dictionary(["outcome": .string("cancelled")]),
+            ])
+        )
+        input.fileHandleForWriting.write(try JSONEncoder().encode(cancelledPermission) + Data([0x0A]))
+
+        let cancelledPrompt = try await readResponse(from: &outputIterator)
+        #expect(cancelledPrompt.id == .number(5))
+        #expect(cancelledPrompt.error == nil)
+        #expect(cancelledPrompt.result == .dictionary(["stopReason": .string("cancelled")]))
+
         try send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
             "sessionId": .string(sessionID),
         ])))
-        var closeCompleted = false
-        var cancelledPromptCompleted = false
-        while !closeCompleted || !cancelledPromptCompleted {
-            guard case let .response(response) = try await readEnvelope(from: &outputIterator) else { continue }
-            if response.id == .number(6) {
-                #expect(response.error == nil)
-                closeCompleted = true
-            } else if response.id == .number(5) {
-                #expect(response.error != nil)
-                cancelledPromptCompleted = true
-            }
-        }
+        #expect(try await readResponse(from: &outputIterator).error == nil)
 
         try send(JSONRPCRequest(id: .number(7), method: "session/resume", params: .dictionary([
             "sessionId": .string(sessionID),
