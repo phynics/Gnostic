@@ -1,0 +1,9 @@
+{
+  "name": "gnostic-pi-acp-client-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@phynics/pi-acp-client": "github:phynics/pi-acp-client#098ba29e9f45d899e463ae3dcbcb5b10d054c7d7",
+    "tsx": "4.20.6"
+  }
+}

@@ -11,6 +11,68 @@ import Testing
 
 @Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
+    @Test("pi-acp-client discovers a Gnostic profile and completes the session lifecycle", .timeLimit(.minutes(1)))
+    @MainActor
+    func piACPClientLifecycle() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let binary = environment["GNOSTIC_ACP_BINARY"],
+              let fixture = environment["GNOSTIC_PI_ACP_CLIENT_FIXTURE"] else { return }
+        let namespace = "pi-acp-client-\(UUID().uuidString.lowercased())"
+        let agentID = UUID()
+        let serve = try await ServeRuntime(
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            approveMode: .auto,
+            languageModel: RepeatingToolLanguageModel()
+        )
+        defer { serve.shutdown() }
+        try await serve.start()
+        await serve.advertise(agent: AgentInstance(
+            id: agentID,
+            name: "pi-acp-client",
+            description: "Generic Pi ACP client fixture",
+            privateTimelineID: serve.servedTimelineID
+        ), workspaces: [])
+
+        let sourceArguments = [
+            "acp", "profiles", "--json",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", namespace,
+        ]
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/workspace/Tests/Fixtures/PiACPClient/node_modules/.bin/tsx")
+        process.arguments = [fixture]
+        var childEnvironment = environment
+        childEnvironment["GNOSTIC_ACP_BINARY"] = binary
+        childEnvironment["GNOSTIC_ACP_PROFILE_SOURCE_ARGS"] = String(
+            decoding: try JSONEncoder().encode(sourceArguments),
+            as: UTF8.self
+        )
+        childEnvironment["GNOSTIC_STATE_HOME"] = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-pi-acp-state-\(UUID().uuidString)").path
+        process.environment = childEnvironment
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let standardOutput = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let standardError = String(
+            decoding: error.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        #expect(standardOutput.contains("pi-acp-client Gnostic lifecycle passed"))
+    }
+
     @Test("profile discovery emits deterministic source profiles", .timeLimit(.minutes(1)))
     @MainActor
     func discoversProfiles() async throws {
