@@ -196,6 +196,42 @@ struct ACPSubprocessTests {
 
         try send(JSONRPCRequest(id: .number(8), method: "shutdown"))
         #expect(try await readResponse(from: &outputIterator).error == nil)
+        input.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        let resumedProcess = Process()
+        resumedProcess.executableURL = URL(fileURLWithPath: binary)
+        resumedProcess.arguments = process.arguments
+        resumedProcess.environment = environment
+        let resumedInput = Pipe()
+        let resumedOutput = Pipe()
+        let resumedLines = LineStream(handle: resumedOutput.fileHandleForReading)
+        resumedProcess.standardInput = resumedInput
+        resumedProcess.standardOutput = resumedOutput
+        resumedProcess.standardError = Pipe()
+        try resumedProcess.run()
+        defer { if resumedProcess.isRunning { resumedProcess.terminate() } }
+
+        func sendAfterRestart(_ request: JSONRPCRequest) throws {
+            resumedInput.fileHandleForWriting.write(try JSONEncoder().encode(request) + Data([0x0A]))
+        }
+
+        var resumedIterator = resumedLines.stream.makeAsyncIterator()
+        try sendAfterRestart(JSONRPCRequest(id: .number(9), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
+        ])))
+        #expect(try await readResponse(from: &resumedIterator).error == nil)
+
+        try sendAfterRestart(JSONRPCRequest(id: .number(10), method: "session/resume", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "cwd": .string("/tmp/acp-smoke"),
+            "mcpServers": .array([]),
+        ])))
+        #expect(try await readResponse(from: &resumedIterator).error == nil)
+
+        try sendAfterRestart(JSONRPCRequest(id: .number(11), method: "shutdown"))
+        #expect(try await readResponse(from: &resumedIterator).error == nil)
     }
 }
 
