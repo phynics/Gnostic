@@ -59,15 +59,23 @@ public final class RemoteChatClient: Sendable {
     private let catalog: NetworkCatalog
     private let subscription: GnosticSubscription
     private let timeout: Duration
+    private let promptTimeout: Duration
     private var stateTask: Task<Void, Never>?
     private var connectionLost = false
 
     /// Creates a client bound to a broker namespace.
-    public init(host: String, port: Int, namespace: String, timeout: Duration = .seconds(5)) throws {
+    public init(
+        host: String,
+        port: Int,
+        namespace: String,
+        timeout: Duration = .seconds(5),
+        promptTimeout: Duration? = nil
+    ) throws {
         self.host = host
         self.port = port
         self.namespace = namespace
         self.timeout = timeout
+        self.promptTimeout = promptTimeout ?? timeout
         manager = try CommunicationManager(
             identity: Identity(name: "gnostic-chat-client"),
             communicationOptions: CommunicationOptions(
@@ -209,7 +217,7 @@ public final class RemoteChatClient: Sendable {
         let response = try await manager.call(
             operation: AgentChatProvider.chatOperation,
             parameters: String(decoding: payload, as: UTF8.self),
-            timeout: timeout
+            timeout: promptTimeout
         )
         return try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
     }
@@ -234,13 +242,26 @@ public final class RemoteChatClient: Sendable {
         return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
     }
 
+    public func observeTurnUpdates() async throws -> AsyncStream<AscendantTurnUpdateStore.Event> {
+        let snapshots = try await manager.observeChannelStream(channelId: AgentChatProvider.updateChannel)
+        return AsyncStream { continuation in
+            let task = Task {
+                for await snapshot in snapshots {
+                    guard let raw = snapshot.privateData,
+                          let event = try? JSONDecoder().decode(
+                            AscendantTurnUpdateStore.Event.self,
+                            from: Data(raw.utf8)
+                          ) else { continue }
+                    continuation.yield(event)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     public func respondToPermission(_ permission: AgentPermissionResponse) async throws {
-        let payload = try JSONEncoder().encode(permission)
-        _ = try await manager.call(
-            operation: AgentPermissionProvider.responseOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            timeout: timeout
-        )
+        manager.publishChannel(try AgentPermissionProvider.responseEvent(permission))
     }
 
     /// Reads the served timeline's attachment state.

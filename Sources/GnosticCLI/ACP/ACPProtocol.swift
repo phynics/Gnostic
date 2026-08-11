@@ -25,7 +25,7 @@ struct ACPPromptParameters: Codable, Sendable {
     let metadata: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
-        case sessionID
+        case sessionID = "sessionId"
         case prompt
         case mcpServers
         case metadata = "_meta"
@@ -46,6 +46,12 @@ struct ACPResumeParameters: Codable, Sendable {
     let sessionID: String
     let cwd: String
     let mcpServers: [AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "sessionId"
+        case cwd
+        case mcpServers
+    }
 }
 
 struct ACPListParameters: Codable, Sendable {
@@ -55,6 +61,10 @@ struct ACPListParameters: Codable, Sendable {
 
 struct ACPCloseParameters: Codable, Sendable {
     let sessionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "sessionId"
+    }
 }
 
 struct ACPProfile: Codable, Sendable {

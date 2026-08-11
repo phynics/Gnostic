@@ -218,6 +218,14 @@ final class ACPDispatcher: Sendable {
         record: ACPSessionRecord,
         turnID: String
     ) async throws -> (AgentChatResult, Int) {
+        let channel = try await client.observeTurnUpdates()
+        let inbox = TurnUpdateInbox()
+        let collector = Task {
+            for await event in channel
+                where event.timelineID == record.timelineID && event.clientTurnID == turnID {
+                await inbox.append(event.update)
+            }
+        }
         let chat = Task {
             try await client.chat(
                 message: message,
@@ -225,63 +233,52 @@ final class ACPDispatcher: Sendable {
                 clientTurnID: turnID
             )
         }
-        defer { chat.cancel() }
+        let completion = PromptCompletion()
+        let completionWatcher = Task {
+            do {
+                await completion.set(.completed(try await chat.value))
+            } catch {
+                await completion.set(.failed(String(describing: error)))
+            }
+        }
+        defer {
+            chat.cancel()
+            collector.cancel()
+            completionWatcher.cancel()
+        }
         var lastSequence = 0
 
         while true {
             try Task.checkCancellation()
-            let outcome = await withTaskGroup(of: PromptWaitOutcome.self) { group in
-                group.addTask {
-                    do {
-                        return .completed(try await chat.value)
-                    } catch {
-                        return .failed(String(describing: error))
-                    }
-                }
-                group.addTask {
-                    try? await Task.sleep(for: .milliseconds(40))
-                    return .poll
-                }
-                let first = await group.next() ?? .poll
-                group.cancelAll()
-                return first
+            try await Task.sleep(for: .milliseconds(40))
+
+            for update in await inbox.drain(afterSequence: lastSequence) {
+                publishUpdate(
+                    sessionID: record.id,
+                    turnID: turnID,
+                    update: update,
+                    replayed: false
+                )
+                try await handlePermissionUpdate(
+                    update,
+                    sessionID: record.id,
+                    timelineID: record.timelineID,
+                    turnID: turnID
+                )
+                lastSequence = max(lastSequence, update.sequence)
             }
 
-            if let replay = try? await client.replay(
-                timelineID: record.timelineID,
-                clientTurnID: turnID,
-                message: message,
-                afterSequence: lastSequence
-            ) {
-                for update in replay.updates {
-                    publishUpdate(
-                        sessionID: record.id,
-                        turnID: turnID,
-                        update: update,
-                        replayed: false
-                    )
-                    try await handlePermissionUpdate(
-                        update,
-                        sessionID: record.id,
-                        timelineID: record.timelineID,
-                        turnID: turnID
-                    )
-                    lastSequence = max(lastSequence, update.sequence)
-                }
-            }
-
-            switch outcome {
+            switch await completion.value() {
             case .completed(let result): return (result, lastSequence)
             case .failed(let detail): throw BridgeMethodError.invalidState(detail)
-            case .poll: break
+            case nil: break
             }
         }
     }
 
-    private enum PromptWaitOutcome: Sendable {
+    fileprivate enum PromptWaitOutcome: Sendable {
         case completed(AgentChatResult)
         case failed(String)
-        case poll
     }
 
     private func handlePermissionUpdate(
@@ -414,4 +411,28 @@ final class ACPDispatcher: Sendable {
     private static func iso8601(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }
+}
+
+private actor TurnUpdateInbox {
+    private var updates: [AscendantTurnUpdate] = []
+
+    func append(_ update: AscendantTurnUpdate) {
+        updates.append(update)
+    }
+
+    func drain(afterSequence: Int) -> [AscendantTurnUpdate] {
+        let ready = updates.filter { $0.sequence > afterSequence }.sorted { $0.sequence < $1.sequence }
+        updates.removeAll { $0.sequence <= (ready.last?.sequence ?? afterSequence) }
+        return ready
+    }
+}
+
+private actor PromptCompletion {
+    private var outcome: ACPDispatcher.PromptWaitOutcome?
+
+    func set(_ outcome: ACPDispatcher.PromptWaitOutcome) {
+        self.outcome = outcome
+    }
+
+    func value() -> ACPDispatcher.PromptWaitOutcome? { outcome }
 }

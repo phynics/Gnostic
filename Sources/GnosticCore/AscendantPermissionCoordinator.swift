@@ -66,7 +66,7 @@ public struct AscendantPermissionRequest: Sendable, Equatable {
 public actor AscendantPermissionCoordinator {
     private struct Pending {
         let request: AscendantPermissionRequest
-        let continuation: CheckedContinuation<Bool, Never>
+        let continuation: AsyncStream<Bool>.Continuation
     }
 
     private let updates: AscendantTurnUpdateStore
@@ -80,10 +80,11 @@ public actor AscendantPermissionCoordinator {
 
     public func request(_ request: AscendantPermissionRequest) async -> Bool {
         guard pending[request.correlationID] == nil else { return false }
-        return await withCheckedContinuation { continuation in
-            pending[request.correlationID] = Pending(request: request, continuation: continuation)
-            Task { await self.append(request, status: "pending") }
-        }
+        let (decisions, continuation) = AsyncStream<Bool>.makeStream()
+        pending[request.correlationID] = Pending(request: request, continuation: continuation)
+        await append(request, status: "pending")
+        var iterator = decisions.makeAsyncIterator()
+        return await iterator.next() ?? false
     }
 
     @discardableResult
@@ -98,7 +99,8 @@ public actor AscendantPermissionCoordinator {
               value.request.clientTurnID == clientTurnID else { return false }
         pending[correlationID] = nil
         await append(value.request, status: approved ? "selected" : "denied")
-        value.continuation.resume(returning: approved)
+        value.continuation.yield(approved)
+        value.continuation.finish()
         return true
     }
 
@@ -107,7 +109,8 @@ public actor AscendantPermissionCoordinator {
         pending.removeAll()
         for value in values {
             await append(value.request, status: reason)
-            value.continuation.resume(returning: false)
+            value.continuation.yield(false)
+            value.continuation.finish()
         }
     }
 

@@ -11,7 +11,10 @@ import Testing
 
 @Suite("ACP subprocess")
 struct ACPSubprocessTests {
-    @Test("ACP initializes and creates a Timeline session")
+    @Test(
+        "ACP initializes, creates a session, and completes a permissioned Workspace turn",
+        .timeLimit(.minutes(1))
+    )
     @MainActor
     func initializesAndCreatesSession() async throws {
         guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
@@ -26,6 +29,25 @@ struct ACPSubprocessTests {
         )
         defer { serve.shutdown() }
         try await serve.start()
+        let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
+        let tool = WorkspaceToolDefinition(
+            id: "workspace_echo",
+            name: "Workspace echo",
+            description: "Echoes fixture input.",
+            requiresPermission: true
+        )
+        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
+            .success(arguments["value"]?.value as? String ?? "")
+        }
+        let registration = try await serve.register(workspaceProvider: provider)
+        defer { registration.cancel() }
+        let workspace = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://acp-smoke")!,
+            location: .runtime,
+            tools: [.custom(tool)],
+            createdAt: Date()
+        )
         await serve.advertise(
             agent: AgentInstance(
                 id: agentID,
@@ -33,7 +55,7 @@ struct ACPSubprocessTests {
                 description: "ACP fixture",
                 privateTimelineID: serve.servedTimelineID
             ),
-            workspaces: []
+            workspaces: [workspace]
         )
 
         let stateURL = FileManager.default.temporaryDirectory
@@ -54,6 +76,7 @@ struct ACPSubprocessTests {
         process.environment = environment
         let input = Pipe()
         let output = Pipe()
+        let outputLines = LineStream(handle: output.fileHandleForReading)
         process.standardInput = input
         process.standardOutput = output
         process.standardError = Pipe()
@@ -68,7 +91,8 @@ struct ACPSubprocessTests {
             "protocolVersion": .number(1),
             "clientInfo": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
         ])))
-        let initialized = try await readResponse(from: output)
+        var outputIterator = outputLines.stream.makeAsyncIterator()
+        let initialized = try await readResponse(from: &outputIterator)
         #expect(initialized.error == nil)
         #expect(initialized.result != nil)
 
@@ -76,49 +100,126 @@ struct ACPSubprocessTests {
             "cwd": .string("/tmp/acp-smoke"),
             "mcpServers": .array([]),
         ])))
-        let created = try await readResponse(from: output)
+        let created = try await readResponse(from: &outputIterator)
         #expect(created.error == nil)
         let result = try #require(created.result)
         guard case let .dictionary(values) = result,
-              case let .string(sessionID) = values["sessionId"] else {
+              case let .string(sessionID) = values["sessionId"],
+              case let .dictionary(metadata) = values["_meta"],
+              case let .string(timelineRaw) = metadata["gnosticTimelineID"],
+              let timelineID = UUID(uuidString: timelineRaw) else {
             Issue.record("session/new returned no sessionId")
             return
         }
         #expect(!sessionID.isEmpty)
 
+        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { client.stop() }
+        try await client.connect()
+        try await poll(timeout: .seconds(8)) {
+            try await client.listWorkspaces().contains { $0.id == workspaceID }
+        }
+        #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+
         try send(JSONRPCRequest(id: .number(3), method: "session/list", params: .dictionary([
             "cwd": .string("/tmp/acp-smoke")
         ])))
-        let listed = try await readResponse(from: output)
+        let listed = try await readResponse(from: &outputIterator)
         #expect(listed.error == nil)
 
-        try send(JSONRPCRequest(id: .number(4), method: "shutdown"))
-        #expect(try await readResponse(from: output).error == nil)
+        try send(JSONRPCRequest(id: .number(4), method: "session/prompt", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "prompt": .array([.dictionary(["type": .string("text"), "text": .string("use the workspace")])]),
+            "mcpServers": .array([]),
+            "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string("acp-smoke:turn-1")]),
+        ])))
+
+        var permissionRequested = false
+        var promptCompleted = false
+        while !promptCompleted {
+            switch try await readEnvelope(from: &outputIterator) {
+            case .request(let request) where request.method == "session/request_permission":
+                permissionRequested = true
+                let response = JSONRPCResponse(id: request.id, result: .dictionary([
+                    "outcome": .dictionary([
+                        "outcome": .string("selected"),
+                        "optionId": .string("allow_once"),
+                    ]),
+                ]))
+                input.fileHandleForWriting.write(try JSONEncoder().encode(response) + Data([0x0A]))
+            case .response(let response) where response.id == .number(4):
+                #expect(response.error == nil)
+                promptCompleted = true
+            default:
+                continue
+            }
+        }
+        #expect(permissionRequested)
+
+        try send(JSONRPCRequest(id: .number(5), method: "shutdown"))
+        #expect(try await readResponse(from: &outputIterator).error == nil)
     }
 }
 
 private enum ACPSubprocessError: Error { case timeout }
 
-private func readResponse(from pipe: Pipe) async throws -> JSONRPCResponse {
-    let handle = pipe.fileHandleForReading
-    let data = try await withThrowingTaskGroup(of: Data.self) { group in
-        group.addTask {
-            try await Task.detached {
-                var data = Data()
-                while true {
-                    let chunk = handle.readData(ofLength: 1)
-                    guard !chunk.isEmpty else { throw ACPSubprocessError.timeout }
-                    data.append(chunk)
-                    if chunk == Data([0x0A]) { return Data(data.dropLast()) }
-                }
-            }.value
-        }
-        group.addTask {
-            try await Task.sleep(for: .seconds(15))
-            throw ACPSubprocessError.timeout
-        }
-        defer { group.cancelAll() }
-        return try await group.next()!
+private enum ACPSubprocessEnvelope {
+    case request(JSONRPCRequest)
+    case response(JSONRPCResponse)
+}
+
+private func readResponse(
+    from iterator: inout AsyncStream<Data>.Iterator
+) async throws -> JSONRPCResponse {
+    while true {
+        if case let .response(response) = try await readEnvelope(from: &iterator) { return response }
     }
-    return try JSONDecoder().decode(JSONRPCResponse.self, from: data)
+}
+
+private func readEnvelope(
+    from iterator: inout AsyncStream<Data>.Iterator
+) async throws -> ACPSubprocessEnvelope {
+    guard let data = await iterator.next() else { throw ACPSubprocessError.timeout }
+    if let request = try? JSONDecoder().decode(JSONRPCRequest.self, from: data) {
+        return .request(request)
+    }
+    return .response(try JSONDecoder().decode(JSONRPCResponse.self, from: data))
+}
+
+private final class LineStream: Sendable {
+    let stream: AsyncStream<Data>
+
+    init(handle: FileHandle) {
+        let (stream, continuation) = AsyncStream<Data>.makeStream()
+        self.stream = stream
+        Task.detached {
+            var line = Data()
+            while true {
+                let byte = handle.readData(ofLength: 1)
+                guard !byte.isEmpty else {
+                    continuation.finish()
+                    return
+                }
+                if byte == Data([0x0A]) {
+                    continuation.yield(line)
+                    line.removeAll(keepingCapacity: true)
+                } else {
+                    line.append(byte)
+                }
+            }
+        }
+    }
+}
+
+private func poll(
+    timeout: Duration,
+    _ condition: @escaping @Sendable () async throws -> Bool
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
+        if try await condition() { return }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    Issue.record("poll condition not met before timeout")
 }

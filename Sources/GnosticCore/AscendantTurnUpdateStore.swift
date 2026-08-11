@@ -108,6 +108,12 @@ public struct AscendantTurnReplay: Codable, Sendable, Equatable {
 /// Keeps bounded identified-turn updates for one serve lifetime. It never
 /// stores prompt text or tool arguments beyond the bounded update payload.
 public actor AscendantTurnUpdateStore {
+    public struct Event: Codable, Sendable, Equatable {
+        public let timelineID: UUID
+        public let clientTurnID: String
+        public let update: AscendantTurnUpdate
+    }
+
     private struct Key: Hashable, Sendable {
         let timelineID: UUID
         let clientTurnID: String
@@ -125,13 +131,18 @@ public actor AscendantTurnUpdateStore {
     private let maxEvents: Int
     private let maxBytes: Int
     private var entries: [Key: Entry] = [:]
+    private let eventStream: AsyncStream<Event>
+    private let eventContinuation: AsyncStream<Event>.Continuation
 
     public init(maxEvents: Int = 1_024, maxBytes: Int = 1_048_576) {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
         self.maxEvents = max(2, maxEvents)
         self.maxBytes = max(256, maxBytes)
+        (eventStream, eventContinuation) = AsyncStream<Event>.makeStream()
     }
+
+    func events() -> AsyncStream<Event> { eventStream }
 
     public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
@@ -211,6 +222,7 @@ public actor AscendantTurnUpdateStore {
             }
         }
         entries[key] = entry
+        eventContinuation.yield(Event(timelineID: timelineID, clientTurnID: clientTurnID, update: update))
         return update
     }
 

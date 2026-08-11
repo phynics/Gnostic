@@ -53,6 +53,8 @@ public final class ServeRuntime {
     private let logger: Logger
     private var registrations: [CallHandlerRegistration] = []
     private var discoverResponder: DiscoverResponderRegistration?
+    private var permissionResponseTask: Task<Void, Never>?
+    private var turnUpdatePublishTask: Task<Void, Never>?
     private var advertisedAgent: AgentInstance?
     private var advertisedWorkspaces: [WorkspaceReference] = []
 
@@ -237,6 +239,14 @@ public final class ServeRuntime {
         registrations.append(try await agentChat.register(on: communication))
         registrations.append(try await agentChat.registerReplay(on: communication))
         registrations.append(try await agentPermission.register(on: communication))
+        permissionResponseTask = try await agentPermission.observeResponses(on: communication)
+        let events = await turnUpdates.events()
+        turnUpdatePublishTask = Task { [communication] in
+            for await event in events {
+                guard let channel = try? AgentChatProvider.updateEvent(event) else { continue }
+                communication.publishChannel(channel)
+            }
+        }
         registrations.append(try await timelineStatus.register(on: communication))
         registrations += try await timelineManagement.register(on: communication)
         try await workspaceOps.register(on: communication)
@@ -281,6 +291,10 @@ public final class ServeRuntime {
         discoverResponder?.cancel()
         discoverResponder = nil
         registrations.forEach { $0.cancel() }
+        permissionResponseTask?.cancel()
+        permissionResponseTask = nil
+        turnUpdatePublishTask?.cancel()
+        turnUpdatePublishTask = nil
         subscription.stop()
         container.shutdown()
         Task { [permissionCoordinator] in

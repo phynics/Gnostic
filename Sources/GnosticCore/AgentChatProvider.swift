@@ -83,6 +83,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
 public struct AgentChatProvider: Sendable {
     public static let chatOperation = "me.atkn.gnostic.agent.chat"
     public static let replayOperation = "me.atkn.gnostic.agent.chat.replay"
+    public static let updateChannel = "me.atkn.gnostic.agent.chat.update"
 
     public typealias TurnExecutor = @Sendable (AgentChatRequest) async throws -> AgentChatResult
 
@@ -187,6 +188,23 @@ public struct AgentChatProvider: Sendable {
         try await communication.registerCallHandler(operation: Self.replayOperation) { [self] request in
             try await handleReplay(parameters: request.parameters)
         }
+    }
+
+    public static func updateEvent(_ event: AscendantTurnUpdateStore.Event) throws -> ChannelEvent {
+        let data = try JSONEncoder().encode(event)
+        guard let privateData = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        return try ChannelEvent.with(
+            object: CoatyObject(
+                coreType: .CoatyObject,
+                objectType: CoatyObject.objectType,
+                objectId: CoatyUUID(),
+                name: "Gnostic Ascendant turn update"
+            ),
+            channelId: updateChannel,
+            privateData: privateData
+        )
     }
 }
 

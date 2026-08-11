@@ -37,7 +37,11 @@ struct ACPCommand: AsyncParsableCommand {
         let client = try GnosticRemoteClient(
             host: host ?? stored.mqttHost,
             port: port ?? stored.mqttPort,
-            namespace: namespace ?? stored.mqttNamespace
+            namespace: namespace ?? stored.mqttNamespace,
+            // ACP prompts may wait on an interactive permission decision.
+            // Keep discovery calls bounded while allowing the authoritative
+            // unary turn enough time to survive that interaction.
+            promptTimeout: .seconds(300)
         )
         try await ACPServer(
             client: client,
