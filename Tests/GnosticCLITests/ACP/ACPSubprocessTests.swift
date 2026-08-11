@@ -11,6 +11,109 @@ import Testing
 
 @Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
+    @Test("pi-acp-client discovers a Gnostic profile and completes the session lifecycle", .timeLimit(.minutes(1)))
+    @MainActor
+    func piACPClientLifecycle() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let binary = environment["GNOSTIC_ACP_BINARY"],
+              let fixture = environment["GNOSTIC_PI_ACP_CLIENT_FIXTURE"] else { return }
+        let namespace = "pi-acp-client-\(UUID().uuidString.lowercased())"
+        let agentID = UUID()
+        let serve = try await ServeRuntime(
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            approveMode: .auto,
+            languageModel: RepeatingToolLanguageModel()
+        )
+        defer { serve.shutdown() }
+        try await serve.start()
+        let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
+        let tool = WorkspaceToolDefinition(
+            id: "workspace_echo",
+            name: "Workspace echo",
+            description: "Echoes fixture input.",
+            requiresPermission: true
+        )
+        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
+            .success(arguments["value"]?.value as? String ?? "")
+        }
+        let registration = try await serve.register(workspaceProvider: provider)
+        defer { registration.cancel() }
+        let workspace = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://pi-acp-client-smoke")!,
+            location: .runtime,
+            tools: [.custom(tool)],
+            createdAt: Date()
+        )
+        await serve.advertise(agent: AgentInstance(
+            id: agentID,
+            name: "pi-acp-client",
+            description: "Generic Pi ACP client fixture",
+            privateTimelineID: serve.servedTimelineID
+        ), workspaces: [workspace])
+
+        let sourceArguments = [
+            "acp", "profiles", "--json",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", namespace,
+        ]
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/workspace/Tests/Fixtures/PiACPClient/node_modules/.bin/tsx")
+        process.arguments = [fixture]
+        var childEnvironment = environment
+        childEnvironment["GNOSTIC_ACP_BINARY"] = binary
+        childEnvironment["GNOSTIC_ACP_PROFILE_SOURCE_ARGS"] = String(
+            decoding: try JSONEncoder().encode(sourceArguments),
+            as: UTF8.self
+        )
+        let fixtureState = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-pi-acp-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureState) }
+        let timelineFile = fixtureState.appendingPathComponent("timeline")
+        let attachedFile = fixtureState.appendingPathComponent("attached")
+        childEnvironment["GNOSTIC_STATE_HOME"] = fixtureState.appendingPathComponent("registry").path
+        childEnvironment["GNOSTIC_PI_ACP_TIMELINE_FILE"] = timelineFile.path
+        childEnvironment["GNOSTIC_PI_ACP_ATTACHED_FILE"] = attachedFile.path
+        process.environment = childEnvironment
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        let attachTask = Task { @MainActor in
+            let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+            defer { client.stop() }
+            try await client.connect()
+            try await poll(timeout: .seconds(30)) {
+                guard FileManager.default.fileExists(atPath: timelineFile.path) else { return false }
+                return try await client.listWorkspaces().contains { $0.id == workspaceID }
+            }
+            let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
+            let timelineID = try #require(UUID(uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)))
+            #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+            try Data("ready\n".utf8).write(to: attachedFile, options: .atomic)
+        }
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let attachResult = await attachTask.result
+        let standardOutput = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let standardError = String(
+            decoding: error.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        #expect(standardOutput.contains("pi-acp-client Gnostic lifecycle passed"))
+        #expect(standardOutput.contains("pi-acp-client Workspace tool turn passed"))
+        try attachResult.get()
+    }
+
     @Test("profile discovery emits deterministic source profiles", .timeLimit(.minutes(1)))
     @MainActor
     func discoversProfiles() async throws {
@@ -91,12 +194,31 @@ struct ACPSubprocessTests {
         )
         defer { serve.shutdown() }
         try await serve.start()
+        let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000002")!
+        let tool = WorkspaceToolDefinition(
+            id: "workspace_echo",
+            name: "Workspace echo",
+            description: "Echoes fixture input.",
+            requiresPermission: true
+        )
+        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
+            .success(arguments["value"]?.value as? String ?? "")
+        }
+        let registration = try await serve.register(workspaceProvider: provider)
+        defer { registration.cancel() }
+        let workspace = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://official-acp-client-smoke")!,
+            location: .runtime,
+            tools: [.custom(tool)],
+            createdAt: Date()
+        )
         await serve.advertise(agent: AgentInstance(
             id: agentID,
             name: "official-acp-client",
             description: "Official ACP SDK lifecycle fixture",
             privateTimelineID: serve.servedTimelineID
-        ), workspaces: [])
+        ), workspaces: [workspace])
 
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-official-acp-state-\(UUID().uuidString)")
@@ -116,12 +238,30 @@ struct ACPSubprocessTests {
         childEnvironment["GNOSTIC_ACP_ARGS"] = String(decoding: argumentsData, as: UTF8.self)
         childEnvironment["GNOSTIC_ACP_CWD"] = "/tmp/gnostic-official-acp-client"
         childEnvironment["GNOSTIC_STATE_HOME"] = stateURL.path
+        let timelineFile = stateURL.appendingPathComponent("timeline")
+        let attachedFile = stateURL.appendingPathComponent("attached")
+        childEnvironment["GNOSTIC_ACP_TIMELINE_FILE"] = timelineFile.path
+        childEnvironment["GNOSTIC_ACP_ATTACHED_FILE"] = attachedFile.path
         process.environment = childEnvironment
         let output = Pipe()
         let error = Pipe()
         process.standardOutput = output
         process.standardError = error
         try process.run()
+        let attachTask = Task { @MainActor in
+            let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+            defer { client.stop() }
+            try await client.connect()
+            try await poll(timeout: .seconds(30)) {
+                FileManager.default.fileExists(atPath: timelineFile.path)
+            }
+            let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
+            let timelineID = try #require(UUID(
+                uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
+            #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+            try Data("ready\n".utf8).write(to: attachedFile, options: .atomic)
+        }
         while process.isRunning {
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -135,6 +275,8 @@ struct ACPSubprocessTests {
         )
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
         #expect(standardOutput.contains("official ACP client lifecycle passed"))
+        #expect(standardOutput.contains("official ACP client permission and cancellation passed"))
+        try await attachTask.value
     }
 
     @Test(
@@ -297,21 +439,26 @@ struct ACPSubprocessTests {
             }
         }
 
+        try send(JSONRPCRequest(id: nil, method: "session/cancel", params: .dictionary([
+            "sessionId": .string(sessionID),
+        ])))
+        let cancelledPermission = JSONRPCResponse(
+            id: secondPermissionRequest?.id,
+            result: .dictionary([
+                "outcome": .dictionary(["outcome": .string("cancelled")]),
+            ])
+        )
+        input.fileHandleForWriting.write(try JSONEncoder().encode(cancelledPermission) + Data([0x0A]))
+
+        let cancelledPrompt = try await readResponse(from: &outputIterator)
+        #expect(cancelledPrompt.id == .number(5))
+        #expect(cancelledPrompt.error == nil)
+        #expect(cancelledPrompt.result == .dictionary(["stopReason": .string("cancelled")]))
+
         try send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
             "sessionId": .string(sessionID),
         ])))
-        var closeCompleted = false
-        var cancelledPromptCompleted = false
-        while !closeCompleted || !cancelledPromptCompleted {
-            guard case let .response(response) = try await readEnvelope(from: &outputIterator) else { continue }
-            if response.id == .number(6) {
-                #expect(response.error == nil)
-                closeCompleted = true
-            } else if response.id == .number(5) {
-                #expect(response.error != nil)
-                cancelledPromptCompleted = true
-            }
-        }
+        #expect(try await readResponse(from: &outputIterator).error == nil)
 
         try send(JSONRPCRequest(id: .number(7), method: "session/resume", params: .dictionary([
             "sessionId": .string(sessionID),

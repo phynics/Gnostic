@@ -17,6 +17,7 @@ final class ACPDispatcher: Sendable {
 
     private struct ActivePrompt {
         let token: UUID
+        let close: () -> Void
         let cancel: () -> Void
     }
 
@@ -34,6 +35,7 @@ final class ACPDispatcher: Sendable {
     private var requestedPermissionIDs: Set<String> = []
     private var activePrompts: [String: ActivePrompt] = [:]
     private var activePermissionRequests: [String: ActivePermissionRequest] = [:]
+    private var cancelledSessions: Set<String> = []
 
     init(
         client: GnosticRemoteClient,
@@ -84,6 +86,8 @@ final class ACPDispatcher: Sendable {
             return try await listSessions(request.params)
         case "session/close":
             return try await closeSession(request.params)
+        case "session/cancel":
+            return try await cancelSession(request.params)
         case "session/prompt":
             return try await prompt(request.params)
         case "session/load", "session/delete", "session/fork":
@@ -153,13 +157,26 @@ final class ACPDispatcher: Sendable {
             throw BridgeMethodError.invalidParams("unknown ACP session")
         }
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
-        activePrompts.removeValue(forKey: input.sessionID)?.cancel()
+        activePrompts.removeValue(forKey: input.sessionID)?.close()
         _ = try await registry.close(id: input.sessionID)
+        return .dictionary([:])
+    }
+
+    private func cancelSession(_ params: AnyCodable?) async throws -> AnyCodable {
+        let input: ACPCloseParameters = try decode(params)
+        guard await registry.record(id: input.sessionID) != nil else {
+            throw BridgeMethodError.invalidParams("unknown ACP session")
+        }
+        guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
+        cancelledSessions.insert(input.sessionID)
+        activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
+        prompt.cancel()
         return .dictionary([:])
     }
 
     private func prompt(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPPromptParameters = try decode(params)
+        defer { cancelledSessions.remove(input.sessionID) }
         guard let text = input.text else {
             throw BridgeMethodError.invalidParams("session/prompt accepts non-empty text content only")
         }
@@ -191,11 +208,23 @@ final class ACPDispatcher: Sendable {
             }
             return .dictionary(["stopReason": .string("end_turn")])
         }
-        let (result, lastSequence) = try await streamPrompt(
-            message: text,
-            record: record,
-            turnID: turnID
-        )
+        let resultAndSequence: (AgentChatResult, Int)
+        do {
+            resultAndSequence = try await streamPrompt(
+                message: text,
+                record: record,
+                turnID: turnID
+            )
+        } catch {
+            if cancelledSessions.contains(input.sessionID) {
+                return .dictionary(["stopReason": .string("cancelled")])
+            }
+            throw error
+        }
+        if cancelledSessions.contains(input.sessionID) {
+            return .dictionary(["stopReason": .string("cancelled")])
+        }
+        let (result, lastSequence) = resultAndSequence
         let replay = try? await client.replay(
             timelineID: record.timelineID,
             clientTurnID: turnID,
@@ -256,14 +285,22 @@ final class ACPDispatcher: Sendable {
             }
         }
         let promptToken = UUID()
-        activePrompts[record.id] = ActivePrompt(token: promptToken) {
+        let stopTasks = {
             chat.cancel()
             collector.cancel()
             completionWatcher.cancel()
-            Task {
-                await completion.set(.failed("ACP session was closed"))
-            }
         }
+        activePrompts[record.id] = ActivePrompt(
+            token: promptToken,
+            close: {
+                stopTasks()
+                Task { await completion.set(.failed("ACP session was closed")) }
+            },
+            cancel: {
+                stopTasks()
+                Task { await completion.set(.cancelled) }
+            }
+        )
         defer {
             chat.cancel()
             collector.cancel()
@@ -297,6 +334,7 @@ final class ACPDispatcher: Sendable {
             switch await completion.value() {
             case .completed(let result): return (result, lastSequence)
             case .failed(let detail): throw BridgeMethodError.invalidState(detail)
+            case .cancelled: throw CancellationError()
             case nil: break
             }
         }
@@ -305,6 +343,7 @@ final class ACPDispatcher: Sendable {
     fileprivate enum PromptWaitOutcome: Sendable {
         case completed(AgentChatResult)
         case failed(String)
+        case cancelled
     }
 
     private func handlePermissionUpdate(
