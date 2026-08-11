@@ -234,6 +234,15 @@ public final class RemoteChatClient: Sendable {
         return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
     }
 
+    public func respondToPermission(_ permission: AgentPermissionResponse) async throws {
+        let payload = try JSONEncoder().encode(permission)
+        _ = try await manager.call(
+            operation: AgentPermissionProvider.responseOperation,
+            parameters: String(decoding: payload, as: UTF8.self),
+            timeout: timeout
+        )
+    }
+
     /// Reads the served timeline's attachment state.
     public func timelineStatus(timelineID: UUID) async throws -> TimelineStatus {
         let payload = try JSONEncoder().encode(TimelineStatusRequest(timelineID: timelineID))

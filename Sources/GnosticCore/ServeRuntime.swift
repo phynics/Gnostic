@@ -42,7 +42,9 @@ public final class ServeRuntime {
     private let projector: OrchestrationProjector
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
+    private let permissionCoordinator: AscendantPermissionCoordinator
     private let agentChat: AgentChatProvider
+    private let agentPermission: AgentPermissionProvider
     private let timelineStatus: TimelineStatusProvider
     private let timelineManagement: TimelineManagementProvider
     private let workspaceOps: WorkspaceOpsProvider
@@ -99,6 +101,9 @@ public final class ServeRuntime {
         catalog = NetworkCatalog()
         subscription = GnosticSubscription(catalog: catalog, communicationManager: communication)
 
+        turnUpdates = AscendantTurnUpdateStore()
+        permissionCoordinator = AscendantPermissionCoordinator(updates: turnUpdates)
+
         // PositronicKit runtime: owns the timeline + chat turns. Its workspace
         // factory is the bridge back to this serve's unary provider, so an
         // attached workspace remains executable inside an Ascendant turn.
@@ -106,12 +111,14 @@ public final class ServeRuntime {
         kit = PositronicKit(configuration: .init(
             provider: .init(languageModel: languageModel),
             persistence: .inMemory(),
-            runtime: .init(workspaceCreator: workspaceFactory)
+            runtime: .init(
+                workspaceCreator: workspaceFactory,
+                toolApprovalPolicy: AscendantToolApprovalPolicy(coordinator: permissionCoordinator)
+            )
         ))
         let timeline = try await kit.timelineManager.createTimeline()
         timelineID = timeline.id
         turnCoordinator = AscendantTurnCoordinator()
-        turnUpdates = AscendantTurnUpdateStore()
 
         projector = OrchestrationProjector(
             advertise: { [lifecycle] object in
@@ -172,6 +179,7 @@ public final class ServeRuntime {
                 throw error
             }
         }, replayStore: turnUpdates)
+        agentPermission = AgentPermissionProvider(coordinator: permissionCoordinator)
         timelineStatus = TimelineStatusProvider { [kit, logger] request in
             ServeTrace.operationStarted(logger: logger, operation: TimelineStatusProvider.statusOperation, timelineID: request.timelineID, workspaceID: nil)
             do {
@@ -228,6 +236,7 @@ public final class ServeRuntime {
         try await subscription.start()
         registrations.append(try await agentChat.register(on: communication))
         registrations.append(try await agentChat.registerReplay(on: communication))
+        registrations.append(try await agentPermission.register(on: communication))
         registrations.append(try await timelineStatus.register(on: communication))
         registrations += try await timelineManagement.register(on: communication)
         try await workspaceOps.register(on: communication)
@@ -274,6 +283,9 @@ public final class ServeRuntime {
         registrations.forEach { $0.cancel() }
         subscription.stop()
         container.shutdown()
+        Task { [permissionCoordinator] in
+            await permissionCoordinator.denyAll(reason: "connection_lost")
+        }
     }
 
     private func advertiseAll() async {
@@ -319,12 +331,18 @@ public final class ServeRuntime {
         // Include the tools enabled on the served timeline so turns can invoke
         // the attached workspace's tools (echo/list/read) rather than empty.
         let tools = await kit.timelineManager.enabledTools(for: timelineID)
-        let stream = try await kit.run(ChatRunRequest(
-            timelineID: timelineID,
-            message: message,
-            tools: tools,
-            maxTurns: 5
-        ))
+        let stream = try await AscendantTurnPermissionContext.$current.withValue(
+            clientTurnID.map {
+                AscendantTurnPermissionContext.Value(timelineID: timelineID, clientTurnID: $0)
+            }
+        ) {
+            try await kit.run(ChatRunRequest(
+                timelineID: timelineID,
+                message: message,
+                tools: tools,
+                maxTurns: 5
+            ))
+        }
         var finalText = ""
         var lastError: String?
         var toolCallIDs: [Int: String] = [:]

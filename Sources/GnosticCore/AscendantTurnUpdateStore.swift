@@ -16,6 +16,20 @@ public struct AscendantToolState: Codable, Sendable, Equatable {
     }
 }
 
+public struct AscendantPermissionState: Codable, Sendable, Equatable {
+    public let correlationID: String
+    public let toolCallID: String
+    public let title: String
+    public let status: String
+
+    public init(correlationID: String, toolCallID: String, title: String, status: String) {
+        self.correlationID = correlationID
+        self.toolCallID = toolCallID
+        self.title = title
+        self.status = status
+    }
+}
+
 /// A replayable, transport-neutral update emitted for an identified Ascendant
 /// turn. The ACP adapter maps these values to `session/update` notifications.
 public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
@@ -24,6 +38,8 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     public let text: String?
     public let toolState: AscendantToolState?
     public let toolStates: [AscendantToolState]
+    public let permissionState: AscendantPermissionState?
+    public let permissionStates: [AscendantPermissionState]
     public let terminal: Bool
 
     public init(
@@ -32,6 +48,8 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         text: String? = nil,
         toolState: AscendantToolState? = nil,
         toolStates: [AscendantToolState] = [],
+        permissionState: AscendantPermissionState? = nil,
+        permissionStates: [AscendantPermissionState] = [],
         terminal: Bool = false
     ) {
         self.sequence = sequence
@@ -39,11 +57,13 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         self.text = text
         self.toolState = toolState
         self.toolStates = toolStates
+        self.permissionState = permissionState
+        self.permissionStates = permissionStates
         self.terminal = terminal
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sequence, kind, text, toolState, toolStates, terminal
+        case sequence, kind, text, toolState, toolStates, permissionState, permissionStates, terminal
     }
 
     public init(from decoder: Decoder) throws {
@@ -53,6 +73,8 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         text = try container.decodeIfPresent(String.self, forKey: .text)
         toolState = try container.decodeIfPresent(AscendantToolState.self, forKey: .toolState)
         toolStates = try container.decodeIfPresent([AscendantToolState].self, forKey: .toolStates) ?? []
+        permissionState = try container.decodeIfPresent(AscendantPermissionState.self, forKey: .permissionState)
+        permissionStates = try container.decodeIfPresent([AscendantPermissionState].self, forKey: .permissionStates) ?? []
         terminal = try container.decode(Bool.self, forKey: .terminal)
     }
 }
@@ -127,6 +149,7 @@ public actor AscendantTurnUpdateStore {
         kind: String,
         text: String? = nil,
         toolState: AscendantToolState? = nil,
+        permissionState: AscendantPermissionState? = nil,
         terminal: Bool = false
     ) -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
@@ -137,6 +160,7 @@ public actor AscendantTurnUpdateStore {
                 kind: kind,
                 text: text,
                 toolState: toolState,
+                permissionState: permissionState,
                 terminal: terminal
             ),
             maxBytes: maxBytes / 2
@@ -149,6 +173,7 @@ public actor AscendantTurnUpdateStore {
         if entry.updates.count > maxEvents || entry.bytes > maxBytes {
             var snapshotText = ""
             var snapshotToolStates: [AscendantToolState] = []
+            var snapshotPermissionStates: [AscendantPermissionState] = []
             var snapshotSequence = 0
             // Reserve half of the byte budget for the accumulated snapshot.
             while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
@@ -165,14 +190,21 @@ public actor AscendantTurnUpdateStore {
                 for toolState in removed.toolStates {
                     Self.upsert(toolState, into: &snapshotToolStates)
                 }
+                if let permissionState = removed.permissionState {
+                    Self.upsert(permissionState, into: &snapshotPermissionStates)
+                }
+                for permissionState in removed.permissionStates {
+                    Self.upsert(permissionState, into: &snapshotPermissionStates)
+                }
                 entry.compacted = true
             }
-            if !snapshotText.isEmpty || !snapshotToolStates.isEmpty {
+            if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty {
                 let snapshot = Self.bounded(AscendantTurnUpdate(
                     sequence: snapshotSequence,
                     kind: "assistant_text_snapshot",
                     text: snapshotText.isEmpty ? nil : snapshotText,
-                    toolStates: snapshotToolStates
+                    toolStates: snapshotToolStates,
+                    permissionStates: snapshotPermissionStates
                 ), maxBytes: max(1, maxBytes - entry.bytes))
                 entry.updates.insert(snapshot, at: 0)
                 entry.bytes += Self.encodedSize(snapshot)
@@ -203,6 +235,7 @@ public actor AscendantTurnUpdateStore {
     private static func bounded(_ update: AscendantTurnUpdate, maxBytes: Int) -> AscendantTurnUpdate {
         var text = update.text
         var toolStates = update.toolStates
+        var permissionStates = update.permissionStates
         var candidate = update
         while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
             text = String(current.prefix(current.count / 2))
@@ -212,6 +245,8 @@ public actor AscendantTurnUpdateStore {
                 text: text,
                 toolState: update.toolState,
                 toolStates: toolStates,
+                permissionState: update.permissionState,
+                permissionStates: permissionStates,
                 terminal: update.terminal
             )
         }
@@ -223,6 +258,21 @@ public actor AscendantTurnUpdateStore {
                 text: text,
                 toolState: update.toolState,
                 toolStates: toolStates,
+                permissionState: update.permissionState,
+                permissionStates: permissionStates,
+                terminal: update.terminal
+            )
+        }
+        while encodedSize(candidate) > maxBytes, !permissionStates.isEmpty {
+            permissionStates.removeFirst()
+            candidate = AscendantTurnUpdate(
+                sequence: update.sequence,
+                kind: update.kind,
+                text: text,
+                toolState: update.toolState,
+                toolStates: toolStates,
+                permissionState: update.permissionState,
+                permissionStates: permissionStates,
                 terminal: update.terminal
             )
         }
@@ -231,6 +281,17 @@ public actor AscendantTurnUpdateStore {
 
     private static func upsert(_ state: AscendantToolState, into states: inout [AscendantToolState]) {
         if let index = states.firstIndex(where: { $0.toolCallID == state.toolCallID }) {
+            states[index] = state
+        } else {
+            states.append(state)
+        }
+    }
+
+    private static func upsert(
+        _ state: AscendantPermissionState,
+        into states: inout [AscendantPermissionState]
+    ) {
+        if let index = states.firstIndex(where: { $0.correlationID == state.correlationID }) {
             states[index] = state
         } else {
             states.append(state)
