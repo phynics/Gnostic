@@ -11,11 +11,11 @@ enum ACPClientRequestError: Error, Equatable, Sendable {
 /// Correlates agent-to-client ACP requests with responses arriving on the
 /// process shared LF-delimited JSON-RPC stream.
 actor ACPClientRequestBroker {
-    private let output: BridgeSession.Output
+    private let output: JSONRPCSession.Output
     private var nextID: Int64 = 1
     private var pending: [JSONRPCIdentifier: CheckedContinuation<AnyCodable, any Error>] = [:]
 
-    init(output: @escaping BridgeSession.Output) {
+    init(output: @escaping JSONRPCSession.Output) {
         self.output = output
     }
 

@@ -12,10 +12,10 @@ EXTRA_CONTAINER_MOUNTS ?=
 SWIFT_CACHE_ARGS := --cache-path /workspace/.swiftpm-cache
 SWIFT_LOCKED_ARGS := $(SWIFT_CACHE_ARGS) --disable-automatic-resolution
 
-.PHONY: help image require-package resolve worktree-bootstrap build test runner-smoke bridge-smoke acp-smoke container-smoke verify shell clean
+.PHONY: help image require-package resolve worktree-bootstrap build test runner-smoke acp-smoke container-smoke verify shell clean
 
 help:
-	@echo "Targets: image resolve worktree-bootstrap build test runner-smoke bridge-smoke acp-smoke container-smoke verify shell clean"
+	@echo "Targets: image resolve worktree-bootstrap build test runner-smoke acp-smoke container-smoke verify shell clean"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -40,9 +40,6 @@ test: require-package image
 
 runner-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; output=$$(swift run $(SWIFT_LOCKED_ARGS) gnostic-runner --scenario --host 127.0.0.1 --port 1883 --namespace gnostic-smoke 2>&1); status=$$?; printf "%s\\n" "$$output" && test $$status -eq 0 && ! (printf "%s\\n" "$$output" | grep -F "workspace registration failed") && printf "%s\\n" "$$output" | grep -F "generic network call passed: list_files" && printf "%s\\n" "$$output" | grep -F "generic network call passed: read_file" && printf "%s\\n" "$$output" | grep -F "generic network call passed: workspace_echo" && printf "%s\\n" "$$output" | grep -F "timeline readvertised with fixture workspace" && printf "%s\\n" "$$output" | grep -F "fixture scenario passed:"'
-
-bridge-smoke: require-package image
-	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; GNOSTIC_BRIDGE_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic swift test $(SWIFT_LOCKED_ARGS) --filter GnosticCLITests.BridgeSubprocessTests | tee .testing/bridge-smoke.log && grep -F "Test run with 1 test" .testing/bridge-smoke.log'
 
 acp-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; npm ci --prefix Tests/Fixtures/OfficialACPClient --cache .testing/npm-cache; npm ci --legacy-peer-deps --prefix Tests/Fixtures/PiACPClient --cache .testing/npm-cache; GNOSTIC_ACP_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic GNOSTIC_ACP_OFFICIAL_CLIENT=/workspace/Tests/Fixtures/OfficialACPClient/lifecycle.mjs GNOSTIC_PI_ACP_CLIENT_FIXTURE=/workspace/Tests/Fixtures/PiACPClient/lifecycle.mjs swift test $(SWIFT_LOCKED_ARGS) --filter GnosticCLITests.ACPSubprocessTests | tee .testing/acp-smoke.log && grep -F "Test run with 4 tests" .testing/acp-smoke.log'

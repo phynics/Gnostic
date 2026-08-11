@@ -4,7 +4,7 @@ import Foundation
 import PKShared
 
 /// Errors a method dispatcher can expose as a JSON-RPC protocol error.
-public enum BridgeMethodError: Error, Sendable {
+public enum JSONRPCMethodError: Error, Sendable {
     case invalidParams(String)
     case methodNotFound(String)
     case invalidState(String)
@@ -13,7 +13,7 @@ public enum BridgeMethodError: Error, Sendable {
 
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
 /// cancellation; the injected handler owns domain semantics.
-public actor BridgeSession {
+public actor JSONRPCSession {
     public enum State: Sendable, Equatable {
         case awaitingInitialize
         case initialized
@@ -112,10 +112,6 @@ public actor BridgeSession {
             await exit(request)
         case "$/cancel_request":
             cancel(request, respond: true)
-        case "$/cancelRequest":
-            // Retained only for the deprecated custom bridge protocol during
-            // its compatibility window. Stable ACP uses `$/cancel_request`.
-            cancel(request, respond: false)
         default:
             guard state == .initialized else {
                 respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "initialize must complete first"))
@@ -193,7 +189,7 @@ public actor BridgeSession {
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, result: result))
             } catch is CancellationError {
                 await self?.complete(id: id, response: nil)
-            } catch let error as BridgeMethodError {
+            } catch let error as JSONRPCMethodError {
                 guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, error: self?.errorObject(for: error) ?? JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
             } catch let error as RemoteChatClientError {
@@ -236,7 +232,7 @@ public actor BridgeSession {
         JSONRPCErrorObject(code: code.rawValue, message: message)
     }
 
-    private func errorObject(for error: BridgeMethodError) -> JSONRPCErrorObject {
+    private func errorObject(for error: JSONRPCMethodError) -> JSONRPCErrorObject {
         switch error {
         case let .invalidParams(message): errorObject(code: .invalidParams, message: message)
         case let .methodNotFound(message): errorObject(code: .methodNotFound, message: message)
