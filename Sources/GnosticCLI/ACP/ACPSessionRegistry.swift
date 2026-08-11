@@ -5,16 +5,16 @@ import Foundation
 /// Durable metadata for ACP sessions. Conversation content remains in the
 /// remote Timeline; this file only lets a restarted ACP child recover its
 /// identity and validate the original client workspace.
-public actor ACPSessionRegistry {
+actor ACPSessionRegistry {
     private let url: URL
     private var records: [String: ACPSessionRecord]
 
-    public init(url: URL? = nil) {
+    init(url: URL? = nil) {
         self.url = url ?? Self.defaultURL()
         records = Self.load(from: self.url)
     }
 
-    public func create(
+    func create(
         profileFingerprint: String,
         ascendantID: UUID,
         timelineID: UUID,
@@ -38,18 +38,18 @@ public actor ACPSessionRegistry {
         return record
     }
 
-    public func record(id: String) -> ACPSessionRecord? {
+    func record(id: String) -> ACPSessionRecord? {
         records[id]
     }
 
-    public func list(cwd: String?) -> [ACPSessionRecord] {
+    func list(cwd: String?) -> [ACPSessionRecord] {
         records.values
             .filter { cwd == nil || $0.cwd == cwd }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     @discardableResult
-    public func close(id: String) throws -> ACPSessionRecord? {
+    func close(id: String) throws -> ACPSessionRecord? {
         guard var record = records[id] else { return nil }
         record.closedAt = Date()
         record.updatedAt = Date()
@@ -58,7 +58,7 @@ public actor ACPSessionRegistry {
         return record
     }
 
-    public func touch(id: String, title: String? = nil) throws {
+    func touch(id: String, title: String? = nil) throws {
         guard var record = records[id] else { return }
         record.updatedAt = Date()
         if let title { record.title = title }

@@ -145,6 +145,50 @@ struct ServeOperationContractTests {
         #expect(code == 400)
     }
 
+    @Test("agent permission responses reject stale or mismatched correlations")
+    func permissionResponseContract() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates)
+        let provider = AgentPermissionProvider(coordinator: coordinator)
+        let timelineID = UUID()
+        let request = AscendantPermissionRequest(
+            correlationID: "permission-contract",
+            timelineID: timelineID,
+            clientTurnID: "turn-contract",
+            toolCallID: "call-contract",
+            title: "Write file"
+        )
+        let decision = Task { await coordinator.request(request) }
+        for _ in 0..<100 {
+            if await coordinator.pendingCount == 1 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        let accepted = try await provider.handle(parameters: payload(AgentPermissionResponse(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: request.clientTurnID,
+            approved: true
+        )))
+        guard case .success = accepted else {
+            Issue.record("expected permission response acceptance")
+            return
+        }
+        #expect(await decision.value)
+
+        let duplicate = try await provider.handle(parameters: payload(AgentPermissionResponse(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: request.clientTurnID,
+            approved: true
+        )))
+        guard case let .failure(code, _, _) = duplicate else {
+            Issue.record("expected stale permission response failure")
+            return
+        }
+        #expect(code == 409)
+    }
+
     @Test("timeline.status decodes the timeline id and returns the status")
     func timelineStatusContract() async throws {
         let timelineID = UUID()

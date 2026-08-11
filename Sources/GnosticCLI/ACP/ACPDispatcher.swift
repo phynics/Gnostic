@@ -19,18 +19,22 @@ final class ACPDispatcher: Sendable {
     private let registry: ACPSessionRegistry
     private let requestedAscendantID: UUID?
     private let publish: @Sendable (String, AnyCodable) -> Void
+    private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
     private var ascendant: Ascendant?
+    private var requestedPermissionIDs: Set<String> = []
 
     init(
         client: GnosticRemoteClient,
         registry: ACPSessionRegistry,
         requestedAscendantID: UUID?,
-        publish: @escaping @Sendable (String, AnyCodable) -> Void
+        publish: @escaping @Sendable (String, AnyCodable) -> Void,
+        requestPermission: @escaping @Sendable (AnyCodable) async throws -> AnyCodable
     ) {
         self.client = client
         self.registry = registry
         self.requestedAscendantID = requestedAscendantID
         self.publish = publish
+        self.requestPermission = requestPermission
     }
 
     func initialize() async throws -> AnyCodable {
@@ -167,9 +171,7 @@ final class ACPDispatcher: Sendable {
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
-                    sequence: update.sequence,
-                    kind: update.kind,
-                    text: update.text,
+                    update: update,
                     replayed: true
                 )
             }
@@ -188,15 +190,18 @@ final class ACPDispatcher: Sendable {
         )
         let updates = replay?.updates ?? []
         if updates.isEmpty, lastSequence == 0 {
-            publishUpdate(sessionID: record.id, turnID: turnID, sequence: 1, kind: "assistant_text", text: result.text, replayed: result.replayed)
+            publishUpdate(
+                sessionID: record.id,
+                turnID: turnID,
+                update: AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: result.text),
+                replayed: result.replayed
+            )
         } else {
             for update in updates {
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
-                    sequence: update.sequence,
-                    kind: update.kind,
-                    text: update.text,
+                    update: update,
                     replayed: result.replayed
                 )
             }
@@ -213,6 +218,14 @@ final class ACPDispatcher: Sendable {
         record: ACPSessionRecord,
         turnID: String
     ) async throws -> (AgentChatResult, Int) {
+        let channel = try await client.observeTurnUpdates()
+        let inbox = TurnUpdateInbox()
+        let collector = Task {
+            for await event in channel
+                where event.timelineID == record.timelineID && event.clientTurnID == turnID {
+                await inbox.append(event.update)
+            }
+        }
         let chat = Task {
             try await client.chat(
                 message: message,
@@ -220,87 +233,111 @@ final class ACPDispatcher: Sendable {
                 clientTurnID: turnID
             )
         }
-        defer { chat.cancel() }
+        let completion = PromptCompletion()
+        let completionWatcher = Task {
+            do {
+                await completion.set(.completed(try await chat.value))
+            } catch {
+                await completion.set(.failed(String(describing: error)))
+            }
+        }
+        defer {
+            chat.cancel()
+            collector.cancel()
+            completionWatcher.cancel()
+        }
         var lastSequence = 0
 
         while true {
             try Task.checkCancellation()
-            let outcome = await withTaskGroup(of: PromptWaitOutcome.self) { group in
-                group.addTask {
-                    do {
-                        return .completed(try await chat.value)
-                    } catch {
-                        return .failed(String(describing: error))
-                    }
-                }
-                group.addTask {
-                    try? await Task.sleep(for: .milliseconds(40))
-                    return .poll
-                }
-                let first = await group.next() ?? .poll
-                group.cancelAll()
-                return first
+            try await Task.sleep(for: .milliseconds(40))
+
+            for update in await inbox.drain(afterSequence: lastSequence) {
+                publishUpdate(
+                    sessionID: record.id,
+                    turnID: turnID,
+                    update: update,
+                    replayed: false
+                )
+                try await handlePermissionUpdate(
+                    update,
+                    sessionID: record.id,
+                    timelineID: record.timelineID,
+                    turnID: turnID
+                )
+                lastSequence = max(lastSequence, update.sequence)
             }
 
-            if let replay = try? await client.replay(
-                timelineID: record.timelineID,
-                clientTurnID: turnID,
-                message: message,
-                afterSequence: lastSequence
-            ) {
-                for update in replay.updates {
-                    publishUpdate(
-                        sessionID: record.id,
-                        turnID: turnID,
-                        sequence: update.sequence,
-                        kind: update.kind,
-                        text: update.text,
-                        replayed: false
-                    )
-                    lastSequence = max(lastSequence, update.sequence)
-                }
-            }
-
-            switch outcome {
+            switch await completion.value() {
             case .completed(let result): return (result, lastSequence)
             case .failed(let detail): throw BridgeMethodError.invalidState(detail)
-            case .poll: break
+            case nil: break
             }
         }
     }
 
-    private enum PromptWaitOutcome: Sendable {
+    fileprivate enum PromptWaitOutcome: Sendable {
         case completed(AgentChatResult)
         case failed(String)
-        case poll
+    }
+
+    private func handlePermissionUpdate(
+        _ update: AscendantTurnUpdate,
+        sessionID: String,
+        timelineID: UUID,
+        turnID: String
+    ) async throws {
+        let states = [update.permissionState].compactMap { $0 } + update.permissionStates
+        for state in states where state.status == "pending" {
+            guard requestedPermissionIDs.insert(state.correlationID).inserted else { continue }
+            defer { requestedPermissionIDs.remove(state.correlationID) }
+            do {
+                let response = try await requestPermission(
+                    ACPPermissionBridge.parameters(sessionID: sessionID, state: state)
+                )
+                guard let approved = ACPPermissionBridge.approved(from: response) else {
+                    throw BridgeMethodError.invalidState("ACP client returned a malformed permission outcome")
+                }
+                try await client.respondToPermission(AgentPermissionResponse(
+                    correlationID: state.correlationID,
+                    timelineID: timelineID,
+                    clientTurnID: turnID,
+                    approved: approved
+                ))
+            } catch {
+                try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
+                throw error
+            }
+        }
+    }
+
+    private func denyPermission(
+        _ state: AscendantPermissionState,
+        timelineID: UUID,
+        turnID: String
+    ) async throws {
+        try await client.respondToPermission(AgentPermissionResponse(
+            correlationID: state.correlationID,
+            timelineID: timelineID,
+            clientTurnID: turnID,
+            approved: false
+        ))
     }
 
     private func publishUpdate(
         sessionID: String,
         turnID: String,
-        sequence: Int,
-        kind: String,
-        text: String?,
+        update: AscendantTurnUpdate,
         replayed: Bool
     ) {
-        guard kind == "assistant_text" || kind == "assistant_text_snapshot" else { return }
-        let updateName = "agent_message_chunk"
-        var update: [String: AnyCodable] = [
-            "sessionUpdate": .string(updateName),
-            "_meta": .dictionary([
-                "clientTurnID": .string(turnID),
-                "sequence": .number(Double(sequence)),
-                "kind": .string(kind),
-                "replayed": .boolean(replayed),
-            ]),
-        ]
-        if let text {
-            update["content"] = .dictionary(["type": .string("text"), "text": .string(text)])
+        for notification in ACPUpdateRenderer.updates(
+            sessionID: sessionID,
+            turnID: turnID,
+            update: update,
+            replayed: replayed
+        ) {
+            publish(notification.method, notification.params)
         }
-        publish("session/update", .dictionary([
-            "sessionId": .string(sessionID),
-            "update": .dictionary(update),
-        ]))
     }
 
     private func resolveAscendant() async throws -> Ascendant {
@@ -374,4 +411,28 @@ final class ACPDispatcher: Sendable {
     private static func iso8601(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }
+}
+
+private actor TurnUpdateInbox {
+    private var updates: [AscendantTurnUpdate] = []
+
+    func append(_ update: AscendantTurnUpdate) {
+        updates.append(update)
+    }
+
+    func drain(afterSequence: Int) -> [AscendantTurnUpdate] {
+        let ready = updates.filter { $0.sequence > afterSequence }.sorted { $0.sequence < $1.sequence }
+        updates.removeAll { $0.sequence <= (ready.last?.sequence ?? afterSequence) }
+        return ready
+    }
+}
+
+private actor PromptCompletion {
+    private var outcome: ACPDispatcher.PromptWaitOutcome?
+
+    func set(_ outcome: ACPDispatcher.PromptWaitOutcome) {
+        self.outcome = outcome
+    }
+
+    func value() -> ACPDispatcher.PromptWaitOutcome? { outcome }
 }
