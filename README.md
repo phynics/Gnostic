@@ -36,7 +36,8 @@ gnostic acp profiles --json
 
 The old `gnostic bridge` command remains available for one compatibility
 release and prints a deprecation warning. It continues to serve the custom
-`gnostic.*` protocol until the migration release removes it.
+`gnostic.*` protocol until a subsequent release removes it after the announced
+compatibility window.
 
 ## Legacy JSON-RPC bridge
 
