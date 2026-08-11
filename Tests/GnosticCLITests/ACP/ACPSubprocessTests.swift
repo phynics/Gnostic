@@ -25,7 +25,7 @@ struct ACPSubprocessTests {
             port: 1883,
             namespace: namespace,
             approveMode: .auto,
-            languageModel: StubLanguageModel()
+            languageModel: RepeatingToolLanguageModel()
         )
         defer { serve.shutdown() }
         try await serve.start()
@@ -156,9 +156,118 @@ struct ACPSubprocessTests {
         }
         #expect(permissionRequested)
 
-        try send(JSONRPCRequest(id: .number(5), method: "shutdown"))
+        try send(JSONRPCRequest(id: .number(5), method: "session/prompt", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "prompt": .array([.dictionary(["type": .string("text"), "text": .string("close this turn")])]),
+            "mcpServers": .array([]),
+            "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string("acp-smoke:turn-2")]),
+        ])))
+
+        var secondPermissionRequest: JSONRPCRequest?
+        while secondPermissionRequest == nil {
+            if case let .request(request) = try await readEnvelope(from: &outputIterator),
+               request.method == "session/request_permission" {
+                secondPermissionRequest = request
+            }
+        }
+
+        try send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
+            "sessionId": .string(sessionID),
+        ])))
+        var closeCompleted = false
+        var cancelledPromptCompleted = false
+        while !closeCompleted || !cancelledPromptCompleted {
+            guard case let .response(response) = try await readEnvelope(from: &outputIterator) else { continue }
+            if response.id == .number(6) {
+                #expect(response.error == nil)
+                closeCompleted = true
+            } else if response.id == .number(5) {
+                #expect(response.error != nil)
+                cancelledPromptCompleted = true
+            }
+        }
+
+        try send(JSONRPCRequest(id: .number(7), method: "session/resume", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "cwd": .string("/tmp/acp-smoke"),
+            "mcpServers": .array([]),
+        ])))
+        #expect(try await readResponse(from: &outputIterator).error == nil)
+
+        try send(JSONRPCRequest(id: .number(8), method: "shutdown"))
         #expect(try await readResponse(from: &outputIterator).error == nil)
     }
+}
+
+private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendable {
+    var isConfigured: Bool { get async { true } }
+    var configuration: LLMConfiguration {
+        get async { .init(activeProvider: .openAI, providers: [:]) }
+    }
+
+    func chatStream(
+        messages: [LLMMessage],
+        tools _: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        if messages.last?.role == .tool {
+            let chunk = LLMStreamChunk(
+                id: "fixture-final",
+                model: "fixture",
+                choices: [LLMStreamChoice(
+                    index: 0,
+                    delta: LLMStreamDelta(content: "Echo received: network"),
+                    finishReason: "stop"
+                )]
+            )
+            return AsyncThrowingStream { $0.yield(chunk); $0.finish() }
+        }
+        let chunk = LLMStreamChunk(
+            id: "fixture-tool",
+            model: "fixture",
+            choices: [LLMStreamChoice(
+                index: 0,
+                delta: LLMStreamDelta(
+                    role: .assistant,
+                    toolCalls: [LLMToolCallDelta(
+                        index: 0,
+                        id: "call_1",
+                        function: LLMToolCallDeltaFunction(
+                            name: "workspace_echo",
+                            arguments: #"{"value":"network"}"#
+                        )
+                    )]
+                ),
+                finishReason: "tool_calls"
+            )]
+        )
+        return AsyncThrowingStream { $0.yield(chunk); $0.finish() }
+    }
+
+    func loadConfiguration() async {}
+    func updateConfiguration(_: LLMConfiguration) async throws {}
+    func clearConfiguration() async {}
+    func restoreFromBackup() async throws {}
+    func exportConfiguration() async throws -> Data { Data() }
+    func importConfiguration(from _: Data) async throws {}
+
+    func sendMessage(_ content: String) async throws -> String { content }
+    func sendMessage(
+        _: String,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        useUtilityModel _: Bool
+    ) async throws -> String { "ok" }
+    func generateTags(for _: String) async throws -> [String] { [] }
+    func generateTitle(for _: [Message]) async throws -> String { "fixture" }
+    func evaluateRecallPerformance(
+        transcript _: String,
+        recalledMemories _: [Memory]
+    ) async throws -> [String: Double] { [:] }
+    func fetchAvailableModels() async throws -> [String]? { nil }
 }
 
 private enum ACPSubprocessError: Error { case timeout }
