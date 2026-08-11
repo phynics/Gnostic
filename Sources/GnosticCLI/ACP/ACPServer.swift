@@ -7,11 +7,14 @@ import Foundation
 struct ACPServer: Sendable {
     private let session: BridgeSession
     private let client: GnosticRemoteClient
+    private let requestBroker: ACPClientRequestBroker
 
     init(client: GnosticRemoteClient, ascendantID: UUID?, registry: ACPSessionRegistry, output: @escaping BridgeSession.Output = { data in
         FileHandle.standardOutput.write(data)
     }) {
         self.client = client
+        let requestBroker = ACPClientRequestBroker(output: output)
+        self.requestBroker = requestBroker
         let dispatcher = ACPDispatcher(
             client: client,
             registry: registry,
@@ -26,7 +29,8 @@ struct ACPServer: Sendable {
             handler: { request in try await dispatcher.handle(request) },
             output: output,
             initialize: { try await dispatcher.initialize() },
-            notification: output
+            notification: output,
+            response: { response in await requestBroker.receive(response) }
         )
     }
 
@@ -37,6 +41,7 @@ struct ACPServer: Sendable {
             switch await readInputOrLoss() {
             case let .data(data):
                 guard !data.isEmpty else {
+                    await requestBroker.finish()
                     await session.finish()
                     return
                 }
@@ -46,9 +51,11 @@ struct ACPServer: Sendable {
                     return
                 }
             case .brokerLost:
+                await requestBroker.finish()
                 await session.finish()
                 throw BridgeServerError.brokerLost
             case .eof:
+                await requestBroker.finish()
                 await session.finish()
                 return
             }

@@ -79,6 +79,40 @@ struct ACPProtocolTests {
         #expect(request.method == "session/update")
     }
 
+    @Test("ACP client requests correlate responses on the shared stdio stream")
+    func clientRequestRoundTrip() async throws {
+        let output = OutputCapture()
+        let broker = ACPClientRequestBroker(output: output.append)
+        let session = BridgeSession(
+            handler: { _ in .dictionary([:]) },
+            output: output.append,
+            initialize: { .dictionary([:]) },
+            response: { response in await broker.receive(response) }
+        )
+        let pending = Task {
+            try await broker.request(
+                method: "session/request_permission",
+                params: .dictionary(["sessionId": .string("session-1")])
+            )
+        }
+
+        var request: JSONRPCRequest?
+        for _ in 0..<100 where request == nil {
+            request = try? output.requests().first
+            if request == nil { await Task.yield() }
+        }
+        let emitted = try #require(request)
+        #expect(emitted.method == "session/request_permission")
+        #expect(emitted.id != nil)
+
+        let response = JSONRPCResponse(
+            id: emitted.id,
+            result: .dictionary(["outcome": .string("selected")])
+        )
+        await session.receive(try JSONEncoder().encode(response) + Data([0x0A]))
+        #expect(try await pending.value == .dictionary(["outcome": .string("selected")]))
+    }
+
     @Test("structured Ascendant tool states render as stable ACP tool updates")
     func structuredToolUpdate() throws {
         let update = AscendantTurnUpdate(

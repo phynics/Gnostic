@@ -22,6 +22,7 @@ public actor BridgeSession {
 
     public typealias RequestHandler = @Sendable (JSONRPCRequest) async throws -> AnyCodable
     public typealias InitializeHandler = @Sendable () async throws -> AnyCodable
+    public typealias ResponseHandler = @Sendable (JSONRPCResponse) async -> Void
     public typealias Output = @Sendable (Data) -> Void
 
     private var framer = LFMessageFramer()
@@ -29,6 +30,7 @@ public actor BridgeSession {
     private var requests: [JSONRPCIdentifier: Task<Void, Never>] = [:]
     private let handler: RequestHandler
     private let initializeHandler: InitializeHandler
+    private let responseHandler: ResponseHandler?
     private let output: Output
 
     public init(handler: @escaping RequestHandler, output: @escaping Output) {
@@ -44,12 +46,14 @@ public actor BridgeSession {
         handler: @escaping RequestHandler,
         output: @escaping Output,
         initialize: @escaping InitializeHandler,
-        notification: @escaping Output = { _ in }
+        notification: @escaping Output = { _ in },
+        response: ResponseHandler? = nil
     ) {
         self.handler = handler
         initializeHandler = initialize
         self.output = output
         self.notification = notification
+        responseHandler = response
     }
 
     private let notification: Output
@@ -84,6 +88,10 @@ public actor BridgeSession {
     }
 
     private func receiveFrame(_ frame: Data) async {
+        if let response = try? JSONDecoder().decode(JSONRPCResponse.self, from: frame) {
+            await responseHandler?(response)
+            return
+        }
         let request: JSONRPCRequest
         do {
             request = try JSONDecoder().decode(JSONRPCRequest.self, from: frame)
