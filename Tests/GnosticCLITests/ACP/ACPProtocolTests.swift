@@ -113,6 +113,26 @@ struct ACPProtocolTests {
         #expect(try await pending.value == .dictionary(["outcome": .string("selected")]))
     }
 
+    @Test("cancelling an ACP prompt releases its pending client permission request")
+    func clientRequestCancellation() async throws {
+        let output = OutputCapture()
+        let broker = ACPClientRequestBroker(output: output.append)
+        let pending = Task {
+            try await broker.request(
+                method: "session/request_permission",
+                params: .dictionary(["sessionId": .string("session-1")])
+            )
+        }
+
+        for _ in 0..<100 where (try? output.requests().isEmpty) != false {
+            await Task.yield()
+        }
+        #expect(try output.requests().count == 1)
+        pending.cancel()
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        #expect(await broker.pendingCount == 0)
+    }
+
     @Test("structured Ascendant tool states render as stable ACP tool updates")
     func structuredToolUpdate() throws {
         let update = AscendantTurnUpdate(
@@ -139,6 +159,49 @@ struct ACPProtocolTests {
         #expect(payload["toolCallId"] == .string("call-7"))
         #expect(payload["title"] == .string("Read file"))
         #expect(payload["status"] == .string("in_progress"))
+    }
+
+    @Test("pending Ascendant permission maps to stable ACP request and selected outcome")
+    func permissionRequestMapping() throws {
+        let state = AscendantPermissionState(
+            correlationID: "permission-1",
+            toolCallID: "call-1",
+            title: "Read file",
+            status: "pending"
+        )
+
+        let params = try #require(ACPPermissionBridge.parameters(
+            sessionID: "session-1",
+            state: state
+        ).dictionaryValue)
+        #expect(params["sessionId"] == .string("session-1"))
+        #expect(params["toolCall"] == .dictionary([
+            "toolCallId": .string("call-1"),
+            "title": .string("Read file"),
+            "status": .string("pending"),
+        ]))
+        #expect(params["options"] == .array([
+            .dictionary([
+                "optionId": .string("allow_once"),
+                "name": .string("Allow once"),
+                "kind": .string("allow_once"),
+            ]),
+            .dictionary([
+                "optionId": .string("reject_once"),
+                "name": .string("Reject once"),
+                "kind": .string("reject_once"),
+            ]),
+        ]))
+
+        #expect(ACPPermissionBridge.approved(from: .dictionary([
+            "outcome": .dictionary([
+                "outcome": .string("selected"),
+                "optionId": .string("allow_once"),
+            ]),
+        ])) == true)
+        #expect(ACPPermissionBridge.approved(from: .dictionary([
+            "outcome": .dictionary(["outcome": .string("cancelled")]),
+        ])) == false)
     }
 }
 

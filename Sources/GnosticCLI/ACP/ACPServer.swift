@@ -23,6 +23,9 @@ struct ACPServer: Sendable {
                 let request = JSONRPCRequest(id: nil, method: method, params: params)
                 guard let data = try? JSONEncoder().encode(request) else { return }
                 output(data + Data([0x0A]))
+            },
+            requestPermission: { params in
+                try await requestBroker.request(method: "session/request_permission", params: params)
             }
         )
         session = BridgeSession(

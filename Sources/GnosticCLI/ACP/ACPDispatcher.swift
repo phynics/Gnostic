@@ -19,18 +19,22 @@ final class ACPDispatcher: Sendable {
     private let registry: ACPSessionRegistry
     private let requestedAscendantID: UUID?
     private let publish: @Sendable (String, AnyCodable) -> Void
+    private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
     private var ascendant: Ascendant?
+    private var requestedPermissionIDs: Set<String> = []
 
     init(
         client: GnosticRemoteClient,
         registry: ACPSessionRegistry,
         requestedAscendantID: UUID?,
-        publish: @escaping @Sendable (String, AnyCodable) -> Void
+        publish: @escaping @Sendable (String, AnyCodable) -> Void,
+        requestPermission: @escaping @Sendable (AnyCodable) async throws -> AnyCodable
     ) {
         self.client = client
         self.registry = registry
         self.requestedAscendantID = requestedAscendantID
         self.publish = publish
+        self.requestPermission = requestPermission
     }
 
     func initialize() async throws -> AnyCodable {
@@ -256,6 +260,12 @@ final class ACPDispatcher: Sendable {
                         update: update,
                         replayed: false
                     )
+                    try await handlePermissionUpdate(
+                        update,
+                        sessionID: record.id,
+                        timelineID: record.timelineID,
+                        turnID: turnID
+                    )
                     lastSequence = max(lastSequence, update.sequence)
                 }
             }
@@ -272,6 +282,49 @@ final class ACPDispatcher: Sendable {
         case completed(AgentChatResult)
         case failed(String)
         case poll
+    }
+
+    private func handlePermissionUpdate(
+        _ update: AscendantTurnUpdate,
+        sessionID: String,
+        timelineID: UUID,
+        turnID: String
+    ) async throws {
+        let states = [update.permissionState].compactMap { $0 } + update.permissionStates
+        for state in states where state.status == "pending" {
+            guard requestedPermissionIDs.insert(state.correlationID).inserted else { continue }
+            defer { requestedPermissionIDs.remove(state.correlationID) }
+            do {
+                let response = try await requestPermission(
+                    ACPPermissionBridge.parameters(sessionID: sessionID, state: state)
+                )
+                guard let approved = ACPPermissionBridge.approved(from: response) else {
+                    throw BridgeMethodError.invalidState("ACP client returned a malformed permission outcome")
+                }
+                try await client.respondToPermission(AgentPermissionResponse(
+                    correlationID: state.correlationID,
+                    timelineID: timelineID,
+                    clientTurnID: turnID,
+                    approved: approved
+                ))
+            } catch {
+                try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
+                throw error
+            }
+        }
+    }
+
+    private func denyPermission(
+        _ state: AscendantPermissionState,
+        timelineID: UUID,
+        turnID: String
+    ) async throws {
+        try await client.respondToPermission(AgentPermissionResponse(
+            correlationID: state.correlationID,
+            timelineID: timelineID,
+            clientTurnID: turnID,
+            approved: false
+        ))
     }
 
     private func publishUpdate(

@@ -19,15 +19,21 @@ actor ACPClientRequestBroker {
         self.output = output
     }
 
+    var pendingCount: Int { pending.count }
+
     func request(method: String, params: AnyCodable) async throws -> AnyCodable {
         let id = JSONRPCIdentifier.number(nextID)
         nextID += 1
         let request = JSONRPCRequest(id: id, method: method, params: params)
         let data = try JSONEncoder().encode(request)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            pending[id] = continuation
-            output(data + Data([0x0A]))
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                pending[id] = continuation
+                output(data + Data([0x0A]))
+            }
+        } onCancel: {
+            Task { await self.cancel(id: id) }
         }
     }
 
@@ -46,5 +52,9 @@ actor ACPClientRequestBroker {
         for continuation in continuations {
             continuation.resume(throwing: ACPClientRequestError.connectionClosed)
         }
+    }
+
+    private func cancel(id: JSONRPCIdentifier) {
+        pending.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
 }
