@@ -214,6 +214,26 @@ public final class RemoteChatClient: Sendable {
         return try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
     }
 
+    /// Reads bounded identified-turn updates retained by the serve runtime.
+    /// ACP adapters use this operation to replay updates after a stdio or
+    /// broker reconnect without re-running the Timeline turn.
+    public func replay(
+        timelineID: UUID,
+        clientTurnID: String,
+        message: String? = nil,
+        afterSequence: Int = 0
+    ) async throws -> AscendantTurnReplay {
+        let payload = try JSONEncoder().encode(
+            AgentChatReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
+        )
+        let response = try await manager.call(
+            operation: AgentChatProvider.replayOperation,
+            parameters: String(decoding: payload, as: UTF8.self),
+            timeout: timeout
+        )
+        return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
+    }
+
     /// Reads the served timeline's attachment state.
     public func timelineStatus(timelineID: UUID) async throws -> TimelineStatus {
         let payload = try JSONEncoder().encode(TimelineStatusRequest(timelineID: timelineID))

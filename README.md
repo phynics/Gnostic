@@ -20,7 +20,25 @@ calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` Call/Return
 operation; direct file APIs are intentionally unsupported. Deadvertised,
 malformed, or ambiguous advertisements cannot be attached or executed.
 
-## JSON-RPC bridge
+## ACP frontend
+
+`gnostic acp` is the supported stable ACP v1 stdio agent. It projects one
+Gnostic Ascendant and maps ACP sessions to authoritative PositronicKit
+Timelines. The process owns one Axoloty/MQTT connection and accepts text
+prompts, Timeline resume/list/close, cancellation, and replay metadata.
+
+Discover profiles for the generic [`pi-acp-client`](https://github.com/phynics/pi-acp-client)
+extension with:
+
+```sh
+gnostic acp profiles --json
+```
+
+The old `gnostic bridge` command remains available for one compatibility
+release and prints a deprecation warning. It continues to serve the custom
+`gnostic.*` protocol until the migration release removes it.
+
+## Legacy JSON-RPC bridge
 
 `gnostic bridge` is a long-lived JSON-RPC 2.0 stdio frontend for pi and other
 process hosts. It reads one LF-delimited request per line from stdin and writes

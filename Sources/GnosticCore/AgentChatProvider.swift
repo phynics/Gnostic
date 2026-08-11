@@ -82,13 +82,16 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
 /// mirroring `WorkspaceProvider`'s contract.
 public struct AgentChatProvider: Sendable {
     public static let chatOperation = "me.atkn.gnostic.agent.chat"
+    public static let replayOperation = "me.atkn.gnostic.agent.chat.replay"
 
     public typealias TurnExecutor = @Sendable (AgentChatRequest) async throws -> AgentChatResult
 
     private let executor: TurnExecutor
+    private let replayStore: AscendantTurnUpdateStore?
 
-    public init(execute: @escaping TurnExecutor) {
+    public init(execute: @escaping TurnExecutor, replayStore: AscendantTurnUpdateStore? = nil) {
         self.executor = execute
+        self.replayStore = replayStore
     }
 
     public func handle(parameters: String?) async throws -> CallHandlerResult {
@@ -101,14 +104,75 @@ public struct AgentChatProvider: Sendable {
             return .failure(code: 400, message: "clientTurnID must not be empty")
         }
         do {
+            if let replayStore, let clientTurnID = request.clientTurnID {
+                await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID, message: request.message)
+            }
             let result = try await executor(request)
+            if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
+                let replay = await replayStore.replay(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID
+                )
+                let streamed = replay.updates.contains {
+                    $0.kind == "assistant_text" || $0.kind == "assistant_text_snapshot"
+                }
+                if !streamed {
+                    _ = await replayStore.append(
+                        timelineID: request.timelineID,
+                        clientTurnID: clientTurnID,
+                        kind: "assistant_text",
+                        text: result.text
+                    )
+                }
+                _ = await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: "completion",
+                    text: result.text,
+                    terminal: true
+                )
+            }
             let encoded = try JSONEncoder().encode(result)
             return .success(result: String(decoding: encoded, as: UTF8.self))
         } catch let error as AscendantTurnError {
+            if let replayStore, let clientTurnID = request.clientTurnID,
+               !isAdmissionOnlyError(error) {
+                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
+            }
             return .failure(code: error.statusCode, message: error.localizedDescription)
         } catch {
+            if let replayStore, let clientTurnID = request.clientTurnID {
+                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
+            }
             return .failure(code: 500, message: String(describing: error))
         }
+    }
+
+    private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
+        switch error {
+        case .conflict, .replayUnavailable: return true
+        case .failed, .cancelled: return false
+        }
+    }
+
+    public func handleReplay(parameters: String?) async throws -> CallHandlerResult {
+        guard let replayStore,
+              let parameters,
+              let request = try? JSONDecoder().decode(AgentChatReplayRequest.self, from: Data(parameters.utf8)),
+              !request.clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(code: 400, message: "Invalid agent.chat.replay payload")
+        }
+        let replay = await replayStore.replay(
+            timelineID: request.timelineID,
+            clientTurnID: request.clientTurnID,
+            message: request.message,
+            afterSequence: request.afterSequence
+        )
+        if replay.conflict {
+            return .failure(code: 409, message: "clientTurnID was already used with different content")
+        }
+        let encoded = try JSONEncoder().encode(replay)
+        return .success(result: String(decoding: encoded, as: UTF8.self))
     }
 
     @MainActor
@@ -116,5 +180,26 @@ public struct AgentChatProvider: Sendable {
         try await communication.registerCallHandler(operation: Self.chatOperation) { [self] request in
             try await handle(parameters: request.parameters)
         }
+    }
+
+    @MainActor
+    public func registerReplay(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
+        try await communication.registerCallHandler(operation: Self.replayOperation) { [self] request in
+            try await handleReplay(parameters: request.parameters)
+        }
+    }
+}
+
+public struct AgentChatReplayRequest: Codable, Sendable {
+    public let timelineID: UUID
+    public let clientTurnID: String
+    public let message: String?
+    public let afterSequence: Int
+
+    public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) {
+        self.timelineID = timelineID
+        self.clientTurnID = clientTurnID
+        self.message = message
+        self.afterSequence = afterSequence
     }
 }

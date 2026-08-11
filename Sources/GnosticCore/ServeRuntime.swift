@@ -41,6 +41,7 @@ public final class ServeRuntime {
     private let attachmentService: DiscoveredWorkspaceAttachmentService
     private let projector: OrchestrationProjector
     private let turnCoordinator: AscendantTurnCoordinator
+    private let turnUpdates: AscendantTurnUpdateStore
     private let agentChat: AgentChatProvider
     private let timelineStatus: TimelineStatusProvider
     private let timelineManagement: TimelineManagementProvider
@@ -110,6 +111,7 @@ public final class ServeRuntime {
         let timeline = try await kit.timelineManager.createTimeline()
         timelineID = timeline.id
         turnCoordinator = AscendantTurnCoordinator()
+        turnUpdates = AscendantTurnUpdateStore()
 
         projector = OrchestrationProjector(
             advertise: { [lifecycle] object in
@@ -126,7 +128,7 @@ public final class ServeRuntime {
 
         // Wire the unary operations, each emitting started/succeeded/denied/failed
         // trace records for operator traceability.
-        agentChat = AgentChatProvider { [kit, logger, turnCoordinator] request in
+        agentChat = AgentChatProvider(execute: { [kit, logger, turnCoordinator, turnUpdates] request in
             ServeTrace.operationStarted(
                 logger: logger,
                 operation: AgentChatProvider.chatOperation,
@@ -136,7 +138,13 @@ public final class ServeRuntime {
             )
             do {
                 let result = try await turnCoordinator.execute(request) {
-                    try await ServeRuntime.runTurn(kit: kit, timelineID: request.timelineID, message: request.message)
+                    try await ServeRuntime.runTurn(
+                        kit: kit,
+                        timelineID: request.timelineID,
+                        message: request.message,
+                        clientTurnID: request.clientTurnID,
+                        updates: turnUpdates
+                    )
                 }
                 ServeTrace.operationSucceeded(
                     logger: logger,
@@ -163,7 +171,7 @@ public final class ServeRuntime {
                 )
                 throw error
             }
-        }
+        }, replayStore: turnUpdates)
         timelineStatus = TimelineStatusProvider { [kit, logger] request in
             ServeTrace.operationStarted(logger: logger, operation: TimelineStatusProvider.statusOperation, timelineID: request.timelineID, workspaceID: nil)
             do {
@@ -219,6 +227,7 @@ public final class ServeRuntime {
         try await container.startAndWaitUntilReady()
         try await subscription.start()
         registrations.append(try await agentChat.register(on: communication))
+        registrations.append(try await agentChat.registerReplay(on: communication))
         registrations.append(try await timelineStatus.register(on: communication))
         registrations += try await timelineManagement.register(on: communication)
         try await workspaceOps.register(on: communication)
@@ -300,7 +309,13 @@ public final class ServeRuntime {
 
     // MARK: - Turn logic (mirrors ChatSession; owned by serve)
 
-    private static func runTurn(kit: PositronicKit, timelineID: UUID, message: String) async throws -> String {
+    private static func runTurn(
+        kit: PositronicKit,
+        timelineID: UUID,
+        message: String,
+        clientTurnID: String?,
+        updates: AscendantTurnUpdateStore
+    ) async throws -> String {
         // Include the tools enabled on the served timeline so turns can invoke
         // the attached workspace's tools (echo/list/read) rather than empty.
         let tools = await kit.timelineManager.enabledTools(for: timelineID)
@@ -314,18 +329,63 @@ public final class ServeRuntime {
         var lastError: String?
         for try await event in stream {
             switch event {
+            case .delta(.generation(let text)):
+                await appendTurnUpdate(
+                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
+                    kind: "assistant_text", text: text
+                )
+            case .delta(.toolCall(let delta)):
+                await appendTurnUpdate(
+                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
+                    kind: "tool_state", text: String(describing: delta)
+                )
+            case .delta(.toolExecution(let toolCallID, let status)),
+                 .completion(.toolExecution(let toolCallID, let status)):
+                await appendTurnUpdate(
+                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
+                    kind: "tool_state", text: "\(toolCallID): \(String(describing: status))"
+                )
             case .completion(.generationCompleted(let message, _)):
                 finalText = message.content
             case .completion(.maxTurnsReached):
                 lastError = "The model exhausted its turn budget without a final answer."
             case .error(.error(let message, _)):
                 lastError = message
+            case .error(.toolCallError(let toolCallID, let name, let error)):
+                await appendTurnUpdate(
+                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
+                    kind: "tool_state", text: "\(toolCallID) \(name): \(error)"
+                )
+            case .error(.generationCancelled):
+                await appendTurnUpdate(
+                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
+                    kind: "cancellation", terminal: true
+                )
+                throw CancellationError()
             default:
                 break
             }
         }
         if let lastError { throw ServeRuntimeError.containerFailed(lastError) }
         return finalText.isEmpty ? "(empty reply)" : finalText
+    }
+
+    private static func appendTurnUpdate(
+        _ updates: AscendantTurnUpdateStore,
+        timelineID: UUID,
+        clientTurnID: String?,
+        kind: String,
+        text: String? = nil,
+        terminal: Bool = false
+    ) async {
+        guard let clientTurnID else { return }
+        _ = await updates.append(
+            timelineID: timelineID,
+            clientTurnID: clientTurnID,
+            kind: kind,
+            text: text,
+            terminal: terminal
+        )
     }
 
     private static func createTimeline(kit: PositronicKit, title: String) async throws -> TimelineStatus {

@@ -56,6 +56,61 @@ struct ServeOperationContractTests {
         #expect(message.contains("clientTurnID turn-1"))
     }
 
+    @Test("agent.chat.replay returns bounded identified-turn updates")
+    func agentChatReplayContract() async throws {
+        let timelineID = UUID()
+        let store = AscendantTurnUpdateStore()
+        let provider = AgentChatProvider(
+            execute: { request in
+                AgentChatResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
+            },
+            replayStore: store
+        )
+        let request = AgentChatRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-replay")
+        _ = try await provider.handle(parameters: payload(request))
+
+        let replayRequest = AgentChatReplayRequest(timelineID: timelineID, clientTurnID: "turn-replay")
+        let response = try await provider.handleReplay(parameters: payload(replayRequest))
+        let replay = try JSONDecoder().decode(
+            AscendantTurnReplay.self,
+            from: Data(try resultText(response).utf8)
+        )
+        #expect(replay.updates.map(\.kind) == ["assistant_text", "completion"])
+        #expect(replay.terminal)
+        #expect(replay.updates.last?.text == "echo: hello")
+    }
+
+    @Test("agent.chat keeps streamed text without appending a duplicate final message")
+    func agentChatStreamReplayContract() async throws {
+        let timelineID = UUID()
+        let store = AscendantTurnUpdateStore()
+        let provider = AgentChatProvider(
+            execute: { request in
+                _ = await store.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID!,
+                    kind: "assistant_text",
+                    text: "hel"
+                )
+                _ = await store.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID!,
+                    kind: "assistant_text",
+                    text: "lo"
+                )
+                return AgentChatResult(clientTurnID: request.clientTurnID, text: "hello")
+            },
+            replayStore: store
+        )
+        _ = try await provider.handle(parameters: payload(
+            AgentChatRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
+        ))
+
+        let replay = await store.replay(timelineID: timelineID, clientTurnID: "turn-stream")
+        #expect(replay.updates.map(\.kind) == ["assistant_text", "assistant_text", "completion"])
+        #expect(replay.updates.compactMap(\.text) == ["hel", "lo", "hello"])
+    }
+
     @Test("agent.chat result decoder accepts the legacy text-only response")
     func agentChatLegacyResultDecodes() throws {
         let result = try JSONDecoder().decode(

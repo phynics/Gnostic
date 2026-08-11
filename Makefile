@@ -12,10 +12,10 @@ EXTRA_CONTAINER_MOUNTS ?=
 SWIFT_CACHE_ARGS := --cache-path /workspace/.swiftpm-cache
 SWIFT_LOCKED_ARGS := $(SWIFT_CACHE_ARGS) --disable-automatic-resolution
 
-.PHONY: help image require-package resolve worktree-bootstrap build test runner-smoke bridge-smoke container-smoke verify shell clean
+.PHONY: help image require-package resolve worktree-bootstrap build test runner-smoke bridge-smoke acp-smoke container-smoke verify shell clean
 
 help:
-	@echo "Targets: image resolve worktree-bootstrap build test runner-smoke bridge-smoke container-smoke verify shell clean"
+	@echo "Targets: image resolve worktree-bootstrap build test runner-smoke bridge-smoke acp-smoke container-smoke verify shell clean"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -43,6 +43,9 @@ runner-smoke: require-package image
 
 bridge-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; GNOSTIC_BRIDGE_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic swift test $(SWIFT_LOCKED_ARGS) --filter GnosticCLITests.BridgeSubprocessTests | tee .testing/bridge-smoke.log && grep -F "Test run with 1 test" .testing/bridge-smoke.log'
+
+acp-smoke: require-package image
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; GNOSTIC_ACP_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic swift test $(SWIFT_LOCKED_ARGS) --filter GnosticCLITests.ACPSubprocessTests | tee .testing/acp-smoke.log && grep -F "Test run with 1 test" .testing/acp-smoke.log'
 
 container-smoke: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
