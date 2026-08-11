@@ -6,17 +6,17 @@ import Testing
 
 @testable import GnosticCLI
 
-@Suite("JSON-RPC bridge session")
-struct BridgeSessionTests {
+@Suite("ACP JSON-RPC session")
+struct JSONRPCSessionTests {
     @Test("initialize gates domain requests and shutdown is terminal")
     func lifecycle() async throws {
-        let output = BridgeOutputCapture()
-        let session = BridgeSession(handler: { request in
-            if request.method == "unknown" { throw BridgeMethodError.methodNotFound(request.method) }
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { request in
+            if request.method == "unknown" { throw JSONRPCMethodError.methodNotFound(request.method) }
             return .string(request.method)
         }, output: output.append)
 
-        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"gnostic.timeline.list"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"session/list"}"#))
         #expect(try output.responses().last?.error?.code == JSONRPCErrorCode.invalidState.rawValue)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}"#))
@@ -29,33 +29,33 @@ struct BridgeSessionTests {
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#))
         #expect(await session.currentState() == .stopped)
-        await session.receive(frame(#"{"jsonrpc":"2.0","id":5,"method":"gnostic.timeline.list"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":5,"method":"session/list"}"#))
         #expect(try output.responses().last?.error?.code == JSONRPCErrorCode.invalidState.rawValue)
     }
 
     @Test("malformed frames produce parse errors and notifications stay silent")
     func malformedAndNotification() async throws {
-        let output = BridgeOutputCapture()
-        let session = BridgeSession(handler: { _ in .boolean(true) }, output: output.append)
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { _ in .boolean(true) }, output: output.append)
 
         await session.receive(Data("{not json}\n".utf8))
         #expect(try output.responses().count == 1)
         #expect(try output.responses()[0].error?.code == JSONRPCErrorCode.parseError.rawValue)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","method":"initialize"}"#))
-        await session.receive(frame(#"{"jsonrpc":"2.0","method":"gnostic.timeline.list"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","method":"session/list"}"#))
         #expect(try output.responses().count == 1)
     }
 
     @Test("domain failures retain a stable Gnostic error code")
     func domainErrorData() async throws {
-        let output = BridgeOutputCapture()
-        let session = BridgeSession(handler: { _ in
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { _ in
             throw RemoteChatClientError.approvalRequired
         }, output: output.append)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
-        await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"gnostic.workspace.invoke"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"session/prompt"}"#))
         try await waitForResponseCount(2, output: output)
         let response = try #require(output.responses().last)
         #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
@@ -64,8 +64,8 @@ struct BridgeSessionTests {
 
     @Test("exit stops the session")
     func exitIsTerminal() async throws {
-        let output = BridgeOutputCapture()
-        let session = BridgeSession(handler: { _ in .boolean(true) }, output: output.append)
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { _ in .boolean(true) }, output: output.append)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"exit"}"#))
         #expect(await session.currentState() == .stopped)
@@ -74,8 +74,8 @@ struct BridgeSessionTests {
 
     @Test("stable request cancellation returns the ACP cancelled error")
     func stableRequestCancellation() async throws {
-        let output = BridgeOutputCapture()
-        let session = BridgeSession(handler: { _ in
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { _ in
             try await Task.sleep(for: .seconds(10))
             return .boolean(true)
         }, output: output.append)
@@ -90,21 +90,21 @@ struct BridgeSessionTests {
     }
 }
 
-private func waitForResponseCount(_ expected: Int, output: BridgeOutputCapture) async throws {
+private func waitForResponseCount(_ expected: Int, output: JSONRPCOutputCapture) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(1)
     while clock.now < deadline {
         if try output.responses().count >= expected { return }
         await Task.yield()
     }
-    Issue.record("timed out waiting for \(expected) bridge responses")
+    Issue.record("timed out waiting for \(expected) JSON-RPC responses")
 }
 
 private func frame(_ json: String) -> Data {
     Data((json + "\n").utf8)
 }
 
-private final class BridgeOutputCapture: @unchecked Sendable {
+private final class JSONRPCOutputCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
 

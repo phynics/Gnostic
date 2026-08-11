@@ -80,7 +80,7 @@ struct ACPProtocolTests {
     @Test("ACP notifications are LF-delimited JSON-RPC notifications")
     func notificationFraming() async throws {
         let output = OutputCapture()
-        let session = BridgeSession(
+        let session = JSONRPCSession(
             handler: { _ in .dictionary([:]) },
             output: output.append,
             initialize: { .dictionary([:]) },
@@ -101,7 +101,7 @@ struct ACPProtocolTests {
     func clientRequestRoundTrip() async throws {
         let output = OutputCapture()
         let broker = ACPClientRequestBroker(output: output.append)
-        let session = BridgeSession(
+        let session = JSONRPCSession(
             handler: { _ in .dictionary([:]) },
             output: output.append,
             initialize: { .dictionary([:]) },

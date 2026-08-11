@@ -5,11 +5,11 @@ import Foundation
 /// Runs one ACP agent process over LF-delimited JSON-RPC stdio.
 @MainActor
 struct ACPServer: Sendable {
-    private let session: BridgeSession
+    private let session: JSONRPCSession
     private let client: GnosticRemoteClient
     private let requestBroker: ACPClientRequestBroker
 
-    init(client: GnosticRemoteClient, ascendantID: UUID?, registry: ACPSessionRegistry, output: @escaping BridgeSession.Output = { data in
+    init(client: GnosticRemoteClient, ascendantID: UUID?, registry: ACPSessionRegistry, output: @escaping JSONRPCSession.Output = { data in
         FileHandle.standardOutput.write(data)
     }) {
         self.client = client
@@ -28,7 +28,7 @@ struct ACPServer: Sendable {
                 try await requestBroker.request(method: "session/request_permission", params: params)
             }
         )
-        session = BridgeSession(
+        session = JSONRPCSession(
             handler: { request in try await dispatcher.handle(request) },
             output: output,
             initialize: { try await dispatcher.initialize() },
@@ -56,7 +56,7 @@ struct ACPServer: Sendable {
             case .brokerLost:
                 await requestBroker.finish()
                 await session.finish()
-                throw BridgeServerError.brokerLost
+                throw ACPServerError.brokerLost
             case .eof:
                 await requestBroker.finish()
                 await session.finish()
@@ -108,5 +108,15 @@ struct ACPServer: Sendable {
         }
         for await data in stream { return data }
         return Data()
+    }
+}
+
+enum ACPServerError: Error, LocalizedError, Sendable {
+    case brokerLost
+
+    var errorDescription: String? {
+        switch self {
+        case .brokerLost: "The MQTT broker connection was lost."
+        }
     }
 }
