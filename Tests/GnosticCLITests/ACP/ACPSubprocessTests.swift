@@ -11,6 +11,69 @@ import Testing
 
 @Suite("ACP subprocess")
 struct ACPSubprocessTests {
+    @Test("official ACP client completes the stable session lifecycle", .timeLimit(.minutes(1)))
+    @MainActor
+    func officialClientLifecycle() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["GNOSTIC_ACP_BINARY"] != nil,
+              let fixture = environment["GNOSTIC_ACP_OFFICIAL_CLIENT"] else { return }
+        let namespace = "acp-official-\(UUID().uuidString.lowercased())"
+        let agentID = UUID()
+        let serve = try await ServeRuntime(
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            approveMode: .auto,
+            languageModel: RepeatingToolLanguageModel()
+        )
+        defer { serve.shutdown() }
+        try await serve.start()
+        await serve.advertise(agent: AgentInstance(
+            id: agentID,
+            name: "official-acp-client",
+            description: "Official ACP SDK lifecycle fixture",
+            privateTimelineID: serve.servedTimelineID
+        ), workspaces: [])
+
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-official-acp-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let arguments = [
+            "acp",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", namespace,
+            "--ascendant", agentID.uuidString,
+        ]
+        let argumentsData = try JSONEncoder().encode(arguments)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/node")
+        process.arguments = [fixture]
+        var childEnvironment = environment
+        childEnvironment["GNOSTIC_ACP_ARGS"] = String(decoding: argumentsData, as: UTF8.self)
+        childEnvironment["GNOSTIC_ACP_CWD"] = "/tmp/gnostic-official-acp-client"
+        childEnvironment["GNOSTIC_STATE_HOME"] = stateURL.path
+        process.environment = childEnvironment
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let standardOutput = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let standardError = String(
+            decoding: error.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        #expect(standardOutput.contains("official ACP client lifecycle passed"))
+    }
+
     @Test(
         "ACP initializes, creates a session, and completes a permissioned Workspace turn",
         .timeLimit(.minutes(1))
@@ -25,7 +88,7 @@ struct ACPSubprocessTests {
             port: 1883,
             namespace: namespace,
             approveMode: .auto,
-            languageModel: StubLanguageModel()
+            languageModel: RepeatingToolLanguageModel()
         )
         defer { serve.shutdown() }
         try await serve.start()
@@ -156,9 +219,154 @@ struct ACPSubprocessTests {
         }
         #expect(permissionRequested)
 
-        try send(JSONRPCRequest(id: .number(5), method: "shutdown"))
+        try send(JSONRPCRequest(id: .number(5), method: "session/prompt", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "prompt": .array([.dictionary(["type": .string("text"), "text": .string("close this turn")])]),
+            "mcpServers": .array([]),
+            "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string("acp-smoke:turn-2")]),
+        ])))
+
+        var secondPermissionRequest: JSONRPCRequest?
+        while secondPermissionRequest == nil {
+            if case let .request(request) = try await readEnvelope(from: &outputIterator),
+               request.method == "session/request_permission" {
+                secondPermissionRequest = request
+            }
+        }
+
+        try send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
+            "sessionId": .string(sessionID),
+        ])))
+        var closeCompleted = false
+        var cancelledPromptCompleted = false
+        while !closeCompleted || !cancelledPromptCompleted {
+            guard case let .response(response) = try await readEnvelope(from: &outputIterator) else { continue }
+            if response.id == .number(6) {
+                #expect(response.error == nil)
+                closeCompleted = true
+            } else if response.id == .number(5) {
+                #expect(response.error != nil)
+                cancelledPromptCompleted = true
+            }
+        }
+
+        try send(JSONRPCRequest(id: .number(7), method: "session/resume", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "cwd": .string("/tmp/acp-smoke"),
+            "mcpServers": .array([]),
+        ])))
         #expect(try await readResponse(from: &outputIterator).error == nil)
+
+        try send(JSONRPCRequest(id: .number(8), method: "shutdown"))
+        #expect(try await readResponse(from: &outputIterator).error == nil)
+        input.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        let resumedProcess = Process()
+        resumedProcess.executableURL = URL(fileURLWithPath: binary)
+        resumedProcess.arguments = process.arguments
+        resumedProcess.environment = environment
+        let resumedInput = Pipe()
+        let resumedOutput = Pipe()
+        let resumedLines = LineStream(handle: resumedOutput.fileHandleForReading)
+        resumedProcess.standardInput = resumedInput
+        resumedProcess.standardOutput = resumedOutput
+        resumedProcess.standardError = Pipe()
+        try resumedProcess.run()
+        defer { if resumedProcess.isRunning { resumedProcess.terminate() } }
+
+        func sendAfterRestart(_ request: JSONRPCRequest) throws {
+            resumedInput.fileHandleForWriting.write(try JSONEncoder().encode(request) + Data([0x0A]))
+        }
+
+        var resumedIterator = resumedLines.stream.makeAsyncIterator()
+        try sendAfterRestart(JSONRPCRequest(id: .number(9), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
+        ])))
+        #expect(try await readResponse(from: &resumedIterator).error == nil)
+
+        try sendAfterRestart(JSONRPCRequest(id: .number(10), method: "session/resume", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "cwd": .string("/tmp/acp-smoke"),
+            "mcpServers": .array([]),
+        ])))
+        #expect(try await readResponse(from: &resumedIterator).error == nil)
+
+        try sendAfterRestart(JSONRPCRequest(id: .number(11), method: "shutdown"))
+        #expect(try await readResponse(from: &resumedIterator).error == nil)
     }
+}
+
+private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendable {
+    var isConfigured: Bool { get async { true } }
+    var configuration: LLMConfiguration {
+        get async { .init(activeProvider: .openAI, providers: [:]) }
+    }
+
+    func chatStream(
+        messages: [LLMMessage],
+        tools _: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        if messages.last?.role == .tool {
+            let chunk = LLMStreamChunk(
+                id: "fixture-final",
+                model: "fixture",
+                choices: [LLMStreamChoice(
+                    index: 0,
+                    delta: LLMStreamDelta(content: "Echo received: network"),
+                    finishReason: "stop"
+                )]
+            )
+            return AsyncThrowingStream { $0.yield(chunk); $0.finish() }
+        }
+        let chunk = LLMStreamChunk(
+            id: "fixture-tool",
+            model: "fixture",
+            choices: [LLMStreamChoice(
+                index: 0,
+                delta: LLMStreamDelta(
+                    role: .assistant,
+                    toolCalls: [LLMToolCallDelta(
+                        index: 0,
+                        id: "call_1",
+                        function: LLMToolCallDeltaFunction(
+                            name: "workspace_echo",
+                            arguments: #"{"value":"network"}"#
+                        )
+                    )]
+                ),
+                finishReason: "tool_calls"
+            )]
+        )
+        return AsyncThrowingStream { $0.yield(chunk); $0.finish() }
+    }
+
+    func loadConfiguration() async {}
+    func updateConfiguration(_: LLMConfiguration) async throws {}
+    func clearConfiguration() async {}
+    func restoreFromBackup() async throws {}
+    func exportConfiguration() async throws -> Data { Data() }
+    func importConfiguration(from _: Data) async throws {}
+
+    func sendMessage(_ content: String) async throws -> String { content }
+    func sendMessage(
+        _: String,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        useUtilityModel _: Bool
+    ) async throws -> String { "ok" }
+    func generateTags(for _: String) async throws -> [String] { [] }
+    func generateTitle(for _: [Message]) async throws -> String { "fixture" }
+    func evaluateRecallPerformance(
+        transcript _: String,
+        recalledMemories _: [Memory]
+    ) async throws -> [String: Double] { [:] }
+    func fetchAvailableModels() async throws -> [String]? { nil }
 }
 
 private enum ACPSubprocessError: Error { case timeout }

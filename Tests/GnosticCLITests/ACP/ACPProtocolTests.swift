@@ -37,7 +37,25 @@ struct ACPProtocolTests {
         #expect(record?.ascendantID == ascendantID)
         #expect(record?.timelineID == timelineID)
         #expect(record?.cwd == "/workspace/project")
+
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: url.deletingLastPathComponent().path
+        )
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        #expect((fileAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
+
+    #if !os(macOS)
+    @Test("Linux session registry uses the XDG application-state directory")
+    func registryUsesXDGStateHome() {
+        let url = ACPSessionRegistry.defaultURL(
+            environment: ["XDG_STATE_HOME": "/tmp/gnostic-xdg-state"],
+            homeDirectory: URL(fileURLWithPath: "/tmp/gnostic-home", isDirectory: true)
+        )
+        #expect(url.path == "/tmp/gnostic-xdg-state/gnostic/acp-sessions-v1.json")
+    }
+    #endif
 
     @Test("prompt accepts only text and carries the stable client turn id")
     func promptMetadata() throws {

@@ -15,6 +15,16 @@ final class ACPDispatcher: Sendable {
         let timelineID: UUID
     }
 
+    private struct ActivePrompt {
+        let token: UUID
+        let cancel: () -> Void
+    }
+
+    private struct ActivePermissionRequest {
+        let token: UUID
+        let task: Task<AnyCodable, Error>
+    }
+
     private let client: GnosticRemoteClient
     private let registry: ACPSessionRegistry
     private let requestedAscendantID: UUID?
@@ -22,6 +32,8 @@ final class ACPDispatcher: Sendable {
     private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
     private var ascendant: Ascendant?
     private var requestedPermissionIDs: Set<String> = []
+    private var activePrompts: [String: ActivePrompt] = [:]
+    private var activePermissionRequests: [String: ActivePermissionRequest] = [:]
 
     init(
         client: GnosticRemoteClient,
@@ -140,6 +152,8 @@ final class ACPDispatcher: Sendable {
         guard await registry.record(id: input.sessionID) != nil else {
             throw BridgeMethodError.invalidParams("unknown ACP session")
         }
+        activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
+        activePrompts.removeValue(forKey: input.sessionID)?.cancel()
         _ = try await registry.close(id: input.sessionID)
         return .dictionary([:])
     }
@@ -241,10 +255,22 @@ final class ACPDispatcher: Sendable {
                 await completion.set(.failed(String(describing: error)))
             }
         }
+        let promptToken = UUID()
+        activePrompts[record.id] = ActivePrompt(token: promptToken) {
+            chat.cancel()
+            collector.cancel()
+            completionWatcher.cancel()
+            Task {
+                await completion.set(.failed("ACP session was closed"))
+            }
+        }
         defer {
             chat.cancel()
             collector.cancel()
             completionWatcher.cancel()
+            if activePrompts[record.id]?.token == promptToken {
+                activePrompts.removeValue(forKey: record.id)
+            }
         }
         var lastSequence = 0
 
@@ -291,10 +317,24 @@ final class ACPDispatcher: Sendable {
         for state in states where state.status == "pending" {
             guard requestedPermissionIDs.insert(state.correlationID).inserted else { continue }
             defer { requestedPermissionIDs.remove(state.correlationID) }
-            do {
-                let response = try await requestPermission(
+            let permissionToken = UUID()
+            let permissionTask = Task {
+                try await requestPermission(
                     ACPPermissionBridge.parameters(sessionID: sessionID, state: state)
                 )
+            }
+            activePermissionRequests[sessionID] = ActivePermissionRequest(
+                token: permissionToken,
+                task: permissionTask
+            )
+            defer {
+                permissionTask.cancel()
+                if activePermissionRequests[sessionID]?.token == permissionToken {
+                    activePermissionRequests.removeValue(forKey: sessionID)
+                }
+            }
+            do {
+                let response = try await permissionTask.value
                 guard let approved = ACPPermissionBridge.approved(from: response) else {
                     throw BridgeMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
@@ -306,6 +346,9 @@ final class ACPDispatcher: Sendable {
                 ))
             } catch {
                 try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
+                if error is CancellationError {
+                    throw BridgeMethodError.invalidState("ACP session was closed")
+                }
                 throw error
             }
         }

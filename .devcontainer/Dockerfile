@@ -12,6 +12,8 @@ RUN apt-get update \
         git \
         mosquitto \
         mosquitto-clients \
+        nodejs \
+        npm \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

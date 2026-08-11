@@ -83,8 +83,10 @@ actor ACPSessionRegistry {
         return Dictionary(uniqueKeysWithValues: decoded.map { ($0.id, $0) })
     }
 
-    private static func defaultURL() -> URL {
-        let environment = ProcessInfo.processInfo.environment
+    static func defaultURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
         if let configured = environment["GNOSTIC_STATE_HOME"], !configured.isEmpty {
             return URL(fileURLWithPath: configured, isDirectory: true)
                 .appendingPathComponent("acp-sessions-v1.json")
@@ -95,8 +97,12 @@ actor ACPSessionRegistry {
         return base.appendingPathComponent("Gnostic", isDirectory: true)
             .appendingPathComponent("acp-sessions-v1.json")
         #else
-        let base = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/state", isDirectory: true)
+        let base: URL
+        if let configured = environment["XDG_STATE_HOME"], !configured.isEmpty {
+            base = URL(fileURLWithPath: configured, isDirectory: true)
+        } else {
+            base = homeDirectory.appendingPathComponent(".local/state", isDirectory: true)
+        }
         return base.appendingPathComponent("gnostic", isDirectory: true)
             .appendingPathComponent("acp-sessions-v1.json")
         #endif
