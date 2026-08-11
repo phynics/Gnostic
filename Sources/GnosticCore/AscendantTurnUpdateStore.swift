@@ -2,31 +2,48 @@
 
 import Foundation
 
+public struct AscendantToolState: Codable, Sendable, Equatable {
+    public let toolCallID: String
+    public let title: String?
+    public let status: String
+    public let content: String?
+
+    public init(toolCallID: String, title: String? = nil, status: String, content: String? = nil) {
+        self.toolCallID = toolCallID
+        self.title = title
+        self.status = status
+        self.content = content
+    }
+}
+
 /// A replayable, transport-neutral update emitted for an identified Ascendant
 /// turn. The ACP adapter maps these values to `session/update` notifications.
 public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     public let sequence: Int
     public let kind: String
     public let text: String?
-    public let toolStates: [String]
+    public let toolState: AscendantToolState?
+    public let toolStates: [AscendantToolState]
     public let terminal: Bool
 
     public init(
         sequence: Int,
         kind: String,
         text: String? = nil,
-        toolStates: [String] = [],
+        toolState: AscendantToolState? = nil,
+        toolStates: [AscendantToolState] = [],
         terminal: Bool = false
     ) {
         self.sequence = sequence
         self.kind = kind
         self.text = text
+        self.toolState = toolState
         self.toolStates = toolStates
         self.terminal = terminal
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sequence, kind, text, toolStates, terminal
+        case sequence, kind, text, toolState, toolStates, terminal
     }
 
     public init(from decoder: Decoder) throws {
@@ -34,7 +51,8 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         sequence = try container.decode(Int.self, forKey: .sequence)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decodeIfPresent(String.self, forKey: .text)
-        toolStates = try container.decodeIfPresent([String].self, forKey: .toolStates) ?? []
+        toolState = try container.decodeIfPresent(AscendantToolState.self, forKey: .toolState)
+        toolStates = try container.decodeIfPresent([AscendantToolState].self, forKey: .toolStates) ?? []
         terminal = try container.decode(Bool.self, forKey: .terminal)
     }
 }
@@ -108,12 +126,19 @@ public actor AscendantTurnUpdateStore {
         clientTurnID: String,
         kind: String,
         text: String? = nil,
+        toolState: AscendantToolState? = nil,
         terminal: Bool = false
     ) -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
         let update = Self.bounded(
-            AscendantTurnUpdate(sequence: entry.nextSequence, kind: kind, text: text, terminal: terminal),
+            AscendantTurnUpdate(
+                sequence: entry.nextSequence,
+                kind: kind,
+                text: text,
+                toolState: toolState,
+                terminal: terminal
+            ),
             maxBytes: maxBytes / 2
         )
         entry.nextSequence += 1
@@ -123,7 +148,7 @@ public actor AscendantTurnUpdateStore {
 
         if entry.updates.count > maxEvents || entry.bytes > maxBytes {
             var snapshotText = ""
-            var snapshotToolStates: [String] = []
+            var snapshotToolStates: [AscendantToolState] = []
             var snapshotSequence = 0
             // Reserve half of the byte budget for the accumulated snapshot.
             while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
@@ -134,10 +159,12 @@ public actor AscendantTurnUpdateStore {
                 if removed.kind == "assistant_text" || removed.kind == "assistant_text_snapshot" {
                     snapshotText += removed.text ?? ""
                 }
-                if removed.kind == "tool_state", let text = removed.text {
-                    snapshotToolStates.append(text)
+                if let toolState = removed.toolState {
+                    Self.upsert(toolState, into: &snapshotToolStates)
                 }
-                snapshotToolStates += removed.toolStates
+                for toolState in removed.toolStates {
+                    Self.upsert(toolState, into: &snapshotToolStates)
+                }
                 entry.compacted = true
             }
             if !snapshotText.isEmpty || !snapshotToolStates.isEmpty {
@@ -183,6 +210,7 @@ public actor AscendantTurnUpdateStore {
                 sequence: update.sequence,
                 kind: update.kind,
                 text: text,
+                toolState: update.toolState,
                 toolStates: toolStates,
                 terminal: update.terminal
             )
@@ -193,11 +221,20 @@ public actor AscendantTurnUpdateStore {
                 sequence: update.sequence,
                 kind: update.kind,
                 text: text,
+                toolState: update.toolState,
                 toolStates: toolStates,
                 terminal: update.terminal
             )
         }
         return candidate
+    }
+
+    private static func upsert(_ state: AscendantToolState, into states: inout [AscendantToolState]) {
+        if let index = states.firstIndex(where: { $0.toolCallID == state.toolCallID }) {
+            states[index] = state
+        } else {
+            states.append(state)
+        }
     }
 
     private static func messageDigest(_ message: String) -> UInt64 {

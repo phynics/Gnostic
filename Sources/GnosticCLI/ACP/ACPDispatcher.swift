@@ -167,9 +167,7 @@ final class ACPDispatcher: Sendable {
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
-                    sequence: update.sequence,
-                    kind: update.kind,
-                    text: update.text,
+                    update: update,
                     replayed: true
                 )
             }
@@ -188,15 +186,18 @@ final class ACPDispatcher: Sendable {
         )
         let updates = replay?.updates ?? []
         if updates.isEmpty, lastSequence == 0 {
-            publishUpdate(sessionID: record.id, turnID: turnID, sequence: 1, kind: "assistant_text", text: result.text, replayed: result.replayed)
+            publishUpdate(
+                sessionID: record.id,
+                turnID: turnID,
+                update: AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: result.text),
+                replayed: result.replayed
+            )
         } else {
             for update in updates {
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
-                    sequence: update.sequence,
-                    kind: update.kind,
-                    text: update.text,
+                    update: update,
                     replayed: result.replayed
                 )
             }
@@ -252,9 +253,7 @@ final class ACPDispatcher: Sendable {
                     publishUpdate(
                         sessionID: record.id,
                         turnID: turnID,
-                        sequence: update.sequence,
-                        kind: update.kind,
-                        text: update.text,
+                        update: update,
                         replayed: false
                     )
                     lastSequence = max(lastSequence, update.sequence)
@@ -278,29 +277,17 @@ final class ACPDispatcher: Sendable {
     private func publishUpdate(
         sessionID: String,
         turnID: String,
-        sequence: Int,
-        kind: String,
-        text: String?,
+        update: AscendantTurnUpdate,
         replayed: Bool
     ) {
-        guard kind == "assistant_text" || kind == "assistant_text_snapshot" else { return }
-        let updateName = "agent_message_chunk"
-        var update: [String: AnyCodable] = [
-            "sessionUpdate": .string(updateName),
-            "_meta": .dictionary([
-                "clientTurnID": .string(turnID),
-                "sequence": .number(Double(sequence)),
-                "kind": .string(kind),
-                "replayed": .boolean(replayed),
-            ]),
-        ]
-        if let text {
-            update["content"] = .dictionary(["type": .string("text"), "text": .string(text)])
+        for notification in ACPUpdateRenderer.updates(
+            sessionID: sessionID,
+            turnID: turnID,
+            update: update,
+            replayed: replayed
+        ) {
+            publish(notification.method, notification.params)
         }
-        publish("session/update", .dictionary([
-            "sessionId": .string(sessionID),
-            "update": .dictionary(update),
-        ]))
     }
 
     private func resolveAscendant() async throws -> Ascendant {

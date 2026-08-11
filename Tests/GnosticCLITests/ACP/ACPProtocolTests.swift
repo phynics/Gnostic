@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import PKShared
 import Testing
 
@@ -64,6 +65,7 @@ struct ACPProtocolTests {
         let session = BridgeSession(
             handler: { _ in .dictionary([:]) },
             output: output.append,
+            initialize: { .dictionary([:]) },
             notification: output.append
         )
 
@@ -75,6 +77,41 @@ struct ACPProtocolTests {
         let request = try #require(output.requests().first)
         #expect(request.id == nil)
         #expect(request.method == "session/update")
+    }
+
+    @Test("structured Ascendant tool states render as stable ACP tool updates")
+    func structuredToolUpdate() throws {
+        let update = AscendantTurnUpdate(
+            sequence: 7,
+            kind: "tool_state",
+            toolState: AscendantToolState(
+                toolCallID: "call-7",
+                title: "Read file",
+                status: "in_progress"
+            )
+        )
+
+        let rendered = ACPUpdateRenderer.updates(
+            sessionID: "session-1",
+            turnID: "turn-1",
+            update: update,
+            replayed: false
+        )
+        let notification = try #require(rendered.first)
+        let params = try #require(notification.params.dictionaryValue)
+        let payload = try #require(params["update"]?.dictionaryValue)
+        #expect(notification.method == "session/update")
+        #expect(payload["sessionUpdate"] == .string("tool_call_update"))
+        #expect(payload["toolCallId"] == .string("call-7"))
+        #expect(payload["title"] == .string("Read file"))
+        #expect(payload["status"] == .string("in_progress"))
+    }
+}
+
+private extension AnyCodable {
+    var dictionaryValue: [String: AnyCodable]? {
+        guard case let .dictionary(value) = self else { return nil }
+        return value
     }
 }
 

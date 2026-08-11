@@ -61,12 +61,24 @@ struct AscendantTurnUpdateStoreTests {
         let store = AscendantTurnUpdateStore(maxEvents: 2, maxBytes: 10_000)
         let timelineID = UUID()
         await store.start(timelineID: timelineID, clientTurnID: "turn-tools")
-        _ = await store.append(timelineID: timelineID, clientTurnID: "turn-tools", kind: "tool_state", text: "call-1: attempting")
-        _ = await store.append(timelineID: timelineID, clientTurnID: "turn-tools", kind: "tool_state", text: "call-1: success")
+        _ = await store.append(
+            timelineID: timelineID,
+            clientTurnID: "turn-tools",
+            kind: "tool_state",
+            toolState: AscendantToolState(toolCallID: "call-1", title: "Read file", status: "in_progress")
+        )
+        _ = await store.append(
+            timelineID: timelineID,
+            clientTurnID: "turn-tools",
+            kind: "tool_state",
+            toolState: AscendantToolState(toolCallID: "call-1", title: "Read file", status: "completed")
+        )
         _ = await store.append(timelineID: timelineID, clientTurnID: "turn-tools", kind: "assistant_text", text: "done")
 
         let replay = await store.replay(timelineID: timelineID, clientTurnID: "turn-tools")
-        #expect(replay.updates.first?.toolStates == ["call-1: attempting", "call-1: success"])
+        #expect(replay.updates.first?.toolStates == [
+            AscendantToolState(toolCallID: "call-1", title: "Read file", status: "completed")
+        ])
         #expect(replay.updates.last?.text == "done")
     }
 

@@ -327,6 +327,9 @@ public final class ServeRuntime {
         ))
         var finalText = ""
         var lastError: String?
+        var toolCallIDs: [Int: String] = [:]
+        var toolTitles: [Int: String] = [:]
+        var announcedToolCalls: Set<Int> = []
         for try await event in stream {
             switch event {
             case .delta(.generation(let text)):
@@ -335,15 +338,29 @@ public final class ServeRuntime {
                     kind: "assistant_text", text: text
                 )
             case .delta(.toolCall(let delta)):
+                let toolCallID = delta.id
+                    ?? toolCallIDs[delta.index]
+                    ?? "\(clientTurnID ?? timelineID.uuidString):tool:\(delta.index)"
+                toolCallIDs[delta.index] = toolCallID
+                if let name = delta.name {
+                    toolTitles[delta.index, default: ""] += name
+                }
+                let initial = announcedToolCalls.insert(delta.index).inserted
                 await appendTurnUpdate(
                     updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "tool_state", text: String(describing: delta)
+                    kind: initial ? "tool_call" : "tool_state",
+                    toolState: AscendantToolState(
+                        toolCallID: toolCallID,
+                        title: toolTitles[delta.index],
+                        status: "pending"
+                    )
                 )
             case .delta(.toolExecution(let toolCallID, let status)),
                  .completion(.toolExecution(let toolCallID, let status)):
                 await appendTurnUpdate(
                     updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "tool_state", text: "\(toolCallID): \(String(describing: status))"
+                    kind: "tool_state",
+                    toolState: toolState(toolCallID: toolCallID, status: status)
                 )
             case .completion(.generationCompleted(let message, _)):
                 finalText = message.content
@@ -354,7 +371,13 @@ public final class ServeRuntime {
             case .error(.toolCallError(let toolCallID, let name, let error)):
                 await appendTurnUpdate(
                     updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "tool_state", text: "\(toolCallID) \(name): \(error)"
+                    kind: "tool_state",
+                    toolState: AscendantToolState(
+                        toolCallID: toolCallID,
+                        title: name,
+                        status: "failed",
+                        content: error
+                    )
                 )
             case .error(.generationCancelled):
                 await appendTurnUpdate(
@@ -376,6 +399,7 @@ public final class ServeRuntime {
         clientTurnID: String?,
         kind: String,
         text: String? = nil,
+        toolState: AscendantToolState? = nil,
         terminal: Bool = false
     ) async {
         guard let clientTurnID else { return }
@@ -384,8 +408,29 @@ public final class ServeRuntime {
             clientTurnID: clientTurnID,
             kind: kind,
             text: text,
+            toolState: toolState,
             terminal: terminal
         )
+    }
+
+    private static func toolState(
+        toolCallID: String,
+        status: ToolExecutionStatus
+    ) -> AscendantToolState {
+        switch status {
+        case .attempting(let name, _):
+            AscendantToolState(toolCallID: toolCallID, title: name, status: "in_progress")
+        case .success(let result):
+            AscendantToolState(
+                toolCallID: toolCallID,
+                status: "completed",
+                content: String(describing: result)
+            )
+        case .failed(_, let error), .persistenceFailed(_, let error):
+            AscendantToolState(toolCallID: toolCallID, status: "failed", content: error)
+        case .executionError(let error):
+            AscendantToolState(toolCallID: toolCallID, status: "failed", content: error)
+        }
     }
 
     private static func createTimeline(kit: PositronicKit, title: String) async throws -> TimelineStatus {

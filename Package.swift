@@ -80,6 +80,7 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "PKShared", package: "PositronicKit"),
             ]
         ),
     ],
