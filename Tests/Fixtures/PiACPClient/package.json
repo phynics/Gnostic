@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@phynics/pi-acp-client": "github:phynics/pi-acp-client#098ba29e9f45d899e463ae3dcbcb5b10d054c7d7",
+    "@phynics/pi-acp-client": "github:phynics/pi-acp-client#bd522aac3fa972fc3acd24d2f3593714864b83a7",
     "tsx": "4.20.6"
   }
 }
