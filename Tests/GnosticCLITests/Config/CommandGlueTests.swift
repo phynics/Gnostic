@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import ArgumentParser
 import Foundation
 import Testing
 
@@ -7,6 +8,13 @@ import Testing
 
 @Suite("CLI command glue")
 struct CommandGlueTests {
+    @Test("legacy bridge command is no longer registered")
+    func bridgeCommandIsRemoved() {
+        #expect(throws: (any Error).self) {
+            _ = try GnosticCLI.parseAsRoot(["bridge"])
+        }
+    }
+
     private func tempFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-glue-\(UUID().uuidString)")

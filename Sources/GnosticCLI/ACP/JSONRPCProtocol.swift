@@ -28,7 +28,7 @@ public enum JSONRPCIdentifier: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// Standard JSON-RPC error codes used by the bridge.
+/// Standard JSON-RPC error codes used by ACP's stdio transport.
 public enum JSONRPCErrorCode: Int, Sendable {
     case parseError = -32700
     case invalidRequest = -32600

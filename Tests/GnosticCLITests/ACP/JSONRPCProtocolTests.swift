@@ -6,7 +6,7 @@ import Testing
 
 @testable import GnosticCLI
 
-@Suite("JSON-RPC bridge protocol")
+@Suite("ACP JSON-RPC protocol")
 struct JSONRPCProtocolTests {
     @Test("LF framing splits only on byte newline and preserves Unicode separators")
     func lfFramingPreservesUnicodeSeparators() throws {
@@ -34,7 +34,7 @@ struct JSONRPCProtocolTests {
     func requestAndErrorResponseRoundTrip() throws {
         let request = JSONRPCRequest(
             id: .string("42"),
-            method: "gnostic.timeline.list",
+            method: "session/list",
             params: .dictionary(["includeArchived": .boolean(false)])
         )
         let encodedRequest = try JSONEncoder().encode(request)

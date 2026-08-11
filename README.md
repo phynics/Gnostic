@@ -34,19 +34,15 @@ extension with:
 gnostic acp profiles --json
 ```
 
-The old `gnostic bridge` command remains available for one compatibility
-release and prints a deprecation warning. It continues to serve the custom
-`gnostic.*` protocol until a subsequent release removes it after the announced
-compatibility window.
+## Bridge removal
 
-## Legacy JSON-RPC bridge
-
-`gnostic bridge` is a long-lived JSON-RPC 2.0 stdio frontend for pi and other
-process hosts. It reads one LF-delimited request per line from stdin and writes
-responses to stdout, while sharing exactly one Axoloty/MQTT connection for
-discovery, timeline operations, chat, workspace attachment, and approved
-workspace-tool invocation. Logs never use stdout. Start it with the configured
-broker or override `--host`, `--port`, and `--namespace`.
+Gnostic 0.2.0 removes the deprecated `gnostic bridge` command and its custom
+`gnostic.*` JSON-RPC frontend. Use `gnostic acp` with a standard ACP client.
+Pi users should migrate from the retired
+[`gnostic-pi`](https://github.com/phynics/gnostic-pi) extension to
+[`pi-acp-client`](https://github.com/phynics/pi-acp-client); existing Pi
+transcripts start a new ACP-backed session because authority cannot be safely
+rebound in place.
 
 ## Development
 

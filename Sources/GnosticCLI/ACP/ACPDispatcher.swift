@@ -91,9 +91,9 @@ final class ACPDispatcher: Sendable {
         case "session/prompt":
             return try await prompt(request.params)
         case "session/load", "session/delete", "session/fork":
-            throw BridgeMethodError.methodNotFound("\(request.method) is not advertised by gnostic acp")
+            throw JSONRPCMethodError.methodNotFound("\(request.method) is not advertised by gnostic acp")
         default:
-            throw BridgeMethodError.methodNotFound(request.method)
+            throw JSONRPCMethodError.methodNotFound(request.method)
         }
     }
 
@@ -154,7 +154,7 @@ final class ACPDispatcher: Sendable {
     private func closeSession(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPCloseParameters = try decode(params)
         guard await registry.record(id: input.sessionID) != nil else {
-            throw BridgeMethodError.invalidParams("unknown ACP session")
+            throw JSONRPCMethodError.invalidParams("unknown ACP session")
         }
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
         activePrompts.removeValue(forKey: input.sessionID)?.close()
@@ -165,7 +165,7 @@ final class ACPDispatcher: Sendable {
     private func cancelSession(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPCloseParameters = try decode(params)
         guard await registry.record(id: input.sessionID) != nil else {
-            throw BridgeMethodError.invalidParams("unknown ACP session")
+            throw JSONRPCMethodError.invalidParams("unknown ACP session")
         }
         guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
         cancelledSessions.insert(input.sessionID)
@@ -178,7 +178,7 @@ final class ACPDispatcher: Sendable {
         let input: ACPPromptParameters = try decode(params)
         defer { cancelledSessions.remove(input.sessionID) }
         guard let text = input.text else {
-            throw BridgeMethodError.invalidParams("session/prompt accepts non-empty text content only")
+            throw JSONRPCMethodError.invalidParams("session/prompt accepts non-empty text content only")
         }
         let record = try await requireSession(id: input.sessionID, cwd: nil)
         let turnID = input.clientTurnID ?? "acp:\(record.id):\(UUID().uuidString.lowercased())"
@@ -191,12 +191,12 @@ final class ACPDispatcher: Sendable {
            let existing = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text),
            existing.terminal {
             if existing.conflict {
-                throw BridgeMethodError.invalidParams("clientTurnID was already used with different content")
+                throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
             }
             if let error = existing.updates.last(where: {
                 $0.kind == "error" || $0.kind == "cancelled" || $0.kind == "cancellation"
             }) {
-                throw BridgeMethodError.invalidState(error.text ?? "ACP turn did not complete")
+                throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             for update in existing.updates {
                 publishUpdate(
@@ -333,7 +333,7 @@ final class ACPDispatcher: Sendable {
 
             switch await completion.value() {
             case .completed(let result): return (result, lastSequence)
-            case .failed(let detail): throw BridgeMethodError.invalidState(detail)
+            case .failed(let detail): throw JSONRPCMethodError.invalidState(detail)
             case .cancelled: throw CancellationError()
             case nil: break
             }
@@ -375,7 +375,7 @@ final class ACPDispatcher: Sendable {
             do {
                 let response = try await permissionTask.value
                 guard let approved = ACPPermissionBridge.approved(from: response) else {
-                    throw BridgeMethodError.invalidState("ACP client returned a malformed permission outcome")
+                    throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
                 try await client.respondToPermission(AgentPermissionResponse(
                     correlationID: state.correlationID,
@@ -386,7 +386,7 @@ final class ACPDispatcher: Sendable {
             } catch {
                 try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
                 if error is CancellationError {
-                    throw BridgeMethodError.invalidState("ACP session was closed")
+                    throw JSONRPCMethodError.invalidState("ACP session was closed")
                 }
                 throw error
             }
@@ -439,28 +439,28 @@ final class ACPDispatcher: Sendable {
             selected = nil
         }
         guard let selected else {
-            if requestedAscendantID != nil { throw BridgeMethodError.invalidState("requested Ascendant was not discovered") }
-            throw BridgeMethodError.invalidState("select one Ascendant with --ascendant")
+            if requestedAscendantID != nil { throw JSONRPCMethodError.invalidState("requested Ascendant was not discovered") }
+            throw JSONRPCMethodError.invalidState("select one Ascendant with --ascendant")
         }
         return selected
     }
 
     private func selectedAscendant() throws -> Ascendant {
-        guard let ascendant else { throw BridgeMethodError.invalidState("ACP agent is not initialized") }
+        guard let ascendant else { throw JSONRPCMethodError.invalidState("ACP agent is not initialized") }
         return ascendant
     }
 
     private func requireSession(id: String, cwd: String?) async throws -> ACPSessionRecord {
         guard let record = await registry.record(id: id) else {
-            throw BridgeMethodError.invalidParams("unknown ACP session")
+            throw JSONRPCMethodError.invalidParams("unknown ACP session")
         }
         if let cwd, cwd != record.cwd {
-            throw BridgeMethodError.invalidParams("session cwd does not match its original binding")
+            throw JSONRPCMethodError.invalidParams("session cwd does not match its original binding")
         }
         let selected = try selectedAscendant()
         guard record.ascendantID == selected.id,
               record.profileFingerprint == profileFingerprint(for: selected) else {
-            throw BridgeMethodError.invalidState("session is bound to a different Ascendant or namespace")
+            throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant or namespace")
         }
         return record
     }
@@ -471,21 +471,21 @@ final class ACPDispatcher: Sendable {
 
     private func canonicalCWD(_ cwd: String) throws -> String {
         guard !cwd.isEmpty, URL(fileURLWithPath: cwd).path.hasPrefix("/") else {
-            throw BridgeMethodError.invalidParams("cwd must be an absolute path")
+            throw JSONRPCMethodError.invalidParams("cwd must be an absolute path")
         }
         return URL(fileURLWithPath: cwd).standardizedFileURL.path
     }
 
     private func rejectMCP(_ servers: [AnyCodable]?) throws {
         guard let servers, !servers.isEmpty else { return }
-        throw BridgeMethodError.invalidParams("client-supplied MCP servers are not supported by gnostic acp yet")
+        throw JSONRPCMethodError.invalidParams("client-supplied MCP servers are not supported by gnostic acp yet")
     }
 
     private func decode<T: Decodable>(_ params: AnyCodable?) throws -> T {
         guard let params,
               let data = try? JSONEncoder().encode(params),
               let value = try? JSONDecoder().decode(T.self, from: data) else {
-            throw BridgeMethodError.invalidParams("invalid ACP method parameters")
+            throw JSONRPCMethodError.invalidParams("invalid ACP method parameters")
         }
         return value
     }
