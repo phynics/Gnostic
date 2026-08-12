@@ -3,6 +3,7 @@
 import Foundation
 import Axoloty
 import GnosticCore
+import JSONSchema
 import PKShared
 import PositronicKit
 import Testing
@@ -46,7 +47,7 @@ struct WorkspaceProviderTests {
         #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
     }
 
-    @Test("public network tools expose exact IDs and approval metadata") @MainActor
+    @Test("public network tools expose exact IDs, approval metadata, and callable schemas") @MainActor
     func publicNetworkToolsMetadataAndInvalidInput() async throws {
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: NetworkCatalog(),
@@ -61,6 +62,14 @@ struct WorkspaceProviderTests {
         #expect(!list.requiresPermission)
         #expect(!inspect.requiresPermission)
         #expect(attach.requiresPermission)
+        let listSchema = try schemaObject(list.parametersSchema)
+        let inspectSchema = try schemaObject(inspect.parametersSchema)
+        let attachSchema = try schemaObject(attach.parametersSchema)
+        #expect(listSchema["type"] as? String == "object")
+        #expect((inspectSchema["properties"] as? [String: Any])?.keys.sorted() == ["objectId", "providerId"])
+        #expect((inspectSchema["required"] as? [String])?.sorted() == ["objectId", "providerId"])
+        #expect((attachSchema["properties"] as? [String: Any])?.keys.sorted() == ["timelineId", "workspaceId"])
+        #expect((attachSchema["required"] as? [String])?.sorted() == ["timelineId", "workspaceId"])
         #expect((try await list.execute(parameters: [:])).success)
         #expect(!(try await inspect.execute(parameters: [:])).success)
         #expect(!(try await attach.execute(parameters: [:])).success)
@@ -71,7 +80,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000003")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{},"requiresPermission":false}]}
+        {"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
@@ -87,6 +96,16 @@ struct WorkspaceProviderTests {
         let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
         #expect(reference.location == .runtime)
         #expect(reference.tools.map(\.toolID) == ["custom"])
+        let tool = try #require(reference.tools.first)
+        guard case let .custom(definition) = tool else {
+            Issue.record("attached tool must remain a custom definition")
+            return
+        }
+        let projectedSchema = try schemaObject(definition.parametersSchema)
+        #expect(projectedSchema["type"] as? String == "object")
+        #expect(projectedSchema["required"] as? [String] == ["query"])
+        let properties = try #require(projectedSchema["properties"] as? [String: Any])
+        #expect((properties["query"] as? [String: Any])?["type"] as? String == "string")
         #expect(try await manager.getWorkspaces(for: timeline.id).primary?.id == workspaceID)
         #expect(recorder.ids == [timeline.id])
     }
@@ -272,6 +291,16 @@ struct WorkspaceProviderTests {
             try await workspace.executeTool(id: "custom", parameters: [:])
         }
     }
+}
+
+private func schemaObject(_ schema: Schema) throws -> [String: Any] {
+    let data = try JSONEncoder().encode(schema)
+    return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func schemaObject(_ schema: [String: AnyCodable]) throws -> [String: Any] {
+    let data = try JSONEncoder().encode(schema)
+    return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
 private final class TimelineRecorder: @unchecked Sendable {

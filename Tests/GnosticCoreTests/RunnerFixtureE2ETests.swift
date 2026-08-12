@@ -28,7 +28,12 @@ struct RunnerFixtureE2ETests {
             tools: [
                 .init(id: "list_files", name: "List files", description: "Lists fixture files."),
                 .init(id: "read_file", name: "Read file", description: "Reads a fixture file."),
-                .init(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."),
+                .init(
+                    id: "workspace_echo",
+                    name: "Workspace echo",
+                    description: "Echoes fixture input.",
+                    parametersSchema: workspaceEchoSchema
+                ),
             ]
         ) { toolID, arguments in
             switch toolID {
@@ -60,6 +65,12 @@ struct RunnerFixtureE2ETests {
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
         let reference = try #require(try await manager.getWorkspaces(for: timeline.id).primary)
+        let echoTool = try #require(reference.tools.first { $0.toolID == "workspace_echo" })
+        guard case let .custom(echoDefinition) = echoTool else {
+            Issue.record("workspace_echo must remain a custom tool after broker discovery")
+            return
+        }
+        #expect(echoDefinition.parametersSchema == workspaceEchoSchema)
         let workspace = try factory.create(from: reference)
         #expect((try await workspace.executeTool(id: "list_files", parameters: [:])).output == "README.md")
         #expect((try await workspace.executeTool(id: "read_file", parameters: [:])).output == "fixture contents")
@@ -162,10 +173,23 @@ private func fixtureReference(id: UUID) -> WorkspaceReference {
         tools: [
             .custom(.init(id: "list_files", name: "List files", description: "Lists fixture files.")),
             .custom(.init(id: "read_file", name: "Read file", description: "Reads a fixture file.")),
-            .custom(.init(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input.")),
+            .custom(.init(
+                id: "workspace_echo",
+                name: "Workspace echo",
+                description: "Echoes fixture input.",
+                parametersSchema: workspaceEchoSchema
+            )),
         ]
     )
 }
+
+private let workspaceEchoSchema: [String: AnyCodable] = [
+    "type": AnyCodable("object"),
+    "properties": AnyCodable([
+        "value": AnyCodable(["type": AnyCodable("string")]),
+    ]),
+    "required": AnyCodable(["value"]),
+]
 
 private func waitForWorkspace(_ catalog: NetworkCatalog, id: UUID) async throws {
     for _ in 0..<50 {
