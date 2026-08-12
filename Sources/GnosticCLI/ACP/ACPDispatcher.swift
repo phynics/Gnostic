@@ -112,10 +112,10 @@ final class ACPDispatcher: Sendable {
         )
         return .dictionary([
             "sessionId": .string(record.id),
-            "_meta": .dictionary([
+            "_meta": .dictionary(sessionMetadata(cwd: cwd, status: status).merging([
                 "gnosticAscendantID": .string(selected.id.uuidString.lowercased()),
                 "gnosticTimelineID": .string(record.timelineID.uuidString.lowercased()),
-            ]),
+            ]) { _, new in new }),
         ])
     }
 
@@ -124,9 +124,9 @@ final class ACPDispatcher: Sendable {
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
         let record = try await requireSession(id: input.sessionID, cwd: cwd)
-        _ = try await client.timelineStatus(timelineID: record.timelineID)
+        let status = try await client.timelineStatus(timelineID: record.timelineID)
         try await registry.touch(id: record.id)
-        return .dictionary([:])
+        return .dictionary(["_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status))])
     }
 
     private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
@@ -140,12 +140,13 @@ final class ACPDispatcher: Sendable {
             // Registry entries survive process restarts, but a deleted remote
             // Timeline must not be presented as resumable. Keep the metadata on
             // disk for diagnostics while omitting it from the ACP result.
-            guard (try? await client.timelineStatus(timelineID: record.timelineID)) != nil else { continue }
+            guard let status = try? await client.timelineStatus(timelineID: record.timelineID) else { continue }
             sessions.append(.dictionary([
                 "sessionId": .string(record.id),
                 "cwd": .string(record.cwd),
                 "title": .string(record.title),
                 "updatedAt": .string(Self.iso8601(record.updatedAt)),
+                "_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status)),
             ]))
         }
         return .dictionary(["sessions": .array(sessions)])
@@ -474,6 +475,22 @@ final class ACPDispatcher: Sendable {
             throw JSONRPCMethodError.invalidParams("cwd must be an absolute path")
         }
         return URL(fileURLWithPath: cwd).standardizedFileURL.path
+    }
+
+    /// ACP's cwd is client intent, not a host path that Gnostic may mount or
+    /// inspect. Report it alongside the timeline's actual attachment state so
+    /// clients can distinguish an attached runtime Workspace from their local
+    /// filesystem workspace.
+    private func sessionMetadata(cwd: String, status: TimelineStatus) -> [String: AnyCodable] {
+        [
+            "gnosticCWD": .string(cwd),
+            "gnosticWorkspaceAttachmentState": .string(
+                status.attachedWorkspaceIDs.isEmpty ? "none" : "attached"
+            ),
+            "gnosticAttachedWorkspaceIDs": .array(
+                status.attachedWorkspaceIDs.map { .string($0.uuidString.lowercased()) }
+            ),
+        ]
     }
 
     private func rejectMCP(_ servers: [AnyCodable]?) throws {

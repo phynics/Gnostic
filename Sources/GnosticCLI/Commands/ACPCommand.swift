@@ -17,6 +17,9 @@ struct ACPCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit a versioned profile source as JSON.")
     var json = false
 
+    @Flag(name: .long, help: "Refresh the short-lived cached profile discovery.")
+    var refresh = false
+
     @Option(name: .long, help: "MQTT broker host (overrides config).")
     var host: String?
 
@@ -38,7 +41,7 @@ struct ACPCommand: AsyncParsableCommand {
                 throw ValidationError("unknown acp operation: \(operation)")
             }
             guard json else { throw ValidationError("profiles requires --json") }
-            try await printProfiles(using: stored)
+            try await printProfiles(using: stored, refresh: refresh)
             return
         }
         guard !json else { throw ValidationError("--json requires the profiles operation") }
@@ -65,11 +68,21 @@ struct ACPCommand: AsyncParsableCommand {
     }
 
     @MainActor
-    private func printProfiles(using stored: CLIConfiguration) async throws {
-        let client = try GnosticRemoteClient(
+    private func printProfiles(using stored: CLIConfiguration, refresh: Bool) async throws {
+        let brokerKey = ACPProfileCacheKey(
             host: host ?? stored.mqttHost,
             port: port ?? stored.mqttPort,
             namespace: namespace ?? stored.mqttNamespace
+        )
+        let cache = ACPProfileCache()
+        if !refresh, let cached = cache.load(for: brokerKey) {
+            try writeProfiles(cached)
+            return
+        }
+        let client = try GnosticRemoteClient(
+            host: brokerKey.host,
+            port: brokerKey.port,
+            namespace: brokerKey.namespace
         )
         defer { client.stop() }
         try await client.connect()
@@ -92,6 +105,11 @@ struct ACPCommand: AsyncParsableCommand {
         // Dynamic profile sources may emit only their executable profiles;
         // profile selection remains owned by pi-acp-client's trusted config.
         let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: profiles)
+        try cache.store(bundle, for: brokerKey)
+        try writeProfiles(bundle)
+    }
+
+    private func writeProfiles(_ bundle: ACPProfileBundle) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         FileHandle.standardOutput.write(try encoder.encode(bundle) + Data([0x0A]))
