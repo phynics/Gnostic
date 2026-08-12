@@ -47,6 +47,8 @@ struct ServeCommand: AsyncParsableCommand {
         let port = self.port ?? stored.mqttPort
         let namespace = self.namespace ?? stored.mqttNamespace
         let mode: ServeApproveMode = approveMode.lowercased() == "deny" ? .deny : .auto
+        let terminationMonitor = ProcessTerminationMonitor()
+        defer { terminationMonitor.cancel() }
 
         // Serve chat turns run against the configured LLM from ~/.gnostic/config.json.
         // When no provider/model is configured, the serve still starts and each
@@ -56,7 +58,7 @@ struct ServeCommand: AsyncParsableCommand {
 
         let runtime = try await ServeRuntime(host: host, port: port, namespace: namespace, approveMode: mode, languageModel: model)
         do {
-            try await runtime.start()
+            guard try await start(runtime: runtime, until: terminationMonitor) else { return }
 
             let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
             let workspaceTools = [
@@ -91,14 +93,42 @@ struct ServeCommand: AsyncParsableCommand {
             print("gnostic serve online at \(host):\(port) namespace \(namespace) timeline \(runtime.servedTimelineID.uuidString.lowercased())")
             print("Press Ctrl-C to shut down.")
 
-            await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
-                // Block until SIGINT (the process exits); shutdown is best-effort.
-                _ = continuation
-            }
+            await terminationMonitor.wait()
         } catch {
             runtime.shutdown()
             throw error
         }
         runtime.shutdown()
+    }
+}
+
+private enum ServeStartupOutcome: Sendable {
+    case started
+    case terminated
+}
+
+@MainActor
+private func start(runtime: ServeRuntime, until terminationMonitor: ProcessTerminationMonitor) async throws -> Bool {
+    try await withThrowingTaskGroup(of: ServeStartupOutcome.self) { group in
+        group.addTask {
+            try await runtime.start()
+            return .started
+        }
+        group.addTask {
+            await terminationMonitor.wait()
+            return .terminated
+        }
+
+        let outcome = try await group.next() ?? .terminated
+        group.cancelAll()
+
+        if outcome == .terminated {
+            runtime.shutdown()
+            try? await group.waitForAll()
+            return false
+        }
+
+        try await group.waitForAll()
+        return true
     }
 }
