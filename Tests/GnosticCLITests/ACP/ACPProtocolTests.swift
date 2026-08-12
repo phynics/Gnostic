@@ -57,6 +57,34 @@ struct ACPProtocolTests {
     }
     #endif
 
+    @Test("ACP profile cache is bounded by broker configuration and TTL")
+    func profileCacheRoundTrip() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-cache-\(UUID().uuidString)")
+        let url = directory.appendingPathComponent("profiles.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = ACPProfileCache(url: url)
+        let key = ACPProfileCacheKey(host: "127.0.0.1", port: 1883, namespace: "cache-test")
+        let profile = ACPProfile(
+            id: "gnostic-agent",
+            name: "Agent",
+            command: "gnostic",
+            args: ["acp"],
+            env: [:]
+        )
+        let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: [profile])
+        let generatedAt = Date(timeIntervalSince1970: 10_000)
+
+        try cache.store(bundle, for: key, generatedAt: generatedAt)
+        #expect(cache.load(for: key, now: generatedAt.addingTimeInterval(29))?.profiles.map(\.id) == ["gnostic-agent"])
+        #expect(cache.load(for: key, now: generatedAt.addingTimeInterval(31)) == nil)
+        #expect(cache.load(
+            for: ACPProfileCacheKey(host: "127.0.0.1", port: 1883, namespace: "other"),
+            now: generatedAt.addingTimeInterval(1)
+        ) == nil)
+    }
+
     @Test("prompt accepts only text and carries the stable client turn id")
     func promptMetadata() throws {
         let params = ACPPromptParameters(

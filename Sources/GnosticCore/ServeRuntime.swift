@@ -39,6 +39,7 @@ public final class ServeRuntime {
     private let catalog: NetworkCatalog
     private let subscription: GnosticSubscription
     private let attachmentService: DiscoveredWorkspaceAttachmentService
+    private let networkTools: [AnyTool]
     private let projector: OrchestrationProjector
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
@@ -115,6 +116,11 @@ public final class ServeRuntime {
             persistence: .inMemory(),
             runtime: .init(
                 workspaceCreator: workspaceFactory,
+                runtimeToolPolicy: .init(
+                    installFilesystemTools: false,
+                    installTimelineObservationTools: true,
+                    installTimelineSendTool: true
+                ),
                 toolApprovalPolicy: AscendantToolApprovalPolicy(coordinator: permissionCoordinator)
             )
         ))
@@ -134,10 +140,15 @@ public final class ServeRuntime {
         attachmentService = DiscoveredWorkspaceAttachmentService(catalog: catalog,
             timelineManager: kit.timelineManager
         ) { _ in }
+        networkTools = [
+            ListNetworkObjectsTool(service: attachmentService).toAnyTool(),
+            InspectNetworkObjectTool(service: attachmentService).toAnyTool(),
+            AttachWorkspaceTool(service: attachmentService).toAnyTool(),
+        ]
 
         // Wire the unary operations, each emitting started/succeeded/denied/failed
         // trace records for operator traceability.
-        agentChat = AgentChatProvider(execute: { [kit, logger, turnCoordinator, turnUpdates] request in
+        agentChat = AgentChatProvider(execute: { [kit, logger, networkTools, turnCoordinator, turnUpdates] request in
             ServeTrace.operationStarted(
                 logger: logger,
                 operation: AgentChatProvider.chatOperation,
@@ -152,7 +163,8 @@ public final class ServeRuntime {
                         timelineID: request.timelineID,
                         message: request.message,
                         clientTurnID: request.clientTurnID,
-                        updates: turnUpdates
+                        updates: turnUpdates,
+                        additionalTools: networkTools
                     )
                 }
                 ServeTrace.operationSucceeded(
@@ -340,11 +352,13 @@ public final class ServeRuntime {
         timelineID: UUID,
         message: String,
         clientTurnID: String?,
-        updates: AscendantTurnUpdateStore
+        updates: AscendantTurnUpdateStore,
+        additionalTools: [AnyTool]
     ) async throws -> String {
         // Include the tools enabled on the served timeline so turns can invoke
-        // the attached workspace's tools (echo/list/read) rather than empty.
-        let tools = await kit.timelineManager.enabledTools(for: timelineID)
+        // the attached workspace's tools (echo/list/read), plus network discovery
+        // and attachment tools for the Ascendant itself.
+        let tools = await kit.timelineManager.enabledTools(for: timelineID) + additionalTools
         let stream = try await AscendantTurnPermissionContext.$current.withValue(
             clientTurnID.map {
                 AscendantTurnPermissionContext.Value(timelineID: timelineID, clientTurnID: $0)

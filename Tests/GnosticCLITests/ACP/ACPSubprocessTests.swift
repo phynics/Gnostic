@@ -380,6 +380,9 @@ struct ACPSubprocessTests {
             return
         }
         #expect(!sessionID.isEmpty)
+        #expect(metadata["gnosticCWD"] == .string("/tmp/acp-smoke"))
+        #expect(metadata["gnosticWorkspaceAttachmentState"] == .string("none"))
+        #expect(metadata["gnosticAttachedWorkspaceIDs"] == .array([]))
 
         let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
@@ -394,6 +397,21 @@ struct ACPSubprocessTests {
         ])))
         let listed = try await readResponse(from: &outputIterator)
         #expect(listed.error == nil)
+        guard case let .dictionary(listedResult) = listed.result,
+              case let .array(listedSessions) = listedResult["sessions"],
+              case let .dictionary(listedSession) = listedSessions.first else {
+            Issue.record("session/list returned no session")
+            return
+        }
+        guard case let .dictionary(listedMetadata) = listedSession["_meta"] else {
+            Issue.record("session/list returned no session metadata")
+            return
+        }
+        #expect(listedMetadata["gnosticCWD"] == .string("/tmp/acp-smoke"))
+        #expect(listedMetadata["gnosticWorkspaceAttachmentState"] == .string("attached"))
+        #expect(listedMetadata["gnosticAttachedWorkspaceIDs"] == .array([
+            .string(workspaceID.uuidString.lowercased())
+        ]))
 
         try send(JSONRPCRequest(id: .number(4), method: "session/prompt", params: .dictionary([
             "sessionId": .string(sessionID),
