@@ -2,6 +2,7 @@
 
 import Foundation
 import JSONSchema
+import JSONSchemaBuilder
 import PKShared
 import PositronicKit
 
@@ -14,7 +15,9 @@ public struct ListNetworkObjectsTool: Tool, Sendable {
     public let description = "Lists currently advertised Gnostic network objects."
     public let requiresPermission = false
     public let sideEffects: ToolSideEffects = .none
-    public var parametersSchema: Schema { Schema([:]) }
+    public var parametersSchema: Schema {
+        ToolParameterSchema.object {}.schemaDefinition
+    }
     public func canExecute() async -> Bool { true }
     public func execute(parameters _: [String: AnyCodable]) async throws -> ToolResult {
         let entries = await service.listNetworkObjects()
@@ -31,7 +34,16 @@ public struct InspectNetworkObjectTool: Tool, Sendable {
     public let description = "Inspects one provider-scoped advertised Gnostic object."
     public let requiresPermission = false
     public let sideEffects: ToolSideEffects = .none
-    public var parametersSchema: Schema { Schema(["objectId": AnyCodable("string"), "providerId": AnyCodable("string")]) }
+    public var parametersSchema: Schema {
+        ToolParameterSchema.object {
+            JSONProperty(key: "objectId") {
+                JSONString().description("UUID of the advertised Gnostic object to inspect.")
+            }.required()
+            JSONProperty(key: "providerId") {
+                JSONString().description("Provider ID returned by list_network_objects.")
+            }.required()
+        }.schemaDefinition
+    }
     public func canExecute() async -> Bool { true }
     public func execute(parameters: [String: AnyCodable]) async throws -> ToolResult {
         guard let rawID = parameters["objectId"]?.asString, let id = UUID(uuidString: rawID),
@@ -50,7 +62,16 @@ public struct AttachWorkspaceTool: Tool, Sendable {
     public let description = "Imports and attaches an unambiguous discovered workspace to a timeline."
     public let requiresPermission = true
     public let sideEffects: ToolSideEffects = .mutating
-    public var parametersSchema: Schema { Schema(["workspaceId": AnyCodable("string"), "timelineId": AnyCodable("string")]) }
+    public var parametersSchema: Schema {
+        ToolParameterSchema.object {
+            JSONProperty(key: "workspaceId") {
+                JSONString().description("UUID of the discovered Workspace to attach.")
+            }.required()
+            JSONProperty(key: "timelineId") {
+                JSONString().description("UUID of the Timeline that will own the attachment.")
+            }.required()
+        }.schemaDefinition
+    }
     public func canExecute() async -> Bool { true }
     public func execute(parameters: [String: AnyCodable]) async throws -> ToolResult {
         guard let workspaceRaw = parameters["workspaceId"]?.value as? String,

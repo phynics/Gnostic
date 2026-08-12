@@ -62,7 +62,13 @@ struct ServeCommand: AsyncParsableCommand {
 
             let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
             let workspaceTools = [
-                WorkspaceToolDefinition(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."),
+                WorkspaceToolDefinition(
+                    id: "workspace_echo",
+                    name: "Workspace echo",
+                    description: "Echoes fixture input.",
+                    parametersSchema: workspaceEchoParametersSchema,
+                    usageExample: #"{"value":"hello"}"#
+                ),
             ]
             let workspaceProvider = WorkspaceProvider(workspaceID: workspaceID, tools: workspaceTools) { toolID, arguments in
                 switch toolID {
@@ -132,3 +138,15 @@ private func start(runtime: ServeRuntime, until terminationMonitor: ProcessTermi
         return true
     }
 }
+
+private let workspaceEchoParametersSchema: [String: AnyCodable] = [
+    "type": AnyCodable("object"),
+    "properties": AnyCodable([
+        "value": AnyCodable([
+            "type": AnyCodable("string"),
+            "description": AnyCodable("Text to echo."),
+        ]),
+    ]),
+    "required": AnyCodable(["value"]),
+    "additionalProperties": AnyCodable(false),
+]
