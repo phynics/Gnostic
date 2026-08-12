@@ -1,12 +1,12 @@
 {
-  "originHash" : "5264b54714a5b43a95cdf7e54bc760ea5fc36500ddc5c274867fda654d15f8a9",
+  "originHash" : "3e3d9a3b92e3c27c0f0e9bac61a698df52d96af4ca42cef2a1fd9e28f578ff9b",
   "pins" : [
     {
       "identity" : "axoloty",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/phynics/Axoloty.git",
       "state" : {
-        "revision" : "f18e867c7ac4affd65f0c12708ed928afbeb475f"
+        "revision" : "7410bb2098203498e92f94d6d39f6121fb8d3a17"
       }
     },
     {
