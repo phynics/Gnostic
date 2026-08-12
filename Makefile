@@ -34,7 +34,7 @@ worktree-bootstrap: resolve
 build: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh swift build $(SWIFT_LOCKED_ARGS)
 
-test: require-package image
+test: build
 	@mkdir -p .testing
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; GNOSTIC_SERVE_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic swift test $(SWIFT_LOCKED_ARGS) | tee .testing/swift-test.log && grep -Eq "Test run with [1-9][0-9]* tests" .testing/swift-test.log'
 
