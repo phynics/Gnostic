@@ -200,15 +200,15 @@ public struct AgentChatProvider: Sendable {
     }
 
     @MainActor
-    public func register(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.chatOperation) { [self] request in
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
+        try await communication.registerCallHandler(operation: Self.chatOperation, context: context) { [self] request in
             try await handle(parameters: request.parameters)
         }
     }
 
     @MainActor
-    public func registerReplay(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.replayOperation) { [self] request in
+    public func registerReplay(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
+        try await communication.registerCallHandler(operation: Self.replayOperation, context: context) { [self] request in
             try await handleReplay(parameters: request.parameters)
         }
     }

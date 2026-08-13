@@ -244,7 +244,9 @@ public actor JSONRPCSession {
     private func errorObject(for error: RemoteChatClientError) -> JSONRPCErrorObject {
         let code: JSONRPCErrorCode = switch error {
         case .brokerUnreachable: .internalError
-        case .noServedAgent, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached: .invalidState
+        case .noServedAgent, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
+             .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .timelineUnavailable,
+             .timelineAmbiguous, .providerMismatch: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI: .invalidParams
         }
         return JSONRPCErrorObject(

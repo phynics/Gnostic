@@ -16,6 +16,12 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
     case approvalRequired
     case toolNotAdvertised
     case invalidWorkspaceURI
+    case ambiguousAscendant
+    case ascendantUnavailable(UUID)
+    case providerUnavailable(String)
+    case timelineUnavailable(UUID)
+    case timelineAmbiguous(UUID)
+    case providerMismatch
 
     public var errorDescription: String? {
         switch self {
@@ -27,6 +33,12 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
         case .approvalRequired: "This tool requires explicit approval."
         case .toolNotAdvertised: "The requested tool is not advertised by the workspace."
         case .invalidWorkspaceURI: "The workspace advertised an invalid URI."
+        case .ambiguousAscendant: "More than one Ascendant was discovered; select one explicitly."
+        case let .ascendantUnavailable(id): "Ascendant \(id.uuidString.lowercased()) was not discovered."
+        case let .providerUnavailable(id): "Provider \(id.lowercased()) was not discovered."
+        case let .timelineUnavailable(id): "Timeline \(id.uuidString.lowercased()) was not discovered."
+        case let .timelineAmbiguous(id): "Timeline \(id.uuidString.lowercased()) is advertised by more than one Node."
+        case .providerMismatch: "The response came from a different provider than the addressed Node."
         }
     }
 
@@ -41,6 +53,12 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
         case .approvalRequired: "approvalRequired"
         case .toolNotAdvertised: "toolNotAdvertised"
         case .invalidWorkspaceURI: "invalidWorkspaceURI"
+        case .ambiguousAscendant: "ambiguousAscendant"
+        case .ascendantUnavailable: "ascendantUnavailable"
+        case .providerUnavailable: "providerUnavailable"
+        case .timelineUnavailable: "timelineUnavailable"
+        case .timelineAmbiguous: "timelineAmbiguous"
+        case .providerMismatch: "providerMismatch"
         }
     }
 }
@@ -52,6 +70,19 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
 /// PositronicKit runtime.
 @MainActor
 public final class RemoteChatClient: Sendable {
+    public struct DiscoveredAscendant: Sendable, Equatable {
+        public let id: UUID
+        public let name: String
+        public let timelineID: UUID
+        public let providerID: String
+
+        public init(id: UUID, name: String, timelineID: UUID, providerID: String) {
+            self.id = id
+            self.name = name
+            self.timelineID = timelineID
+            self.providerID = providerID
+        }
+    }
     public let host: String
     public let port: Int
     public let namespace: String
@@ -140,6 +171,18 @@ public final class RemoteChatClient: Sendable {
         return await catalog.networkObjects()
     }
 
+    public func discoverAscendants() async -> [DiscoveredAscendant] {
+        await refreshCatalog()
+        return await catalog.networkObjects()
+            .filter { $0.objectType == GnosticObjectType.agent }
+            .compactMap { entry in
+                guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
+                      let timelineID = UUID(uuidString: raw) else { return nil }
+                return DiscoveredAscendant(id: entry.objectID, name: entry.name, timelineID: timelineID, providerID: entry.providerID)
+            }
+            .sorted { ($0.id.uuidString, $0.providerID) < ($1.id.uuidString, $1.providerID) }
+    }
+
     /// Invokes an advertised workspace tool through the existing Axoloty connection.
     public func invokeWorkspace(
         workspaceID: UUID,
@@ -162,7 +205,7 @@ public final class RemoteChatClient: Sendable {
         guard currentProvider == providerID, descriptor.isAvailable else {
             throw RemoteChatClientError.workspaceUnavailable
         }
-        let timeline = try await timelineStatus(timelineID: timelineID)
+        let timeline = try await timelineStatus(timelineID: timelineID, providerID: providerID)
         guard timeline.attachedWorkspaceIDs.contains(workspaceID) else {
             throw RemoteChatClientError.timelineNotAttached
         }
@@ -184,20 +227,6 @@ public final class RemoteChatClient: Sendable {
         return try await workspace.executeTool(id: toolID, parameters: parameters)
     }
 
-    /// Discovers the served Agent's timeline ID from advertised objects.
-    public func discoverServedTimeline() async throws -> UUID {
-        await subscription.discover(using: manager, timeout: timeout)
-        let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
-        if let timeline = agents.lazy.compactMap({ entry -> UUID? in
-            guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
-                  let id = UUID(uuidString: raw) else { return nil }
-            return id
-        }).first {
-            return timeline
-        }
-        throw RemoteChatClientError.noServedAgent
-    }
-
     /// Runs one chat turn over `agent.chat`.
     public func chat(message: String, timelineID: UUID) async throws -> String {
         try await chat(message: message, timelineID: timelineID, clientTurnID: nil).text
@@ -209,14 +238,16 @@ public final class RemoteChatClient: Sendable {
     public func chat(
         message: String,
         timelineID: UUID,
-        clientTurnID: String?
+        clientTurnID: String?,
+        providerID: String? = nil
     ) async throws -> AgentChatResult {
         let payload = try JSONEncoder().encode(
             AgentChatRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
         )
-        let response = try await manager.call(
+        let response = try await call(
             operation: AgentChatProvider.chatOperation,
             parameters: String(decoding: payload, as: UTF8.self),
+            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: promptTimeout
         )
         return try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
@@ -229,24 +260,28 @@ public final class RemoteChatClient: Sendable {
         timelineID: UUID,
         clientTurnID: String,
         message: String? = nil,
-        afterSequence: Int = 0
+        afterSequence: Int = 0,
+        providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
         let payload = try JSONEncoder().encode(
             AgentChatReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
         )
-        let response = try await manager.call(
+        let response = try await call(
             operation: AgentChatProvider.replayOperation,
             parameters: String(decoding: payload, as: UTF8.self),
+            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: timeout
         )
         return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
     }
 
-    public func observeTurnUpdates() async throws -> AsyncStream<AscendantTurnUpdateStore.Event> {
+    public func observeTurnUpdates(providerID: String? = nil) async throws -> AsyncStream<AscendantTurnUpdateStore.Event> {
         let snapshots = try await manager.observeChannelStream(channelId: AgentChatProvider.updateChannel)
         return AsyncStream { continuation in
             let task = Task {
                 for await snapshot in snapshots {
+                    if let providerID,
+                       snapshot.sourceId?.lowercased() != providerID.lowercased() { continue }
                     guard let raw = snapshot.privateData,
                           let event = try? JSONDecoder().decode(
                             AscendantTurnUpdateStore.Event.self,
@@ -260,79 +295,168 @@ public final class RemoteChatClient: Sendable {
         }
     }
 
-    public func respondToPermission(_ permission: AgentPermissionResponse) async throws {
-        manager.publishChannel(try AgentPermissionProvider.responseEvent(permission))
+    public func respondToPermission(_ permission: AgentPermissionResponse, providerID: String? = nil) async throws {
+        manager.publishChannel(try AgentPermissionProvider.responseEvent(permission.targeted(to: providerID)))
     }
 
     /// Reads the served timeline's attachment state.
-    public func timelineStatus(timelineID: UUID) async throws -> TimelineStatus {
+    public func timelineStatus(timelineID: UUID, providerID: String? = nil) async throws -> TimelineStatus {
         let payload = try JSONEncoder().encode(TimelineStatusRequest(timelineID: timelineID))
-        let response = try await manager.call(
+        let response = try await call(
             operation: TimelineStatusProvider.statusOperation,
             parameters: String(decoding: payload, as: UTF8.self),
+            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: timeout
         )
         return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
     /// Creates a new timeline on the serve and returns its status.
-    public func createTimeline(title: String) async throws -> TimelineStatus {
-        let payload = try JSONEncoder().encode(TimelineCreateRequest(title: title))
-        let response = try await manager.call(
+    public func createTimeline(title: String, ascendantID: UUID? = nil, providerID: String? = nil) async throws -> TimelineStatus {
+        let payload = try JSONEncoder().encode(TimelineCreateRequest(title: title, ascendantID: ascendantID))
+        let targetProvider: String?
+        if let providerID {
+            targetProvider = providerID
+        } else if let ascendantID {
+            targetProvider = try await selectAscendant(id: ascendantID).providerID
+        } else {
+            targetProvider = try await selectAscendant(id: nil).providerID
+        }
+        let response = try await call(
             operation: TimelineManagementProvider.createOperation,
             parameters: String(decoding: payload, as: UTF8.self),
+            providerID: targetProvider,
             timeout: timeout
         )
         return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
     /// Lists every timeline the serve manages.
-    public func listTimelines() async throws -> [TimelineStatus] {
-        let response = try await manager.call(
+    public func listTimelines(providerID: String? = nil) async throws -> [TimelineStatus] {
+        let targetProvider: String?
+        if let providerID { targetProvider = providerID } else { targetProvider = try await singleProviderID() }
+        let response = try await call(
             operation: TimelineManagementProvider.listOperation,
+            providerID: targetProvider,
             timeout: timeout
         )
         return try JSONDecoder().decode(TimelineListResult.self, from: Data(response.result.utf8)).timelines
     }
 
     /// Renames a timeline and returns its updated status.
-    public func updateTimeline(timelineID: UUID, title: String) async throws -> TimelineStatus {
+    public func updateTimeline(timelineID: UUID, title: String, providerID: String? = nil) async throws -> TimelineStatus {
         let payload = try JSONEncoder().encode(TimelineUpdateRequest(timelineID: timelineID, title: title))
-        let response = try await manager.call(
+        let response = try await call(
             operation: TimelineManagementProvider.updateOperation,
             parameters: String(decoding: payload, as: UTF8.self),
+            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: timeout
         )
         return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
     /// Lists attachable workspaces.
-    public func listWorkspaces() async throws -> [WorkspaceListing] {
-        let response = try await manager.call(
+    public func listWorkspaces(providerID: String? = nil) async throws -> [WorkspaceListing] {
+        let targetProvider: String?
+        if let providerID { targetProvider = providerID } else { targetProvider = try await singleProviderID() }
+        let response = try await call(
             operation: WorkspaceOpsProvider.listOperation,
+            providerID: targetProvider,
             timeout: timeout
         )
         return try JSONDecoder().decode(WorkspaceListResult.self, from: Data(response.result.utf8)).workspaces
     }
 
     /// Attaches a workspace to a timeline.
-    public func attach(workspaceID: UUID, timelineID: UUID) async throws -> Bool {
-        try await mutate(operation: WorkspaceOpsProvider.attachOperation, workspaceID: workspaceID, timelineID: timelineID)
+    public func attach(workspaceID: UUID, timelineID: UUID, providerID: String? = nil) async throws -> Bool {
+        try await mutate(operation: WorkspaceOpsProvider.attachOperation, workspaceID: workspaceID, timelineID: timelineID, providerID: providerID)
     }
 
     /// Detaches a workspace from a timeline.
-    public func detach(workspaceID: UUID, timelineID: UUID) async throws -> Bool {
-        try await mutate(operation: WorkspaceOpsProvider.detachOperation, workspaceID: workspaceID, timelineID: timelineID)
+    public func detach(workspaceID: UUID, timelineID: UUID, providerID: String? = nil) async throws -> Bool {
+        try await mutate(operation: WorkspaceOpsProvider.detachOperation, workspaceID: workspaceID, timelineID: timelineID, providerID: providerID)
     }
 
-    private func mutate(operation: String, workspaceID: UUID, timelineID: UUID) async throws -> Bool {
+    private func mutate(operation: String, workspaceID: UUID, timelineID: UUID, providerID: String? = nil) async throws -> Bool {
         let payload = try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID))
-        let response = try await manager.call(
+        let response = try await call(
             operation: operation,
             parameters: String(decoding: payload, as: UTF8.self),
+            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: timeout
         )
         return response.result == "true"
+    }
+
+    public func discoverServedTimeline(ascendantID: UUID? = nil) async throws -> UUID {
+        try await selectAscendant(id: ascendantID).timelineID
+    }
+
+    public func selectAscendant(id ascendantID: UUID? = nil, providerID: String? = nil) async throws -> DiscoveredAscendant {
+        let candidates = await discoverAscendants()
+        if ascendantID != nil || providerID != nil {
+            let matches = candidates.filter {
+                (ascendantID == nil || $0.id == ascendantID)
+                    && (providerID == nil || $0.providerID.lowercased() == providerID?.lowercased())
+            }
+            guard let candidate = matches.first else {
+                if let ascendantID { throw RemoteChatClientError.ascendantUnavailable(ascendantID) }
+                throw RemoteChatClientError.providerUnavailable(providerID ?? "")
+            }
+            guard matches.count == 1 else { throw RemoteChatClientError.ambiguousAscendant }
+            return candidate
+        }
+        guard candidates.count == 1 else {
+            if candidates.isEmpty { throw RemoteChatClientError.noServedAgent }
+            throw RemoteChatClientError.ambiguousAscendant
+        }
+        return candidates[0]
+    }
+
+    private func discoveredProviderID(forTimeline timelineID: UUID) async throws -> String {
+        await refreshCatalog()
+        let providers = Set(await catalog.networkObjects().compactMap {
+            $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID ? $0.providerID : nil
+        })
+        guard let provider = providers.first else { throw RemoteChatClientError.timelineUnavailable(timelineID) }
+        guard providers.count == 1 else { throw RemoteChatClientError.timelineAmbiguous(timelineID) }
+        return provider
+    }
+
+    private func resolvedProviderID(_ explicit: String?, forTimeline timelineID: UUID) async throws -> String {
+        if let explicit { return explicit }
+        return try await discoveredProviderID(forTimeline: timelineID)
+    }
+
+    private func singleProviderID() async throws -> String {
+        await refreshCatalog()
+        let entries = await catalog.networkObjects()
+        let providers = Set(entries.compactMap {
+            $0.objectType == GnosticObjectType.agent || $0.objectType == GnosticObjectType.timeline ? $0.providerID : nil
+        })
+        guard let provider = providers.first else { throw RemoteChatClientError.noServedAgent }
+        guard providers.count == 1 else { throw RemoteChatClientError.ambiguousAscendant }
+        return provider
+    }
+
+    private func call(operation: String, parameters: String? = nil, providerID: String?, timeout: Duration) async throws -> UnaryCallResult {
+        let response = try await manager.call(
+            operation: operation,
+            parameters: parameters,
+            context: providerID.map(Self.providerContext),
+            timeout: timeout
+        )
+        if let providerID, response.sourceId?.lowercased() != providerID.lowercased() {
+            throw RemoteChatClientError.providerMismatch
+        }
+        return response
+    }
+
+    private static func providerContext(_ providerID: String) -> ObjectFilter {
+        ObjectFilter(condition: ObjectFilterCondition(
+            property: ObjectFilterProperty("objectId"),
+            expression: .equals(FilterOperand(providerID.lowercased()))
+        ))
     }
 }
 

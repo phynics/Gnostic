@@ -81,33 +81,45 @@ public struct TimelineManagementProvider: Sendable {
             } else {
                 return .failure(code: 400, message: "Invalid timeline.create payload")
             }
-            let status = try await create(request.title, request.ascendantID)
-            let encoded = try JSONEncoder().encode(status)
-            return .success(result: String(decoding: encoded, as: UTF8.self))
+            do {
+                let status = try await create(request.title, request.ascendantID)
+                let encoded = try JSONEncoder().encode(status)
+                return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch let error as NodeRuntimeError {
+                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+            }
         case Self.listOperation:
-            let statuses = try await list()
-            let encoded = try JSONEncoder().encode(TimelineListResult(timelines: statuses))
-            return .success(result: String(decoding: encoded, as: UTF8.self))
+            do {
+                let statuses = try await list()
+                let encoded = try JSONEncoder().encode(TimelineListResult(timelines: statuses))
+                return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch let error as NodeRuntimeError {
+                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+            }
         case Self.updateOperation:
             guard let parameters,
                   let request = try? JSONDecoder().decode(TimelineUpdateRequest.self, from: Data(parameters.utf8)) else {
                 return .failure(code: 400, message: "Invalid timeline.update payload")
             }
-            let status = try await update(request)
-            let encoded = try JSONEncoder().encode(status)
-            return .success(result: String(decoding: encoded, as: UTF8.self))
+            do {
+                let status = try await update(request)
+                let encoded = try JSONEncoder().encode(status)
+                return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch let error as NodeRuntimeError {
+                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+            }
         default:
             return .failure(code: 404, message: "Unknown timeline operation")
         }
     }
 
     @MainActor
-    public func register(on communication: CommunicationManager) async throws -> [CallHandlerRegistration] {
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
         var registrations: [CallHandlerRegistration] = []
         do {
             for operation in [Self.createOperation, Self.listOperation, Self.updateOperation] {
                 let op = operation
-                registrations.append(try await communication.registerCallHandler(operation: op) { [self] request in
+                registrations.append(try await communication.registerCallHandler(operation: op, context: context) { [self] request in
                     try await handle(operation: op, parameters: request.parameters)
                 })
             }

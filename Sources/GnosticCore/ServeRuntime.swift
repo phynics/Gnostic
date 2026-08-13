@@ -248,10 +248,13 @@ public final class ServeRuntime {
     public func start() async throws {
         try await container.startAndWaitUntilReady()
         try await subscription.start()
-        registrations.append(try await agentChat.register(on: communication))
-        registrations.append(try await agentChat.registerReplay(on: communication))
-        registrations.append(try await agentPermission.register(on: communication))
-        permissionResponseTask = try await agentPermission.observeResponses(on: communication)
+        registrations.append(try await agentChat.register(on: communication, context: communication.identity))
+        registrations.append(try await agentChat.registerReplay(on: communication, context: communication.identity))
+        registrations.append(try await agentPermission.register(on: communication, context: communication.identity))
+        permissionResponseTask = try await agentPermission.observeResponses(
+            on: communication,
+            providerID: communication.identity.objectId.string
+        )
         let events = await turnUpdates.events()
         turnUpdatePublishTask = Task { [communication] in
             for await event in events {
@@ -259,9 +262,9 @@ public final class ServeRuntime {
                 communication.publishChannel(channel)
             }
         }
-        registrations.append(try await timelineStatus.register(on: communication))
-        registrations += try await timelineManagement.register(on: communication)
-        registrations += try await workspaceOps.register(on: communication)
+        registrations.append(try await timelineStatus.register(on: communication, context: communication.identity))
+        registrations += try await timelineManagement.register(on: communication, context: communication.identity)
+        registrations += try await workspaceOps.register(on: communication, context: communication.identity)
 
         discoverResponder = await communication.registerDiscoverResponder { [weak self] request in
             guard let self else { return }

@@ -28,10 +28,14 @@ private final class ActiveTimelineBox: @unchecked Sendable {
 public final class RemoteChatSession: Sendable, ChatTurnRunning {
     private let client: RemoteChatClient
     private let activeTimeline: ActiveTimelineBox
+    private let ascendantID: UUID?
+    private let providerID: String?
 
-    public init(client: RemoteChatClient, timelineID: UUID) {
+    public init(client: RemoteChatClient, timelineID: UUID, ascendantID: UUID? = nil, providerID: String? = nil) {
         self.client = client
         self.activeTimeline = ActiveTimelineBox(timelineID)
+        self.ascendantID = ascendantID
+        self.providerID = providerID
     }
 
     /// The id of the currently active timeline.
@@ -45,7 +49,11 @@ public final class RemoteChatSession: Sendable, ChatTurnRunning {
     /// Creates a new timeline, activates it, and returns its status.
     @discardableResult
     public func createActivateTimeline(title: String) async throws -> TimelineStatus {
-        let status = try await client.createTimeline(title: title)
+        let status = try await client.createTimeline(
+            title: title,
+            ascendantID: ascendantID,
+            providerID: try await selectedProviderID()
+        )
         switchTimeline(to: status.timelineID)
         return status
     }
@@ -53,12 +61,12 @@ public final class RemoteChatSession: Sendable, ChatTurnRunning {
     /// Renames the active timeline.
     @discardableResult
     public func renameActiveTimeline(title: String) async throws -> TimelineStatus {
-        try await client.updateTimeline(timelineID: timelineID, title: title)
+        try await client.updateTimeline(timelineID: timelineID, title: title, providerID: try await selectedProviderID())
     }
 
     /// Lists every timeline the serve manages.
     public func listTimelines() async throws -> [TimelineStatus] {
-        try await client.listTimelines()
+        try await client.listTimelines(providerID: try await selectedProviderID())
     }
 
     /// One turn over the `agent.chat` unary. The serve may fail the turn (e.g.
@@ -66,8 +74,8 @@ public final class RemoteChatSession: Sendable, ChatTurnRunning {
     /// alive.
     public func run(line: String) async throws -> ChatTurnResult {
         do {
-            let text = try await client.chat(message: line, timelineID: timelineID)
-            return .text(text)
+            let text = try await client.chat(message: line, timelineID: timelineID, clientTurnID: nil, providerID: try await selectedProviderID())
+            return .text(text.text)
         } catch {
             return .failed(String(describing: error))
         }
@@ -77,22 +85,27 @@ public final class RemoteChatSession: Sendable, ChatTurnRunning {
 
     /// The workspaces currently attached to the active timeline.
     public func attachedWorkspaceIDs() async throws -> [UUID] {
-        let status = try await client.timelineStatus(timelineID: timelineID)
+        let status = try await client.timelineStatus(timelineID: timelineID, providerID: try await selectedProviderID())
         return status.attachedWorkspaceIDs
     }
 
     /// The workspaces the serve can attach.
     public func attachableWorkspaces() async throws -> [WorkspaceListing] {
-        try await client.listWorkspaces()
+        try await client.listWorkspaces(providerID: try await selectedProviderID())
     }
 
     /// Attaches a workspace to the active timeline; `false` when denied.
     public func attach(_ workspaceID: UUID) async throws -> Bool {
-        try await client.attach(workspaceID: workspaceID, timelineID: timelineID)
+        try await client.attach(workspaceID: workspaceID, timelineID: timelineID, providerID: try await selectedProviderID())
     }
 
     /// Detaches a workspace from the active timeline; `false` when denied.
     public func detach(_ workspaceID: UUID) async throws -> Bool {
-        try await client.detach(workspaceID: workspaceID, timelineID: timelineID)
+        try await client.detach(workspaceID: workspaceID, timelineID: timelineID, providerID: try await selectedProviderID())
+    }
+
+    private func selectedProviderID() async throws -> String {
+        if let providerID { return providerID }
+        return try await client.selectAscendant(id: ascendantID).providerID
     }
 }

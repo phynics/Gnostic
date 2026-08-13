@@ -23,6 +23,9 @@ struct ChatCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT namespace (overrides config).")
     var namespace: String?
 
+    @Option(name: .long, help: "Ascendant UUID to pin for this chat process.")
+    var ascendant: String?
+
     @MainActor
     func run() async throws {
         let store = CLIConfigurationStore()
@@ -39,11 +42,14 @@ struct ChatCommand: AsyncParsableCommand {
         // timelines and select one as active. With multi-timeline ownership, the
         // enumeration source is timeline.list; default to the first timeline (or
         // the advertised default when none is listed yet).
-        let defaultID = try await client.discoverServedTimeline()
-        let timelines = try await client.listTimelines()
-        let timelineID = timelines.first?.timelineID ?? defaultID
+        let ascendantID = try ascendant.map { value in
+            guard let id = UUID(uuidString: value) else { throw ValidationError("--ascendant must be a UUID") }
+            return id
+        }
+        let selectedAscendant = try await client.selectAscendant(id: ascendantID)
+        let timelineID = selectedAscendant.timelineID
 
-        let session = RemoteChatSession(client: client, timelineID: timelineID)
+        let session = RemoteChatSession(client: client, timelineID: timelineID, ascendantID: selectedAscendant.id, providerID: selectedAscendant.providerID)
         let repl = ChatREPL(
             session: session,
             timelineID: timelineID,

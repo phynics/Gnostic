@@ -9,9 +9,15 @@ struct ACPServer: Sendable {
     private let client: GnosticRemoteClient
     private let requestBroker: ACPClientRequestBroker
 
-    init(client: GnosticRemoteClient, ascendantID: UUID?, registry: ACPSessionRegistry, output: @escaping JSONRPCSession.Output = { data in
+    init(
+        client: GnosticRemoteClient,
+        ascendantID: UUID?,
+        providerID: String? = nil,
+        registry: ACPSessionRegistry,
+        output: @escaping JSONRPCSession.Output = { data in
         FileHandle.standardOutput.write(data)
-    }) {
+        }
+    ) {
         self.client = client
         let requestBroker = ACPClientRequestBroker(output: output)
         self.requestBroker = requestBroker
@@ -19,6 +25,7 @@ struct ACPServer: Sendable {
             client: client,
             registry: registry,
             requestedAscendantID: ascendantID,
+            requestedProviderID: providerID,
             publish: { method, params in
                 let request = JSONRPCRequest(id: nil, method: method, params: params)
                 guard let data = try? JSONEncoder().encode(request) else { return }

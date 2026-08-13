@@ -8,12 +8,24 @@ public struct AgentPermissionResponse: Codable, Sendable {
     public let timelineID: UUID
     public let clientTurnID: String
     public let approved: Bool
+    public let targetProviderID: String?
 
-    public init(correlationID: String, timelineID: UUID, clientTurnID: String, approved: Bool) {
+    public init(correlationID: String, timelineID: UUID, clientTurnID: String, approved: Bool, targetProviderID: String? = nil) {
         self.correlationID = correlationID
         self.timelineID = timelineID
         self.clientTurnID = clientTurnID
         self.approved = approved
+        self.targetProviderID = targetProviderID
+    }
+
+    public func targeted(to providerID: String?) -> Self {
+        Self(
+            correlationID: correlationID,
+            timelineID: timelineID,
+            clientTurnID: clientTurnID,
+            approved: approved,
+            targetProviderID: providerID
+        )
     }
 }
 
@@ -50,8 +62,8 @@ public struct AgentPermissionProvider: Sendable {
     }
 
     @MainActor
-    public func register(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.responseOperation) { [self] request in
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
+        try await communication.registerCallHandler(operation: Self.responseOperation, context: context) { [self] request in
             try await handle(parameters: request.parameters)
         }
     }
@@ -59,7 +71,7 @@ public struct AgentPermissionProvider: Sendable {
     /// Observes one-way permission responses without competing with an active
     /// `agent.chat` Call/Return handler on the same communication manager.
     @MainActor
-    public func observeResponses(on communication: CommunicationManager) async throws -> Task<Void, Never> {
+    public func observeResponses(on communication: CommunicationManager, providerID: String? = nil) async throws -> Task<Void, Never> {
         let stream = try await communication.observeChannelStream(channelId: Self.responseChannel)
         return Task { [coordinator] in
             for await snapshot in stream {
@@ -68,6 +80,9 @@ public struct AgentPermissionProvider: Sendable {
                           AgentPermissionResponse.self,
                           from: Data(raw.utf8)
                       ) else { continue }
+                if let target = response.targetProviderID,
+                   let providerID,
+                   target.lowercased() != providerID.lowercased() { continue }
                 _ = await coordinator.respond(
                     correlationID: response.correlationID,
                     timelineID: response.timelineID,

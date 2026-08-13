@@ -57,14 +57,16 @@ public struct TimelineStatusProvider: Sendable {
             let status = try await executor(request)
             let encoded = try JSONEncoder().encode(status)
             return .success(result: String(decoding: encoded, as: UTF8.self))
+        } catch let error as NodeRuntimeError {
+            return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
         } catch {
             return .failure(code: 500, message: String(describing: error))
         }
     }
 
     @MainActor
-    public func register(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.statusOperation) { [self] request in
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
+        try await communication.registerCallHandler(operation: Self.statusOperation, context: context) { [self] request in
             try await handle(parameters: request.parameters)
         }
     }
