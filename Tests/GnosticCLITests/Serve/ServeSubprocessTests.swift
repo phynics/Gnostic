@@ -13,6 +13,81 @@ import Darwin
 
 @Suite("Serve subprocess", .serialized)
 struct ServeSubprocessTests {
+    @Test("effective launch plan preserves manifest node settings without CLI overrides")
+    func effectiveLaunchPlanPreservesManifestNodeSettings() throws {
+        let manifest = NodeManifest.makeDefault(
+            broker: .init(host: "manifest.example", port: 1_883, namespace: "manifest")
+        )
+        var configuredManifest = manifest
+        configuredManifest.node.approvalMode = "deny"
+        configuredManifest.node.logLevel = "warning"
+        let expectedTimelineIDs = configuredManifest.timelines.map(\.id)
+
+        var manifestLoads = 0
+        let plan = try ServeLaunchPlan.load(
+            manifest: {
+                manifestLoads += 1
+                return configuredManifest
+            },
+            configuration: { _ in
+                // Simulate a concurrent manifest write after the load has
+                // released its file lock. The plan must retain the snapshot.
+                configuredManifest.node.approvalMode = "auto"
+                configuredManifest.timelines = []
+                return .init(
+                    mqttHost: "environment.example",
+                    mqttPort: 1_884,
+                    mqttNamespace: "environment",
+                    mqttUsername: "environment-user",
+                    mqttPassword: "environment-secret",
+                    llmProvider: nil,
+                    llmEndpoint: nil,
+                    llmModel: nil,
+                    llmUtilityModel: nil,
+                    llmFastModel: nil,
+                    llmAPIKey: nil
+                )
+            },
+            overrides: .init(host: nil, port: nil, namespace: nil, approvalMode: nil, logLevel: nil)
+        )
+
+        #expect(manifestLoads == 1)
+        #expect(plan.broker.host == "environment.example")
+        #expect(plan.broker.port == 1_884)
+        #expect(plan.broker.namespace == "environment")
+        #expect(plan.broker.username == "environment-user")
+        #expect(plan.broker.password == "environment-secret")
+        #expect(plan.node.approvalMode == "deny")
+        #expect(plan.node.logLevel == "warning")
+        #expect(plan.timelines.map(\.id) == expectedTimelineIDs)
+    }
+
+    @Test("effective launch plan validates explicit CLI overrides after precedence")
+    func effectiveLaunchPlanValidatesExplicitOverrides() throws {
+        let manifest = NodeManifest.makeDefault(
+            broker: .init(host: "manifest.example", port: 1_883, namespace: "manifest")
+        )
+
+        let plan = try ServeLaunchPlan.compile(
+            manifest: manifest,
+            configuration: .defaults,
+            overrides: .init(host: "cli.example", port: 1_885, namespace: "cli", approvalMode: "deny", logLevel: "error")
+        )
+        #expect(plan.broker.host == "cli.example")
+        #expect(plan.broker.port == 1_885)
+        #expect(plan.broker.namespace == "cli")
+        #expect(plan.node.approvalMode == "deny")
+        #expect(plan.node.logLevel == "error")
+
+        #expect(throws: NodeManifestError.invalidNodeSettings) {
+            try ServeLaunchPlan.compile(
+                manifest: manifest,
+                configuration: .defaults,
+                overrides: .init(host: nil, port: nil, namespace: nil, approvalMode: "invalid", logLevel: nil)
+            )
+        }
+    }
+
     @Test("SIGTERM gracefully stops gnostic serve", .timeLimit(.minutes(1)))
     @MainActor
     func sigtermStopsServe() async throws {

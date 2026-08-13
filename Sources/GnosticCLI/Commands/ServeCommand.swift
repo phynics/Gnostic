@@ -27,11 +27,11 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT namespace (overrides config).")
     var namespace: String?
 
-    @Option(name: .long, help: "Approval mode for workspace attach/detach: auto or deny.")
-    var approveMode: String = "auto"
+    @Option(name: .long, help: "Approval mode for workspace attach/detach (overrides config): auto or deny.")
+    var approveMode: String?
 
-    @Option(name: .long, help: "Log level: debug, info, warning, or error (default info).")
-    var logLevel: String = "info"
+    @Option(name: .long, help: "Log level (overrides config): trace, debug, info, warning, or error.")
+    var logLevel: String?
 
     /// Runs the serve process until interrupted.
     @MainActor
@@ -39,61 +39,92 @@ struct ServeCommand: AsyncParsableCommand {
         let terminationMonitor = ProcessTerminationMonitor()
         defer { terminationMonitor.cancel() }
 
-        // Configure SwiftLog so serve emits timestamped, parseable records.
-        let level = Logger.Level(rawValue: logLevel.lowercased()) ?? .info
-        LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardOutput(label: label)
-            handler.logLevel = level
-            return handler
-        }
-
         let store = CLIConfigurationStore(configPath: configPath.map { URL(fileURLWithPath: $0) })
         do {
-            _ = try store.loadManifest().compileLaunchPlan()
+            let plan = try ServeLaunchPlan.load(
+                manifest: store.loadManifest,
+                configuration: store.effectiveConfiguration(for:),
+                overrides: .init(host: host, port: port, namespace: namespace, approvalMode: approveMode, logLevel: logLevel)
+            )
+
+            // Configure SwiftLog from the validated, effective launch plan.
+            let level = Logger.Level(rawValue: plan.node.logLevel) ?? .info
+            LoggingSystem.bootstrap { label in
+                var handler = StreamLogHandler.standardOutput(label: label)
+                handler.logLevel = level
+                return handler
+            }
+
+            var adapters = NodeRuntimeAdapters.default
+            adapters.ascendants.register(kind: "positronic") { _, profile in
+                if let profile { return ConfiguredLLMService.make(from: profile) }
+                return UnconfiguredLLMService()
+            }
+            let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
+            do {
+                guard try await start(runtime: runtime, until: terminationMonitor) else { return }
+                let timelineID = runtime.snapshot().timelineIDs.first
+                ServeTrace.advertised(
+                    logger: ServeLogging.makeLogger(),
+                    objects: runtime.snapshot().ascendantIDs.count + runtime.snapshot().timelineIDs.count,
+                    timelineID: timelineID ?? runtime.plan.nodeID
+                )
+                let timelineText = timelineID?.uuidString.lowercased() ?? "none"
+                print("gnostic serve online at \(plan.broker.host):\(plan.broker.port) namespace \(plan.broker.namespace) timeline \(timelineText)")
+                print("Press Ctrl-C to shut down.")
+
+                await terminationMonitor.wait()
+            } catch {
+                await runtime.shutdown()
+                throw error
+            }
+            await runtime.shutdown()
         } catch let error as CLIConfigurationError {
             if case .missingFile = error {
                 throw ValidationError("No configuration manifest exists; run `gnostic config init` before `gnostic serve`.")
             }
             throw error
         }
-        let stored = try store.load()
-        let host = self.host ?? stored.mqttHost
-        let port = self.port ?? stored.mqttPort
-        let namespace = self.namespace ?? stored.mqttNamespace
-        var plan = try store.loadManifest().compileLaunchPlan()
-        var broker = plan.broker
-        broker.host = host
-        broker.port = port
-        broker.namespace = namespace
-        var node = plan.node
-        node.approvalMode = approveMode.lowercased() == "deny" ? "deny" : "auto"
-        node.logLevel = logLevel.lowercased()
-        plan = NodeLaunchPlan(node: node, broker: broker, llmProfiles: plan.llmProfiles, ascendants: plan.ascendants, timelines: plan.timelines, workspaces: plan.workspaces)
+    }
+}
 
-        var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, profile in
-            if let profile { return ConfiguredLLMService.make(from: profile) }
-            return UnconfiguredLLMService()
-        }
-        let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
-        do {
-            guard try await start(runtime: runtime, until: terminationMonitor) else { return }
-            let timelineID = runtime.snapshot().timelineIDs.first
-            ServeTrace.advertised(
-                logger: ServeLogging.makeLogger(),
-                objects: runtime.snapshot().ascendantIDs.count + runtime.snapshot().timelineIDs.count,
-                timelineID: timelineID ?? runtime.plan.nodeID
-            )
-            let timelineText = timelineID?.uuidString.lowercased() ?? "none"
-            print("gnostic serve online at \(host):\(port) namespace \(namespace) timeline \(timelineText)")
-            print("Press Ctrl-C to shut down.")
+struct ServeLaunchOverrides: Sendable {
+    let host: String?
+    let port: Int?
+    let namespace: String?
+    let approvalMode: String?
+    let logLevel: String?
+}
 
-            await terminationMonitor.wait()
-        } catch {
-            await runtime.shutdown()
-            throw error
+/// Compiles the immutable startup input from exactly one manifest snapshot.
+enum ServeLaunchPlan {
+    static func load(
+        manifest: () throws -> NodeManifest,
+        configuration: (NodeManifest) throws -> CLIConfiguration,
+        overrides: ServeLaunchOverrides
+    ) throws -> NodeLaunchPlan {
+        let manifest = try manifest()
+        return try compile(manifest: manifest, configuration: configuration(manifest), overrides: overrides)
+    }
+
+    static func compile(
+        manifest: NodeManifest,
+        configuration: CLIConfiguration,
+        overrides: ServeLaunchOverrides
+    ) throws -> NodeLaunchPlan {
+        var effective = manifest
+        effective.broker.host = overrides.host ?? configuration.mqttHost
+        effective.broker.port = overrides.port ?? configuration.mqttPort
+        effective.broker.namespace = overrides.namespace ?? configuration.mqttNamespace
+        effective.broker.username = configuration.mqttUsername
+        effective.broker.password = configuration.mqttPassword
+        if let approvalMode = overrides.approvalMode {
+            effective.node.approvalMode = approvalMode.lowercased()
         }
-        await runtime.shutdown()
+        if let logLevel = overrides.logLevel {
+            effective.node.logLevel = logLevel.lowercased()
+        }
+        return try effective.compileLaunchPlan()
     }
 }
 
