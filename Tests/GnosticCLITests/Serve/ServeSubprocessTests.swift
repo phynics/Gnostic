@@ -45,10 +45,15 @@ struct ServeSubprocessTests {
     ) async throws {
         let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
         let namespace = "serve-signal-\(UUID().uuidString.lowercased())"
+        let configDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-serve-config-\(UUID().uuidString)")
+        let configStore = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
+        try configStore.setValue("127.0.0.1", for: .mqttHost)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
         process.arguments = [
-            "serve", "--host", "127.0.0.1", "--port", String(port), "--namespace", namespace,
+            "serve", "--config", configStore.path().path,
+            "--host", "127.0.0.1", "--port", String(port), "--namespace", namespace,
         ]
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-serve-\(UUID().uuidString).log")
@@ -61,6 +66,7 @@ struct ServeSubprocessTests {
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             try? log.close()
             try? FileManager.default.removeItem(at: logURL)
+            try? FileManager.default.removeItem(at: configDirectory)
         }
 
         try await Task.sleep(for: signalDelay)

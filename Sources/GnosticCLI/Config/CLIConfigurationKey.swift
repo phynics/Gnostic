@@ -69,6 +69,10 @@ public enum ConfigurationKey: String, CaseIterable, Sendable {
 public enum CLIConfigurationError: Error, Sendable, Equatable, LocalizedError {
     /// The configuration file exists but cannot be decoded.
     case malformedFile(URL)
+    /// The selected manifest does not exist. `config init` is responsible for creating it.
+    case missingFile(URL)
+    /// A decoded manifest violates a schema invariant.
+    case invalidManifest(NodeManifestError, URL)
     /// A value cannot be represented for the given key.
     case invalidValue(key: ConfigurationKey, value: String)
     /// An unknown dotted key was requested.
@@ -83,6 +87,10 @@ public enum CLIConfigurationError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case let .malformedFile(url):
             return "The configuration file at \(url.path) is malformed."
+        case let .missingFile(url):
+            return "No configuration manifest exists at \(url.path); run `gnostic config init`."
+        case let .invalidManifest(error, url):
+            return "The configuration manifest at \(url.path) is invalid: \(error.localizedDescription)"
         case let .invalidValue(key, value):
             return "Invalid value '\(value)' for \(key.rawValue)."
         case let .unknownKey(key):
@@ -98,6 +106,8 @@ public enum CLIConfigurationError: Error, Sendable, Equatable, LocalizedError {
     public var reasonCode: String {
         switch self {
         case .malformedFile: "malformedFile"
+        case .missingFile: "missingFile"
+        case let .invalidManifest(error, _): error.reasonCode
         case .invalidValue: "invalidValue"
         case .unknownKey: "unknownKey"
         case .notASecret: "notASecret"
