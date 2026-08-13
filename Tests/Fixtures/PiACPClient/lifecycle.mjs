@@ -57,7 +57,7 @@ try {
   });
   const updates = JSON.stringify(notifications);
   if (!permissionRequested || !updates.includes("workspace_echo") || !updates.includes("Echo received: network")) {
-    throw new Error("Pi ACP client did not complete the permissioned Workspace tool turn");
+    throw new Error(`Pi ACP client did not complete the permissioned Workspace tool turn: ${updates}`);
   }
   process.stdout.write("pi-acp-client Workspace tool turn passed\n");
   const listed = await client.list(cwd);

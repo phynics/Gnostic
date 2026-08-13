@@ -332,6 +332,18 @@ struct NodeRuntimeTests {
         #expect(created.title == "Second scratch")
         #expect(second.timeline(id: created.timelineID)?.title == "Second scratch")
         #expect(first.timeline(id: created.timelineID) == nil)
+        await subscription.discover(using: consumer, timeout: .seconds(1))
+        for _ in 0..<20 {
+            if await catalog.networkObjects().contains(where: {
+                $0.objectType == GnosticObjectType.timeline && $0.objectID == created.timelineID
+            }) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await catalog.networkObjects().contains {
+            $0.objectType == GnosticObjectType.timeline
+                && $0.objectID == created.timelineID
+                && $0.providerID == target.providerID
+        })
 
         let listResponse = try await consumer.call(
             operation: TimelineManagementProvider.listOperation,
@@ -630,6 +642,107 @@ struct NodeRuntimeTests {
         await runtime.shutdown()
     }
 
+    @Test("Ascendant turns receive network tools without filesystem tools") @MainActor
+    func ascendantTurnsUseNetworkOnlyTools() async throws {
+        let manifest = try makeManifest(
+            namespace: "node-runtime-turn-tools",
+            ascendantID: "A21D0000-0000-4000-8000-000000000191",
+            timelineID: "A21D0000-0000-4000-8000-000000000192",
+            workspaceIDs: []
+        )
+        let languageModel = NodeToolCaptureLanguageModel()
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "positronic") { _, _ in languageModel }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        defer { Task { @MainActor in await runtime.shutdown() } }
+        try await runtime.start()
+
+        _ = try await runtime.chat(AgentChatRequest(
+            message: "find a workspace",
+            timelineID: manifest.timelines[0].id
+        ))
+
+        #expect(await languageModel.toolNames().isSuperset(of: [
+            "list_network_objects",
+            "inspect_network_object",
+            "attach_workspace",
+        ]))
+        #expect(await languageModel.toolNames().isDisjoint(with: [
+            "Change Directory",
+            "List Directory",
+            "Find File",
+            "Search File Content",
+            "Search Files",
+            "Read File",
+        ]))
+    }
+
+    @Test("runtime does not heartbeat Timeline advertisements") @MainActor
+    func runtimeDoesNotHeartbeatAdvertisements() async throws {
+        let namespace = "node-runtime-advertisement-tests"
+        let manifest = try makeManifest(
+            namespace: namespace,
+            ascendantID: "A21D0000-0000-4000-8000-000000000193",
+            timelineID: "A21D0000-0000-4000-8000-000000000194",
+            workspaceIDs: []
+        )
+        let consumer = makeNodeRuntimeBrokerManager("node-runtime-advertisement-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        let stream = try await consumer.observeAdvertiseStream(withObjectType: GnosticObjectType.timeline)
+        let events = Task { () -> [AdvertiseEventSnapshot] in
+            var events: [AdvertiseEventSnapshot] = []
+            for await event in stream { events.append(event) }
+            return events
+        }
+        try await startNodeRuntimeBrokerManager(consumer)
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        try await runtime.start()
+        try await Task.sleep(for: .seconds(1))
+        await runtime.shutdown()
+        consumer.stop()
+        events.cancel()
+
+        #expect(await events.value.count == 1)
+    }
+
+    @Test("custom Workspace adapters advertise their own tool projection") @MainActor
+    func customWorkspaceAdapterToolsAreAdvertised() async throws {
+        let namespace = "node-runtime-custom-workspace-tools"
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000195")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000196")!
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000197")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000198")!),
+            ascendants: [.init(id: ascendantID, name: "Atlas", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            workspaces: [.init(id: workspaceID, name: "Permissioned", uri: "echo://permissioned", kind: "permissioned-echo")]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.register(kind: "permissioned-echo") { configuration, _ in
+            ProjectedToolWorkspace(configuration: configuration)
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        defer { Task { @MainActor in await runtime.shutdown() } }
+        try await runtime.start()
+
+        let consumer = makeNodeRuntimeBrokerManager("custom-workspace-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        await subscription.discover(using: consumer, timeout: .seconds(1))
+
+        let workspace = try #require(await catalog.networkObjects().first {
+            $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID
+        }?.workspace)
+        #expect(workspace.tools.map(\.id) == ["permissioned_echo"])
+        #expect(workspace.tools.allSatisfy { $0.requiresPermission })
+    }
+
     @Test("runtime advertises complete objects over the broker") @MainActor
     func runtimeAdvertisesCompleteObjects() async throws {
         let namespace = "node-runtime-broker-tests"
@@ -827,6 +940,92 @@ struct NodeRuntimeTests {
             expression: .equals(FilterOperand(providerID.lowercased()))
         ))
     }
+}
+
+private final class NodeToolCaptureLanguageModel: LanguageModel, @unchecked Sendable {
+    private let capture = ToolNameCapture()
+
+    var isConfigured: Bool { get async { true } }
+    var configuration: LLMConfiguration {
+        get async { .init(activeProvider: .openAI, providers: [:]) }
+    }
+
+    func toolNames() async -> Set<String> { await capture.names }
+
+    func chatStream(
+        messages _: [LLMMessage],
+        tools: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        await capture.record(tools ?? [])
+        return AsyncThrowingStream { continuation in
+            continuation.yield(LLMStreamChunk(
+                id: "capture",
+                model: "capture",
+                choices: [.init(index: 0, delta: .init(content: "ready"), finishReason: "stop")]
+            ))
+            continuation.finish()
+        }
+    }
+
+    func loadConfiguration() async {}
+    func updateConfiguration(_: LLMConfiguration) async throws {}
+    func clearConfiguration() async {}
+    func restoreFromBackup() async throws {}
+    func exportConfiguration() async throws -> Data { Data() }
+    func importConfiguration(from _: Data) async throws {}
+    func sendMessage(_ content: String) async throws -> String { content }
+    func sendMessage(
+        _: String,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        useUtilityModel _: Bool
+    ) async throws -> String { "ready" }
+    func generateTags(for _: String) async throws -> [String] { [] }
+    func generateTitle(for _: [Message]) async throws -> String { "capture" }
+    func evaluateRecallPerformance(
+        transcript _: String,
+        recalledMemories _: [Memory]
+    ) async throws -> [String: Double] { [:] }
+    func fetchAvailableModels() async throws -> [String]? { nil }
+
+    private actor ToolNameCapture {
+        private(set) var names: Set<String> = []
+
+        func record(_ tools: [LLMToolDefinition]) {
+            names = Set(tools.map(\.name))
+        }
+    }
+}
+
+private struct ProjectedToolWorkspace: Workspace, Sendable {
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    init(configuration: NodeManifest.Workspace) {
+        reference = WorkspaceReference(
+            id: configuration.id,
+            uri: WorkspaceURI(parsing: configuration.uri)!,
+            location: .runtime,
+            tools: [.custom(.init(
+                id: "permissioned_echo",
+                name: "Permissioned echo",
+                description: "Echoes after approval.",
+                requiresPermission: true
+            ))]
+        )
+    }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult { .success("ok") }
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
 }
 
 private final class ProviderIsolationLanguageModel: LanguageModel, @unchecked Sendable {

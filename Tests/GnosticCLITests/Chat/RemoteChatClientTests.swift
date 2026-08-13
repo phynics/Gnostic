@@ -13,28 +13,31 @@ struct RemoteChatClientTests {
     @Test("chat, timeline status, and workspace ops resolve against a live serve") @MainActor
     func roundTripWithLiveServe() async throws {
         let namespace = "remote-chat-tests"
-        let serve = try await serveRuntime(namespace: namespace, approveMode: .auto)
-        defer { serve.shutdown() }
-        try await serve.start()
-        await serve.advertise(agent: AgentInstance(name: "serve", description: "test", privateTimelineID: serve.servedTimelineID), workspaces: [])
+        let node = try await nodeRuntime(namespace: namespace)
+        defer { Task { await node.runtime.shutdown() } }
+        try await node.runtime.start()
 
         let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
+        try await poll(timeout: .seconds(8)) {
+            await client.discoverAscendants().contains { $0.id == node.ascendantID }
+        }
+        let providerID = try await client.selectAscendant(id: node.ascendantID).providerID
 
         // Discover the served timeline from the advertised Agent.
         let timelineID = try await client.discoverServedTimeline()
-        #expect(timelineID == serve.servedTimelineID)
+        #expect(timelineID == node.timelineID)
 
         // Chat turn over agent.chat. The serve runs with an unconfigured LLM, so
         // the round-trip returns the serve's structured failure — proving the
         // Axoloty Call/Return path reached the served handler.
         await #expect(throws: RemoteCallFailure.self) {
-            _ = try await client.chat(message: "hello", timelineID: timelineID)
+            _ = try await client.chat(message: "hello", timelineID: timelineID, clientTurnID: nil, providerID: providerID)
         }
 
         // Timeline status.
-        let status = try await client.timelineStatus(timelineID: timelineID)
+        let status = try await client.timelineStatus(timelineID: timelineID, providerID: providerID)
         #expect(status.timelineID == timelineID)
         #expect(status.attachedWorkspaceIDs.isEmpty)
     }
@@ -42,70 +45,74 @@ struct RemoteChatClientTests {
     @Test("attach and detach a workspace over the served ops") @MainActor
     func attachDetachOverBroker() async throws {
         let namespace = "remote-chat-attach-tests"
-        let serve = try await serveRuntime(namespace: namespace, approveMode: .auto)
-        defer { serve.shutdown() }
-        try await serve.start()
-        let workspace = WorkspaceReference(
-            id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!,
-            uri: WorkspaceURI(parsing: "workspace://serve")!,
-            location: .runtime,
-            tools: [.custom(.init(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."))],
-            createdAt: Date()
+        let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
+        let node = try await nodeRuntime(
+            namespace: namespace,
+            workspaces: [.init(id: workspaceID, name: "Echo fixture", uri: "echo://serve")]
         )
-        await serve.advertise(
-            agent: AgentInstance(name: "serve", description: "test", privateTimelineID: serve.servedTimelineID),
-            workspaces: [workspace]
-        )
+        defer { Task { await node.runtime.shutdown() } }
+        try await node.runtime.start()
 
         let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
-
-        let timelineID = try await client.discoverServedTimeline()
+        try await poll(timeout: .seconds(8)) {
+            await client.discoverAscendants().contains { $0.id == node.ascendantID }
+        }
+        let providerID = try await client.selectAscendant(id: node.ascendantID).providerID
+        let timelineID = node.timelineID
 
         // The fixture workspace is listed as attachable.
         try await poll(timeout: .seconds(8)) {
-            let list = try await client.listWorkspaces()
-            return list.contains { $0.id == workspace.id }
+            let list = try await client.listWorkspaces(providerID: providerID)
+            return list.contains { $0.id == workspaceID }
         }
 
         // Attach, then the served timeline status reflects it.
-        let attached = try await client.attach(workspaceID: workspace.id, timelineID: timelineID)
+        let attached = try await client.attach(workspaceID: workspaceID, timelineID: timelineID, providerID: providerID)
         #expect(attached)
         try await poll(timeout: .seconds(8)) {
-            let status = try await client.timelineStatus(timelineID: timelineID)
-            return status.attachedWorkspaceIDs.contains(workspace.id)
+            let status = try await client.timelineStatus(timelineID: timelineID, providerID: providerID)
+            return status.attachedWorkspaceIDs.contains(workspaceID)
         }
 
         // Detach, then it's gone.
-        let detached = try await client.detach(workspaceID: workspace.id, timelineID: timelineID)
+        let detached = try await client.detach(workspaceID: workspaceID, timelineID: timelineID, providerID: providerID)
         #expect(detached)
         try await poll(timeout: .seconds(8)) {
-            let status = try await client.timelineStatus(timelineID: timelineID)
-            return !status.attachedWorkspaceIDs.contains(workspace.id)
+            let status = try await client.timelineStatus(timelineID: timelineID, providerID: providerID)
+            return !status.attachedWorkspaceIDs.contains(workspaceID)
         }
     }
 
     @Test("timeline create/list/rename resolve over the broker") @MainActor
     func timelineManagementOverBroker() async throws {
         let namespace = "remote-chat-timeline-tests"
-        let serve = try await serveRuntime(namespace: namespace, approveMode: .auto)
-        defer { serve.shutdown() }
-        try await serve.start()
-        await serve.advertise(agent: AgentInstance(name: "serve", description: "test", privateTimelineID: serve.servedTimelineID), workspaces: [])
+        let node = try await nodeRuntime(namespace: namespace)
+        defer { Task { await node.runtime.shutdown() } }
+        try await node.runtime.start()
 
         let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
+        try await poll(timeout: .seconds(8)) {
+            await client.discoverAscendants().contains { $0.id == node.ascendantID }
+        }
+        let providerID = try await client.selectAscendant(id: node.ascendantID).providerID
 
-        // The serve already created a default timeline at startup; list it.
-        let initial = try await client.listTimelines()
-        #expect(initial.contains { $0.timelineID == serve.servedTimelineID })
+        // The Node already created a default timeline at startup; list it.
+        let initial = try await client.listTimelines(providerID: providerID)
+        #expect(initial.contains { $0.timelineID == node.timelineID })
 
         // Create + activate a second timeline via the session.
-        let session = RemoteChatSession(client: client, timelineID: serve.servedTimelineID)
+        let session = RemoteChatSession(
+            client: client,
+            timelineID: node.timelineID,
+            ascendantID: node.ascendantID,
+            providerID: providerID
+        )
         try await session.createActivateTimeline(title: "Research")
-        #expect(session.timelineID != serve.servedTimelineID)
+        #expect(session.timelineID != node.timelineID)
 
         // Rename the active timeline.
         let renamed = try await session.renameActiveTimeline(title: "Renamed Topic")
@@ -113,13 +120,13 @@ struct RemoteChatClientTests {
         #expect(renamed.timelineID == session.timelineID)
 
         // Both timelines are now listed.
-        let after = try await client.listTimelines()
+        let after = try await client.listTimelines(providerID: providerID)
         #expect(after.count == initial.count + 1)
         #expect(after.contains { $0.timelineID == session.timelineID && $0.title == "Renamed Topic" })
 
         // Switching back to the first timeline targets it.
-        session.switchTimeline(to: serve.servedTimelineID)
-        #expect(session.timelineID == serve.servedTimelineID)
+        session.switchTimeline(to: node.timelineID)
+        #expect(session.timelineID == node.timelineID)
     }
 
     @Test("workspace invocation keeps duplicate Timeline IDs scoped to the Workspace provider") @MainActor
@@ -200,7 +207,19 @@ struct RemoteChatClientTests {
         Issue.record("poll condition not met before \(timeout) timeout")
     }
 
-    private func serveRuntime(namespace: String, approveMode: ServeApproveMode) async throws -> ServeRuntime {
-        try await ServeRuntime(host: "127.0.0.1", port: 1883, namespace: namespace, approveMode: approveMode)
+    private func nodeRuntime(
+        namespace: String,
+        workspaces: [NodeManifest.Workspace] = []
+    ) async throws -> (runtime: NodeRuntime, ascendantID: UUID, timelineID: UUID) {
+        let ascendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000002")!
+        let timelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000003")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000004")!),
+            ascendants: [.init(id: ascendantID, name: "Test Ascendant", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Test Timeline", operatingAscendantID: ascendantID)],
+            workspaces: workspaces
+        )
+        return (try await NodeRuntime(plan: manifest.compileLaunchPlan()), ascendantID, timelineID)
     }
 }

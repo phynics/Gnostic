@@ -19,40 +19,15 @@ struct ACPSubprocessTests {
               let fixture = environment["GNOSTIC_PI_ACP_CLIENT_FIXTURE"] else { return }
         let namespace = "pi-acp-client-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
-        let serve = try await ServeRuntime(
-            host: "127.0.0.1",
-            port: 1883,
-            namespace: namespace,
-            approveMode: .auto,
-            languageModel: RepeatingToolLanguageModel()
-        )
-        defer { serve.shutdown() }
-        try await serve.start()
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
-        let tool = WorkspaceToolDefinition(
-            id: "workspace_echo",
-            name: "Workspace echo",
-            description: "Echoes fixture input.",
-            requiresPermission: true
-        )
-        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
-            .success(arguments["value"]?.value as? String ?? "")
-        }
-        let registration = try await serve.register(workspaceProvider: provider)
-        defer { registration.cancel() }
-        let workspace = WorkspaceReference(
-            id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://pi-acp-client-smoke")!,
-            location: .runtime,
-            tools: [.custom(tool)],
-            createdAt: Date()
-        )
-        await serve.advertise(agent: AgentInstance(
-            id: agentID,
+        let node = try await makeACPNode(
+            namespace: namespace,
+            ascendantID: agentID,
             name: "pi-acp-client",
-            description: "Generic Pi ACP client fixture",
-            privateTimelineID: serve.servedTimelineID
-        ), workspaces: [workspace])
+            workspaceID: workspaceID
+        )
+        defer { Task { @MainActor in await node.shutdown() } }
+        try await node.start()
 
         let sourceArguments = [
             "acp", "profiles", "--json",
@@ -87,13 +62,18 @@ struct ACPSubprocessTests {
             let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
             defer { client.stop() }
             try await client.connect()
+            let providerID = try await client.selectAscendant(id: agentID).providerID
             try await poll(timeout: .seconds(30)) {
                 guard FileManager.default.fileExists(atPath: timelineFile.path) else { return false }
-                return try await client.listWorkspaces().contains { $0.id == workspaceID }
+                return try await client.listWorkspaces(providerID: providerID).contains { $0.id == workspaceID }
             }
             let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
             let timelineID = try #require(UUID(uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)))
-            #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+            #expect(try await client.attach(
+                workspaceID: workspaceID,
+                timelineID: timelineID,
+                providerID: providerID
+            ))
             try Data("ready\n".utf8).write(to: attachedFile, options: .atomic)
         }
         while process.isRunning {
@@ -120,21 +100,13 @@ struct ACPSubprocessTests {
         guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
         let namespace = "acp-profiles-\(UUID().uuidString.lowercased())"
         let lowerID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
-        let lowerServe = try await ServeRuntime(
-            host: "127.0.0.1",
-            port: 1883,
+        let node = try await makeACPNode(
             namespace: namespace,
-            approveMode: .auto,
-            languageModel: RepeatingToolLanguageModel()
+            ascendantID: lowerID,
+            name: "Lower Ascendant"
         )
-        defer { lowerServe.shutdown() }
-        try await lowerServe.start()
-        await lowerServe.advertise(agent: AgentInstance(
-            id: lowerID,
-            name: "Lower Ascendant",
-            description: "ACP profile fixture",
-            privateTimelineID: lowerServe.servedTimelineID
-        ), workspaces: [])
+        defer { Task { @MainActor in await node.shutdown() } }
+        try await node.start()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
         process.arguments = [
@@ -187,40 +159,16 @@ struct ACPSubprocessTests {
               let fixture = environment["GNOSTIC_ACP_OFFICIAL_CLIENT"] else { return }
         let namespace = "acp-official-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
-        let serve = try await ServeRuntime(
-            host: "127.0.0.1",
-            port: 1883,
-            namespace: namespace,
-            approveMode: .auto,
-            languageModel: RepeatingToolLanguageModel()
-        )
-        defer { serve.shutdown() }
-        try await serve.start()
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000002")!
-        let tool = WorkspaceToolDefinition(
-            id: "workspace_echo",
-            name: "Workspace echo",
-            description: "Echoes fixture input.",
-            requiresPermission: true
-        )
-        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
-            .success(arguments["value"]?.value as? String ?? "")
-        }
-        let registration = try await serve.register(workspaceProvider: provider)
-        defer { registration.cancel() }
-        let workspace = WorkspaceReference(
-            id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://official-acp-client-smoke")!,
-            location: .runtime,
-            tools: [.custom(tool)],
-            createdAt: Date()
-        )
-        await serve.advertise(agent: AgentInstance(
-            id: agentID,
+        let node = try await makeACPNode(
+            namespace: namespace,
+            ascendantID: agentID,
             name: "official-acp-client",
-            description: "Official ACP SDK lifecycle fixture",
-            privateTimelineID: serve.servedTimelineID
-        ), workspaces: [workspace])
+            workspaceID: workspaceID
+        )
+        defer { Task { @MainActor in await node.shutdown() } }
+        try await node.start()
+        let providerID = try await discoverProviderID(namespace: namespace, ascendantID: agentID)
 
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-official-acp-state-\(UUID().uuidString)")
@@ -231,6 +179,7 @@ struct ACPSubprocessTests {
             "--port", "1883",
             "--namespace", namespace,
             "--ascendant", agentID.uuidString,
+            "--provider", providerID,
         ]
         let argumentsData = try JSONEncoder().encode(arguments)
         let process = Process()
@@ -255,13 +204,20 @@ struct ACPSubprocessTests {
             defer { client.stop() }
             try await client.connect()
             try await poll(timeout: .seconds(30)) {
-                FileManager.default.fileExists(atPath: timelineFile.path)
+                guard let timelineText = try? String(contentsOf: timelineFile, encoding: .utf8) else {
+                    return false
+                }
+                return UUID(uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
             }
             let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
             let timelineID = try #require(UUID(
                 uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)
             ))
-            #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+            #expect(try await client.attach(
+                workspaceID: workspaceID,
+                timelineID: timelineID,
+                providerID: providerID
+            ))
             try Data("ready\n".utf8).write(to: attachedFile, options: .atomic)
         }
         while process.isRunning {
@@ -290,43 +246,16 @@ struct ACPSubprocessTests {
         guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
         let namespace = "acp-subprocess-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
-        let serve = try await ServeRuntime(
-            host: "127.0.0.1",
-            port: 1883,
-            namespace: namespace,
-            approveMode: .auto,
-            languageModel: RepeatingToolLanguageModel()
-        )
-        defer { serve.shutdown() }
-        try await serve.start()
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
-        let tool = WorkspaceToolDefinition(
-            id: "workspace_echo",
-            name: "Workspace echo",
-            description: "Echoes fixture input.",
-            requiresPermission: true
+        let node = try await makeACPNode(
+            namespace: namespace,
+            ascendantID: agentID,
+            name: "acp-smoke",
+            workspaceID: workspaceID
         )
-        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [tool]) { _, arguments in
-            .success(arguments["value"]?.value as? String ?? "")
-        }
-        let registration = try await serve.register(workspaceProvider: provider)
-        defer { registration.cancel() }
-        let workspace = WorkspaceReference(
-            id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://acp-smoke")!,
-            location: .runtime,
-            tools: [.custom(tool)],
-            createdAt: Date()
-        )
-        await serve.advertise(
-            agent: AgentInstance(
-                id: agentID,
-                name: "acp-smoke",
-                description: "ACP fixture",
-                privateTimelineID: serve.servedTimelineID
-            ),
-            workspaces: [workspace]
-        )
+        defer { Task { @MainActor in await node.shutdown() } }
+        try await node.start()
+        let providerID = try await discoverProviderID(namespace: namespace, ascendantID: agentID)
 
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-acp-state-\(UUID().uuidString)")
@@ -340,6 +269,7 @@ struct ACPSubprocessTests {
             "--port", "1883",
             "--namespace", namespace,
             "--ascendant", agentID.uuidString,
+            "--provider", providerID,
         ]
         var environment = ProcessInfo.processInfo.environment
         environment["GNOSTIC_STATE_HOME"] = stateURL.path
@@ -390,9 +320,13 @@ struct ACPSubprocessTests {
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {
-            try await client.listWorkspaces().contains { $0.id == workspaceID }
+            try await client.listWorkspaces(providerID: providerID).contains { $0.id == workspaceID }
         }
-        #expect(try await client.attach(workspaceID: workspaceID, timelineID: timelineID))
+        #expect(try await client.attach(
+            workspaceID: workspaceID,
+            timelineID: timelineID,
+            providerID: providerID
+        ))
 
         try send(JSONRPCRequest(id: .number(3), method: "session/list", params: .dictionary([
             "cwd": .string("/tmp/acp-smoke")
@@ -526,6 +460,92 @@ struct ACPSubprocessTests {
         try sendAfterRestart(JSONRPCRequest(id: .number(11), method: "shutdown"))
         #expect(try await readResponse(from: &resumedIterator).error == nil)
     }
+}
+
+@MainActor
+private func makeACPNode(
+    namespace: String,
+    ascendantID: UUID,
+    name: String,
+    workspaceID: UUID? = nil
+) async throws -> NodeRuntime {
+    let timelineID = UUID()
+    let workspaces = workspaceID.map {
+        [NodeManifest.Workspace(
+            id: $0,
+            name: "ACP echo",
+            uri: "echo://acp-smoke",
+            kind: "permissioned-echo"
+        )]
+    } ?? []
+    let manifest = NodeManifest(
+        broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+        node: .init(id: UUID(), approvalMode: "auto"),
+        ascendants: [.init(
+            id: ascendantID,
+            name: name,
+            defaultTimelineID: timelineID,
+            description: "ACP lifecycle fixture"
+        )],
+        timelines: [.init(
+            id: timelineID,
+            title: "\(name) Timeline",
+            operatingAscendantID: ascendantID
+        )],
+        workspaces: workspaces
+    )
+    var adapters = NodeRuntimeAdapters.default
+    adapters.ascendants.register(kind: "positronic") { _, _ in RepeatingToolLanguageModel() }
+    adapters.workspaces.register(kind: "permissioned-echo") { configuration, _ in
+        let tool = WorkspaceToolDefinition(
+            id: NodeRuntime.echoToolID,
+            name: "Workspace echo",
+            description: "Echoes fixture input.",
+            requiresPermission: true
+        )
+        let reference = WorkspaceReference(
+            id: configuration.id,
+            uri: WorkspaceURI(parsing: configuration.uri)!,
+            location: .runtime,
+            tools: [.custom(tool)]
+        )
+        return PermissionedEchoWorkspace(reference: reference)
+    }
+    return try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+}
+
+@MainActor
+private func discoverProviderID(namespace: String, ascendantID: UUID) async throws -> String {
+    let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+    defer { client.stop() }
+    try await client.connect()
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(8)
+    while clock.now < deadline {
+        if let selected = try? await client.selectAscendant(id: ascendantID) {
+            return selected.providerID
+        }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    throw ACPSubprocessError.timeout
+}
+
+private struct PermissionedEchoWorkspace: Workspace, Sendable {
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+
+    func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
+        guard id == NodeRuntime.echoToolID else { throw WorkspaceError.toolExecutionNotSupported }
+        return .success(parameters["value"]?.value as? String ?? "")
+    }
+
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
 }
 
 private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendable {
