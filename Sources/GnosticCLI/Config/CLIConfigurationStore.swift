@@ -178,9 +178,15 @@ public struct CLIConfigurationStore: Sendable {
         if let data = try? Data(contentsOf: path()), data.isEmpty {
             return try applyEnvironmentOverrides(to: .defaults)
         }
-        let manifest = try loadManifest()
-        let configuration = configuration(from: manifest)
-        return try applyEnvironmentOverrides(to: configuration)
+        return try effectiveConfiguration(for: loadManifest())
+    }
+
+    /// Derives compatibility settings from an already-loaded manifest snapshot.
+    ///
+    /// Commands that need both the resource graph and the legacy broker
+    /// overrides use this to avoid reading the manifest a second time.
+    public func effectiveConfiguration(for manifest: NodeManifest) throws -> CLIConfiguration {
+        try applyEnvironmentOverrides(to: configuration(from: manifest))
     }
 
     private func applyEnvironmentOverrides(to initial: CLIConfiguration) throws -> CLIConfiguration {
