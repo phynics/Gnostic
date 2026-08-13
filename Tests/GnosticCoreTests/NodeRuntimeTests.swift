@@ -10,6 +10,66 @@ import Testing
 
 @Suite("Modular node runtime")
 struct NodeRuntimeTests {
+    @Test("a non-Positronic Ascendant adapter owns timeline and turn behavior at the NodeRuntime seam")
+    @MainActor
+    func customAscendantAdapterDoesNotRequirePositronicKit() async throws {
+        let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000211"))
+        let timelineID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000212"))
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-custom-ascendant"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000213")!),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
+            timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
+            FixtureAscendantAdapter(ascendant: ascendant, timelines: timelines)
+        }
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        #expect(try await runtime.listTimelines().map(\.timelineID) == [timelineID])
+        #expect(try await runtime.chat(.init(message: "hello", timelineID: timelineID)).text == "fixture: hello")
+        let created = try await runtime.createTimeline(title: "Scratch", ascendantID: ascendantID)
+        #expect(created.title == "Scratch")
+    }
+
+    @Test("node shutdown asks each Ascendant adapter to cancel provider work")
+    @MainActor
+    func customAdapterOwnsTurnCancellation() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000214")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000215")!
+        let probe = AdapterCancellationProbe()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-adapter-cancellation"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000216")!),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
+            timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
+            FixtureAscendantAdapter(ascendant: ascendant, timelines: timelines, cancellationProbe: probe)
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await runtime.start()
+        let chat = Task {
+            try await runtime.chat(.init(message: "wait", timelineID: timelineID, clientTurnID: "cancel-me"))
+        }
+
+        await probe.waitUntilStarted()
+        await runtime.shutdown()
+
+        #expect(await probe.wasCancelled)
+        switch await chat.result {
+        case .success:
+            Issue.record("The cancelled adapter turn unexpectedly succeeded.")
+        case let .failure(error):
+            #expect(error as? AscendantTurnError == .cancelled(timelineID: timelineID, clientTurnID: "cancel-me"))
+        }
+    }
+
     @Test("runtime rejects an unregistered adapter before startup")
     func adapterRegistryFailureIsAtomic() async throws {
         let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000131"))
@@ -486,7 +546,6 @@ struct NodeRuntimeTests {
 
         #expect(await runtime.ascendantID(forTimeline: created.timelineID) == second)
         #expect(await runtime.timeline(id: created.timelineID)?.attachedAgentInstanceID == second)
-        #expect(await runtime.ascendantRuntime(id: second)?.timelineManager.timeline(id: created.timelineID)?.attachedAgentInstanceID == second)
         #expect(await runtime.snapshot().timelineIDs.contains(created.timelineID))
         #expect(!(await runtime.launchPlan).timelines.contains { $0.id == created.timelineID })
     }
@@ -862,9 +921,7 @@ struct NodeRuntimeTests {
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
         #expect(runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == true)
-        let manager = try #require(runtime.ascendantRuntime(id: ascendantID)?.timelineManager)
-        try await manager.ensureTimelineExists(id: timelineID)
-        #expect(await manager.enabledTools(for: timelineID).contains { $0.callName == "remote_echo" } == false)
+        #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
 
         let remote = try CommunicationManager(
             identity: Identity(name: "late-workspace-provider"),
@@ -890,7 +947,43 @@ struct NodeRuntimeTests {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == false)
-        #expect(await manager.enabledTools(for: timelineID).contains { $0.callName == "remote_echo" })
+        #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo"))
+    }
+
+    @Test("an unambiguous discovered Workspace need not be predeclared in the manifest") @MainActor
+    func resolvesDiscoveredWorkspaceOutsideManifest() async throws {
+        let namespace = "node-runtime-dynamic-workspace"
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000217")!
+        let runtime = try await NodeRuntime(plan: NodeManifest.empty(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace)
+        ).compileLaunchPlan())
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let remote = try CommunicationManager(
+            identity: Identity(name: "dynamic-workspace-provider"),
+            communicationOptions: .init(
+                namespace: namespace,
+                shouldEnableCrossNamespacing: false,
+                mqttClientOptions: .init(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false),
+                shouldAutoStart: false
+            ),
+            commonOptions: nil
+        )
+        try remote.start()
+        defer { remote.stop() }
+        let advertised = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "workspace://dynamic")!,
+            location: .runtime,
+            tools: [.custom(.init(id: "dynamic_echo", name: "Dynamic echo", description: "Echoes dynamically."))]
+        )
+        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: advertised)))
+
+        let resolved = try await runtime.resolveNetworkWorkspace(workspaceID: workspaceID, timeout: .seconds(2))
+
+        #expect(resolved.id == workspaceID)
+        #expect(runtime.workspaceReference(id: workspaceID)?.tools.first?.toolID == "dynamic_echo")
     }
 
     private func makeManifest(
@@ -939,6 +1032,72 @@ struct NodeRuntimeTests {
             property: ObjectFilterProperty("objectId"),
             expression: .equals(FilterOperand(providerID.lowercased()))
         ))
+    }
+}
+
+@MainActor
+private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
+    let identity: AscendantRuntimeIdentity
+    private var storedTimelines: [AscendantRuntimeTimeline]
+    private let cancellationProbe: AdapterCancellationProbe?
+
+    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil) {
+        let now = Date()
+        self.cancellationProbe = cancellationProbe
+        identity = .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
+        storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), attachedAgentInstanceID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
+    }
+
+    func timelines() async throws -> [AscendantRuntimeTimeline] { storedTimelines }
+    func createTimeline(title: String) async throws -> AscendantRuntimeTimeline {
+        let now = Date()
+        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        storedTimelines.append(timeline)
+        return timeline
+    }
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+        guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
+        let current = storedTimelines[index]
+        let renamed = AscendantRuntimeTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, attachedAgentInstanceID: current.attachedAgentInstanceID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
+        storedTimelines[index] = renamed
+        return renamed
+    }
+    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {}
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
+    func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
+    func runTurn(_ request: AgentChatRequest, updates: AscendantTurnUpdateStore) async throws -> String {
+        if let cancellationProbe { return try await cancellationProbe.run() }
+        return "fixture: \(request.message)"
+    }
+    func cancelAll() async { await cancellationProbe?.cancel() }
+    func shutdown() async {}
+}
+
+private actor AdapterCancellationProbe {
+    private var started = false
+    private var cancelled = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var release: CheckedContinuation<Void, Never>?
+
+    var wasCancelled: Bool { cancelled }
+
+    func run() async throws -> String {
+        started = true
+        startedWaiters.forEach { $0.resume() }
+        startedWaiters.removeAll()
+        await withCheckedContinuation { release = $0 }
+        throw CancellationError()
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiters.append($0) }
+    }
+
+    func cancel() {
+        cancelled = true
+        release?.resume()
+        release = nil
     }
 }
 

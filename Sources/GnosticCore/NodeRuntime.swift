@@ -86,22 +86,81 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
 
 /// A registry of downstream LLM adapters. GnosticCore owns the runtime shape;
 /// the CLI may supply provider-specific language models without being imported by Core.
+@MainActor public protocol AscendantRuntimeAdapter: AnyObject, Sendable {
+    var identity: AscendantRuntimeIdentity { get }
+    func timelines() async throws -> [AscendantRuntimeTimeline]
+    func createTimeline(title: String) async throws -> AscendantRuntimeTimeline
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline
+    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
+    func enabledToolIDs(for timelineID: UUID) async -> [String]
+    func runTurn(_ request: AgentChatRequest, updates: AscendantTurnUpdateStore) async throws -> String
+    func cancelAll() async
+    func shutdown() async
+}
+
+/// Gnostic's stable, provider-independent projection of an Ascendant identity.
+public struct AscendantRuntimeIdentity: Sendable, Equatable {
+    public let id: UUID
+    public let name: String
+    public let description: String
+    public let privateTimelineID: UUID
+    public let primaryWorkspaceID: UUID?
+    public let lastActiveAt: Date
+    public let createdAt: Date
+    public let updatedAt: Date
+}
+
+/// Gnostic's stable, provider-independent projection of a Timeline.
+public struct AscendantRuntimeTimeline: Sendable, Equatable {
+    public let id: UUID
+    public let title: String
+    public let attachedWorkspaceIDs: [UUID]
+    public let attachedAgentInstanceID: UUID?
+    public let isArchived: Bool
+    public let isPrivate: Bool
+    public let createdAt: Date
+    public let updatedAt: Date
+}
+
+/// Construction dependencies supplied by the node composition boundary.  The
+/// adapter owns all PositronicKit objects created from these values.
+@MainActor public struct AscendantRuntimeDependencies {
+    public let workspaces: [UUID: any Workspace]
+    public let catalog: NetworkCatalog
+    public let communication: CommunicationManager
+    public let permissionCoordinator: AscendantPermissionCoordinator
+    public init(workspaces: [UUID: any Workspace], catalog: NetworkCatalog, communication: CommunicationManager, permissionCoordinator: AscendantPermissionCoordinator) {
+        self.workspaces = workspaces; self.catalog = catalog; self.communication = communication; self.permissionCoordinator = permissionCoordinator
+    }
+}
+
 public struct AscendantAdapterRegistry: Sendable {
-    public typealias Factory = @Sendable (_ ascendant: NodeManifest.Ascendant, _ profile: NodeManifest.LLMProfile?) -> any LanguageModel
+    public typealias Factory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ profile: NodeManifest.LLMProfile?, _ dependencies: AscendantRuntimeDependencies, _ timelines: [NodeManifest.Timeline], _ references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter
 
     private var factories: [String: Factory]
 
     public init() {
-        factories = ["positronic": { _, _ in UnconfiguredLLMService() }]
+        factories = ["positronic": { ascendant, profile, dependencies, timelines, references in
+            try await PositronicAscendantAdapter(ascendant: ascendant, profile: profile, dependencies: dependencies, timelines: timelines, references: references, languageModel: UnconfiguredLLMService())
+        }]
     }
 
     public mutating func register(kind: String, factory: @escaping Factory) {
         factories[kind] = factory
     }
 
-    fileprivate func makeLanguageModel(for ascendant: NodeManifest.Ascendant, profile: NodeManifest.LLMProfile?) throws -> any LanguageModel {
+    /// Transitional provider seam retained for CLI composition. It configures
+    /// the Positronic adapter without exposing its construction to NodeRuntime.
+    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ profile: NodeManifest.LLMProfile?) -> any LanguageModel) {
+        factories[kind] = { ascendant, profile, dependencies, timelines, references in
+            try await PositronicAscendantAdapter(ascendant: ascendant, profile: profile, dependencies: dependencies, timelines: timelines, references: references, languageModel: factory(ascendant, profile))
+        }
+    }
+
+    fileprivate func makeAdapter(for ascendant: NodeManifest.Ascendant, profile: NodeManifest.LLMProfile?, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter {
         guard let factory = factories[ascendant.kind] else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
-        return factory(ascendant, profile)
+        return try await factory(ascendant, profile, dependencies, timelines, references)
     }
 
     fileprivate func validate(kinds: some Sequence<String>) throws {
@@ -184,21 +243,6 @@ public struct NodeRuntimeAdapters: Sendable {
     public static var `default`: NodeRuntimeAdapters { .init() }
 }
 
-/// A stable PositronicKit runtime seeded from one manifest Ascendant.
-public struct AscendantRuntime: Sendable {
-    public let id: UUID
-    public let agent: AgentInstance
-    public let kit: PositronicKit
-
-    public var timelineManager: TimelineManager { kit.timelineManager }
-
-    fileprivate init(id: UUID, agent: AgentInstance, kit: PositronicKit) {
-        self.id = id
-        self.agent = agent
-        self.kit = kit
-    }
-}
-
 /// A local echo Workspace implementation. All configured echo Workspaces use
 /// the same multiplexed provider route while retaining their own stable IDs.
 public struct EchoWorkspace: Workspace, Sendable {
@@ -261,7 +305,7 @@ public actor MultiplexedWorkspaceProvider {
 }
 
 /// Materializes a validated node manifest into one transport connection,
-/// per-Ascendant PositronicKit runtimes, and complete canonical advertisements.
+/// per-Ascendant runtime adapters, and complete canonical advertisements.
 @MainActor
 public final class NodeRuntime {
     private enum LifecycleState {
@@ -279,7 +323,7 @@ public final class NodeRuntime {
     public let port: Int
     public let namespace: String
     public var isRunning: Bool { lifecycleState == .running }
-    public private(set) var ascendantRuntimes: [UUID: AscendantRuntime]
+    private var ascendantAdapters: [UUID: any AscendantRuntimeAdapter]
 
     private let container: Container
     private let communication: CommunicationManager
@@ -292,12 +336,10 @@ public final class NodeRuntime {
     private var provider: MultiplexedWorkspaceProvider?
     private var registrations: [CallHandlerRegistration] = []
     private var discoverResponder: DiscoverResponderRegistration?
-    private var unoperatedTimelines: [UUID: Timeline]
+    private var unoperatedTimelines: [UUID: AscendantRuntimeTimeline]
     private var runtimeTimelines: [UUID: UUID]
-    private var runtimeTimelineRecords: [UUID: Timeline]
-    private var timelineRecords: [UUID: Timeline]
-    private var timelineStores: [UUID: InMemoryTimelinePersistence]
-    private var networkToolsByAscendant: [UUID: [AnyTool]]
+    private var runtimeTimelineRecords: [UUID: AscendantRuntimeTimeline]
+    private var timelineRecords: [UUID: AscendantRuntimeTimeline]
     private var lifecycleState: LifecycleState = .stopped
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
@@ -316,13 +358,11 @@ public final class NodeRuntime {
         port = plan.broker.port
         namespace = plan.broker.namespace
         self.adapters = adapters
-        ascendantRuntimes = [:]
+        ascendantAdapters = [:]
         unoperatedTimelines = [:]
         runtimeTimelines = [:]
         runtimeTimelineRecords = [:]
         timelineRecords = [:]
-        timelineStores = [:]
-        networkToolsByAscendant = [:]
         let updates = AscendantTurnUpdateStore()
         turnUpdates = updates
         permissionCoordinator = AscendantPermissionCoordinator(updates: updates)
@@ -402,50 +442,11 @@ public final class NodeRuntime {
         do {
             for ascendant in plan.ascendants {
                 let profile = ascendant.llmProfileID.flatMap { id in plan.llmProfiles.first(where: { $0.id == id }) }
-                let languageModel = try adapters.ascendants.makeLanguageModel(for: ascendant, profile: profile)
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
-                guard timelineConfigurations.contains(where: { $0.id == ascendant.defaultTimelineID }) else { throw NodeRuntimeError.missingTimeline(ascendant.defaultTimelineID) }
-                let stores = (InMemoryAgentInstanceStore(), InMemoryTimelinePersistence(), InMemoryMessageStore(), InMemoryWorkspacePersistence(), InMemoryToolPersistence())
-                let agent = AgentInstance(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, metadata: ascendant.metadata.mapValues { AnyCodable($0) })
-                try await stores.0.saveAgentInstance(agent)
-                for configuration in timelineConfigurations {
-                    let timeline = try Self.timeline(from: configuration, agentID: ascendant.id)
-                    try await stores.1.saveTimeline(timeline)
-                    timelineRecords[timeline.id] = timeline
-                    for workspaceID in configuration.attachments.map(\.workspaceID) {
-                        guard let reference = references[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
-                        try await stores.3.saveWorkspace(reference)
-                    }
-                }
-                let factory = RuntimeWorkspaceFactory(
-                    local: workspaces,
-                    remote: AxolotyWorkspaceFactory(catalog: catalog, communication: communication)
-                )
-                let kit = PositronicKit(configuration: .init(
-                    provider: .init(languageModel: languageModel),
-                    persistence: .init(messageStore: stores.2, timelinePersistence: stores.1, workspacePersistence: stores.3, toolPersistence: stores.4, agentInstanceStore: stores.0),
-                    runtime: .init(
-                        workspaceCreator: factory,
-                        runtimeToolPolicy: .init(
-                            installFilesystemTools: false,
-                            installTimelineObservationTools: true,
-                            installTimelineSendTool: true
-                        ),
-                        toolApprovalPolicy: AscendantToolApprovalPolicy(coordinator: permissionCoordinator)
-                    )
-                ))
-                ascendantRuntimes[ascendant.id] = AscendantRuntime(id: ascendant.id, agent: agent, kit: kit)
-                timelineStores[ascendant.id] = stores.1
-                let attachmentService = DiscoveredWorkspaceAttachmentService(
-                    catalog: catalog,
-                    timelineManager: kit.timelineManager,
-                    allowedTimelineIDs: Set(timelineConfigurations.map(\.id))
-                )
-                networkToolsByAscendant[ascendant.id] = [
-                    ListNetworkObjectsTool(service: attachmentService).toAnyTool(),
-                    InspectNetworkObjectTool(service: attachmentService).toAnyTool(),
-                    AttachWorkspaceTool(service: attachmentService).toAnyTool(),
-                ]
+                let dependencies = AscendantRuntimeDependencies(workspaces: workspaces, catalog: catalog, communication: communication, permissionCoordinator: permissionCoordinator)
+                let adapter = try await adapters.ascendants.makeAdapter(for: ascendant, profile: profile, dependencies: dependencies, timelines: timelineConfigurations, references: references)
+                ascendantAdapters[ascendant.id] = adapter
+                for timeline in try await adapter.timelines() { timelineRecords[timeline.id] = timeline }
             }
             for configuration in plan.timelines where configuration.operatingAscendantID == nil {
                 let timeline = try Self.timeline(from: configuration, agentID: nil)
@@ -458,10 +459,12 @@ public final class NodeRuntime {
                 }
             }
         } catch {
-            ascendantRuntimes.removeAll()
+            for adapter in ascendantAdapters.values {
+                await adapter.shutdown()
+            }
+            ascendantAdapters.removeAll()
             unoperatedTimelines.removeAll()
             timelineRecords.removeAll()
-            timelineStores.removeAll()
             container.shutdown()
             throw error
         }
@@ -644,9 +647,7 @@ public final class NodeRuntime {
             .sorted { $0.uuidString < $1.uuidString }
     }
 
-    public func ascendantRuntime(id: UUID) -> AscendantRuntime? { ascendantRuntimes[id] }
-
-    public func timeline(id: UUID) -> Timeline? {
+    public func timeline(id: UUID) -> AscendantRuntimeTimeline? {
         timelineRecords[id]
     }
 
@@ -659,12 +660,12 @@ public final class NodeRuntime {
 
     private func selectedAscendantID(requested ascendantID: UUID?) throws -> UUID {
         if let ascendantID {
-            guard ascendantRuntimes[ascendantID] != nil else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+            guard ascendantAdapters[ascendantID] != nil else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
             return ascendantID
         }
-        guard !ascendantRuntimes.isEmpty else { throw NodeRuntimeError.noConfiguredAscendant }
-        guard ascendantRuntimes.count == 1 else { throw NodeRuntimeError.ambiguousAscendant }
-        return ascendantRuntimes.keys[...].first!
+        guard !ascendantAdapters.isEmpty else { throw NodeRuntimeError.noConfiguredAscendant }
+        guard ascendantAdapters.count == 1 else { throw NodeRuntimeError.ambiguousAscendant }
+        return ascendantAdapters.keys[...].first!
     }
 
     public func workspaceReference(id: UUID) -> WorkspaceReference? { workspaceReferences[id] }
@@ -675,7 +676,16 @@ public final class NodeRuntime {
         return try await workspace.executeTool(id: toolID, parameters: arguments)
     }
 
-    /// Runs one chat turn against the PositronicKit runtime selected by the
+    /// Returns the tool identifiers currently available to an operated Timeline.
+    public func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
+        guard let ascendantID = ascendantID(forTimeline: timelineID),
+              let adapter = ascendantAdapters[ascendantID] else {
+            throw NodeRuntimeError.noOperatingAscendant(timelineID)
+        }
+        return await adapter.enabledToolIDs(for: timelineID)
+    }
+
+    /// Runs one chat turn against the adapter selected by the
     /// addressed timeline. Unoperated timelines remain observable but cannot
     /// accidentally fall through to an arbitrary Ascendant.
     public func chat(_ request: AgentChatRequest) async throws -> AgentChatResult {
@@ -684,19 +694,11 @@ public final class NodeRuntime {
             throw NodeRuntimeError.noOperatingAscendant(request.timelineID)
         }
         guard isRunning else { throw NodeRuntimeError.notRunning }
-        guard let runtime = ascendantRuntimes[ascendantID] else {
+        guard let runtime = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
-        let networkTools = networkToolsByAscendant[ascendantID] ?? []
-        return try await turnCoordinator.execute(request) { [runtime, turnUpdates, networkTools] in
-            try await Self.runTurn(
-                kit: runtime.kit,
-                timelineID: request.timelineID,
-                message: request.message,
-                clientTurnID: request.clientTurnID,
-                updates: turnUpdates,
-                additionalTools: networkTools
-            )
+        return try await turnCoordinator.execute(request) { [runtime, turnUpdates] in
+            try await runtime.runTurn(request, updates: turnUpdates)
         }
     }
 
@@ -705,20 +707,10 @@ public final class NodeRuntime {
     @discardableResult
     public func createTimeline(title: String, ascendantID: UUID) async throws -> TimelineStatus {
         guard lifecycleState != .closed else { throw NodeRuntimeError.notRunning }
-        guard let runtime = ascendantRuntimes[ascendantID] else {
+        guard let runtime = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
-        let timeline = Timeline(
-            id: UUID.makeVersion4(),
-            title: title,
-            attachedAgentInstanceID: ascendantID,
-            isPrivate: false
-        )
-        guard let timelineStore = timelineStores[ascendantID] else {
-            throw NodeRuntimeError.unknownAscendant(ascendantID)
-        }
-        try await timelineStore.saveTimeline(timeline)
-        try await runtime.timelineManager.ensureTimelineExists(id: timeline.id)
+        let timeline = try await runtime.createTimeline(title: title)
         runtimeTimelines[timeline.id] = ascendantID
         runtimeTimelineRecords[timeline.id] = timeline
         timelineRecords[timeline.id] = timeline
@@ -732,8 +724,8 @@ public final class NodeRuntime {
         guard lifecycleState != .closed else { throw NodeRuntimeError.notRunning }
         var result: [TimelineStatus] = []
         for timeline in unoperatedTimelines.values { result.append(Self.mapTimeline(timeline)) }
-        for runtime in ascendantRuntimes.values {
-            result += try await runtime.timelineManager.listTimelines().map(Self.mapTimeline)
+        for runtime in ascendantAdapters.values {
+            result += try await runtime.timelines().map(Self.mapTimeline)
         }
         return result.sorted { $0.timelineID.uuidString < $1.timelineID.uuidString }
     }
@@ -741,8 +733,8 @@ public final class NodeRuntime {
     private func timelineStatus(for timelineID: UUID) async throws -> TimelineStatus {
         if let timeline = unoperatedTimelines[timelineID] { return Self.mapTimeline(timeline) }
         guard let ascendantID = ascendantID(forTimeline: timelineID),
-              let runtime = ascendantRuntimes[ascendantID],
-              let timeline = try await runtime.timelineManager.listTimelines().first(where: { $0.id == timelineID }) else {
+              let runtime = ascendantAdapters[ascendantID],
+              let timeline = try await runtime.timelines().first(where: { $0.id == timelineID }) else {
             throw NodeRuntimeError.missingTimeline(timelineID)
         }
         return Self.mapTimeline(timeline)
@@ -750,13 +742,10 @@ public final class NodeRuntime {
 
     private func renameTimeline(_ request: TimelineUpdateRequest) async throws -> TimelineStatus {
         guard let ascendantID = ascendantID(forTimeline: request.timelineID),
-              let runtime = ascendantRuntimes[ascendantID] else {
+              let runtime = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(request.timelineID)
         }
-        try await runtime.timelineManager.updateTimelineTitle(id: request.timelineID, title: request.title)
-        guard let timeline = try await runtime.timelineManager.listTimelines().first(where: { $0.id == request.timelineID }) else {
-            throw NodeRuntimeError.missingTimeline(request.timelineID)
-        }
+        let timeline = try await runtime.renameTimeline(id: request.timelineID, title: request.title)
         if runtimeTimelines[request.timelineID] != nil {
             runtimeTimelineRecords[request.timelineID] = timeline
         }
@@ -783,22 +772,17 @@ public final class NodeRuntime {
 
     private func attachWorkspace(_ request: WorkspaceOpsRequest) async throws -> Bool {
         guard let ascendantID = ascendantID(forTimeline: request.timelineID),
-              let runtime = ascendantRuntimes[ascendantID] else {
+              let runtime = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(request.timelineID)
         }
         if localWorkspaces[request.workspaceID] != nil,
            let reference = workspaceReferences[request.workspaceID] {
-            try await runtime.timelineManager.importWorkspace(reference)
-            try await runtime.timelineManager.attachWorkspace(reference.id, to: request.timelineID)
+            try await runtime.attachWorkspace(reference, to: request.timelineID)
         } else {
-            let service = DiscoveredWorkspaceAttachmentService(
-                catalog: catalog,
-                timelineManager: runtime.timelineManager,
-                allowedTimelineIDs: [request.timelineID]
-            )
-            _ = try await service.attach(workspaceID: request.workspaceID, to: request.timelineID, approved: true)
+            guard let reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID) as WorkspaceReference? else { throw NodeRuntimeError.missingWorkspace(request.workspaceID) }
+            try await runtime.attachWorkspace(reference, to: request.timelineID)
         }
-        if let timeline = try await runtime.timelineManager.listTimelines().first(where: { $0.id == request.timelineID }) {
+        if let timeline = try await runtime.timelines().first(where: { $0.id == request.timelineID }) {
             timelineRecords[request.timelineID] = timeline
             lifecycle.readvertiseDiscoverableObject(object: GnosticTimelineObject(timeline: timeline))
         }
@@ -807,137 +791,15 @@ public final class NodeRuntime {
 
     private func detachWorkspace(_ request: WorkspaceOpsRequest) async throws -> Bool {
         guard let ascendantID = ascendantID(forTimeline: request.timelineID),
-              let runtime = ascendantRuntimes[ascendantID] else {
+              let runtime = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(request.timelineID)
         }
-        try await runtime.timelineManager.detachWorkspace(request.workspaceID, from: request.timelineID)
-        if let timeline = try await runtime.timelineManager.listTimelines().first(where: { $0.id == request.timelineID }) {
+        try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
+        if let timeline = try await runtime.timelines().first(where: { $0.id == request.timelineID }) {
             timelineRecords[request.timelineID] = timeline
             lifecycle.readvertiseDiscoverableObject(object: GnosticTimelineObject(timeline: timeline))
         }
         return true
-    }
-
-    private static func runTurn(
-        kit: PositronicKit,
-        timelineID: UUID,
-        message: String,
-        clientTurnID: String?,
-        updates: AscendantTurnUpdateStore,
-        additionalTools: [AnyTool]
-    ) async throws -> String {
-        let tools = await kit.timelineManager.enabledTools(for: timelineID) + additionalTools
-        let stream = try await AscendantTurnPermissionContext.$current.withValue(
-            clientTurnID.map { AscendantTurnPermissionContext.Value(timelineID: timelineID, clientTurnID: $0) }
-        ) {
-            try await kit.run(ChatRunRequest(timelineID: timelineID, message: message, tools: tools, maxTurns: 5))
-        }
-        var finalText = ""
-        var failure: String?
-        var toolCallIDs: [Int: String] = [:]
-        var toolTitles: [Int: String] = [:]
-        var announcedToolCalls: Set<Int> = []
-        for try await event in stream {
-            switch event {
-            case .delta(.generation(let text)):
-                await appendTurnUpdate(
-                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "assistant_text", text: text
-                )
-            case .delta(.toolCall(let delta)):
-                let toolCallID = delta.id
-                    ?? toolCallIDs[delta.index]
-                    ?? "\(clientTurnID ?? timelineID.uuidString):tool:\(delta.index)"
-                toolCallIDs[delta.index] = toolCallID
-                if let name = delta.name {
-                    toolTitles[delta.index, default: ""] += name
-                }
-                let initial = announcedToolCalls.insert(delta.index).inserted
-                await appendTurnUpdate(
-                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: initial ? "tool_call" : "tool_state",
-                    toolState: AscendantToolState(
-                        toolCallID: toolCallID,
-                        title: toolTitles[delta.index],
-                        status: "pending"
-                    )
-                )
-            case .delta(.toolExecution(let toolCallID, let status)),
-                 .completion(.toolExecution(let toolCallID, let status)):
-                await appendTurnUpdate(
-                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "tool_state",
-                    toolState: toolState(toolCallID: toolCallID, status: status)
-                )
-            case .completion(.generationCompleted(let message, _)):
-                finalText = message.content
-            case .completion(.maxTurnsReached):
-                failure = "The model exhausted its turn budget without a final answer."
-            case .error(.error(let message, _)):
-                failure = message
-            case .error(.toolCallError(let toolCallID, let name, let error)):
-                await appendTurnUpdate(
-                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "tool_state",
-                    toolState: AscendantToolState(
-                        toolCallID: toolCallID,
-                        title: name,
-                        status: "failed",
-                        content: error
-                    )
-                )
-            case .error(.generationCancelled):
-                await appendTurnUpdate(
-                    updates, timelineID: timelineID, clientTurnID: clientTurnID,
-                    kind: "cancellation", terminal: true
-                )
-                throw CancellationError()
-            default:
-                break
-            }
-        }
-        if let failure { throw NodeRuntimeError.turnFailed(failure) }
-        return finalText.isEmpty ? "(empty reply)" : finalText
-    }
-
-    private static func appendTurnUpdate(
-        _ updates: AscendantTurnUpdateStore,
-        timelineID: UUID,
-        clientTurnID: String?,
-        kind: String,
-        text: String? = nil,
-        toolState: AscendantToolState? = nil,
-        terminal: Bool = false
-    ) async {
-        guard let clientTurnID else { return }
-        _ = await updates.append(
-            timelineID: timelineID,
-            clientTurnID: clientTurnID,
-            kind: kind,
-            text: text,
-            toolState: toolState,
-            terminal: terminal
-        )
-    }
-
-    private static func toolState(
-        toolCallID: String,
-        status: ToolExecutionStatus
-    ) -> AscendantToolState {
-        switch status {
-        case .attempting(let name, _):
-            AscendantToolState(toolCallID: toolCallID, title: name, status: "in_progress")
-        case .success(let result):
-            AscendantToolState(
-                toolCallID: toolCallID,
-                status: "completed",
-                content: String(describing: result)
-            )
-        case .failed(_, let error), .persistenceFailed(_, let error):
-            AscendantToolState(toolCallID: toolCallID, status: "failed", content: error)
-        case .executionError(let error):
-            AscendantToolState(toolCallID: toolCallID, status: "failed", content: error)
-        }
     }
 
     /// Discovers and imports a network Workspace only when a caller needs it.
@@ -955,7 +817,7 @@ public final class NodeRuntime {
         else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
-        guard workspaceReferences[workspaceID]?.uri.description == uri else {
+        if let configured = workspaceReferences[workspaceID], configured.uri.description != uri {
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         try await installResolvedNetworkWorkspace(reference, workspaceID: workspaceID)
@@ -967,8 +829,8 @@ public final class NodeRuntime {
     }
 
     private func advertiseAll() {
-        for runtime in ascendantRuntimes.values {
-            advertise(GnosticAgentObject(agent: runtime.agent))
+        for runtime in ascendantAdapters.values {
+            advertise(GnosticAgentObject(identity: runtime.identity))
         }
         for timeline in timelineRecords.values { advertise(GnosticTimelineObject(timeline: timeline)) }
         for workspace in plan.workspaces {
@@ -986,8 +848,8 @@ public final class NodeRuntime {
 
     private func discoverableObjects() -> [CoatyObject] {
         var objects: [CoatyObject] = []
-        for runtime in ascendantRuntimes.values {
-            objects.append(GnosticAgentObject(agent: runtime.agent))
+        for runtime in ascendantAdapters.values {
+            objects.append(GnosticAgentObject(identity: runtime.identity))
         }
         objects += timelineRecords.values.map(GnosticTimelineObject.init)
         objects += workspaceReferences.values
@@ -1031,20 +893,22 @@ public final class NodeRuntime {
     }
 
     private func installResolvedNetworkWorkspace(_ reference: WorkspaceReference, workspaceID: UUID) async throws {
-        workspaceReferences[workspaceID] = reference
         let attachedTimelines = plan.timelines.filter {
             $0.attachments.contains { $0.workspaceID == workspaceID && $0.scope == .network }
         }
         for ascendantID in Set(attachedTimelines.compactMap(\.operatingAscendantID)) {
-            guard let runtime = ascendantRuntimes[ascendantID] else { continue }
-            try await runtime.kit.timelineManager.importWorkspace(reference)
+            guard let runtime = ascendantAdapters[ascendantID] else { continue }
+            try await runtime.attachWorkspace(reference, to: attachedTimelines.first(where: { $0.operatingAscendantID == ascendantID })!.id)
             for timeline in attachedTimelines where timeline.operatingAscendantID == ascendantID {
                 // PositronicKit intentionally permits attaching an existing ID;
                 // doing so refreshes any already-hydrated tool registry with the
                 // newly resolved remote Workspace implementation.
-                try await runtime.kit.timelineManager.attachWorkspace(workspaceID, to: timeline.id)
+                try await runtime.attachWorkspace(reference, to: timeline.id)
             }
         }
+        // Publish the resolved descriptor only after every owning adapter has
+        // installed it, so callers never observe a half-resolved attachment.
+        workspaceReferences[workspaceID] = reference
     }
 
     private func requireActiveStart() throws {
@@ -1069,7 +933,9 @@ public final class NodeRuntime {
         responseTask?.cancel(); permissionResponseTask = nil
         publishTask?.cancel(); turnUpdatePublishTask = nil
         resolutionTask?.cancel(); networkResolutionTask = nil
+        for adapter in ascendantAdapters.values { await adapter.cancelAll() }
         await turnCoordinator.cancelAll()
+        for adapter in ascendantAdapters.values { await adapter.shutdown() }
         await permissionCoordinator.denyAll(reason: "connection_lost")
         await responseTask?.value
         await publishTask?.value
@@ -1086,11 +952,12 @@ public final class NodeRuntime {
         try manifest.validate()
     }
 
-    private static func timeline(from configuration: NodeManifest.Timeline, agentID: UUID?) throws -> Timeline {
-        Timeline(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAgentInstanceID: agentID, isPrivate: false)
+    private static func timeline(from configuration: NodeManifest.Timeline, agentID: UUID?) throws -> AscendantRuntimeTimeline {
+        let now = Date()
+        return .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAgentInstanceID: agentID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
     }
 
-    private static func mapTimeline(_ timeline: Timeline) -> TimelineStatus {
+    private static func mapTimeline(_ timeline: AscendantRuntimeTimeline) -> TimelineStatus {
         TimelineStatus(
             timelineID: timeline.id,
             title: timeline.title,
@@ -1111,7 +978,7 @@ public final class NodeRuntime {
     }
 }
 
-private struct RuntimeWorkspaceFactory: WorkspaceFactory, Sendable {
+struct RuntimeWorkspaceFactory: WorkspaceFactory, Sendable {
     let local: [UUID: any Workspace]
     let remote: AxolotyWorkspaceFactory
     func create(from reference: WorkspaceReference) throws -> any Workspace {

@@ -35,7 +35,12 @@ public final class GnosticTimelineObject: CoatyObject {
     /// Creates a safe Axoloty projection of a timeline.
     ///
     /// - Parameter timeline: The PositronicKit timeline to expose on the network.
-    public init(timeline: Timeline) {
+    public convenience init(timeline: Timeline) {
+        self.init(timeline: .init(id: timeline.id, title: timeline.title, attachedWorkspaceIDs: timeline.attachedWorkspaceIDs, attachedAgentInstanceID: timeline.attachedAgentInstanceID, isArchived: timeline.isArchived, isPrivate: timeline.isPrivate, createdAt: timeline.createdAt, updatedAt: timeline.updatedAt))
+    }
+
+    /// Creates a network projection without exposing a provider's Timeline type.
+    public init(timeline: AscendantRuntimeTimeline) {
         title = timeline.title
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
