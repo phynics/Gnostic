@@ -60,62 +60,40 @@ struct ServeCommand: AsyncParsableCommand {
         let host = self.host ?? stored.mqttHost
         let port = self.port ?? stored.mqttPort
         let namespace = self.namespace ?? stored.mqttNamespace
-        let mode: ServeApproveMode = approveMode.lowercased() == "deny" ? .deny : .auto
-        // Serve chat turns run against the configured LLM from ~/.gnostic/config.json.
-        // When no provider/model is configured, the serve still starts and each
-        // agent.chat turn returns the unconfigured-LLM structured failure.
-        let model: any LanguageModel = stored.llmConfiguration().map(ConfiguredLLMService.make)
-            ?? UnconfiguredLLMService()
+        var plan = try store.loadManifest().compileLaunchPlan()
+        var broker = plan.broker
+        broker.host = host
+        broker.port = port
+        broker.namespace = namespace
+        var node = plan.node
+        node.approvalMode = approveMode.lowercased() == "deny" ? "deny" : "auto"
+        node.logLevel = logLevel.lowercased()
+        plan = NodeLaunchPlan(node: node, broker: broker, llmProfiles: plan.llmProfiles, ascendants: plan.ascendants, timelines: plan.timelines, workspaces: plan.workspaces)
 
-        let runtime = try await ServeRuntime(host: host, port: port, namespace: namespace, approveMode: mode, languageModel: model)
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "positronic") { _, profile in
+            if let profile { return ConfiguredLLMService.make(from: profile) }
+            return UnconfiguredLLMService()
+        }
+        let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
         do {
             guard try await start(runtime: runtime, until: terminationMonitor) else { return }
-
-            let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
-            let workspaceTools = [
-                WorkspaceToolDefinition(
-                    id: "workspace_echo",
-                    name: "Workspace echo",
-                    description: "Echoes fixture input.",
-                    parametersSchema: workspaceEchoParametersSchema,
-                    usageExample: #"{"value":"hello"}"#
-                ),
-            ]
-            let workspaceProvider = WorkspaceProvider(workspaceID: workspaceID, tools: workspaceTools) { toolID, arguments in
-                switch toolID {
-                case "workspace_echo":
-                    return .success(arguments["value"]?.value as? String ?? "")
-                default:
-                    return .failure("unknown served workspace tool")
-                }
-            }
-            let providerRegistration = try await runtime.register(workspaceProvider: workspaceProvider)
-            defer { providerRegistration.cancel() }
-
-            // Advertise the served Agent, Timeline, and (for the fixture path) a
-            // workspace with echo tools so chat can attach and invoke it.
-            let agent = AgentInstance(
-                name: "gnostic-serve",
-                description: "Serves Gnostic network operations.",
-                privateTimelineID: runtime.servedTimelineID
+            let timelineID = runtime.snapshot().timelineIDs.first
+            ServeTrace.advertised(
+                logger: ServeLogging.makeLogger(),
+                objects: runtime.snapshot().ascendantIDs.count + runtime.snapshot().timelineIDs.count,
+                timelineID: timelineID ?? runtime.plan.nodeID
             )
-            let workspace = WorkspaceReference(
-                id: workspaceID,
-                uri: WorkspaceURI(parsing: "workspace://serve")!,
-                location: .runtime,
-                tools: workspaceTools.map(ToolReference.custom),
-                createdAt: Date()
-            )
-            await runtime.advertise(agent: agent, workspaces: [workspace])
-            print("gnostic serve online at \(host):\(port) namespace \(namespace) timeline \(runtime.servedTimelineID.uuidString.lowercased())")
+            let timelineText = timelineID?.uuidString.lowercased() ?? "none"
+            print("gnostic serve online at \(host):\(port) namespace \(namespace) timeline \(timelineText)")
             print("Press Ctrl-C to shut down.")
 
             await terminationMonitor.wait()
         } catch {
-            runtime.shutdown()
+            await runtime.shutdown()
             throw error
         }
-        runtime.shutdown()
+        await runtime.shutdown()
     }
 }
 
@@ -125,7 +103,7 @@ private enum ServeStartupOutcome: Sendable {
 }
 
 @MainActor
-private func start(runtime: ServeRuntime, until terminationMonitor: ProcessTerminationMonitor) async throws -> Bool {
+private func start(runtime: NodeRuntime, until terminationMonitor: ProcessTerminationMonitor) async throws -> Bool {
     try await withThrowingTaskGroup(of: ServeStartupOutcome.self) { group in
         group.addTask {
             try await runtime.start()
@@ -140,7 +118,7 @@ private func start(runtime: ServeRuntime, until terminationMonitor: ProcessTermi
         group.cancelAll()
 
         if outcome == .terminated {
-            runtime.shutdown()
+            await runtime.shutdown()
             try? await group.waitForAll()
             return false
         }
@@ -149,15 +127,3 @@ private func start(runtime: ServeRuntime, until terminationMonitor: ProcessTermi
         return true
     }
 }
-
-private let workspaceEchoParametersSchema: [String: AnyCodable] = [
-    "type": AnyCodable("object"),
-    "properties": AnyCodable([
-        "value": AnyCodable([
-            "type": AnyCodable("string"),
-            "description": AnyCodable("Text to echo."),
-        ]),
-    ]),
-    "required": AnyCodable(["value"]),
-    "additionalProperties": AnyCodable(false),
-]

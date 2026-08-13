@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import PKAnthropicProvider
 import PKOllamaProvider
 import PKOpenAIProvider
@@ -42,5 +43,22 @@ public enum ConfiguredLLMService {
                 }
             }
         )
+    }
+
+    /// Bridges a validated Core launch-plan profile without making GnosticCore
+    /// depend on CLI provider packages.
+    public static func make(from profile: NodeManifest.LLMProfile) -> any LanguageModel {
+        guard let provider = LLMProvider.allCases.first(where: {
+            $0.rawValue.lowercased() == profile.provider.lowercased()
+        }) else { return UnconfiguredLLMService() }
+        var configuration = LLMConfiguration(activeProvider: provider)
+        var providerConfiguration = provider.providerConfiguration
+        providerConfiguration.endpoint = profile.endpoint ?? providerConfiguration.endpoint
+        providerConfiguration.apiKey = profile.apiKey ?? providerConfiguration.apiKey
+        providerConfiguration.modelName = profile.model ?? providerConfiguration.modelName
+        providerConfiguration.utilityModel = profile.utilityModel ?? providerConfiguration.utilityModel
+        providerConfiguration.fastModel = profile.fastModel ?? providerConfiguration.fastModel
+        configuration.providers[provider] = providerConfiguration
+        return make(from: configuration)
     }
 }

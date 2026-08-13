@@ -74,7 +74,7 @@ struct ServeSubprocessTests {
         if requireOnlineBeforeSignal {
             try log.synchronize()
             let startupLog = try String(contentsOf: logURL, encoding: .utf8)
-            #expect(startupLog.contains("objectCount=2"), Comment(rawValue: startupLog))
+            #expect(startupLog.contains("objectCount=0"), Comment(rawValue: startupLog))
         }
         switch signal {
         case .interrupt: process.interrupt()

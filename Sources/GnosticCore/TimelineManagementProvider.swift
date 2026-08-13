@@ -7,9 +7,11 @@ import PKShared
 /// The wire payload to create a new timeline.
 public struct TimelineCreateRequest: Codable, Sendable {
     public let title: String
+    public let ascendantID: UUID?
 
-    public init(title: String) {
+    public init(title: String, ascendantID: UUID? = nil) {
         self.title = title
+        self.ascendantID = ascendantID
     }
 }
 
@@ -43,7 +45,8 @@ public struct TimelineManagementProvider: Sendable {
     public static let listOperation = "me.atkn.gnostic.timeline.list"
     public static let updateOperation = "me.atkn.gnostic.timeline.update"
 
-    public typealias CreateExecutor = @Sendable (String) async throws -> TimelineStatus
+    public typealias CreateExecutor = @Sendable (String, UUID?) async throws -> TimelineStatus
+    public typealias LegacyCreateExecutor = @Sendable (String) async throws -> TimelineStatus
     public typealias ListExecutor = @Sendable () async throws -> [TimelineStatus]
     public typealias UpdateExecutor = @Sendable (TimelineUpdateRequest) async throws -> TimelineStatus
 
@@ -61,6 +64,14 @@ public struct TimelineManagementProvider: Sendable {
         self.update = update
     }
 
+    public init(
+        create: @escaping LegacyCreateExecutor,
+        list: @escaping ListExecutor,
+        update: @escaping UpdateExecutor
+    ) {
+        self.init(create: { title, _ in try await create(title) }, list: list, update: update)
+    }
+
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
         switch operation {
         case Self.createOperation:
@@ -70,7 +81,7 @@ public struct TimelineManagementProvider: Sendable {
             } else {
                 return .failure(code: 400, message: "Invalid timeline.create payload")
             }
-            let status = try await create(request.title)
+            let status = try await create(request.title, request.ascendantID)
             let encoded = try JSONEncoder().encode(status)
             return .success(result: String(decoding: encoded, as: UTF8.self))
         case Self.listOperation:
@@ -93,11 +104,16 @@ public struct TimelineManagementProvider: Sendable {
     @MainActor
     public func register(on communication: CommunicationManager) async throws -> [CallHandlerRegistration] {
         var registrations: [CallHandlerRegistration] = []
-        for operation in [Self.createOperation, Self.listOperation, Self.updateOperation] {
-            let op = operation
-            registrations.append(try await communication.registerCallHandler(operation: op) { [self] request in
-                try await handle(operation: op, parameters: request.parameters)
-            })
+        do {
+            for operation in [Self.createOperation, Self.listOperation, Self.updateOperation] {
+                let op = operation
+                registrations.append(try await communication.registerCallHandler(operation: op) { [self] request in
+                    try await handle(operation: op, parameters: request.parameters)
+                })
+            }
+        } catch {
+            registrations.forEach { $0.cancel() }
+            throw error
         }
         return registrations
     }
