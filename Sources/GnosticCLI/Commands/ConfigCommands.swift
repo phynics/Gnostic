@@ -3,80 +3,733 @@
 import ArgumentParser
 import Foundation
 
-/// `gnostic config` — inspect and edit the CLI configuration store.
+/// gnostic config — create and manage the versioned Node resource graph.
 struct ConfigCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "config",
-        abstract: "Show or edit the gnostic configuration.",
-        subcommands: [Show.self, Set.self, Path.self]
+        abstract: "Create and manage the Gnostic Node configuration.",
+        subcommands: [
+            Init.self, Show.self, Validate.self, Path.self, Broker.self, LLM.self,
+            Ascendant.self, Timeline.self, Workspace.self,
+        ]
     )
 
-    /// `gnostic config show` — print the effective (redacted) configuration.
+    // Leaf commands also declare this option, allowing config <command>
+    // --config path, the canonical spelling.
+    @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+    var configPath: String?
+
+    func run() async throws {
+        print(Self.helpMessage())
+    }
+
+    struct Init: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "init", abstract: "Create a default schema-v1 Node manifest.")
+        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+        var configPath: String?
+
+        func run() async throws {
+            try ConfigCommandLogic.initialize(store: ConfigCommandLogic.store(for: configPath))
+        }
+    }
+
     struct Show: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "show",
-            abstract: "Print the effective configuration with secrets redacted."
-        )
+        static let configuration = CommandConfiguration(commandName: "show", abstract: "Print the effective configuration with secrets redacted (resource manifest).")
+        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+        var configPath: String?
+        @Flag(name: .customLong("json"), help: "Print redacted JSON instead of the human-readable view.")
+        var json = false
+        @Option(name: .customLong("format"), help: "Output format: human or json.")
+        var format: String?
 
         func run() async throws {
-            try ConfigCommandLogic.show()
+            if let format, !["human", "json"].contains(format.lowercased()) {
+                throw ValidationError("Output format must be human or json.")
+            }
+            try ConfigCommandLogic.show(
+                store: ConfigCommandLogic.store(for: configPath),
+                json: json || format?.lowercased() == "json"
+            )
         }
     }
 
-    /// `gnostic config set <key> <value>` — persist a validated value.
-    struct Set: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "set",
-            abstract: "Set a configuration key to a value."
-        )
-
-        @Argument(help: "Dotted configuration key (e.g. mqtt.host).")
-        var key: String
-
-        @Argument(help: "Value to store.")
-        var value: String
+    struct Validate: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "validate", abstract: "Validate the complete manifest without changing it.")
+        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+        var configPath: String?
 
         func run() async throws {
-            try ConfigCommandLogic.set(key: key, value: value)
+            try ConfigCommandLogic.validate(store: ConfigCommandLogic.store(for: configPath))
         }
     }
 
-    /// `gnostic config path` — print the config file location.
     struct Path: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "path",
-            abstract: "Print the config file path."
-        )
+        static let configuration = CommandConfiguration(commandName: "path", abstract: "Print the config file path (selected resource manifest).")
+        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+        var configPath: String?
 
         func run() async throws {
-            try ConfigCommandLogic.path()
+            try ConfigCommandLogic.path(store: ConfigCommandLogic.store(for: configPath))
         }
     }
+
+    struct Broker: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "broker",
+            abstract: "Configure the MQTT broker.",
+            subcommands: [BrokerSet.self, BrokerSetPassword.self]
+        )
+
+        struct BrokerSet: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "set", abstract: "Set broker host, port, namespace, or username.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Option(name: .long, help: "MQTT broker host.")
+            var host: String?
+            @Option(name: .long, help: "MQTT broker port.")
+            var port: Int?
+            @Option(name: .long, help: "MQTT topic namespace.")
+            var namespace: String?
+            @Option(name: .long, help: "MQTT username.")
+            var username: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.setBroker(
+                    host: host, port: port, namespace: namespace, username: username,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct BrokerSetPassword: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "set-password", abstract: "Read the broker password from standard input.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.setBrokerPassword(
+                    ConfigCommandLogic.readSecret(),
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+    }
+
+    struct LLM: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "llm",
+            abstract: "Manage named LLM profiles.",
+            subcommands: [LLMAdd.self, LLMUpdate.self, LLMRemove.self, LLMSetAPIKey.self]
+        )
+
+        struct LLMAdd: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add an LLM profile.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Provider name (also accepted as --provider).")
+            var providerArgument: String?
+            @Option(name: .long, help: "Provider name.")
+            var provider: String?
+            @Option(name: .long, help: "Profile display name.")
+            var name: String = "Default LLM Profile"
+            @Option(name: .long, help: "Provider endpoint URL.")
+            var endpoint: String?
+            @Option(name: .long, help: "Primary model name.")
+            var model: String?
+            @Option(name: .customLong("utility-model"), help: "Utility model name.")
+            var utilityModel: String?
+            @Option(name: .customLong("fast-model"), help: "Fast model name.")
+            var fastModel: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.addLLM(
+                    provider: provider ?? providerArgument,
+                    name: provider != nil && name == "Default LLM Profile" ? (providerArgument ?? name) : name,
+                    endpoint: endpoint,
+                    model: model, utilityModel: utilityModel, fastModel: fastModel,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct LLMUpdate: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "update", abstract: "Update an LLM profile without changing its ID or kind.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "LLM profile UUID.")
+            var id: String
+            @Option(name: .long) var name: String?
+            @Option(name: .long) var provider: String?
+            @Option(name: .long) var endpoint: String?
+            @Option(name: .long) var model: String?
+            @Option(name: .customLong("utility-model")) var utilityModel: String?
+            @Option(name: .customLong("fast-model")) var fastModel: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.updateLLM(
+                    id: id, name: name, provider: provider, endpoint: endpoint, model: model,
+                    utilityModel: utilityModel, fastModel: fastModel,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct LLMRemove: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove an unreferenced LLM profile.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "LLM profile UUID.")
+            var id: String
+
+            func run() async throws {
+                try ConfigCommandLogic.removeLLM(id: id, store: ConfigCommandLogic.store(for: configPath))
+            }
+        }
+
+        struct LLMSetAPIKey: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "set-api-key", abstract: "Read an LLM API key from standard input.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "LLM profile UUID.")
+            var id: String
+
+            func run() async throws {
+                try ConfigCommandLogic.setLLMAPIKey(
+                    id: id, value: ConfigCommandLogic.readSecret(),
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+    }
+
+    struct Ascendant: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "ascendant",
+            abstract: "Manage local Positronic Ascendants.",
+            subcommands: [AscendantAdd.self, AscendantUpdate.self, AscendantRemove.self]
+        )
+
+        struct AscendantAdd: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add an Ascendant and its operated default Timeline atomically.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Ascendant name (also accepted as --name).")
+            var nameArgument: String?
+            @Option(name: .long) var name: String?
+            @Option(name: .long) var description: String = ""
+            @Option(name: .customLong("llm-profile"), help: "Existing LLM profile UUID.")
+            var llmProfile: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.addAscendant(
+                    name: name ?? nameArgument, description: description, llmProfileID: llmProfile,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct AscendantUpdate: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "update", abstract: "Update an Ascendant without changing its ID or kind.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument var id: String
+            @Option(name: .long) var name: String?
+            @Option(name: .long) var description: String?
+            @Option(name: .customLong("llm-profile")) var llmProfile: String?
+            @Flag(name: .customLong("clear-llm-profile"), help: "Clear the optional LLM profile reference.")
+            var clearLLMProfile = false
+            @Option(name: .customLong("default-timeline"), help: "Existing Timeline operated by this Ascendant.")
+            var defaultTimeline: String?
+
+            func run() async throws {
+                if llmProfile != nil && clearLLMProfile {
+                    throw ValidationError("Use either --llm-profile or --clear-llm-profile, not both.")
+                }
+                try ConfigCommandLogic.updateAscendant(
+                    id: id, name: name, description: description, llmProfileID: llmProfile,
+                    defaultTimelineID: defaultTimeline,
+                    clearLLMProfile: clearLLMProfile,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct AscendantRemove: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove an Ascendant and clear its operator from every Timeline.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument var id: String
+
+            func run() async throws {
+                try ConfigCommandLogic.removeAscendant(id: id, store: ConfigCommandLogic.store(for: configPath))
+            }
+        }
+    }
+
+    struct Timeline: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "timeline",
+            abstract: "Manage independent Timelines and Workspace attachments.",
+            subcommands: [TimelineAdd.self, TimelineUpdate.self, TimelineRemove.self, AttachWorkspace.self, DetachWorkspace.self]
+        )
+
+        struct TimelineAdd: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add a Timeline, optionally operated by an Ascendant.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Timeline title (also accepted as --title).")
+            var titleArgument: String?
+            @Option(name: .long) var title: String?
+            @Option(name: .customLong("operating-ascendant"), help: "Existing Ascendant UUID.")
+            var operatingAscendant: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.addTimeline(
+                    title: title ?? titleArgument, operatingAscendantID: operatingAscendant,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct TimelineUpdate: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "update", abstract: "Update a Timeline without changing its ID or kind.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument var id: String
+            @Option(name: .long) var title: String?
+            @Option(name: .customLong("operating-ascendant")) var operatingAscendant: String?
+            @Flag(name: .customLong("clear-operating-ascendant"), help: "Leave this Timeline without an operating Ascendant.")
+            var clearOperatingAscendant = false
+
+            func run() async throws {
+                if operatingAscendant != nil && clearOperatingAscendant {
+                    throw ValidationError("Use either --operating-ascendant or --clear-operating-ascendant, not both.")
+                }
+                try ConfigCommandLogic.updateTimeline(
+                    id: id, title: title, operatingAscendantID: operatingAscendant,
+                    clearOperatingAscendant: clearOperatingAscendant,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct TimelineRemove: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove a Timeline that is not an Ascendant default.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument var id: String
+
+            func run() async throws {
+                try ConfigCommandLogic.removeTimeline(id: id, store: ConfigCommandLogic.store(for: configPath))
+            }
+        }
+
+        struct AttachWorkspace: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "attach-workspace", abstract: "Attach a local Workspace or a lazy network Workspace reference.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Timeline UUID, followed by Workspace UUID; with --timeline, this is the Workspace UUID.")
+            var firstID: String
+            @Argument(help: "Workspace UUID when the Timeline UUID is positional.")
+            var secondID: String?
+            @Option(name: .customLong("timeline"), help: "Timeline UUID.")
+            var timelineOption: String?
+            @Option(name: .customLong("network"), help: "Network Workspace URI; omit for a local Workspace.")
+            var networkURI: String?
+
+            func run() async throws {
+                let timelineID = timelineOption ?? secondID.map { _ in firstID }
+                let workspaceID = timelineID == nil ? secondID : firstID
+                guard let timelineID, let workspaceID else {
+                    throw ValidationError("Provide a Timeline UUID and Workspace UUID.")
+                }
+                try ConfigCommandLogic.attachWorkspace(
+                    timelineID: timelineID, workspaceID: workspaceID, networkURI: networkURI,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct DetachWorkspace: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "detach-workspace", abstract: "Detach a Workspace from a Timeline.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Timeline UUID, followed by Workspace UUID; with --timeline, this is the Workspace UUID.")
+            var firstID: String
+            @Argument(help: "Workspace UUID when the Timeline UUID is positional.")
+            var secondID: String?
+            @Option(name: .customLong("timeline"), help: "Timeline UUID.")
+            var timelineOption: String?
+
+            func run() async throws {
+                let timelineID = timelineOption ?? secondID.map { _ in firstID }
+                let workspaceID = timelineID == nil ? secondID : firstID
+                guard let timelineID, let workspaceID else {
+                    throw ValidationError("Provide a Timeline UUID and Workspace UUID.")
+                }
+                try ConfigCommandLogic.detachWorkspace(
+                    timelineID: timelineID, workspaceID: workspaceID,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+    }
+
+    struct Workspace: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "workspace",
+            abstract: "Manage local echo Workspaces.",
+            subcommands: [WorkspaceAdd.self, WorkspaceUpdate.self, WorkspaceRemove.self]
+        )
+
+        struct WorkspaceAdd: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add an echo Workspace.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Workspace name (also accepted as --name).")
+            var nameArgument: String?
+            @Option(name: .long) var name: String?
+            @Option(name: .long, help: "Workspace URI.")
+            var uri: String
+
+            func run() async throws {
+                try ConfigCommandLogic.addWorkspace(
+                    name: name ?? nameArgument, uri: uri,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct WorkspaceUpdate: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "update", abstract: "Update a Workspace without changing its ID or kind.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument var id: String
+            @Option(name: .long) var name: String?
+            @Option(name: .long) var uri: String?
+
+            func run() async throws {
+                try ConfigCommandLogic.updateWorkspace(
+                    id: id, name: name, uri: uri,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct WorkspaceRemove: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove a Workspace that has no local attachments.")
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument var id: String
+
+            func run() async throws {
+                try ConfigCommandLogic.removeWorkspace(id: id, store: ConfigCommandLogic.store(for: configPath))
+            }
+        }
+    }
+
 }
 
-/// The testable logic behind the `config` subcommands.
-///
-/// Each function accepts an explicit store and output sink so tests exercise
-/// the exact code the commands run without touching ArgumentParser's Codable
-/// synthesis.
+/// Testable logic behind the resource commands.
 public enum ConfigCommandLogic {
-    /// `config show`
-    public static func show(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
-        let configuration = try store.load()
-        writeOutput(store.redactedDescription(for: configuration))
-    }
-
-    /// `config set <key> <value>`
-    public static func set(key: String, value: String, store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
-        guard let parsedKey = ConfigurationKey(rawValue: key) else {
-            throw CLIConfigurationError.unknownKey(key)
+    public static func store(for configPath: String?) -> CLIConfigurationStore {
+        if configPath == nil {
+            // ArgumentParser permits a parent option before a subcommand.
+            // Leaf commands normally receive their own value, while this
+            // fallback keeps the parent-option spelling equivalent.
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if let index = arguments.firstIndex(of: "--config"), arguments.indices.contains(index + 1) {
+                return CLIConfigurationStore(configPath: arguments[index + 1])
+            }
+            if let inline = arguments.first(where: { $0.hasPrefix("--config=") }) {
+                return CLIConfigurationStore(configPath: String(inline.dropFirst("--config=".count)))
+            }
         }
-        try store.setValue(value, for: parsedKey)
-        writeOutput("Set \(parsedKey.rawValue).")
+        return CLIConfigurationStore(configPath: configPath.map(URL.init(fileURLWithPath:)))
     }
 
-    /// `config path`
+    public static func readSecret() -> String {
+        var value = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        while value.last == "\n" || value.last == "\r" { value.removeLast() }
+        return value
+    }
+
+    public static func initialize(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
+        writeOutput(initializationSummary(try store.initializeManifest()))
+    }
+
+    public static func show(store: CLIConfigurationStore = CLIConfigurationStore(), json: Bool = false, writeOutput: (String) -> Void = { print($0) }) throws {
+        let manifest = try store.loadManifest()
+        writeOutput(json ? manifest.redactedDescription() : humanDescription(manifest))
+    }
+
+    public static func validate(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
+        try store.loadManifest().validate()
+        writeOutput("Configuration is valid.")
+    }
+
     public static func path(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
         writeOutput(store.path().path)
+    }
+
+    public static func setBroker(host: String?, port: Int?, namespace: String?, username: String?, store: CLIConfigurationStore) throws {
+        guard host != nil || port != nil || namespace != nil || username != nil else { throw CLIConfigurationError.invalidArgument("Provide at least one broker field to set.") }
+        _ = try store.mutateManifest { manifest in
+            if let host { manifest.broker.host = host }
+            if let port { manifest.broker.port = port }
+            if let namespace { manifest.broker.namespace = namespace }
+            if let username { manifest.broker.username = username }
+        }
+    }
+
+    public static func setBrokerPassword(_ password: String, store: CLIConfigurationStore) throws {
+        _ = try store.mutateManifest { $0.broker.password = password }
+    }
+
+    public static func addLLM(provider: String?, name: String, endpoint: String?, model: String?, utilityModel: String?, fastModel: String?, store: CLIConfigurationStore) throws {
+        guard let provider, !provider.isEmpty else { throw CLIConfigurationError.invalidArgument("An LLM provider is required.") }
+        let profileID = UUID.makeVersion4()
+        _ = try store.mutateManifest { $0.llmProfiles.append(.init(id: profileID, provider: provider, name: name, endpoint: endpoint, model: model, utilityModel: utilityModel, fastModel: fastModel)) }
+        printID("Added llm profile", profileID)
+    }
+
+    public static func updateLLM(id: String, name: String?, provider: String?, endpoint: String?, model: String?, utilityModel: String?, fastModel: String?, store: CLIConfigurationStore) throws {
+        let profileID = try parseID(id, kind: "llm profile")
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.llmProfiles.firstIndex(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
+            if let name { manifest.llmProfiles[index].name = name }
+            if let provider { manifest.llmProfiles[index].provider = provider }
+            if let endpoint { manifest.llmProfiles[index].endpoint = endpoint }
+            if let model { manifest.llmProfiles[index].model = model }
+            if let utilityModel { manifest.llmProfiles[index].utilityModel = utilityModel }
+            if let fastModel { manifest.llmProfiles[index].fastModel = fastModel }
+        }
+    }
+
+    public static func removeLLM(id: String, store: CLIConfigurationStore) throws {
+        let profileID = try parseID(id, kind: "llm profile")
+        _ = try store.mutateManifest { manifest in
+            guard manifest.llmProfiles.contains(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
+            let references = manifest.ascendants.filter { $0.llmProfileID == profileID }.map { "ascendant \($0.id.uuidString.lowercased())" }
+            guard references.isEmpty else { throw CLIConfigurationError.resourceReferenced(kind: "llm profile", id: profileID, references: references) }
+            manifest.llmProfiles.removeAll { $0.id == profileID }
+        }
+    }
+
+    public static func setLLMAPIKey(id: String, value: String, store: CLIConfigurationStore) throws {
+        let profileID = try parseID(id, kind: "llm profile")
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.llmProfiles.firstIndex(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
+            manifest.llmProfiles[index].apiKey = value
+        }
+    }
+
+    public static func addAscendant(name: String?, description: String, llmProfileID: String?, store: CLIConfigurationStore) throws {
+        guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("An Ascendant name is required.") }
+        let ascendantID = UUID.makeVersion4()
+        let timelineID = UUID.makeVersion4()
+        let profileID = try llmProfileID.map { try parseID($0, kind: "llm profile") }
+        _ = try store.mutateManifest { manifest in
+            if let profileID, !manifest.llmProfiles.contains(where: { $0.id == profileID }) { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
+            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, llmProfileID: profileID))
+            manifest.timelines.append(.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID))
+        }
+        printID("Added ascendant", ascendantID)
+        printID("Added default timeline", timelineID)
+    }
+
+    public static func updateAscendant(
+        id: String,
+        name: String?,
+        description: String?,
+        llmProfileID: String?,
+        defaultTimelineID: String?,
+        clearLLMProfile: Bool = false,
+        store: CLIConfigurationStore
+    ) throws {
+        let ascendantID = try parseID(id, kind: "ascendant")
+        let profileID = try llmProfileID.map { try parseID($0, kind: "llm profile") }
+        let timelineID = try defaultTimelineID.map { try parseID($0, kind: "timeline") }
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.ascendants.firstIndex(where: { $0.id == ascendantID }) else { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID) }
+            if let name { manifest.ascendants[index].name = name }
+            if let description { manifest.ascendants[index].description = description }
+            if clearLLMProfile {
+                manifest.ascendants[index].llmProfileID = nil
+            } else if llmProfileID != nil {
+                guard let profileID, manifest.llmProfiles.contains(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID ?? UUID()) }
+                manifest.ascendants[index].llmProfileID = profileID
+            }
+            if let timelineID {
+                guard manifest.timelines.contains(where: { $0.id == timelineID && $0.operatingAscendantID == ascendantID }) else { throw CLIConfigurationError.invalidArgument("Default Timeline \(timelineID.uuidString.lowercased()) must exist and be operated by Ascendant \(ascendantID.uuidString.lowercased()).") }
+                manifest.ascendants[index].defaultTimelineID = timelineID
+            }
+        }
+    }
+
+    public static func removeAscendant(id: String, store: CLIConfigurationStore) throws {
+        let ascendantID = try parseID(id, kind: "ascendant")
+        _ = try store.mutateManifest { manifest in
+            guard manifest.ascendants.contains(where: { $0.id == ascendantID }) else { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID) }
+            manifest.ascendants.removeAll { $0.id == ascendantID }
+            for index in manifest.timelines.indices where manifest.timelines[index].operatingAscendantID == ascendantID { manifest.timelines[index].operatingAscendantID = nil }
+        }
+    }
+
+    public static func addTimeline(title: String?, operatingAscendantID: String?, store: CLIConfigurationStore) throws {
+        guard let title, !title.isEmpty else { throw CLIConfigurationError.invalidArgument("A Timeline title is required.") }
+        let timelineID = UUID.makeVersion4()
+        let ascendantID = try operatingAscendantID.map { try parseID($0, kind: "ascendant") }
+        _ = try store.mutateManifest { manifest in
+            if let ascendantID, !manifest.ascendants.contains(where: { $0.id == ascendantID }) { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID) }
+            manifest.timelines.append(.init(id: timelineID, title: title, operatingAscendantID: ascendantID))
+        }
+        printID("Added timeline", timelineID)
+    }
+
+    public static func updateTimeline(
+        id: String,
+        title: String?,
+        operatingAscendantID: String?,
+        clearOperatingAscendant: Bool = false,
+        store: CLIConfigurationStore
+    ) throws {
+        let timelineID = try parseID(id, kind: "timeline")
+        let ascendantID = try operatingAscendantID.map { try parseID($0, kind: "ascendant") }
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.timelines.firstIndex(where: { $0.id == timelineID }) else { throw CLIConfigurationError.resourceNotFound(kind: "timeline", id: timelineID) }
+            if let title { manifest.timelines[index].title = title }
+            if clearOperatingAscendant {
+                manifest.timelines[index].operatingAscendantID = nil
+            } else if operatingAscendantID != nil {
+                guard let ascendantID, manifest.ascendants.contains(where: { $0.id == ascendantID }) else { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID ?? UUID()) }
+                manifest.timelines[index].operatingAscendantID = ascendantID
+            }
+        }
+    }
+
+    public static func removeTimeline(id: String, store: CLIConfigurationStore) throws {
+        let timelineID = try parseID(id, kind: "timeline")
+        _ = try store.mutateManifest { manifest in
+            guard manifest.timelines.contains(where: { $0.id == timelineID }) else { throw CLIConfigurationError.resourceNotFound(kind: "timeline", id: timelineID) }
+            let references = manifest.ascendants.filter { $0.defaultTimelineID == timelineID }.map { "ascendant \($0.id.uuidString.lowercased())" }
+            guard references.isEmpty else { throw CLIConfigurationError.resourceReferenced(kind: "timeline", id: timelineID, references: references) }
+            manifest.timelines.removeAll { $0.id == timelineID }
+        }
+    }
+
+    public static func attachWorkspace(timelineID: String, workspaceID: String, networkURI: String?, store: CLIConfigurationStore) throws {
+        let timelineUUID = try parseID(timelineID, kind: "timeline")
+        let workspaceUUID = try parseID(workspaceID, kind: "workspace")
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.timelines.firstIndex(where: { $0.id == timelineUUID }) else { throw CLIConfigurationError.resourceNotFound(kind: "timeline", id: timelineUUID) }
+            if let networkURI {
+                guard !networkURI.isEmpty else { throw CLIConfigurationError.invalidArgument("A network Workspace URI is required.") }
+                manifest.timelines[index].attachments.removeAll { $0.workspaceID == workspaceUUID }
+                manifest.timelines[index].attachments.append(.network(workspaceUUID, uri: networkURI))
+            } else {
+                guard manifest.workspaces.contains(where: { $0.id == workspaceUUID }) else { throw CLIConfigurationError.resourceNotFound(kind: "workspace", id: workspaceUUID) }
+                manifest.timelines[index].attachments.removeAll { $0.workspaceID == workspaceUUID }
+                manifest.timelines[index].attachments.append(.local(workspaceUUID))
+            }
+        }
+    }
+
+    public static func detachWorkspace(timelineID: String, workspaceID: String, store: CLIConfigurationStore) throws {
+        let timelineUUID = try parseID(timelineID, kind: "timeline")
+        let workspaceUUID = try parseID(workspaceID, kind: "workspace")
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.timelines.firstIndex(where: { $0.id == timelineUUID }) else { throw CLIConfigurationError.resourceNotFound(kind: "timeline", id: timelineUUID) }
+            manifest.timelines[index].attachments.removeAll { $0.workspaceID == workspaceUUID }
+        }
+    }
+
+    public static func addWorkspace(name: String?, uri: String, store: CLIConfigurationStore) throws {
+        guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("A Workspace name is required.") }
+        let workspaceID = UUID.makeVersion4()
+        _ = try store.mutateManifest { $0.workspaces.append(.init(id: workspaceID, name: name, uri: uri)) }
+        printID("Added workspace", workspaceID)
+    }
+
+    public static func updateWorkspace(id: String, name: String?, uri: String?, store: CLIConfigurationStore) throws {
+        let workspaceID = try parseID(id, kind: "workspace")
+        _ = try store.mutateManifest { manifest in
+            guard let index = manifest.workspaces.firstIndex(where: { $0.id == workspaceID }) else { throw CLIConfigurationError.resourceNotFound(kind: "workspace", id: workspaceID) }
+            if let name { manifest.workspaces[index].name = name }
+            if let uri { manifest.workspaces[index].uri = uri }
+        }
+    }
+
+    public static func removeWorkspace(id: String, store: CLIConfigurationStore) throws {
+        let workspaceID = try parseID(id, kind: "workspace")
+        _ = try store.mutateManifest { manifest in
+            guard manifest.workspaces.contains(where: { $0.id == workspaceID }) else { throw CLIConfigurationError.resourceNotFound(kind: "workspace", id: workspaceID) }
+            let references = manifest.timelines.flatMap { timeline in
+                timeline.attachments.contains { $0.workspaceID == workspaceID && $0.scope == .local } ? ["timeline \(timeline.id.uuidString.lowercased())"] : []
+            }
+            guard references.isEmpty else { throw CLIConfigurationError.resourceReferenced(kind: "workspace", id: workspaceID, references: references) }
+            manifest.workspaces.removeAll { $0.id == workspaceID }
+        }
+    }
+
+    private static func parseID(_ raw: String, kind: String) throws -> UUID {
+        guard let id = UUID(uuidString: raw) else { throw CLIConfigurationError.invalidArgument("Invalid \(kind) UUID '\(raw)'.") }
+        return id
+    }
+
+    private static func printID(_ label: String, _ id: UUID) {
+        print("\(label): \(id.uuidString.lowercased())")
+    }
+
+    private static func initializationSummary(_ manifest: NodeManifest) -> String {
+        [
+            "Initialized configuration.",
+            "node: \(manifest.node.id.uuidString.lowercased())",
+            "llm profile: \(manifest.llmProfiles[0].id.uuidString.lowercased())",
+            "ascendant: \(manifest.ascendants[0].id.uuidString.lowercased())",
+            "timeline: \(manifest.timelines[0].id.uuidString.lowercased())",
+            "workspace: \(manifest.workspaces[0].id.uuidString.lowercased())",
+        ].joined(separator: "\n")
+    }
+
+    private static func humanDescription(_ manifest: NodeManifest) -> String {
+        var lines = [
+            "schemaVersion = \(manifest.schemaVersion)",
+            "node.id = \(manifest.node.id.uuidString.lowercased())",
+            "node.approvalMode = \(manifest.node.approvalMode)",
+            "node.logLevel = \(manifest.node.logLevel)",
+            "broker.host = \(manifest.broker.host)",
+            "broker.port = \(manifest.broker.port)",
+            "broker.namespace = \(manifest.broker.namespace)",
+            "mqtt.host = \(manifest.broker.host)",
+            "mqtt.port = \(manifest.broker.port)",
+            "mqtt.namespace = \(manifest.broker.namespace)",
+        ]
+        if let username = manifest.broker.username { lines.append("broker.username = \(username)") }
+        if manifest.broker.password != nil { lines.append("broker.password = <redacted>") }
+        for profile in manifest.llmProfiles {
+            lines.append("llm.profile \(profile.id.uuidString.lowercased()) = \(profile.name) [\(profile.provider)]")
+            if let endpoint = profile.endpoint { lines.append("  endpoint = \(endpoint)") }
+            if let model = profile.model { lines.append("  model = \(model)") }
+            if let utilityModel = profile.utilityModel { lines.append("  utilityModel = \(utilityModel)") }
+            if let fastModel = profile.fastModel { lines.append("  fastModel = \(fastModel)") }
+            if profile.apiKey != nil { lines.append("  apiKey = <redacted>") }
+        }
+        for ascendant in manifest.ascendants {
+            lines.append("ascendant \(ascendant.id.uuidString.lowercased()) = \(ascendant.name) default=\(ascendant.defaultTimelineID.uuidString.lowercased())")
+            if !ascendant.description.isEmpty { lines.append("  description = \(ascendant.description)") }
+            if let profileID = ascendant.llmProfileID { lines.append("  llmProfile = \(profileID.uuidString.lowercased())") }
+        }
+        for timeline in manifest.timelines {
+            lines.append("timeline \(timeline.id.uuidString.lowercased()) = \(timeline.title)")
+            if let operatorID = timeline.operatingAscendantID { lines.append("  operator = \(operatorID.uuidString.lowercased())") }
+            for attachment in timeline.attachments {
+                let scope = attachment.scope.rawValue
+                let uri = attachment.uri.map { " \($0)" } ?? ""
+                lines.append("  workspace = \(attachment.workspaceID.uuidString.lowercased()) [\(scope)]\(uri)")
+            }
+        }
+        for workspace in manifest.workspaces { lines.append("workspace \(workspace.id.uuidString.lowercased()) = \(workspace.name) \(workspace.uri)") }
+        return lines.joined(separator: "\n")
     }
 }

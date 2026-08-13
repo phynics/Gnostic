@@ -100,7 +100,7 @@ public enum ChatREPLError: Error, Sendable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unconfiguredLLM:
-            "No LLM is configured. Set llm.provider, llm.model, and llm.apiKey with `gnostic config set`."
+            "No LLM is configured. Add a profile with `gnostic config llm add` and provide its API key with `gnostic config llm set-api-key`."
         case .timelineCreationFailed:
             "Could not create a chat timeline."
         case let .invalidCommand(command):

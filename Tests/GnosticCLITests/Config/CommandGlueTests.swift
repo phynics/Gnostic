@@ -39,26 +39,14 @@ struct CommandGlueTests {
         #expect(text.contains("<redacted>"))
     }
 
-    @Test("config set persists and reports the key")
+    @Test("broker set persists resource fields")
     func configSetPersists() throws {
         let folder = try tempFolder()
         let store = CLIConfigurationStore(baseDirectory: folder, environment: [:])
 
-        var output: [String] = []
-        try ConfigCommandLogic.set(key: "mqtt.namespace", value: "test-ns", store: store, writeOutput: { output.append($0) })
+        try ConfigCommandLogic.setBroker(host: nil, port: nil, namespace: "test-ns", username: nil, store: store)
 
-        #expect(output == ["Set mqtt.namespace."])
         #expect(try store.load().mqttNamespace == "test-ns")
-    }
-
-    @Test("config set rejects an unknown key")
-    func configSetRejectsUnknownKey() throws {
-        let folder = try tempFolder()
-        let store = CLIConfigurationStore(baseDirectory: folder, environment: [:])
-
-        #expect(throws: CLIConfigurationError.unknownKey("bogus.key")) {
-            try ConfigCommandLogic.set(key: "bogus.key", value: "x", store: store)
-        }
     }
 
     @Test("config path prints the store location")

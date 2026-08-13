@@ -79,6 +79,14 @@ public enum CLIConfigurationError: Error, Sendable, Equatable, LocalizedError {
     case unknownKey(String)
     /// A secret was requested for a key that does not store secrets.
     case notASecret(ConfigurationKey)
+    /// The selected file already exists and cannot be initialized again.
+    case fileAlreadyExists(URL)
+    /// A resource ID does not exist in the selected manifest.
+    case resourceNotFound(kind: String, id: UUID)
+    /// A resource cannot be removed because other resources still reference it.
+    case resourceReferenced(kind: String, id: UUID, references: [String])
+    /// A command argument is invalid independently of a dotted configuration key.
+    case invalidArgument(String)
     /// The configuration file could not be written.
     case writeFailed(URL)
 
@@ -97,6 +105,14 @@ public enum CLIConfigurationError: Error, Sendable, Equatable, LocalizedError {
             return "Unknown configuration key '\(key)'."
         case let .notASecret(key):
             return "\(key.rawValue) is not a secret key."
+        case let .fileAlreadyExists(url):
+            return "A configuration manifest already exists at \(url.path); refusing to overwrite it."
+        case let .resourceNotFound(kind, id):
+            return "No \(kind) resource exists with ID \(id.uuidString.lowercased())."
+        case let .resourceReferenced(kind, id, references):
+            return "Cannot remove \(kind) \(id.uuidString.lowercased()); it is referenced by \(references.joined(separator: ", "))."
+        case let .invalidArgument(message):
+            return message
         case let .writeFailed(url):
             return "Could not write the configuration file at \(url.path)."
         }
@@ -111,6 +127,10 @@ public enum CLIConfigurationError: Error, Sendable, Equatable, LocalizedError {
         case .invalidValue: "invalidValue"
         case .unknownKey: "unknownKey"
         case .notASecret: "notASecret"
+        case .fileAlreadyExists: "fileAlreadyExists"
+        case .resourceNotFound: "resourceNotFound"
+        case .resourceReferenced: "resourceReferenced"
+        case .invalidArgument: "invalidArgument"
         case .writeFailed: "writeFailed"
         }
     }
