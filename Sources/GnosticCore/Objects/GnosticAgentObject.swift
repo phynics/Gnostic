@@ -52,18 +52,23 @@ public final class GnosticAgentObject: CoatyObject {
     /// Creates a safe Axoloty projection of an agent.
     ///
     /// - Parameter agent: The PositronicKit agent to expose on the network.
-    public init(agent: AgentInstance) {
-        agentDescription = agent.description
-        primaryWorkspaceID = agent.primaryWorkspaceID
-        privateTimelineID = agent.privateTimelineID
-        lastActiveAt = agent.lastActiveAt
-        createdAt = agent.createdAt
-        updatedAt = agent.updatedAt
+    public convenience init(agent: AgentInstance) {
+        self.init(identity: .init(id: agent.id, name: agent.name, description: agent.description, privateTimelineID: agent.privateTimelineID, primaryWorkspaceID: agent.primaryWorkspaceID, lastActiveAt: agent.lastActiveAt, createdAt: agent.createdAt, updatedAt: agent.updatedAt))
+    }
+
+    /// Creates a network projection without exposing a provider's agent type.
+    public init(identity: AscendantRuntimeIdentity) {
+        agentDescription = identity.description
+        primaryWorkspaceID = identity.primaryWorkspaceID
+        privateTimelineID = identity.privateTimelineID
+        lastActiveAt = identity.lastActiveAt
+        createdAt = identity.createdAt
+        updatedAt = identity.updatedAt
         super.init(
             coreType: .CoatyObject,
             objectType: Self.objectType,
-            objectId: CoatyUUID(uuidString: agent.id.uuidString)!,
-            name: agent.name
+            objectId: CoatyUUID(uuidString: identity.id.uuidString)!,
+            name: identity.name
         )
     }
 
