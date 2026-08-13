@@ -32,6 +32,9 @@ struct ACPCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Ascendant UUID to pin for this ACP process.")
     var ascendant: String?
 
+    @Option(name: .long, help: "Node provider identity to pin for this ACP process.")
+    var provider: String?
+
     @MainActor
     func run() async throws {
         let store = CLIConfigurationStore()
@@ -63,6 +66,7 @@ struct ACPCommand: AsyncParsableCommand {
         try await ACPServer(
             client: client,
             ascendantID: ascendantID,
+            providerID: provider,
             registry: ACPSessionRegistry()
         ).run()
     }
@@ -75,7 +79,8 @@ struct ACPCommand: AsyncParsableCommand {
             namespace: namespace ?? stored.mqttNamespace
         )
         let cache = ACPProfileCache()
-        if !refresh, let cached = cache.load(for: brokerKey) {
+        if !refresh, let cached = cache.load(for: brokerKey),
+           cached.profiles.allSatisfy({ $0.args.contains("--provider") }) {
             try writeProfiles(cached)
             return
         }
@@ -87,9 +92,11 @@ struct ACPCommand: AsyncParsableCommand {
         defer { client.stop() }
         try await client.connect()
         let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.agent }
+        let counts = Dictionary(grouping: entries, by: \.objectID).mapValues(\.count)
         let profiles = entries.map { entry in
-            ACPProfile(
-                id: "gnostic-\(entry.objectID.uuidString.lowercased())",
+            let baseID = "gnostic-\(entry.objectID.uuidString.lowercased())"
+            return ACPProfile(
+                id: counts[entry.objectID] == 1 ? baseID : "\(baseID)-\(entry.providerID.lowercased())",
                 name: entry.name,
                 command: "gnostic",
                 args: [
@@ -98,6 +105,7 @@ struct ACPCommand: AsyncParsableCommand {
                     "--port", String(port ?? stored.mqttPort),
                     "--namespace", namespace ?? stored.mqttNamespace,
                     "--ascendant", entry.objectID.uuidString.lowercased(),
+                    "--provider", entry.providerID.lowercased(),
                 ],
                 env: [:]
             )

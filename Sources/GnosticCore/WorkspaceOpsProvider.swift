@@ -63,21 +63,33 @@ public struct WorkspaceOpsProvider: Sendable {
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
         switch operation {
         case Self.listOperation:
-            let listings = try await list()
-            let encoded = try JSONEncoder().encode(WorkspaceListResult(workspaces: listings))
-            return .success(result: String(decoding: encoded, as: UTF8.self))
+            do {
+                let listings = try await list()
+                let encoded = try JSONEncoder().encode(WorkspaceListResult(workspaces: listings))
+                return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch {
+                return failure(for: error)
+            }
         case Self.attachOperation:
             guard let request = decode(parameters) else {
                 return .failure(code: 400, message: "Invalid workspace.attach payload")
             }
-            let ok = try await attach(request)
-            return .success(result: ok ? "true" : "false")
+            do {
+                let ok = try await attach(request)
+                return .success(result: ok ? "true" : "false")
+            } catch {
+                return failure(for: error)
+            }
         case Self.detachOperation:
             guard let request = decode(parameters) else {
                 return .failure(code: 400, message: "Invalid workspace.detach payload")
             }
-            let ok = try await detach(request)
-            return .success(result: ok ? "true" : "false")
+            do {
+                let ok = try await detach(request)
+                return .success(result: ok ? "true" : "false")
+            } catch {
+                return failure(for: error)
+            }
         default:
             return .failure(code: 404, message: "Unknown workspace operation")
         }
@@ -90,13 +102,32 @@ public struct WorkspaceOpsProvider: Sendable {
         return request
     }
 
+    private func failure(for error: Error) -> CallHandlerResult {
+        if let error = error as? NodeRuntimeError {
+            return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+        }
+        if let error = error as? DiscoveredWorkspaceAttachmentError {
+            switch error {
+            case .approvalRequired:
+                return .failure(code: 403, message: "approvalRequired: Workspace attachment requires approval.")
+            case let .unavailable(status):
+                return .failure(code: 409, message: "workspaceUnavailable: Workspace is not uniquely available (\(status)).")
+            case .invalidURI:
+                return .failure(code: 422, message: "invalidWorkspaceURI: Workspace advertised an invalid URI.")
+            case let .timelineNotOwned(id):
+                return .failure(code: 404, message: "timelineNotOwned: Timeline \(id.uuidString.lowercased()) is not owned by this Node.")
+            }
+        }
+        return .failure(code: 500, message: "workspaceOperationFailed: \(String(describing: error))")
+    }
+
     @MainActor
-    public func register(on communication: CommunicationManager) async throws -> [CallHandlerRegistration] {
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
         var registrations: [CallHandlerRegistration] = []
         do {
             for operation in [Self.listOperation, Self.attachOperation, Self.detachOperation] {
                 let op = operation
-                registrations.append(try await communication.registerCallHandler(operation: op) { [self] request in
+                registrations.append(try await communication.registerCallHandler(operation: op, context: context) { [self] request in
                     try await handle(operation: op, parameters: request.parameters)
                 })
             }

@@ -122,6 +122,71 @@ struct RemoteChatClientTests {
         #expect(session.timelineID == serve.servedTimelineID)
     }
 
+    @Test("workspace invocation keeps duplicate Timeline IDs scoped to the Workspace provider") @MainActor
+    func workspaceInvocationScopesDuplicateTimelineIDs() async throws {
+        let namespace = "remote-chat-duplicate-timeline-provider-tests"
+        let timelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000011")!
+        let firstWorkspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000012")!
+        let secondWorkspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000013")!
+        let firstAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000014")!
+        let secondAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000015")!
+        let firstManifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000016")!),
+            ascendants: [.init(id: firstAscendantID, name: "First", defaultTimelineID: timelineID)],
+            timelines: [.init(
+                id: timelineID,
+                title: "First duplicate",
+                operatingAscendantID: firstAscendantID,
+                attachments: [.local(firstWorkspaceID)]
+            )],
+            workspaces: [.init(id: firstWorkspaceID, name: "First echo", uri: "echo://first")]
+        )
+        let secondManifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000017")!),
+            ascendants: [.init(id: secondAscendantID, name: "Second", defaultTimelineID: timelineID)],
+            timelines: [.init(
+                id: timelineID,
+                title: "Second duplicate",
+                operatingAscendantID: secondAscendantID,
+                attachments: [.local(secondWorkspaceID)]
+            )],
+            workspaces: [.init(id: secondWorkspaceID, name: "Second echo", uri: "echo://second")]
+        )
+        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan())
+        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan())
+        try await first.start()
+        try await second.start()
+        defer {
+            Task { @MainActor in
+                await first.shutdown()
+                await second.shutdown()
+            }
+        }
+
+        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { client.stop() }
+        try await client.connect()
+        try await poll(timeout: .seconds(8)) {
+            await client.discoverAscendants().count == 2
+        }
+        let providerID = try #require(
+            await client.discoverAscendants().first { $0.id == secondAscendantID }?.providerID
+        )
+
+        let result = try await client.invokeWorkspace(
+            workspaceID: secondWorkspaceID,
+            providerID: providerID,
+            timelineID: timelineID,
+            toolID: "workspace_echo",
+            parameters: ["value": AnyCodable("second-node")],
+            approved: true
+        )
+
+        #expect(result.output == "second-node")
+    }
+
     private func poll(
         timeout: Duration,
         _ condition: @escaping @Sendable () async throws -> Bool

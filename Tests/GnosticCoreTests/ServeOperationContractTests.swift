@@ -225,6 +225,47 @@ struct ServeOperationContractTests {
         #expect(await recorder.attached.isEmpty)
     }
 
+    @Test("workspace ops convert domain and unexpected errors to structured failures")
+    func workspaceOpsFailureContract() async throws {
+        struct InjectedFailure: Error {}
+        let request = WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID())
+        let provider = WorkspaceOpsProvider(
+            list: { throw InjectedFailure() },
+            attach: { _ in throw DiscoveredWorkspaceAttachmentError.invalidURI },
+            detach: { _ in throw NodeRuntimeError.notRunning }
+        )
+
+        guard case let .failure(listCode, listMessage, _) = try await provider.handle(
+            operation: WorkspaceOpsProvider.listOperation,
+            parameters: nil
+        ) else {
+            Issue.record("expected structured list failure")
+            return
+        }
+        #expect(listCode == 500)
+        #expect(listMessage.hasPrefix("workspaceOperationFailed:"))
+
+        guard case let .failure(attachCode, attachMessage, _) = try await provider.handle(
+            operation: WorkspaceOpsProvider.attachOperation,
+            parameters: payload(request)
+        ) else {
+            Issue.record("expected structured attach failure")
+            return
+        }
+        #expect(attachCode == 422)
+        #expect(attachMessage.hasPrefix("invalidWorkspaceURI:"))
+
+        guard case let .failure(detachCode, detachMessage, _) = try await provider.handle(
+            operation: WorkspaceOpsProvider.detachOperation,
+            parameters: payload(request)
+        ) else {
+            Issue.record("expected structured detach failure")
+            return
+        }
+        #expect(detachCode == 503)
+        #expect(detachMessage.hasPrefix("notRunning:"))
+    }
+
     @Test("timeline create/list/update route to the injected closures")
     func timelineManagementContract() async throws {
         let createdID = UUID()

@@ -15,6 +15,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
     case noOperatingAscendant(UUID)
     case unknownAscendant(UUID)
     case noConfiguredAscendant
+    case ambiguousAscendant
     case turnFailed(String)
     case startInProgress
     case notRunning
@@ -29,6 +30,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case let .noOperatingAscendant(id): "Timeline \(id.uuidString) has no operating Ascendant."
         case let .unknownAscendant(id): "Ascendant \(id.uuidString) is not in the launch plan."
         case .noConfiguredAscendant: "The node has no configured Ascendant."
+        case .ambiguousAscendant: "The node has multiple Ascendants; select one explicitly."
         case let .turnFailed(detail): detail
         case .startInProgress: "The node runtime is already starting."
         case .notRunning: "The node runtime is not running."
@@ -45,6 +47,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case .noOperatingAscendant: "noOperatingAscendant"
         case .unknownAscendant: "unknownAscendant"
         case .noConfiguredAscendant: "noConfiguredAscendant"
+        case .ambiguousAscendant: "ambiguousAscendant"
         case .turnFailed: "turnFailed"
         case .startInProgress: "startInProgress"
         case .notRunning: "notRunning"
@@ -53,6 +56,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
 
     public var statusCode: Int {
         switch self {
+        case .missingTimeline, .missingWorkspace, .unknownAscendant: 404
         case .noOperatingAscendant: 409
         case .startInProgress, .notRunning: 503
         case .turnFailed: 500
@@ -501,11 +505,14 @@ public final class NodeRuntime {
                 replayStore: turnUpdates,
                 isAvailable: { [weak self] in await self?.isRunning == true }
             )
-            registrations.append(try await agentChat.register(on: communication))
-            registrations.append(try await agentChat.registerReplay(on: communication))
+            registrations.append(try await agentChat.register(on: communication, context: communication.identity))
+            registrations.append(try await agentChat.registerReplay(on: communication, context: communication.identity))
             let permission = AgentPermissionProvider(coordinator: permissionCoordinator)
-            registrations.append(try await permission.register(on: communication))
-            permissionResponseTask = try await permission.observeResponses(on: communication)
+            registrations.append(try await permission.register(on: communication, context: communication.identity))
+            permissionResponseTask = try await permission.observeResponses(
+                on: communication,
+                providerID: communication.identity.objectId.string
+            )
 
             let events = await turnUpdates.events()
             turnUpdatePublishTask = Task { [communication] in
@@ -520,16 +527,13 @@ public final class NodeRuntime {
                 guard await self.isRunning else { throw NodeRuntimeError.notRunning }
                 return try await self.timelineStatus(for: request.timelineID)
             }
-            registrations.append(try await status.register(on: communication))
+            registrations.append(try await status.register(on: communication, context: communication.identity))
 
             let management = TimelineManagementProvider(
                 create: { [weak self] title, ascendantID in
                     guard let self else { throw NodeRuntimeError.notRunning }
                     guard await self.isRunning else { throw NodeRuntimeError.notRunning }
-                    let selectedID = await self.selectedAscendantID(requested: ascendantID)
-                    guard let selectedID else {
-                        throw NodeRuntimeError.noConfiguredAscendant
-                    }
+                    let selectedID = try await self.selectedAscendantID(requested: ascendantID)
                     return try await self.createTimeline(title: title, ascendantID: selectedID)
                 },
                 list: { [weak self] in
@@ -543,7 +547,7 @@ public final class NodeRuntime {
                     return try await self.renameTimeline(request)
                 }
             )
-            registrations += try await management.register(on: communication)
+            registrations += try await management.register(on: communication, context: communication.identity)
 
             let operations = WorkspaceOpsProvider(
                 list: { [weak self] in
@@ -562,7 +566,7 @@ public final class NodeRuntime {
                     return try await self.detachWorkspace(request)
                 }
             )
-            registrations += try await operations.register(on: communication)
+            registrations += try await operations.register(on: communication, context: communication.identity)
             try requireActiveStart()
             try adapters.lifecycle.afterRegistration()
             try await adapters.lifecycle.beforeDiscoverResponder()
@@ -643,10 +647,14 @@ public final class NodeRuntime {
         return plan.timelines.first(where: { $0.id == timelineID })?.operatingAscendantID
     }
 
-    private func selectedAscendantID(requested ascendantID: UUID?) -> UUID? {
-        if let ascendantID { return ascendantID }
-        guard ascendantRuntimes.count == 1 else { return nil }
-        return ascendantRuntimes.keys.first
+    private func selectedAscendantID(requested ascendantID: UUID?) throws -> UUID {
+        if let ascendantID {
+            guard ascendantRuntimes[ascendantID] != nil else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+            return ascendantID
+        }
+        guard !ascendantRuntimes.isEmpty else { throw NodeRuntimeError.noConfiguredAscendant }
+        guard ascendantRuntimes.count == 1 else { throw NodeRuntimeError.ambiguousAscendant }
+        return ascendantRuntimes.keys[...].first!
     }
 
     public func workspaceReference(id: UUID) -> WorkspaceReference? { workspaceReferences[id] }
@@ -725,7 +733,7 @@ public final class NodeRuntime {
         guard let ascendantID = ascendantID(forTimeline: timelineID),
               let runtime = ascendantRuntimes[ascendantID],
               let timeline = try await runtime.timelineManager.listTimelines().first(where: { $0.id == timelineID }) else {
-            return TimelineStatus(timelineID: timelineID, title: "(unknown)", attachedWorkspaceIDs: [])
+            throw NodeRuntimeError.missingTimeline(timelineID)
         }
         return Self.mapTimeline(timeline)
     }
@@ -750,9 +758,17 @@ public final class NodeRuntime {
     }
 
     private func attachableWorkspaces() async -> [WorkspaceListing] {
-        await catalog.networkObjects()
-            .filter { $0.objectType == GnosticObjectType.workspace && $0.workspace?.isAvailable == true }
-            .map { WorkspaceListing(id: $0.objectID, name: $0.name, isAvailable: true) }
+        var listings = Dictionary(uniqueKeysWithValues: plan.workspaces.map {
+            ($0.id, WorkspaceListing(id: $0.id, name: $0.name, isAvailable: true))
+        })
+        for entry in await catalog.networkObjects()
+            where entry.objectType == GnosticObjectType.workspace
+                && entry.workspace?.isAvailable == true
+                && listings[entry.objectID] == nil {
+            guard case .available = await catalog.workspaceAttachmentStatus(id: entry.objectID) else { continue }
+            listings[entry.objectID] = WorkspaceListing(id: entry.objectID, name: entry.name, isAvailable: true)
+        }
+        return listings.values.sorted { ($0.id.uuidString, $0.name) < ($1.id.uuidString, $1.name) }
     }
 
     private func attachWorkspace(_ request: WorkspaceOpsRequest) async throws -> Bool {
@@ -760,12 +776,18 @@ public final class NodeRuntime {
               let runtime = ascendantRuntimes[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(request.timelineID)
         }
-        let service = DiscoveredWorkspaceAttachmentService(
-            catalog: catalog,
-            timelineManager: runtime.timelineManager,
-            allowedTimelineIDs: [request.timelineID]
-        )
-        _ = try await service.attach(workspaceID: request.workspaceID, to: request.timelineID, approved: true)
+        if localWorkspaces[request.workspaceID] != nil,
+           let reference = workspaceReferences[request.workspaceID] {
+            try await runtime.timelineManager.importWorkspace(reference)
+            try await runtime.timelineManager.attachWorkspace(reference.id, to: request.timelineID)
+        } else {
+            let service = DiscoveredWorkspaceAttachmentService(
+                catalog: catalog,
+                timelineManager: runtime.timelineManager,
+                allowedTimelineIDs: [request.timelineID]
+            )
+            _ = try await service.attach(workspaceID: request.workspaceID, to: request.timelineID, approved: true)
+        }
         if let timeline = try await runtime.timelineManager.listTimelines().first(where: { $0.id == request.timelineID }) {
             timelineRecords[request.timelineID] = timeline
             lifecycle.readvertiseDiscoverableObject(object: GnosticTimelineObject(timeline: timeline))

@@ -86,6 +86,7 @@ struct ACPSessionRecord: Codable, Sendable, Identifiable {
     let profileFingerprint: String
     let ascendantID: UUID
     let timelineID: UUID
+    let providerID: String?
     let cwd: String
     var title: String
     let createdAt: Date

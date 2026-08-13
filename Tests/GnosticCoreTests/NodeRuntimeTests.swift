@@ -129,6 +129,273 @@ struct NodeRuntimeTests {
         #expect(try await runtime.listTimelines().count == 3)
     }
 
+    @Test("two nodes in one namespace route Timeline status only to the addressed provider") @MainActor
+    func twoNodeTimelineStatusUsesProviderScope() async throws {
+        let namespace = "node-runtime-two-provider-status"
+        let firstTimeline = UUID(uuidString: "A21D0000-0000-4000-8000-000000000161")!
+        let secondTimeline = UUID(uuidString: "A21D0000-0000-4000-8000-000000000162")!
+        let firstManifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000163")!),
+            ascendants: [.init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000164")!, name: "First", defaultTimelineID: firstTimeline)],
+            timelines: [.init(id: firstTimeline, title: "First Node Timeline", operatingAscendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000164")!)]
+        )
+        let secondManifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000165")!),
+            ascendants: [.init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000166")!, name: "Second", defaultTimelineID: secondTimeline)],
+            timelines: [.init(id: secondTimeline, title: "Second Node Timeline", operatingAscendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000166")!)]
+        )
+        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan())
+        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan())
+        try await first.start()
+        try await second.start()
+        defer {
+            Task { @MainActor in
+                await first.shutdown()
+                await second.shutdown()
+            }
+        }
+
+        let consumer = makeNodeRuntimeBrokerManager("two-provider-status-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
+        await subscription.discover(using: consumer, timeout: .seconds(2))
+
+        let target = try #require(await catalog.networkObjects().first {
+            $0.objectType == GnosticObjectType.timeline && $0.objectID == secondTimeline
+        })
+        let payload = String(decoding: try JSONEncoder().encode(TimelineStatusRequest(timelineID: secondTimeline)), as: UTF8.self)
+        let response = try await consumer.call(
+            operation: TimelineStatusProvider.statusOperation,
+            parameters: payload,
+            context: ObjectFilter(condition: ObjectFilterCondition(
+                property: ObjectFilterProperty("objectId"),
+                expression: .equals(FilterOperand(target.providerID.lowercased()))
+            )),
+            timeout: .seconds(2)
+        )
+        let status = try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
+        #expect(response.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(status.title == "Second Node Timeline")
+    }
+
+    @Test("two nodes in one namespace address chat and replay to the selected language model") @MainActor
+    func twoNodeChatAndReplayUseProviderScope() async throws {
+        let namespace = "node-runtime-two-provider-chat"
+        let firstTimeline = UUID(uuidString: "A21D0000-0000-4000-8000-000000000171")!
+        let secondTimeline = UUID(uuidString: "A21D0000-0000-4000-8000-000000000172")!
+        let firstModel = ProviderIsolationLanguageModel(response: "first-model-response")
+        let secondModel = ProviderIsolationLanguageModel(response: "second-model-response")
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "positronic") { _, profile in
+            switch profile?.model {
+            case "first-model": return firstModel
+            case "second-model": return secondModel
+            default: return UnconfiguredLLMService()
+            }
+        }
+        let firstManifest = try makeProviderIsolationManifest(
+            namespace: namespace,
+            nodeID: "A21D0000-0000-4000-8000-000000000173",
+            ascendantID: "A21D0000-0000-4000-8000-000000000174",
+            timelineID: firstTimeline,
+            profileID: "A21D0000-0000-4000-8000-000000000175",
+            profileModel: "first-model"
+        )
+        let secondManifest = try makeProviderIsolationManifest(
+            namespace: namespace,
+            nodeID: "A21D0000-0000-4000-8000-000000000176",
+            ascendantID: "A21D0000-0000-4000-8000-000000000177",
+            timelineID: secondTimeline,
+            profileID: "A21D0000-0000-4000-8000-000000000178",
+            profileModel: "second-model"
+        )
+        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan(), adapters: adapters)
+        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan(), adapters: adapters)
+        try await first.start()
+        try await second.start()
+        defer {
+            Task { @MainActor in
+                await first.shutdown()
+                await second.shutdown()
+            }
+        }
+
+        let consumer = makeNodeRuntimeBrokerManager("two-provider-chat-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
+        await subscription.discover(using: consumer, timeout: .seconds(2))
+
+        let target = try #require(await catalog.networkObjects().first {
+            $0.objectType == GnosticObjectType.timeline && $0.objectID == secondTimeline
+        })
+        let request = AgentChatRequest(message: "provider isolation", timelineID: secondTimeline, clientTurnID: "provider-turn-2")
+        let response = try await consumer.call(
+            operation: AgentChatProvider.chatOperation,
+            parameters: String(decoding: try JSONEncoder().encode(request), as: UTF8.self),
+            context: providerIsolationContext(target.providerID),
+            timeout: .seconds(3)
+        )
+        let result = try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
+        #expect(response.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(result.text == "second-model-response")
+        #expect(await firstModel.invocationCount == 0)
+        #expect(await secondModel.invocationCount == 1)
+
+        let replayRequest = AgentChatReplayRequest(timelineID: secondTimeline, clientTurnID: "provider-turn-2")
+        let replayResponse = try await consumer.call(
+            operation: AgentChatProvider.replayOperation,
+            parameters: String(decoding: try JSONEncoder().encode(replayRequest), as: UTF8.self),
+            context: providerIsolationContext(target.providerID),
+            timeout: .seconds(3)
+        )
+        let replay = try JSONDecoder().decode(
+            AscendantTurnReplay.self,
+            from: Data(replayResponse.result.utf8)
+        )
+        #expect(replayResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(replay.terminal)
+        #expect(replay.updates.last?.text == "second-model-response")
+        #expect(await firstModel.invocationCount == 0)
+        #expect(await secondModel.invocationCount == 1)
+    }
+
+    @Test("two nodes in one namespace address timeline and workspace management to one provider") @MainActor
+    func twoNodeManagementUsesProviderScope() async throws {
+        let namespace = "node-runtime-two-provider-management"
+        let firstNodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000181")!
+        let firstAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000182")!
+        let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000183")!
+        let firstWorkspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000184")!
+        let secondNodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000185")!
+        let secondAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000186")!
+        let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000187")!
+        let secondWorkspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000188")!
+        let firstManifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: firstNodeID),
+            ascendants: [.init(id: firstAscendantID, name: "First", defaultTimelineID: firstTimelineID)],
+            timelines: [.init(id: firstTimelineID, title: "First timeline", operatingAscendantID: firstAscendantID)],
+            workspaces: [.init(id: firstWorkspaceID, name: "First workspace", uri: "echo://first")]
+        )
+        let secondManifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: secondNodeID),
+            ascendants: [.init(id: secondAscendantID, name: "Second", defaultTimelineID: secondTimelineID)],
+            timelines: [.init(id: secondTimelineID, title: "Second timeline", operatingAscendantID: secondAscendantID)],
+            workspaces: [.init(id: secondWorkspaceID, name: "Second workspace", uri: "echo://second")]
+        )
+        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan())
+        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan())
+        try await first.start()
+        try await second.start()
+        defer {
+            Task { @MainActor in
+                await first.shutdown()
+                await second.shutdown()
+            }
+        }
+
+        let consumer = makeNodeRuntimeBrokerManager("two-provider-management-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
+        await subscription.discover(using: consumer, timeout: .seconds(2))
+
+        let target = try #require(await catalog.networkObjects().first {
+            $0.objectType == GnosticObjectType.timeline && $0.objectID == secondTimelineID
+        })
+        let context = providerIsolationContext(target.providerID)
+        let initialFirstTimeline = try #require(first.timeline(id: firstTimelineID))
+        let initialSecondTimeline = try #require(second.timeline(id: secondTimelineID))
+
+        let createResponse = try await consumer.call(
+            operation: TimelineManagementProvider.createOperation,
+            parameters: String(decoding: try JSONEncoder().encode(TimelineCreateRequest(title: "Second scratch", ascendantID: secondAscendantID)), as: UTF8.self),
+            context: context,
+            timeout: .seconds(3)
+        )
+        let created = try JSONDecoder().decode(TimelineStatus.self, from: Data(createResponse.result.utf8))
+        #expect(createResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(created.title == "Second scratch")
+        #expect(second.timeline(id: created.timelineID)?.title == "Second scratch")
+        #expect(first.timeline(id: created.timelineID) == nil)
+
+        let listResponse = try await consumer.call(
+            operation: TimelineManagementProvider.listOperation,
+            parameters: nil,
+            context: context,
+            timeout: .seconds(3)
+        )
+        let listed = try JSONDecoder().decode(TimelineListResult.self, from: Data(listResponse.result.utf8))
+        #expect(listResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(listed.timelines.map(\.timelineID).contains(secondTimelineID))
+        #expect(listed.timelines.map(\.timelineID).contains(created.timelineID))
+        #expect(!listed.timelines.map(\.timelineID).contains(firstTimelineID))
+
+        let updateResponse = try await consumer.call(
+            operation: TimelineManagementProvider.updateOperation,
+            parameters: String(decoding: try JSONEncoder().encode(TimelineUpdateRequest(timelineID: secondTimelineID, title: "Second renamed")), as: UTF8.self),
+            context: context,
+            timeout: .seconds(3)
+        )
+        let updated = try JSONDecoder().decode(TimelineStatus.self, from: Data(updateResponse.result.utf8))
+        #expect(updateResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(updated.title == "Second renamed")
+        #expect(second.timeline(id: secondTimelineID)?.title == "Second renamed")
+        #expect(first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
+        #expect(first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
+
+        let workspaceListResponse = try await consumer.call(
+            operation: WorkspaceOpsProvider.listOperation,
+            parameters: nil,
+            context: context,
+            timeout: .seconds(3)
+        )
+        let workspaceList = try JSONDecoder().decode(WorkspaceListResult.self, from: Data(workspaceListResponse.result.utf8))
+        #expect(workspaceListResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(workspaceList.workspaces.contains { $0.id == secondWorkspaceID && $0.name == "Second workspace" })
+
+        let attachmentRequest = WorkspaceOpsRequest(workspaceID: secondWorkspaceID, timelineID: secondTimelineID)
+        let attachResponse = try await consumer.call(
+            operation: WorkspaceOpsProvider.attachOperation,
+            parameters: String(decoding: try JSONEncoder().encode(attachmentRequest), as: UTF8.self),
+            context: context,
+            timeout: .seconds(3)
+        )
+        #expect(attachResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(attachResponse.result == "true")
+        #expect(second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs == [secondWorkspaceID])
+        #expect(first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
+        #expect(first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
+
+        let detachResponse = try await consumer.call(
+            operation: WorkspaceOpsProvider.detachOperation,
+            parameters: String(decoding: try JSONEncoder().encode(attachmentRequest), as: UTF8.self),
+            context: context,
+            timeout: .seconds(3)
+        )
+        #expect(detachResponse.sourceId?.lowercased() == target.providerID.lowercased())
+        #expect(detachResponse.result == "true")
+        #expect(second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs.isEmpty == true)
+        #expect(second.timeline(id: secondTimelineID)?.title == "Second renamed")
+        #expect(first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
+        #expect(first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
+        #expect(second.timeline(id: secondTimelineID)?.attachedAgentInstanceID == initialSecondTimeline.attachedAgentInstanceID)
+    }
+
     @Test("one running runtime multiplexes configured echo workspaces") @MainActor
     func echoWorkspacesShareTheProviderRoute() async throws {
         let manifest = try makeManifest(
@@ -395,8 +662,9 @@ struct NodeRuntimeTests {
         try consumer.start()
         await subscription.discover(using: consumer, timeout: .seconds(1))
 
-        for _ in 0..<30 {
+        for _ in 0..<20 {
             if await Set(catalog.networkObjects().map(\.objectType)).count >= 3 { break }
+            await subscription.discover(using: consumer, timeout: .milliseconds(200))
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(await Set(catalog.networkObjects().map(\.objectType)) == Set([
@@ -531,6 +799,107 @@ struct NodeRuntimeTests {
             timelines: [.init(id: timeline, title: "Default", operatingAscendantID: ascendant, attachments: workspaceIDs.compactMap { UUID(uuidString: $0) }.map(NodeManifest.WorkspaceAttachment.local))],
             workspaces: workspaces
         )
+    }
+
+    private func makeProviderIsolationManifest(
+        namespace: String,
+        nodeID: String,
+        ascendantID: String,
+        timelineID: UUID,
+        profileID: String,
+        profileModel: String
+    ) throws -> NodeManifest {
+        let node = try #require(UUID(uuidString: nodeID))
+        let ascendant = try #require(UUID(uuidString: ascendantID))
+        let profile = try #require(UUID(uuidString: profileID))
+        return NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: node),
+            llmProfiles: [.init(id: profile, provider: "stub", model: profileModel)],
+            ascendants: [.init(id: ascendant, name: profileModel, defaultTimelineID: timelineID, llmProfileID: profile)],
+            timelines: [.init(id: timelineID, title: "\(profileModel) timeline", operatingAscendantID: ascendant)]
+        )
+    }
+
+    private func providerIsolationContext(_ providerID: String) -> ObjectFilter {
+        ObjectFilter(condition: ObjectFilterCondition(
+            property: ObjectFilterProperty("objectId"),
+            expression: .equals(FilterOperand(providerID.lowercased()))
+        ))
+    }
+}
+
+private final class ProviderIsolationLanguageModel: LanguageModel, @unchecked Sendable {
+    let response: String
+    private let state = InvocationState()
+
+    init(response: String) {
+        self.response = response
+    }
+
+    var invocationCount: Int {
+        get async { await state.count }
+    }
+
+    var isConfigured: Bool {
+        get async { true }
+    }
+
+    var configuration: LLMConfiguration {
+        get async { .init(activeProvider: .openAI, providers: [:]) }
+    }
+
+    func chatStream(
+        messages _: [LLMMessage],
+        tools _: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        await state.recordInvocation()
+        let response = response
+        return AsyncThrowingStream { continuation in
+            continuation.yield(LLMStreamChunk(
+                id: response,
+                model: response,
+                choices: [LLMStreamChoice(
+                    index: 0,
+                    delta: LLMStreamDelta(content: response),
+                    finishReason: "stop"
+                )]
+            ))
+            continuation.finish()
+        }
+    }
+
+    func loadConfiguration() async {}
+    func updateConfiguration(_: LLMConfiguration) async throws {}
+    func clearConfiguration() async {}
+    func restoreFromBackup() async throws {}
+    func exportConfiguration() async throws -> Data { Data() }
+    func importConfiguration(from _: Data) async throws {}
+    func sendMessage(_ content: String) async throws -> String { content }
+    func sendMessage(
+        _: String,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        useUtilityModel _: Bool
+    ) async throws -> String { response }
+    func generateTags(for _: String) async throws -> [String] { [] }
+    func generateTitle(for _: [Message]) async throws -> String { response }
+    func evaluateRecallPerformance(
+        transcript _: String,
+        recalledMemories _: [Memory]
+    ) async throws -> [String: Double] { [:] }
+    func fetchAvailableModels() async throws -> [String]? { [response] }
+
+    private actor InvocationState {
+        private(set) var count = 0
+
+        func recordInvocation() {
+            count += 1
+        }
     }
 }
 

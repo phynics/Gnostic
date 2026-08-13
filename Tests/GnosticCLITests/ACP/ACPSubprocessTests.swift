@@ -166,13 +166,15 @@ struct ACPSubprocessTests {
         #expect(bundle.profiles.map(\.name) == ["Lower Ascendant"])
         #expect(bundle.profiles.allSatisfy { $0.command == "gnostic" && $0.env.isEmpty })
         let lowerProfile = try #require(bundle.profiles.first)
-        #expect(lowerProfile.args == [
+        #expect(Array(lowerProfile.args.dropLast(2)) == [
             "acp",
             "--host", "127.0.0.1",
             "--port", "1883",
             "--namespace", namespace,
             "--ascendant", lowerID.uuidString.lowercased(),
         ])
+        #expect(lowerProfile.args.dropLast().last == "--provider")
+        #expect(UUID(uuidString: try #require(lowerProfile.args.last)) != nil)
         let envelope = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(Set(envelope.keys) == ["version", "profiles"])
     }
@@ -597,14 +599,14 @@ private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendab
     func fetchAvailableModels() async throws -> [String]? { nil }
 }
 
-private enum ACPSubprocessError: Error { case timeout }
+enum ACPSubprocessError: Error { case timeout }
 
-private enum ACPSubprocessEnvelope {
+enum ACPSubprocessEnvelope {
     case request(JSONRPCRequest)
     case response(JSONRPCResponse)
 }
 
-private func readResponse(
+func readResponse(
     from iterator: inout AsyncStream<Data>.Iterator
 ) async throws -> JSONRPCResponse {
     while true {
@@ -612,7 +614,7 @@ private func readResponse(
     }
 }
 
-private func readEnvelope(
+func readEnvelope(
     from iterator: inout AsyncStream<Data>.Iterator
 ) async throws -> ACPSubprocessEnvelope {
     guard let data = await iterator.next() else { throw ACPSubprocessError.timeout }
@@ -622,7 +624,7 @@ private func readEnvelope(
     return .response(try JSONDecoder().decode(JSONRPCResponse.self, from: data))
 }
 
-private final class LineStream: Sendable {
+final class LineStream: Sendable {
     let stream: AsyncStream<Data>
 
     init(handle: FileHandle) {
@@ -647,7 +649,7 @@ private final class LineStream: Sendable {
     }
 }
 
-private func poll(
+func poll(
     timeout: Duration,
     _ condition: @escaping @Sendable () async throws -> Bool
 ) async throws {

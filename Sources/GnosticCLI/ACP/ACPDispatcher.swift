@@ -13,6 +13,7 @@ final class ACPDispatcher: Sendable {
         let id: UUID
         let name: String
         let timelineID: UUID
+        let providerID: String
     }
 
     private struct ActivePrompt {
@@ -29,6 +30,7 @@ final class ACPDispatcher: Sendable {
     private let client: GnosticRemoteClient
     private let registry: ACPSessionRegistry
     private let requestedAscendantID: UUID?
+    private let requestedProviderID: String?
     private let publish: @Sendable (String, AnyCodable) -> Void
     private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
     private var ascendant: Ascendant?
@@ -41,12 +43,14 @@ final class ACPDispatcher: Sendable {
         client: GnosticRemoteClient,
         registry: ACPSessionRegistry,
         requestedAscendantID: UUID?,
+        requestedProviderID: String? = nil,
         publish: @escaping @Sendable (String, AnyCodable) -> Void,
         requestPermission: @escaping @Sendable (AnyCodable) async throws -> AnyCodable
     ) {
         self.client = client
         self.registry = registry
         self.requestedAscendantID = requestedAscendantID
+        self.requestedProviderID = requestedProviderID
         self.publish = publish
         self.requestPermission = requestPermission
     }
@@ -102,13 +106,18 @@ final class ACPDispatcher: Sendable {
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
         let selected = try selectedAscendant()
-        let status = try await client.createTimeline(title: "ACP \(URL(fileURLWithPath: cwd).lastPathComponent)")
+        let status = try await client.createTimeline(
+            title: "ACP \(URL(fileURLWithPath: cwd).lastPathComponent)",
+            ascendantID: selected.id,
+            providerID: selected.providerID
+        )
         let record = try await registry.create(
             profileFingerprint: profileFingerprint(for: selected),
             ascendantID: selected.id,
             timelineID: status.timelineID,
             cwd: cwd,
-            title: status.title
+            title: status.title,
+            providerID: selected.providerID
         )
         return .dictionary([
             "sessionId": .string(record.id),
@@ -124,7 +133,7 @@ final class ACPDispatcher: Sendable {
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
         let record = try await requireSession(id: input.sessionID, cwd: cwd)
-        let status = try await client.timelineStatus(timelineID: record.timelineID)
+        let status = try await client.timelineStatus(timelineID: record.timelineID, providerID: try boundProviderID(for: record))
         try await registry.touch(id: record.id)
         return .dictionary(["_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status))])
     }
@@ -134,13 +143,16 @@ final class ACPDispatcher: Sendable {
         let cwd = try input.cwd.map { try canonicalCWD($0) }
         let selected = try selectedAscendant()
         let fingerprint = profileFingerprint(for: selected)
+        let legacyFingerprint = legacyProfileFingerprint(for: selected)
         let records = await registry.list(cwd: cwd)
         var sessions: [AnyCodable] = []
-        for record in records where record.profileFingerprint == fingerprint && record.ascendantID == selected.id {
+        for record in records where (record.profileFingerprint == fingerprint || record.profileFingerprint == legacyFingerprint)
+            && record.ascendantID == selected.id
+            && (record.providerID == nil || record.providerID == selected.providerID) {
             // Registry entries survive process restarts, but a deleted remote
             // Timeline must not be presented as resumable. Keep the metadata on
             // disk for diagnostics while omitting it from the ACP result.
-            guard let status = try? await client.timelineStatus(timelineID: record.timelineID) else { continue }
+            guard let status = try? await client.timelineStatus(timelineID: record.timelineID, providerID: selected.providerID) else { continue }
             sessions.append(.dictionary([
                 "sessionId": .string(record.id),
                 "cwd": .string(record.cwd),
@@ -154,9 +166,7 @@ final class ACPDispatcher: Sendable {
 
     private func closeSession(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPCloseParameters = try decode(params)
-        guard await registry.record(id: input.sessionID) != nil else {
-            throw JSONRPCMethodError.invalidParams("unknown ACP session")
-        }
+        _ = try await requireSession(id: input.sessionID, cwd: nil)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
         activePrompts.removeValue(forKey: input.sessionID)?.close()
         _ = try await registry.close(id: input.sessionID)
@@ -165,9 +175,7 @@ final class ACPDispatcher: Sendable {
 
     private func cancelSession(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPCloseParameters = try decode(params)
-        guard await registry.record(id: input.sessionID) != nil else {
-            throw JSONRPCMethodError.invalidParams("unknown ACP session")
-        }
+        _ = try await requireSession(id: input.sessionID, cwd: nil)
         guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
         cancelledSessions.insert(input.sessionID)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
@@ -189,7 +197,7 @@ final class ACPDispatcher: Sendable {
         // for the bounded update stream, so consume it before attempting
         // admission and never risk a second Timeline mutation.
         if input.clientTurnID != nil,
-           let existing = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text),
+           let existing = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text, providerID: try boundProviderID(for: record)),
            existing.terminal {
             if existing.conflict {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
@@ -230,7 +238,8 @@ final class ACPDispatcher: Sendable {
             timelineID: record.timelineID,
             clientTurnID: turnID,
             message: text,
-            afterSequence: lastSequence
+            afterSequence: lastSequence,
+            providerID: try boundProviderID(for: record)
         )
         let updates = replay?.updates ?? []
         if updates.isEmpty, lastSequence == 0 {
@@ -262,7 +271,8 @@ final class ACPDispatcher: Sendable {
         record: ACPSessionRecord,
         turnID: String
     ) async throws -> (AgentChatResult, Int) {
-        let channel = try await client.observeTurnUpdates()
+        let providerID = try boundProviderID(for: record)
+        let channel = try await client.observeTurnUpdates(providerID: providerID)
         let inbox = TurnUpdateInbox()
         let collector = Task {
             for await event in channel
@@ -274,7 +284,8 @@ final class ACPDispatcher: Sendable {
             try await client.chat(
                 message: message,
                 timelineID: record.timelineID,
-                clientTurnID: turnID
+                clientTurnID: turnID,
+                providerID: providerID
             )
         }
         let completion = PromptCompletion()
@@ -383,7 +394,7 @@ final class ACPDispatcher: Sendable {
                     timelineID: timelineID,
                     clientTurnID: turnID,
                     approved: approved
-                ))
+                ), providerID: try selectedAscendant().providerID)
             } catch {
                 try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
                 if error is CancellationError {
@@ -404,7 +415,7 @@ final class ACPDispatcher: Sendable {
             timelineID: timelineID,
             clientTurnID: turnID,
             approved: false
-        ))
+        ), providerID: try selectedAscendant().providerID)
     }
 
     private func publishUpdate(
@@ -424,26 +435,17 @@ final class ACPDispatcher: Sendable {
     }
 
     private func resolveAscendant() async throws -> Ascendant {
-        let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.agent }
-        let candidates = entries.compactMap { entry -> Ascendant? in
-            guard let raw = entry.knownProperties["privateTimelineID"],
-                  case let .string(timelineRaw) = raw,
-                  let timelineID = UUID(uuidString: timelineRaw) else { return nil }
-            return Ascendant(id: entry.objectID, name: entry.name, timelineID: timelineID)
+        do {
+            let selected = try await client.selectAscendant(id: requestedAscendantID, providerID: requestedProviderID)
+            return Ascendant(
+                id: selected.id,
+                name: selected.name,
+                timelineID: selected.timelineID,
+                providerID: selected.providerID
+            )
+        } catch let error as RemoteChatClientError {
+            throw JSONRPCMethodError.invalidState(error.localizedDescription)
         }
-        let selected: Ascendant?
-        if let requestedAscendantID {
-            selected = candidates.first { $0.id == requestedAscendantID }
-        } else if candidates.count == 1 {
-            selected = candidates.first
-        } else {
-            selected = nil
-        }
-        guard let selected else {
-            if requestedAscendantID != nil { throw JSONRPCMethodError.invalidState("requested Ascendant was not discovered") }
-            throw JSONRPCMethodError.invalidState("select one Ascendant with --ascendant")
-        }
-        return selected
     }
 
     private func selectedAscendant() throws -> Ascendant {
@@ -459,15 +461,29 @@ final class ACPDispatcher: Sendable {
             throw JSONRPCMethodError.invalidParams("session cwd does not match its original binding")
         }
         let selected = try selectedAscendant()
+        let legacyFingerprint = legacyProfileFingerprint(for: selected)
         guard record.ascendantID == selected.id,
-              record.profileFingerprint == profileFingerprint(for: selected) else {
+              record.providerID == nil || record.providerID == selected.providerID,
+              record.profileFingerprint == profileFingerprint(for: selected) || record.profileFingerprint == legacyFingerprint else {
             throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant or namespace")
         }
         return record
     }
 
     private func profileFingerprint(for ascendant: Ascendant) -> String {
+        "\(client.namespace):\(ascendant.providerID.lowercased()):\(ascendant.id.uuidString.lowercased())"
+    }
+
+    private func legacyProfileFingerprint(for ascendant: Ascendant) -> String {
         "\(client.namespace):\(ascendant.id.uuidString.lowercased())"
+    }
+
+    private func boundProviderID(for record: ACPSessionRecord) throws -> String {
+        let selected = try selectedAscendant()
+        guard record.providerID == nil || record.providerID == selected.providerID else {
+            throw JSONRPCMethodError.invalidState("session is bound to a different provider")
+        }
+        return selected.providerID
     }
 
     private func canonicalCWD(_ cwd: String) throws -> String {
