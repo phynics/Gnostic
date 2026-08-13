@@ -69,7 +69,7 @@ try {
         _meta: { "dev.phynics.pi-acp-client/clientTurnID": "official-client:turn-1" },
       });
       assert.equal(completed.stopReason, "end_turn");
-      assert(JSON.stringify(updates).includes("workspace_echo"));
+      assert(JSON.stringify(updates).includes("workspace_echo"), JSON.stringify(updates));
 
       permissionMode = "cancel";
       const permissionPending = new Promise((resolve) => { permissionSeen = resolve; });
