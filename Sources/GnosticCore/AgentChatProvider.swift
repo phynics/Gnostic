@@ -89,13 +89,22 @@ public struct AgentChatProvider: Sendable {
 
     private let executor: TurnExecutor
     private let replayStore: AscendantTurnUpdateStore?
+    private let isAvailable: @Sendable () async -> Bool
 
-    public init(execute: @escaping TurnExecutor, replayStore: AscendantTurnUpdateStore? = nil) {
+    public init(
+        execute: @escaping TurnExecutor,
+        replayStore: AscendantTurnUpdateStore? = nil,
+        isAvailable: @escaping @Sendable () async -> Bool = { true }
+    ) {
         self.executor = execute
         self.replayStore = replayStore
+        self.isAvailable = isAvailable
     }
 
     public func handle(parameters: String?) async throws -> CallHandlerResult {
+        guard await isAvailable() else {
+            return .failure(code: 503, message: "notRunning: The node runtime is not running.")
+        }
         guard let parameters,
               let request = try? JSONDecoder().decode(AgentChatRequest.self, from: Data(parameters.utf8)) else {
             return .failure(code: 400, message: "Invalid agent.chat payload")
@@ -141,6 +150,17 @@ public struct AgentChatProvider: Sendable {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
             }
             return .failure(code: error.statusCode, message: error.localizedDescription)
+        } catch let error as NodeRuntimeError {
+            if let replayStore, let clientTurnID = request.clientTurnID {
+                _ = await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: "error",
+                    text: error.localizedDescription,
+                    terminal: true
+                )
+            }
+            return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
@@ -157,6 +177,9 @@ public struct AgentChatProvider: Sendable {
     }
 
     public func handleReplay(parameters: String?) async throws -> CallHandlerResult {
+        guard await isAvailable() else {
+            return .failure(code: 503, message: "notRunning: The node runtime is not running.")
+        }
         guard let replayStore,
               let parameters,
               let request = try? JSONDecoder().decode(AgentChatReplayRequest.self, from: Data(parameters.utf8)),

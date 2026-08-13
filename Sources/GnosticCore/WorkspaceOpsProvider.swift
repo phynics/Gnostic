@@ -91,12 +91,19 @@ public struct WorkspaceOpsProvider: Sendable {
     }
 
     @MainActor
-    public func register(on communication: CommunicationManager) async throws {
-        for operation in [Self.listOperation, Self.attachOperation, Self.detachOperation] {
-            let op = operation
-            _ = try await communication.registerCallHandler(operation: op) { [self] request in
-                try await handle(operation: op, parameters: request.parameters)
+    public func register(on communication: CommunicationManager) async throws -> [CallHandlerRegistration] {
+        var registrations: [CallHandlerRegistration] = []
+        do {
+            for operation in [Self.listOperation, Self.attachOperation, Self.detachOperation] {
+                let op = operation
+                registrations.append(try await communication.registerCallHandler(operation: op) { [self] request in
+                    try await handle(operation: op, parameters: request.parameters)
+                })
             }
+        } catch {
+            registrations.forEach { $0.cancel() }
+            throw error
         }
+        return registrations
     }
 }

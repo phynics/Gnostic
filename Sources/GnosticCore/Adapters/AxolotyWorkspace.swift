@@ -40,9 +40,11 @@ public struct AxolotyWorkspace: Workspace, Sendable {
         }
     }
 
-    /// Returns only the advertised custom definitions retained on the imported reference.
+    /// Returns the current uniquely advertised custom definitions. The catalog lookup
+    /// lets a proxy created from a lazy placeholder gain tools when its provider appears.
     public func listTools() async throws -> [ToolReference] {
-        reference.tools.compactMap { tool in
+        let tools = await advertisedReference()?.tools ?? reference.tools
+        return tools.compactMap { tool in
             guard case .custom = tool else { return nil }
             return tool
         }
@@ -53,7 +55,7 @@ public struct AxolotyWorkspace: Workspace, Sendable {
         guard case let .available(providerID, _) = await catalog.workspaceAttachmentStatus(id: self.id) else {
             throw WorkspaceError.connectionFailed
         }
-        guard reference.tools.contains(where: { $0.toolID == id }) else {
+        guard await advertisedReference()?.tools.contains(where: { $0.toolID == id }) == true else {
             throw WorkspaceError.toolExecutionNotSupported
         }
         do {
@@ -79,6 +81,13 @@ public struct AxolotyWorkspace: Workspace, Sendable {
     public func healthCheck() async -> Bool {
         if case .available = await catalog.workspaceAttachmentStatus(id: id) { return true }
         return false
+    }
+
+    private func advertisedReference() async -> WorkspaceReference? {
+        guard case let .available(providerID, _) = await catalog.workspaceAttachmentStatus(id: id),
+              let descriptor = await catalog.object(id: id, providerID: providerID)?.workspace
+        else { return nil }
+        return try? WorkspaceReferenceProjection.reference(from: descriptor)
     }
 }
 

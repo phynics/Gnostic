@@ -261,7 +261,7 @@ public final class ServeRuntime {
         }
         registrations.append(try await timelineStatus.register(on: communication))
         registrations += try await timelineManagement.register(on: communication)
-        try await workspaceOps.register(on: communication)
+        registrations += try await workspaceOps.register(on: communication)
 
         discoverResponder = await communication.registerDiscoverResponder { [weak self] request in
             guard let self else { return }

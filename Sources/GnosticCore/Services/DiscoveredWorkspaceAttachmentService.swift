@@ -12,6 +12,8 @@ public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
     case unavailable(WorkspaceAttachmentStatus)
     /// The advertised URI cannot form a PositronicKit workspace reference.
     case invalidURI
+    /// The requested timeline belongs to another configured runtime.
+    case timelineNotOwned(UUID)
 }
 
 /// Imports safe discovered workspace references and attaches them through `TimelineManager`.
@@ -19,6 +21,7 @@ public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
 public final class DiscoveredWorkspaceAttachmentService {
     private let catalog: NetworkCatalog
     private let timelineManager: TimelineManager
+    private let allowedTimelineIDs: Set<UUID>?
     private let readvertiseTimeline: ((Timeline) -> Void)?
 
     /// Creates the attachment bridge using the runtime's timeline manager.
@@ -27,10 +30,12 @@ public final class DiscoveredWorkspaceAttachmentService {
     public init(
         catalog: NetworkCatalog,
         timelineManager: TimelineManager,
+        allowedTimelineIDs: Set<UUID>? = nil,
         readvertiseTimeline: ((Timeline) -> Void)? = nil
     ) {
         self.catalog = catalog
         self.timelineManager = timelineManager
+        self.allowedTimelineIDs = allowedTimelineIDs
         self.readvertiseTimeline = readvertiseTimeline
     }
 
@@ -48,6 +53,9 @@ public final class DiscoveredWorkspaceAttachmentService {
     @discardableResult
     public func attach(workspaceID: UUID, to timelineID: UUID, approved: Bool) async throws -> WorkspaceReference {
         guard approved else { throw DiscoveredWorkspaceAttachmentError.approvalRequired }
+        if let allowedTimelineIDs, !allowedTimelineIDs.contains(timelineID) {
+            throw DiscoveredWorkspaceAttachmentError.timelineNotOwned(timelineID)
+        }
         let status = await catalog.workspaceAttachmentStatus(id: workspaceID)
         guard case let .available(_, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)

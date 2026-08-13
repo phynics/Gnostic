@@ -164,13 +164,14 @@ struct ResourceCommandTests {
         manifest = try store.loadManifest()
         let unoperatedTimeline = try #require(manifest.timelines.last { $0.operatingAscendantID == nil })
         let workspace = try #require(manifest.workspaces.first)
+        let networkWorkspaceID = "A21D0000-0000-4000-8000-000000000041"
 
         try ConfigCommandLogic.attachWorkspace(
-            timelineID: unoperatedTimeline.id.uuidString, workspaceID: workspace.id.uuidString,
+            timelineID: unoperatedTimeline.id.uuidString, workspaceID: networkWorkspaceID,
             networkURI: "workspace://remote", store: store
         )
         try ConfigCommandLogic.detachWorkspace(
-            timelineID: unoperatedTimeline.id.uuidString, workspaceID: workspace.id.uuidString, store: store
+            timelineID: unoperatedTimeline.id.uuidString, workspaceID: networkWorkspaceID, store: store
         )
         try ConfigCommandLogic.removeTimeline(id: unoperatedTimeline.id.uuidString, store: store)
         try ConfigCommandLogic.removeAscendant(id: secondaryAscendant.id.uuidString, store: store)
