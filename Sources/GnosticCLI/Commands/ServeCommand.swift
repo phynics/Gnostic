@@ -18,6 +18,9 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT broker host (overrides config).")
     var host: String?
 
+    @Option(name: .customLong("config"), help: "Path to the node manifest.")
+    var configPath: String?
+
     @Option(name: .long, help: "MQTT broker port (overrides config).")
     var port: Int?
 
@@ -33,6 +36,9 @@ struct ServeCommand: AsyncParsableCommand {
     /// Runs the serve process until interrupted.
     @MainActor
     func run() async throws {
+        let terminationMonitor = ProcessTerminationMonitor()
+        defer { terminationMonitor.cancel() }
+
         // Configure SwiftLog so serve emits timestamped, parseable records.
         let level = Logger.Level(rawValue: logLevel.lowercased()) ?? .info
         LoggingSystem.bootstrap { label in
@@ -41,15 +47,20 @@ struct ServeCommand: AsyncParsableCommand {
             return handler
         }
 
-        let store = CLIConfigurationStore()
+        let store = CLIConfigurationStore(configPath: configPath.map { URL(fileURLWithPath: $0) })
+        do {
+            _ = try store.loadManifest().compileLaunchPlan()
+        } catch let error as CLIConfigurationError {
+            if case .missingFile = error {
+                throw ValidationError("No configuration manifest exists; run `gnostic config init` before `gnostic serve`.")
+            }
+            throw error
+        }
         let stored = try store.load()
         let host = self.host ?? stored.mqttHost
         let port = self.port ?? stored.mqttPort
         let namespace = self.namespace ?? stored.mqttNamespace
         let mode: ServeApproveMode = approveMode.lowercased() == "deny" ? .deny : .auto
-        let terminationMonitor = ProcessTerminationMonitor()
-        defer { terminationMonitor.cancel() }
-
         // Serve chat turns run against the configured LLM from ~/.gnostic/config.json.
         // When no provider/model is configured, the serve still starts and each
         // agent.chat turn returns the unconfigured-LLM structured failure.

@@ -1,11 +1,19 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+#if os(Linux)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
-/// The on-disk representation for the config file.
-///
-/// Uses dotted keys so `config set mqtt.host` maps directly onto JSON.
+/// The legacy flat representation accepted only during one-time migration.
 private struct PersistedConfiguration: Codable {
+    static let acceptedKeys: Set<String> = [
+        "mqtt.host", "mqtt.port", "mqtt.namespace", "mqtt.username", "mqtt.password",
+        "llm.provider", "llm.endpoint", "llm.model", "llm.utilityModel", "llm.fastModel", "llm.apiKey",
+    ]
+
     var mqttHost: String?
     var mqttPort: Int?
     var mqttNamespace: String?
@@ -65,42 +73,29 @@ private struct PersistedConfiguration: Codable {
     }
 }
 
-/// An actor-safe configuration store for the `gnostic` CLI.
-///
-/// The store reads and writes a user-level JSON file under a base directory
-/// (default `~/.gnostic/config.json`), applies environment overrides, writes
-/// secret values with `0600` permissions, and redacts secrets in output.
+/// A process-safe, atomically persisted manifest store.
 public struct CLIConfigurationStore: Sendable {
-    /// The default config file name inside the base directory.
     static let defaultFileName = "config.json"
 
-    /// The directory holding the default config file (unused when an explicit
-    /// config file path is supplied).
     public let baseDirectory: URL
-    /// An explicit config file path supplied via `GNOSTIC_CONFIG`, when one
-    /// exists and points at a file rather than a directory.
     private let explicitConfigURL: URL?
-    /// Environment overrides keyed by variable name.
     public let environment: [String: String]
 
-    /// Creates a store.
-    ///
-    /// - Parameters:
-    ///   - baseDirectory: The directory that holds `config.json`. When nil, the
-    ///     `GNOSTIC_CONFIG` environment variable (a file or directory path)
-    ///     is honored; otherwise `~/.gnostic` is used.
-    ///   - environment: Environment variables for override precedence.
+    /// Creates a store. An explicit config path wins over `GNOSTIC_CONFIG`.
     public init(
         baseDirectory: URL? = nil,
+        configPath: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
-        if let baseDirectory {
+        if let configPath {
+            self.baseDirectory = configPath.deletingLastPathComponent()
+            self.explicitConfigURL = configPath
+        } else if let baseDirectory {
             self.baseDirectory = baseDirectory
             self.explicitConfigURL = nil
         } else if let custom = environment["GNOSTIC_CONFIG"], !custom.isEmpty {
             let url = URL(fileURLWithPath: custom)
             if url.pathExtension == "json" || !url.hasDirectoryPath {
-                // Treat a non-directory path as the config file itself.
                 self.baseDirectory = url.deletingLastPathComponent()
                 self.explicitConfigURL = url
             } else {
@@ -115,82 +110,286 @@ public struct CLIConfigurationStore: Sendable {
         self.environment = environment
     }
 
-    /// The config file location.
+    /// Compatibility spelling for callers that model the command-line flag as an explicit path.
+    public init(explicitPath: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.init(configPath: explicitPath, environment: environment)
+    }
+
+    public init(path: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.init(configPath: path, environment: environment)
+    }
+
+    public init(configPath: String, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.init(configPath: URL(fileURLWithPath: configPath), environment: environment)
+    }
+
+    public init(explicitPath: String, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.init(configPath: URL(fileURLWithPath: explicitPath), environment: environment)
+    }
+
     public func path() -> URL {
         explicitConfigURL ?? baseDirectory.appendingPathComponent(Self.defaultFileName)
     }
 
-    /// Loads the effective configuration: file values overlaid with
-    /// environment overrides, falling back to defaults.
-    ///
-    /// - Throws: `CLIConfigurationError.malformedFile` when the file cannot be
-    ///   decoded.
-    public func load() throws -> CLIConfiguration {
-        var configuration = CLIConfiguration.defaults
-        let url = path()
+    /// The retained copy of a flat file after successful migration.
+    public func legacyBackupPath() -> URL {
+        path().appendingPathExtension("legacy")
+    }
 
-        if FileManager.default.fileExists(atPath: url.path) {
-            let data = try Data(contentsOf: url)
-            if data.isEmpty {
-                // An empty file (e.g. freshly created) counts as no values.
-            } else {
-                let persisted: PersistedConfiguration
-                do {
-                    persisted = try JSONDecoder().decode(PersistedConfiguration.self, from: data)
-                } catch {
-                    throw CLIConfigurationError.malformedFile(url)
-                }
-                configuration = persisted.applying(configuration)
-            }
+    /// Loads the current manifest, migrating a valid flat file exactly once.
+    public func loadManifest() throws -> NodeManifest {
+        guard FileManager.default.fileExists(atPath: path().path) else {
+            throw CLIConfigurationError.missingFile(path())
         }
+        return try ManifestStoreLock.withLock(at: path()) {
+            guard let manifest = try loadManifestUnlocked() else { throw CLIConfigurationError.missingFile(path()) }
+            return manifest
+        }
+    }
 
+    /// Mutates the manifest under the same lock used for reads and atomically replaces the file.
+    @discardableResult
+    public func mutateManifest(_ mutation: (inout NodeManifest) throws -> Void) throws -> NodeManifest {
+        try ManifestStoreLock.withLock(at: path()) {
+            var manifest = try existingManifestOrEmptyUnlocked()
+            let original = manifest
+            try mutation(&manifest)
+            try manifest.validate(against: original)
+            try writeManifestUnlocked(manifest)
+            return manifest
+        }
+    }
+
+    /// Loads the effective compatibility configuration with environment overrides.
+    public func load() throws -> CLIConfiguration {
+        guard FileManager.default.fileExists(atPath: path().path) else {
+            return try applyEnvironmentOverrides(to: .defaults)
+        }
+        if let data = try? Data(contentsOf: path()), data.isEmpty {
+            return try applyEnvironmentOverrides(to: .defaults)
+        }
+        let manifest = try loadManifest()
+        let configuration = configuration(from: manifest)
+        return try applyEnvironmentOverrides(to: configuration)
+    }
+
+    private func applyEnvironmentOverrides(to initial: CLIConfiguration) throws -> CLIConfiguration {
+        var configuration = initial
         for key in ConfigurationKey.allCases {
-            guard let variable = key.environmentVariable,
-                  let value = environment[variable] else { continue }
+            guard let variable = key.environmentVariable, let value = environment[variable] else { continue }
             configuration = try configuration.setting(value, for: key)
         }
-
         return configuration
     }
 
-    /// Sets a key in the config file (after applying environment overrides for
-    /// the invariant that the file only stores what was explicitly set).
-    ///
-    /// - Parameters:
-    ///   - value: The raw string value to store.
-    ///   - key: The key to set.
-    /// - Throws: `CLIConfigurationError.invalidValue` or `.writeFailed`.
+    /// Sets a compatibility key in the manifest, preserving all unrelated graph data.
     public func setValue(_ value: String, for key: ConfigurationKey) throws {
-        // Validate and type-normalize before persisting.
         let validated = try key.validatedValue(value)
-        let current = try load().setting(validated, for: key)
-
-        try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
-        let persisted = PersistedConfiguration(current)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(persisted)
-
-        do {
-            try data.write(to: path(), options: .atomic)
-        } catch {
-            throw CLIConfigurationError.writeFailed(path())
-        }
-
-        if key.isSecret {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: path().path
-            )
+        try ManifestStoreLock.withLock(at: path()) {
+            var manifest = try existingManifestOrEmptyUnlocked()
+            var configuration = configuration(from: manifest)
+            configuration = try configuration.setting(validated, for: key)
+            manifest = manifestApplying(configuration, to: manifest)
+            try manifest.validate()
+            try writeManifestUnlocked(manifest)
         }
     }
 
-    /// A redacted description of the effective configuration.
-    ///
-    /// - Parameter configuration: The configuration to render.
-    /// - Returns: A redacted multi-line description.
     public func redactedDescription(for configuration: CLIConfiguration) -> String {
         configuration.redactedDescription()
     }
 
+    public func redactedDescription(for manifest: NodeManifest) -> String {
+        manifest.redactedDescription()
+    }
+
+    private func loadManifestUnlocked() throws -> NodeManifest? {
+        let url = path()
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        let data: Data
+        do { data = try Data(contentsOf: url) } catch { throw CLIConfigurationError.malformedFile(url) }
+        if data.isEmpty {
+            throw CLIConfigurationError.malformedFile(url)
+        }
+
+        let jsonObject = try? JSONSerialization.jsonObject(with: data)
+        let object = jsonObject as? [String: Any]
+        let hasSchemaVersion = object?["schemaVersion"] != nil
+        if hasSchemaVersion {
+            do {
+                let manifest = try JSONDecoder().decode(NodeManifest.self, from: data)
+                try manifest.validate()
+                return manifest
+            } catch let error as NodeManifestError {
+                throw CLIConfigurationError.invalidManifest(error, url)
+            } catch {
+                throw CLIConfigurationError.malformedFile(url)
+            }
+        }
+
+        guard let object,
+              !object.isEmpty,
+              Set(object.keys).isSubset(of: PersistedConfiguration.acceptedKeys)
+        else {
+            throw CLIConfigurationError.malformedFile(url)
+        }
+
+        let legacy: PersistedConfiguration
+        do { legacy = try JSONDecoder().decode(PersistedConfiguration.self, from: data) }
+        catch { throw CLIConfigurationError.malformedFile(url) }
+        let configuration = legacy.applying(.defaults)
+        let manifest = Self.manifest(from: legacy, configuration: configuration)
+        do { try manifest.validate() }
+        catch let error as NodeManifestError { throw CLIConfigurationError.invalidManifest(error, url) }
+        catch { throw CLIConfigurationError.malformedFile(url) }
+
+        try retainLegacyBackupUnlocked(data)
+        try writeManifestUnlocked(manifest)
+        return manifest
+    }
+
+    private func existingManifestOrEmptyUnlocked() throws -> NodeManifest {
+        if FileManager.default.fileExists(atPath: path().path) {
+            let data = try Data(contentsOf: path())
+            if data.isEmpty { throw CLIConfigurationError.malformedFile(path()) }
+        }
+        return try loadManifestUnlocked() ?? NodeManifest.empty(broker: defaultBroker)
+    }
+
+    private var defaultBroker: NodeManifest.Broker {
+        .init(host: CLIConfiguration.defaults.mqttHost, port: CLIConfiguration.defaults.mqttPort, namespace: CLIConfiguration.defaults.mqttNamespace)
+    }
+
+    private func retainLegacyBackupUnlocked(_ data: Data) throws {
+        let backup = legacyBackupPath()
+        if FileManager.default.fileExists(atPath: backup.path) { return }
+        try FileManager.default.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temporary = backup.deletingLastPathComponent().appendingPathComponent(".legacy-\(UUID.makeVersion4().uuidString).tmp")
+        do {
+            try data.write(to: temporary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            try FileManager.default.moveItem(at: temporary, to: backup)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw CLIConfigurationError.writeFailed(backup)
+        }
+    }
+
+    private func writeManifestUnlocked(_ manifest: NodeManifest) throws {
+        let url = path()
+        do {
+            let directory = url.deletingLastPathComponent()
+            let directoryExisted = FileManager.default.fileExists(atPath: directory.path)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !directoryExisted {
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(manifest)
+            let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID.makeVersion4().uuidString).tmp")
+            try data.write(to: temporary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            guard rename(temporary.path, url.path) == 0 else {
+                try? FileManager.default.removeItem(at: temporary)
+                throw CLIConfigurationError.writeFailed(url)
+            }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            throw CLIConfigurationError.writeFailed(url)
+        }
+    }
+
+    private func configuration(from manifest: NodeManifest) -> CLIConfiguration {
+        var result = CLIConfiguration(
+            mqttHost: manifest.broker.host,
+            mqttPort: manifest.broker.port,
+            mqttNamespace: manifest.broker.namespace,
+            mqttUsername: manifest.broker.username,
+            mqttPassword: manifest.broker.password,
+            llmProvider: nil,
+            llmEndpoint: nil,
+            llmModel: nil,
+            llmUtilityModel: nil,
+            llmFastModel: nil,
+            llmAPIKey: nil
+        )
+        if let profile = manifest.llmProfiles.first {
+            result.llmProvider = profile.provider
+            result.llmEndpoint = profile.endpoint
+            result.llmModel = profile.model
+            result.llmUtilityModel = profile.utilityModel
+            result.llmFastModel = profile.fastModel
+            result.llmAPIKey = profile.apiKey
+        }
+        return result
+    }
+
+    private func manifestApplying(_ configuration: CLIConfiguration, to manifest: NodeManifest) -> NodeManifest {
+        var result = manifest
+        result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword)
+        let hasProfileValues = configuration.llmProvider != nil
+            || configuration.llmEndpoint != nil
+            || configuration.llmModel != nil
+            || configuration.llmUtilityModel != nil
+            || configuration.llmFastModel != nil
+            || configuration.llmAPIKey != nil
+        if result.llmProfiles.isEmpty, hasProfileValues {
+            result.llmProfiles = [.init(id: UUID.makeVersion4(), provider: configuration.llmProvider ?? "positronic")]
+        }
+        guard !result.llmProfiles.isEmpty else { return result }
+        result.llmProfiles[0].provider = configuration.llmProvider ?? result.llmProfiles[0].provider
+        result.llmProfiles[0].endpoint = configuration.llmEndpoint
+        result.llmProfiles[0].model = configuration.llmModel
+        result.llmProfiles[0].utilityModel = configuration.llmUtilityModel
+        result.llmProfiles[0].fastModel = configuration.llmFastModel
+        result.llmProfiles[0].apiKey = configuration.llmAPIKey
+        return result
+    }
+
+    private static func manifest(from legacy: PersistedConfiguration, configuration: CLIConfiguration) -> NodeManifest {
+        let broker = NodeManifest.Broker(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword)
+        let hasLLMValues = [legacy.llmProvider, legacy.llmEndpoint, legacy.llmModel, legacy.llmUtilityModel, legacy.llmFastModel, legacy.llmAPIKey].contains { $0 != nil }
+        let profile: NodeManifest.LLMProfile? = hasLLMValues ? .init(
+            id: UUID.makeVersion4(),
+            provider: configuration.llmProvider ?? "positronic",
+            name: "Migrated LLM Profile",
+            endpoint: configuration.llmEndpoint,
+            model: configuration.llmModel,
+            utilityModel: configuration.llmUtilityModel,
+            fastModel: configuration.llmFastModel,
+            apiKey: configuration.llmAPIKey
+        ) : nil
+        let timelineID = UUID.makeVersion4()
+        let ascendantID = UUID.makeVersion4()
+        return NodeManifest(
+            broker: broker,
+            node: .init(id: UUID.makeVersion4()),
+            llmProfiles: profile.map { [$0] } ?? [],
+            ascendants: [.init(id: ascendantID, name: "Migrated Ascendant", defaultTimelineID: timelineID, llmProfileID: profile?.id)],
+            timelines: [.init(id: timelineID, title: "Default Timeline", operatingAscendantID: ascendantID)],
+            workspaces: [.init(id: UUID.makeVersion4(), name: "Echo Workspace", uri: "echo://default")]
+        )
+    }
 }
+
+private enum ManifestStoreLock {
+    static func withLock<T>(at file: URL, _ operation: () throws -> T) throws -> T {
+        let directory = file.deletingLastPathComponent()
+        let directoryExisted = FileManager.default.fileExists(atPath: directory.path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !directoryExisted {
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        let lockURL = directory.appendingPathComponent(".\(file.lastPathComponent).lock")
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { throw CLIConfigurationError.writeFailed(lockURL) }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw CLIConfigurationError.writeFailed(lockURL) }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        return try operation()
+    }
+}
+
+public typealias NodeManifestStore = CLIConfigurationStore
