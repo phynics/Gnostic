@@ -95,13 +95,8 @@ public struct CLIConfigurationStore: Sendable {
             self.explicitConfigURL = nil
         } else if let custom = environment["GNOSTIC_CONFIG"], !custom.isEmpty {
             let url = URL(fileURLWithPath: custom)
-            if url.pathExtension == "json" || !url.hasDirectoryPath {
-                self.baseDirectory = url.deletingLastPathComponent()
-                self.explicitConfigURL = url
-            } else {
-                self.baseDirectory = url
-                self.explicitConfigURL = nil
-            }
+            self.baseDirectory = url.deletingLastPathComponent()
+            self.explicitConfigURL = url
         } else {
             self.baseDirectory = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".gnostic", isDirectory: true)
@@ -143,6 +138,21 @@ public struct CLIConfigurationStore: Sendable {
         }
         return try ManifestStoreLock.withLock(at: path()) {
             guard let manifest = try loadManifestUnlocked() else { throw CLIConfigurationError.missingFile(path()) }
+            return manifest
+        }
+    }
+
+    /// Creates the default resource graph, refusing to replace any existing
+    /// file (including an empty or malformed one).
+    @discardableResult
+    public func initializeManifest() throws -> NodeManifest {
+        try ManifestStoreLock.withLock(at: path()) {
+            guard !FileManager.default.fileExists(atPath: path().path) else {
+                throw CLIConfigurationError.fileAlreadyExists(path())
+            }
+            let manifest = NodeManifest.makeDefault(broker: defaultBroker)
+            try manifest.validate()
+            try writeManifestUnlocked(manifest)
             return manifest
         }
     }

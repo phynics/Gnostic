@@ -118,30 +118,30 @@ struct CLIConfigurationTests {
         #expect(store.path().deletingLastPathComponent().path == folder.url.path)
     }
 
-    @Test("GNOSTIC_CONFIG points the store at a custom directory or file")
+    @Test("GNOSTIC_CONFIG always names the selected manifest file")
     func gnosticConfigEnvironmentOverridesLocation() throws {
         let folder = try TemporaryFolder()
-        let dirStore = CLIConfigurationStore(
-            environment: ["GNOSTIC_CONFIG": folder.url.path]
-        )
-        #expect(dirStore.path().deletingLastPathComponent().path == folder.url.path)
-
         let fileURL = folder.url.appendingPathComponent("custom.json")
         let fileStore = CLIConfigurationStore(
             environment: ["GNOSTIC_CONFIG": fileURL.path]
         )
         #expect(fileStore.path().path == fileURL.path)
+
+        let extensionlessURL = folder.url.appendingPathComponent("node-manifest")
+        let extensionlessStore = CLIConfigurationStore(
+            environment: ["GNOSTIC_CONFIG": extensionlessURL.path]
+        )
+        #expect(extensionlessStore.path().path == extensionlessURL.path)
     }
 
-    @Test("subcommand help is available and names the config keys")
+    @Test("resource subcommand help is available")
     func subcommandHelp() {
         let showHelp = ConfigCommand.Show.helpMessage()
         #expect(showHelp.contains("Print the effective configuration with secrets redacted"))
         #expect(showHelp.contains("show"))
 
-        let setHelp = ConfigCommand.Set.helpMessage()
-        #expect(setHelp.contains("Set a configuration key to a value"))
-        #expect(setHelp.contains("Dotted configuration key"))
+        #expect(ConfigCommand.Broker.helpMessage().contains("set-password"))
+        #expect(ConfigCommand.Timeline.helpMessage().contains("attach-workspace"))
 
         let pathHelp = ConfigCommand.Path.helpMessage()
         #expect(pathHelp.contains("Print the config file path"))
