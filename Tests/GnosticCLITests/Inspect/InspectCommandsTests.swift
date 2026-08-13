@@ -54,12 +54,14 @@ struct InspectCommandsTests {
         #expect(InspectRenderer.exitCode(for: .ambiguous) == 2)
         #expect(InspectRenderer.exitCode(for: .found(entry)) == 0)
 
-        if case .unknown = InspectRenderer.resolution(for: []) {
-            #expect(true)
-        } else { Issue.record("expected unknown") }
-        if case .ambiguous = InspectRenderer.resolution(for: [entry, other]) {
-            #expect(true)
-        } else { Issue.record("expected ambiguous") }
+        guard case .unknown = InspectRenderer.resolution(for: []) else {
+            Issue.record("expected unknown")
+            return
+        }
+        guard case .ambiguous = InspectRenderer.resolution(for: [entry, other]) else {
+            Issue.record("expected ambiguous")
+            return
+        }
     }
 
     /// Seeds a one-shot workspace advertisement and registers the generic

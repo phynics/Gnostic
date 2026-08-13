@@ -78,20 +78,17 @@ struct InspectRendererTests {
         let a = workspaceEntry(provider: "provider-a")
         let b = workspaceEntry(provider: "provider-b")
 
-        if case .unknown = InspectRenderer.resolution(for: []) {
-            #expect(true)
-        } else {
+        guard case .unknown = InspectRenderer.resolution(for: []) else {
             Issue.record("expected unknown")
+            return
         }
-        if case .found = InspectRenderer.resolution(for: [a]) {
-            #expect(true)
-        } else {
+        guard case .found = InspectRenderer.resolution(for: [a]) else {
             Issue.record("expected found")
+            return
         }
-        if case .ambiguous = InspectRenderer.resolution(for: [a, b]) {
-            #expect(true)
-        } else {
+        guard case .ambiguous = InspectRenderer.resolution(for: [a, b]) else {
             Issue.record("expected ambiguous")
+            return
         }
     }
 

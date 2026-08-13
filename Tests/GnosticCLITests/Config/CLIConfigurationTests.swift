@@ -94,10 +94,10 @@ struct CLIConfigurationTests {
     @Test("malformed json and invalid ports produce structured errors naming the key")
     func malformedInputProducesStructuredErrors() throws {
         let folder = try TemporaryFolder()
-        FileManager.default.createFile(
+        #expect(FileManager.default.createFile(
             atPath: folder.url.appendingPathComponent("config.json").path,
             contents: Data("{not json".utf8)
-        )
+        ))
         let store = self.store(folder: folder)
 
         #expect(throws: CLIConfigurationError.self) {
