@@ -63,10 +63,11 @@ struct ServeCommand: AsyncParsableCommand {
             let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
             do {
                 guard try await start(runtime: runtime, until: terminationMonitor) else { return }
-                let timelineID = runtime.snapshot().timelineIDs.first
+                let snapshot = await runtime.snapshot()
+                let timelineID = snapshot.timelineIDs.first
                 ServeTrace.advertised(
                     logger: ServeLogging.makeLogger(),
-                    objects: runtime.snapshot().ascendantIDs.count + runtime.snapshot().timelineIDs.count,
+                    objects: snapshot.ascendantIDs.count + snapshot.timelineIDs.count,
                     timelineID: timelineID ?? runtime.plan.nodeID
                 )
                 let timelineText = timelineID?.uuidString.lowercased() ?? "none"

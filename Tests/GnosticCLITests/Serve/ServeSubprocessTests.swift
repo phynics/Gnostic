@@ -106,7 +106,9 @@ struct ServeSubprocessTests {
         try await assertGracefulStop(
             using: .interrupt,
             port: 1,
-            signalDelay: .milliseconds(100),
+            // Give the launched Swift process enough time to enter `run()` and
+            // install its signal sources; it is still blocked in broker startup.
+            signalDelay: .milliseconds(500),
             requireOnlineBeforeSignal: false
         )
     }

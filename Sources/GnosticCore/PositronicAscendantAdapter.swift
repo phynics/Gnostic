@@ -43,7 +43,11 @@ import PositronicKit
     }
 
     public func timelines() async throws -> [AscendantRuntimeTimeline] { try await kit.timelineManager.listTimelines().map(Self.projection) }
-    public func createTimeline(title: String) async throws -> AscendantRuntimeTimeline { let timeline = Timeline(id: UUID.makeVersion4(), title: title, attachedAgentInstanceID: identity.id, isPrivate: false); try await timelineStore.saveTimeline(timeline); try await kit.timelineManager.ensureTimelineExists(id: timeline.id); return Self.projection(timeline) }
+    public func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline { let timeline = Timeline(id: id, title: title, attachedAgentInstanceID: identity.id, isPrivate: false); try await timelineStore.saveTimeline(timeline); try await kit.timelineManager.ensureTimelineExists(id: timeline.id); return Self.projection(timeline) }
+    public func removeTimeline(id: UUID) async {
+        await kit.timelineManager.evictTimelineFromMemory(id: id)
+        try? await timelineStore.deleteTimeline(id: id)
+    }
     public func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline { try await kit.timelineManager.updateTimelineTitle(id: id, title: title); guard let timeline = try await timelines().first(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }; return timeline }
     public func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws { try await kit.timelineManager.importWorkspace(reference); try await kit.timelineManager.attachWorkspace(reference.id, to: timelineID) }
     public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws { try await kit.timelineManager.detachWorkspace(workspaceID, from: timelineID) }

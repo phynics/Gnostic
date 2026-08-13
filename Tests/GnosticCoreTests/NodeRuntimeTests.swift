@@ -70,6 +70,32 @@ struct NodeRuntimeTests {
         }
     }
 
+    @Test("a rejected adapter-created Timeline is removed from adapter and registry")
+    @MainActor
+    func runtimeTimelineCreationCompensatesAdapterFailure() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000218")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000219")!
+        let probe = AdapterCreationProbe()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-create-compensation"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000220")!),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
+            FixtureAscendantAdapter(ascendant: ascendant, timelines: timelines, creationProbe: probe)
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+
+        await #expect(throws: NodeRuntimeError.self) {
+            _ = try await runtime.createTimeline(title: "Rejected", ascendantID: ascendantID)
+        }
+
+        #expect(await runtime.snapshot().timelineIDs == [timelineID])
+        #expect(await probe.removedIDs.count == 2)
+    }
+
     @Test("runtime rejects an unregistered adapter before startup")
     func adapterRegistryFailureIsAtomic() async throws {
         let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000131"))
@@ -378,8 +404,8 @@ struct NodeRuntimeTests {
             $0.objectType == GnosticObjectType.timeline && $0.objectID == secondTimelineID
         })
         let context = providerIsolationContext(target.providerID)
-        let initialFirstTimeline = try #require(first.timeline(id: firstTimelineID))
-        let initialSecondTimeline = try #require(second.timeline(id: secondTimelineID))
+        let initialFirstTimeline = try #require(await first.timeline(id: firstTimelineID))
+        let initialSecondTimeline = try #require(await second.timeline(id: secondTimelineID))
 
         let createResponse = try await consumer.call(
             operation: TimelineManagementProvider.createOperation,
@@ -390,8 +416,8 @@ struct NodeRuntimeTests {
         let created = try JSONDecoder().decode(TimelineStatus.self, from: Data(createResponse.result.utf8))
         #expect(createResponse.sourceId?.lowercased() == target.providerID.lowercased())
         #expect(created.title == "Second scratch")
-        #expect(second.timeline(id: created.timelineID)?.title == "Second scratch")
-        #expect(first.timeline(id: created.timelineID) == nil)
+        #expect(await second.timeline(id: created.timelineID)?.title == "Second scratch")
+        #expect(await first.timeline(id: created.timelineID) == nil)
         await subscription.discover(using: consumer, timeout: .seconds(1))
         for _ in 0..<20 {
             if await catalog.networkObjects().contains(where: {
@@ -426,9 +452,9 @@ struct NodeRuntimeTests {
         let updated = try JSONDecoder().decode(TimelineStatus.self, from: Data(updateResponse.result.utf8))
         #expect(updateResponse.sourceId?.lowercased() == target.providerID.lowercased())
         #expect(updated.title == "Second renamed")
-        #expect(second.timeline(id: secondTimelineID)?.title == "Second renamed")
-        #expect(first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
-        #expect(first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
+        #expect(await second.timeline(id: secondTimelineID)?.title == "Second renamed")
+        #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
+        #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
 
         let workspaceListResponse = try await consumer.call(
             operation: WorkspaceOpsProvider.listOperation,
@@ -449,9 +475,9 @@ struct NodeRuntimeTests {
         )
         #expect(attachResponse.sourceId?.lowercased() == target.providerID.lowercased())
         #expect(attachResponse.result == "true")
-        #expect(second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs == [secondWorkspaceID])
-        #expect(first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
-        #expect(first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
+        #expect(await second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs == [secondWorkspaceID])
+        #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
+        #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
 
         let detachResponse = try await consumer.call(
             operation: WorkspaceOpsProvider.detachOperation,
@@ -461,11 +487,11 @@ struct NodeRuntimeTests {
         )
         #expect(detachResponse.sourceId?.lowercased() == target.providerID.lowercased())
         #expect(detachResponse.result == "true")
-        #expect(second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs.isEmpty == true)
-        #expect(second.timeline(id: secondTimelineID)?.title == "Second renamed")
-        #expect(first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
-        #expect(first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
-        #expect(second.timeline(id: secondTimelineID)?.attachedAgentInstanceID == initialSecondTimeline.attachedAgentInstanceID)
+        #expect(await second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs.isEmpty == true)
+        #expect(await second.timeline(id: secondTimelineID)?.title == "Second renamed")
+        #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
+        #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
+        #expect(await second.timeline(id: secondTimelineID)?.attachedAgentInstanceID == initialSecondTimeline.attachedAgentInstanceID)
     }
 
     @Test("one running runtime multiplexes configured echo workspaces") @MainActor
@@ -848,7 +874,7 @@ struct NodeRuntimeTests {
         let update = TimelineUpdateRequest(timelineID: manifest.timelines[0].id, title: "Renamed")
         let payload = String(decoding: try JSONEncoder().encode(update), as: UTF8.self)
         _ = try await consumer.call(operation: TimelineManagementProvider.updateOperation, parameters: payload, timeout: .seconds(3))
-        #expect(runtime.timeline(id: manifest.timelines[0].id)?.title == "Renamed")
+        #expect(await runtime.timeline(id: manifest.timelines[0].id)?.title == "Renamed")
         await subscription.discover(using: consumer, timeout: .seconds(1))
         for _ in 0..<20 {
             if await catalog.networkObjects().first(where: { $0.objectID == manifest.timelines[0].id })?.name == "Renamed" { break }
@@ -894,10 +920,10 @@ struct NodeRuntimeTests {
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
 
-        for _ in 0..<30 where runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
+        for _ in 0..<30 where await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
             try await Task.sleep(for: .milliseconds(100))
         }
-        #expect(runtime.workspaceReference(id: workspaceID)?.tools.first?.toolID == "existing_echo")
+        #expect(await runtime.workspaceReference(id: workspaceID)?.tools.first?.toolID == "existing_echo")
     }
 
     @Test("late unambiguous advertisement automatically resolves a lazy network attachment") @MainActor
@@ -920,7 +946,7 @@ struct NodeRuntimeTests {
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
-        #expect(runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == true)
+        #expect(await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == true)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
 
         let remote = try CommunicationManager(
@@ -943,10 +969,10 @@ struct NodeRuntimeTests {
         )
         remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: reference)))
 
-        for _ in 0..<40 where runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
+        for _ in 0..<40 where await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
             try await Task.sleep(for: .milliseconds(50))
         }
-        #expect(runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == false)
+        #expect(await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == false)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo"))
     }
 
@@ -983,7 +1009,7 @@ struct NodeRuntimeTests {
         let resolved = try await runtime.resolveNetworkWorkspace(workspaceID: workspaceID, timeout: .seconds(2))
 
         #expect(resolved.id == workspaceID)
-        #expect(runtime.workspaceReference(id: workspaceID)?.tools.first?.toolID == "dynamic_echo")
+        #expect(await runtime.workspaceReference(id: workspaceID)?.tools.first?.toolID == "dynamic_echo")
     }
 
     private func makeManifest(
@@ -1040,20 +1066,27 @@ private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
     let identity: AscendantRuntimeIdentity
     private var storedTimelines: [AscendantRuntimeTimeline]
     private let cancellationProbe: AdapterCancellationProbe?
+    private let creationProbe: AdapterCreationProbe?
 
-    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil) {
+    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil) {
         let now = Date()
         self.cancellationProbe = cancellationProbe
+        self.creationProbe = creationProbe
         identity = .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
         storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), attachedAgentInstanceID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
     }
 
     func timelines() async throws -> [AscendantRuntimeTimeline] { storedTimelines }
-    func createTimeline(title: String) async throws -> AscendantRuntimeTimeline {
+    func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
         let now = Date()
-        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let createdID = creationProbe == nil ? id : UUID.makeVersion4()
+        let timeline = AscendantRuntimeTimeline(id: createdID, title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         storedTimelines.append(timeline)
         return timeline
+    }
+    func removeTimeline(id: UUID) async {
+        storedTimelines.removeAll { $0.id == id }
+        await creationProbe?.recordRemoval(id)
     }
     func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
         guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
@@ -1099,6 +1132,11 @@ private actor AdapterCancellationProbe {
         release?.resume()
         release = nil
     }
+}
+
+private actor AdapterCreationProbe {
+    private(set) var removedIDs: [UUID] = []
+    func recordRemoval(_ id: UUID) { removedIDs.append(id) }
 }
 
 private final class NodeToolCaptureLanguageModel: LanguageModel, @unchecked Sendable {
