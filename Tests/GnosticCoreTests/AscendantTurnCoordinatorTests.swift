@@ -73,7 +73,9 @@ struct AscendantTurnCoordinatorTests {
         let first = Task {
             try await coordinator.execute(firstRequest) {
                 await probe.enter("first")
-                try await Task.sleep(for: .milliseconds(120))
+                // Hold this lane until the independent Timeline has actually
+                // entered, instead of relying on scheduler timing.
+                await probe.waitForStarts(2)
                 await probe.leave()
                 return "first"
             }
