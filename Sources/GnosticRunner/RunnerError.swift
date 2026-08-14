@@ -5,6 +5,7 @@ import Foundation
 import GnosticCore
 import PKShared
 import PositronicKit
+import struct PositronicKit.Thread
 
 extension Optional {
     func unwrap() throws -> Wrapped {
@@ -19,8 +20,8 @@ enum RunnerError: Error {
 }
 
 final class TimelineReadvertisement: @unchecked Sendable {
-    private(set) var latest: Timeline?
-    func record(_ timeline: Timeline) { latest = timeline }
+    private(set) var latest: Thread?
+    func record(_ timeline: Thread) { latest = timeline }
 }
 
 func waitForWorkspace(_ catalog: NetworkCatalog, id: UUID) async throws {

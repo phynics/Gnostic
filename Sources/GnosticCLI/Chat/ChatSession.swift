@@ -56,7 +56,7 @@ public final class ChatSession: Sendable, ChatTurnRunning {
     /// - Returns: The turn result.
     public func run(line: String) async throws -> ChatTurnResult {
         let stream = try await kit.run(ChatRunRequest(
-            timelineID: timelineID,
+            threadID: timelineID,
             message: line,
             tools: tools,
             maxTurns: 5

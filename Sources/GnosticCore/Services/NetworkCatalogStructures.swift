@@ -11,8 +11,14 @@ public indirect enum NetworkDynamicValue: Codable, Sendable, Equatable {
     /// A JSON Boolean.
     case bool(Bool)
 
-    /// A JSON number.
+    /// A floating-point JSON number.
     case number(Double)
+
+    /// A signed JSON integer retained without floating-point conversion.
+    case integer(Int64)
+
+    /// An unsigned JSON integer retained without floating-point conversion.
+    case unsignedInteger(UInt64)
 
     /// A JSON string.
     case string(String)
@@ -32,6 +38,10 @@ public indirect enum NetworkDynamicValue: Codable, Sendable, Equatable {
             self = .null
         } else if let value = try? container.decode(Bool.self) {
             self = .bool(value)
+        } else if let value = try? container.decode(Int64.self) {
+            self = .integer(value)
+        } else if let value = try? container.decode(UInt64.self) {
+            self = .unsignedInteger(value)
         } else if let value = try? container.decode(Double.self) {
             self = .number(value)
         } else if let value = try? container.decode(String.self) {
@@ -54,6 +64,10 @@ public indirect enum NetworkDynamicValue: Codable, Sendable, Equatable {
         case let .bool(value):
             try container.encode(value)
         case let .number(value):
+            try container.encode(value)
+        case let .integer(value):
+            try container.encode(value)
+        case let .unsignedInteger(value):
             try container.encode(value)
         case let .string(value):
             try container.encode(value)

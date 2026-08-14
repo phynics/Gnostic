@@ -17,10 +17,10 @@
 ## Current baseline
 
 - `main` contains the standalone Swift package, `GnosticCore`, and the `gnostic-runner` executable.
-- The completed PoC projects PositronicKit Agent, Timeline, and Workspace objects; discovers, inspects, imports, and attaches an unambiguous advertised Workspace; invokes its tools through Axoloty unary Call/Return; actively discovers late subscribers; and readvertises the changed Timeline.
+- The completed PoC projects Gnostic Ascendant, Timeline, and Workspace objects; discovers, inspects, imports, and attaches an unambiguous advertised Workspace; invokes its tools through Axoloty unary Call/Return; actively discovers late subscribers; and readvertises the changed Timeline. The Positronic adapter privately maps each Gnostic Timeline UUID to a PositronicKit Thread.
 - The deterministic runner fixture covers discovery, approved attachment, `list_files`, `read_file`, and `workspace_echo` through Mosquitto without LLM or broker credentials.
-- `Package.swift` normally pins released semantic versions. During GNO-advonce development it records the exact Axoloty main revision `f18e867c7ac4affd65f0c12708ed928afbeb475f` because the merged public discover-responder API is not released yet; PositronicKit is pinned to `3.4.2` exactly. The owning GitHub issue records this temporary, deterministic exception.
-- The verified baseline is 127 Swift Testing tests in 23 suites plus the passing runner fixture smoke scenario (includes the GNO-005–GNO-010 narrative/context stack).
+- `Package.swift` normally pins released semantic versions. During GNO-advonce development it records the exact Axoloty main revision `f18e867c7ac4affd65f0c12708ed928afbeb475f` because the merged public discover-responder API is not released yet; PositronicKit is pinned to `3.7.0` exactly. The owning GitHub issue records this temporary, deterministic exception.
+- The verified baseline is 245 Swift Testing tests in 37 suites plus the passing runner and ACP smoke scenarios.
 - PositronicKit still declares `pkgConfig: "pkfastembed"` unconditionally for its optional `CPKFastEmbed` system target. Repository commands use SwiftPM quiet mode to suppress that dependency-owned package-metadata warning without vendoring a fake library, while passing `-warnings-as-errors` so compiler diagnostics from normal and test builds remain visible and fail the gate. Do not remove either side of that boundary without an upstream release that fixes the manifest.
 
 ## Build and test

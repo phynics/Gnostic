@@ -126,7 +126,7 @@ struct ChatREPLTests {
         approval: (@Sendable () -> Bool)? = nil
     ) async throws -> (ChatSession, ChatREPL) {
         let kit = PositronicKit(languageModel: StubLanguageModel(shouldFail: shouldFail))
-        let timeline = try await kit.timelineManager.createTimeline()
+        let timeline = try await kit.threadManager.createThread()
         let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: lines)
         let sink = OutputSink()
@@ -143,7 +143,7 @@ struct ChatREPLTests {
     @Test("a scripted session runs a conversation and prints the final text") @MainActor
     func scriptedConversation() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
-        let timeline = try await kit.timelineManager.createTimeline()
+        let timeline = try await kit.threadManager.createThread()
         let echo = EchoTool()
         let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["hello", "/quit"])
@@ -167,7 +167,7 @@ struct ChatREPLTests {
     @Test("failed turns keep the loop alive") @MainActor
     func failedTurnKeepsLoopAlive() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel(shouldFail: true))
-        let timeline = try await kit.timelineManager.createTimeline()
+        let timeline = try await kit.threadManager.createThread()
         let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["hello", "hello again", "/quit"])
         let sink = OutputSink()
@@ -189,7 +189,7 @@ struct ChatREPLTests {
     @Test("slash commands dispatch") @MainActor
     func slashCommands() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
-        let timeline = try await kit.timelineManager.createTimeline()
+        let timeline = try await kit.threadManager.createThread()
         let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["/timeline", "/quit"])
         let sink = OutputSink()
@@ -209,7 +209,7 @@ struct ChatREPLTests {
     @Test("ChatSession drives a tool call then the final text through PositronicKit") @MainActor
     func sessionDrivesToolCallThenFinalText() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
-        let timeline = try await kit.timelineManager.createTimeline()
+        let timeline = try await kit.threadManager.createThread()
         // A fixture workspace_echo tool, mirroring the runner fixture route.
         let echo = EchoTool()
         let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
@@ -228,7 +228,7 @@ struct ChatREPLTests {
     @Test("a workspace_echo tool executes through the turn loop") @MainActor
     func workspaceEchoExecutes() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
-        let timeline = try await kit.timelineManager.createTimeline()
+        let timeline = try await kit.threadManager.createThread()
         let echo = EchoTool()
         let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
 

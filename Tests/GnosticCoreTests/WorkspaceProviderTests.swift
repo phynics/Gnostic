@@ -2,10 +2,11 @@
 
 import Foundation
 import Axoloty
-import GnosticCore
+@testable import GnosticCore
 import JSONSchema
 import PKShared
 import PositronicKit
+import struct PositronicKit.Thread
 import Testing
 
 @Suite("Gnostic workspace provider")
@@ -21,17 +22,17 @@ struct WorkspaceProviderTests {
     func attachmentRequiresApproval() async throws {
         let catalog = NetworkCatalog()
         let store = InMemoryWorkspacePersistence()
-        let manager = TimelineManager(
+        let manager = ThreadManager(
             stores: .init(
-                timelineStore: InMemoryTimelinePersistence(),
+                threadStore: InMemoryThreadPersistence(),
                 messageStore: InMemoryMessageStore(),
                 workspaceStore: store,
                 toolPersistence: InMemoryToolPersistence()
             ),
             workspaceProfile: .noWorkspace
         )
-        let timeline = try await manager.createTimeline()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager)
+        let timeline = try await manager.createThread()
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager)
 
         await #expect(throws: DiscoveredWorkspaceAttachmentError.self) {
             try await service.attach(workspaceID: UUID(), to: timeline.id, approved: false)
@@ -41,8 +42,8 @@ struct WorkspaceProviderTests {
     @Test("network management API lists and inspects without attaching") @MainActor
     func networkManagementInspection() async throws {
         let catalog = NetworkCatalog()
-        let manager = TimelineManager(workspaceProfile: .noWorkspace)
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager)
+        let manager = ThreadManager(workspaceProfile: .noWorkspace)
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager)
         #expect(await service.listNetworkObjects().isEmpty)
         #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
     }
@@ -51,7 +52,7 @@ struct WorkspaceProviderTests {
     func publicNetworkToolsMetadataAndInvalidInput() async throws {
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: NetworkCatalog(),
-            timelineManager: TimelineManager(workspaceProfile: .noWorkspace)
+            threadManager: ThreadManager(workspaceProfile: .noWorkspace)
         )
         let list = ListNetworkObjectsTool(service: service).toAnyTool()
         let inspect = InspectNetworkObjectTool(service: service).toAnyTool()
@@ -84,14 +85,14 @@ struct WorkspaceProviderTests {
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
-        let manager = TimelineManager(
-            stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
+        let manager = ThreadManager(
+            stores: .init(threadStore: InMemoryThreadPersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
             workspaceProfile: .noWorkspace,
             workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") }
         )
-        let timeline = try await manager.createTimeline()
+        let timeline = try await manager.createThread()
         let recorder = TimelineRecorder()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager) { recorder.record($0) }
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager) { recorder.record($0) }
 
         let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
         #expect(reference.location == .runtime)
@@ -305,7 +306,7 @@ private func schemaObject(_ schema: [String: AnyCodable]) throws -> [String: Any
 
 private final class TimelineRecorder: @unchecked Sendable {
     private(set) var ids: [UUID] = []
-    func record(_ timeline: Timeline) { ids.append(timeline.id) }
+    func record(_ timeline: Thread) { ids.append(timeline.id) }
 }
 
 private actor InvocationRecorder {
