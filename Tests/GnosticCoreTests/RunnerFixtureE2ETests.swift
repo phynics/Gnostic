@@ -2,9 +2,10 @@
 
 import Axoloty
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import PKShared
 import PositronicKit
+import struct PositronicKit.Thread
 import Testing
 
 @Suite("Gnostic runner fixture")
@@ -54,14 +55,14 @@ struct RunnerFixtureE2ETests {
             let response = try await consumer.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
-        let manager = TimelineManager(
-            stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
+        let manager = ThreadManager(
+            stores: .init(threadStore: InMemoryThreadPersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
             workspaceProfile: .noWorkspace,
             workspaceCreator: factory
         )
-        let timeline = try await manager.createTimeline()
+        let timeline = try await manager.createThread()
         let readvertised = TimelineRecorder()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager) { readvertised.record($0) }
+        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager) { readvertised.record($0) }
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
         let reference = try #require(try await manager.getWorkspaces(for: timeline.id).primary)
@@ -161,8 +162,8 @@ private func start(_ manager: CommunicationManager) async throws {
 }
 
 private final class TimelineRecorder: @unchecked Sendable {
-    private(set) var timelines: [Timeline] = []
-    func record(_ timeline: Timeline) { timelines.append(timeline) }
+    private(set) var timelines: [Thread] = []
+    func record(_ timeline: Thread) { timelines.append(timeline) }
 }
 
 private func fixtureReference(id: UUID) -> WorkspaceReference {

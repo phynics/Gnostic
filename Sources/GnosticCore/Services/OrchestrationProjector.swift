@@ -3,7 +3,6 @@
 import Axoloty
 import Foundation
 import PKShared
-import PositronicKit
 
 /// Projects local PositronicKit models into Gnostic network objects.
 @MainActor
@@ -38,15 +37,15 @@ public final class OrchestrationProjector {
     /// Projects and advertises all local orchestration objects.
     ///
     /// - Parameters:
-    ///   - agent: The local agent.
-    ///   - timeline: The local timeline.
+    ///   - agent: The local Ascendant identity.
+    ///   - timeline: The local Timeline projection.
     ///   - workspaces: The local workspace references to advertise.
     public func advertise(
-        agent: AgentInstance,
-        timeline: Timeline,
+        agent: AscendantRuntimeIdentity,
+        timeline: AscendantRuntimeTimeline,
         workspaces: [WorkspaceReference]
     ) {
-        advertiseObject(GnosticAgentObject(agent: agent))
+        advertiseObject(GnosticAgentObject(identity: agent))
         let timelineObject = GnosticTimelineObject(timeline: timeline)
         timelines[timeline.id] = timelineObject
         advertiseObject(timelineObject)
@@ -58,7 +57,7 @@ public final class OrchestrationProjector {
     /// - Parameter timeline: The latest PositronicKit timeline state.
     /// - Returns: The timeline object sent in the readvertisement.
     @discardableResult
-    public func readvertise(timeline: Timeline) -> GnosticTimelineObject {
+    public func readvertise(timeline: AscendantRuntimeTimeline) -> GnosticTimelineObject {
         let object = GnosticTimelineObject(timeline: timeline)
         timelines[timeline.id] = object
         readvertiseObject(object)

@@ -4,7 +4,7 @@ Gnostic bridges PositronicKit orchestration with Axoloty networking.
 
 ## Status
 
-Early proof of concept. The package uses the released PositronicKit `3.4.2`
+Early proof of concept. The package uses the released PositronicKit `3.7.0`
 surface and the Axoloty discovery revision that follows the `0.3.0` release.
 
 ## Discovered workspaces
@@ -13,7 +13,7 @@ Gnostic can inspect advertised network objects with `list_network_objects` and
 `inspect_network_object`. A discovered workspace is imported only when one
 available, well-formed provider advertises it. `attach_workspace` requires user
 approval, imports the workspace as a runtime reference, attaches it through
-PositronicKit's `TimelineManager`, and readvertises the changed Timeline.
+PositronicKit's `ThreadManager`, and readvertises the changed Timeline.
 
 Attached workspaces expose only their advertised custom tool definitions. Tool
 calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` Call/Return
@@ -23,8 +23,8 @@ malformed, or ambiguous advertisements cannot be attached or executed.
 ## ACP frontend
 
 `gnostic acp` is the supported stable ACP v1 stdio agent. It projects one
-Gnostic Ascendant and maps ACP sessions to authoritative PositronicKit
-Timelines. The process owns one Axoloty/MQTT connection and accepts text
+Gnostic Ascendant and maps ACP sessions to authoritative Gnostic Timelines,
+represented privately as PositronicKit Threads inside the built-in adapter. The process owns one Axoloty/MQTT connection and accepts text
 prompts, Timeline resume/list/close, cancellation, and replay metadata.
 
 Discover profiles for the generic [`pi-acp-client`](https://github.com/phynics/pi-acp-client)

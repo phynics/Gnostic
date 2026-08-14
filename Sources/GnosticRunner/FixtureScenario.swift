@@ -48,15 +48,22 @@ struct FixtureScenario {
             )
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
-        let manager = TimelineManager(
-            stores: .init(timelineStore: InMemoryTimelinePersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
+        let manager = ThreadManager(
+            stores: .init(threadStore: InMemoryThreadPersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
             workspaceProfile: .noWorkspace,
             workspaceCreator: factory
         )
-        let timeline = try await manager.createTimeline()
+        let timeline = try await manager.createThread()
         let readvertised = TimelineReadvertisement()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, timelineManager: manager) { readvertised.record($0) }
-        let reference = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
+        guard let descriptor = await catalog.networkObjects().first(where: { $0.objectID == workspaceID })?.workspace,
+              let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+            throw RunnerError.missingRuntimeComponent
+        }
+        try await manager.importWorkspace(reference)
+        try await manager.attachWorkspace(reference.id, to: timeline.id)
+        if let changed = try await manager.listThreads().first(where: { $0.id == timeline.id }) {
+            readvertised.record(changed)
+        }
         let remote = AxolotyWorkspace(reference: reference, catalog: catalog, communication: consumer.communication, timeout: .seconds(3))
         try await invoke(remote, id: "list_files", arguments: [:], expected: "README.md")
         try await invoke(remote, id: "read_file", arguments: [:], expected: "fixture contents")
@@ -87,4 +94,3 @@ private let fixtureTools = [
     WorkspaceToolDefinition(id: "read_file", name: "Read file", description: "Reads a fixture file."),
     WorkspaceToolDefinition(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."),
 ]
-

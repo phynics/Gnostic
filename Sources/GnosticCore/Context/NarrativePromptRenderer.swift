@@ -88,7 +88,7 @@ public struct NarrativePromptRenderer: Sendable {
             return nil
         }
         let rendered = await assembled.render()
-        let plan = journal.observe(rendered)
+        guard let plan = try? journal.observe(rendered) else { return nil }
         lastRequiresHardReset = plan.requiresHardReset
         return rendered
     }

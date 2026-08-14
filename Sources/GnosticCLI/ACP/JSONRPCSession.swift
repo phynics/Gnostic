@@ -259,8 +259,12 @@ public actor JSONRPCSession {
     private func identifier(from value: AnyCodable) -> JSONRPCIdentifier? {
         switch value {
         case let .string(value): return .string(value)
+        case let .integer(value): return .number(value)
+        case let .unsignedInteger(value) where value <= UInt64(Int64.max): return .number(Int64(value))
         case let .number(value):
-            guard value.isFinite, value.rounded() == value else { return nil }
+            let signedUpperBound = -Double(Int64.min)
+            guard value.isFinite, value.rounded() == value,
+                  value >= Double(Int64.min), value < signedUpperBound else { return nil }
             return .number(Int64(value))
         default: return nil
         }

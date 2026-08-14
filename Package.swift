@@ -17,7 +17,7 @@ let package = Package(
         // Temporary development override for GNO-advonce (#64) and readable
         // MQTT client IDs (#106): the required Axoloty changes are not released.
         .package(url: "https://github.com/phynics/Axoloty.git", revision: "7410bb2098203498e92f94d6d39f6121fb8d3a17"),
-        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.4.2"),
+        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.7.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
     targets: [

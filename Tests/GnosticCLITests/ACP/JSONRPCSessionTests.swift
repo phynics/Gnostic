@@ -88,6 +88,18 @@ struct JSONRPCSessionTests {
         #expect(response.id == .number(2))
         #expect(response.error?.code == -32800)
     }
+
+    @Test("cancel rejects a floating identifier at the signed integer upper boundary")
+    func cancelRejectsOutOfRangeFloatingIdentifier() async throws {
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { _ in .boolean(true) }, output: output.append)
+
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"$/cancel_request","params":{"id":9.223372036854776e18}}"#))
+
+        let response = try #require(output.responses().last)
+        #expect(response.id == .number(1))
+        #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
+    }
 }
 
 private func waitForResponseCount(_ expected: Int, output: JSONRPCOutputCapture) async throws {

@@ -2,9 +2,8 @@
 
 import Axoloty
 import Foundation
-import PositronicKit
 
-/// A safe network projection of a PositronicKit ``Timeline``.
+/// A safe network projection of a Gnostic Timeline.
 public final class GnosticTimelineObject: CoatyObject {
     /// The timeline title.
     public var title: String
@@ -30,13 +29,6 @@ public final class GnosticTimelineObject: CoatyObject {
     /// Registers Gnostic's canonical timeline object type.
     public override class var objectType: String {
         register(objectType: GnosticObjectType.timeline, with: self)
-    }
-
-    /// Creates a safe Axoloty projection of a timeline.
-    ///
-    /// - Parameter timeline: The PositronicKit timeline to expose on the network.
-    public convenience init(timeline: Timeline) {
-        self.init(timeline: .init(id: timeline.id, title: timeline.title, attachedWorkspaceIDs: timeline.attachedWorkspaceIDs, attachedAgentInstanceID: timeline.attachedAgentInstanceID, isArchived: timeline.isArchived, isPrivate: timeline.isPrivate, createdAt: timeline.createdAt, updatedAt: timeline.updatedAt))
     }
 
     /// Creates a network projection without exposing a provider's Timeline type.

@@ -53,6 +53,25 @@ struct JSONRPCProtocolTests {
         #expect(decodedResponse == response)
     }
 
+    @Test("JSON-RPC preserves exact signed and unsigned AnyCodable values")
+    func requestPreservesExactIntegerParameters() throws {
+        let request = JSONRPCRequest(
+            id: .number(42),
+            method: "session/prompt",
+            params: .dictionary([
+                "small": .integer(Int64.min),
+                "large": .unsignedInteger(UInt64.max),
+            ])
+        )
+
+        let decoded = try JSONDecoder().decode(
+            JSONRPCRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+
+        #expect(decoded == request)
+    }
+
     @Test("responses for parse failures carry a JSON null id")
     func nilResponseIDIsExplicit() throws {
         let response = JSONRPCResponse(

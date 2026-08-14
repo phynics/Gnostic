@@ -18,26 +18,20 @@ struct ProjectionAndCatalogTests {
 
     @Test("projections preserve model identities and omit unsafe state")
     func projectionsPreserveModelIdentitiesAndOmitUnsafeState() throws {
-        let agent = AgentInstance(
-            id: agentID,
-            name: "Atlas",
-            description: "Coordinates analysis.",
-            primaryWorkspaceID: workspaceID,
-            privateTimelineID: timelineID,
-            lastActiveAt: updateDate,
-            createdAt: creationDate,
-            updatedAt: updateDate,
-            metadata: ["apiKey": AnyCodable("secret")]
+        let agent = AscendantRuntimeIdentity(
+            id: agentID, name: "Atlas", description: "Coordinates analysis.",
+            privateTimelineID: timelineID, primaryWorkspaceID: workspaceID,
+            lastActiveAt: updateDate, createdAt: creationDate, updatedAt: updateDate
         )
-        let timeline = Timeline(
+        let timeline = AscendantRuntimeTimeline(
             id: timelineID,
             title: "Private research",
-            createdAt: creationDate,
-            updatedAt: updateDate,
-            workingDirectory: "/private/worktree",
             attachedWorkspaceIDs: [workspaceID, attachedWorkspaceID],
             attachedAgentInstanceID: agentID,
-            isPrivate: true
+            isArchived: false,
+            isPrivate: true,
+            createdAt: creationDate,
+            updatedAt: updateDate
         )
         let workspace = WorkspaceReference(
             id: workspaceID,
@@ -57,7 +51,7 @@ struct ProjectionAndCatalogTests {
             createdAt: creationDate
         )
 
-        let agentObject = GnosticAgentObject(agent: agent)
+        let agentObject = GnosticAgentObject(identity: agent)
         let timelineObject = GnosticTimelineObject(timeline: timeline)
         let workspaceObject = GnosticWorkspaceObject(workspace: workspace)
 
@@ -75,7 +69,6 @@ struct ProjectionAndCatalogTests {
         let encoded = try JSONEncoder().encode([agentObject, timelineObject, workspaceObject])
         let json = String(decoding: encoded, as: UTF8.self)
 
-        #expect(!json.contains("apiKey"))
         #expect(!json.contains("/private/worktree"))
         #expect(!json.contains("Ignore all prior instructions"))
         #expect(!json.contains("contextInjection"))
@@ -89,18 +82,9 @@ struct ProjectionAndCatalogTests {
             advertise: { recorded.appendAdvertised($0) },
             readvertise: { recorded.appendReadvertised($0) }
         )
-        let agent = AgentInstance(
-            id: agentID,
-            name: "Atlas",
-            description: "Coordinates analysis.",
-            privateTimelineID: timelineID
-        )
-        let initialTimeline = Timeline(id: timelineID, attachedAgentInstanceID: agentID)
-        let changedTimeline = Timeline(
-            id: timelineID,
-            attachedWorkspaceIDs: [workspaceID],
-            attachedAgentInstanceID: agentID
-        )
+        let agent = AscendantRuntimeIdentity(id: agentID, name: "Atlas", description: "Coordinates analysis.", privateTimelineID: timelineID, primaryWorkspaceID: nil, lastActiveAt: creationDate, createdAt: creationDate, updatedAt: creationDate)
+        let initialTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [], attachedAgentInstanceID: agentID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: creationDate)
+        let changedTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [workspaceID], attachedAgentInstanceID: agentID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: updateDate)
         let workspace = WorkspaceReference(
             id: workspaceID,
             uri: WorkspaceURI(parsing: "workspace://atlas")!,
@@ -183,6 +167,21 @@ struct ProjectionAndCatalogTests {
         #expect(entry.knownProperties["uri"] == .string("workspace://alpha"))
         #expect(entry.knownProperties["isAvailable"] == .bool(true))
         #expect(entry.knownProperties["objectId"] == nil, "Coaty core fields are not known projection fields")
+    }
+
+    @Test("catalog retains exact signed and unsigned dynamic integers")
+    func catalogRetainsExactDynamicIntegers() async throws {
+        let snapshot = CoatyObjectSnapshot(
+            objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject,
+            objectType: GnosticObjectType.workspace, name: "Exact values",
+            payload: #"{"uri":"workspace://exact","isAvailable":true,"tools":[],"signed":-9223372036854775808,"unsigned":18446744073709551615}"#
+        )
+        let catalog = NetworkCatalog()
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider-a", object: snapshot))
+
+        let entry = try #require(await catalog.object(id: workspaceID, providerID: "provider-a"))
+        #expect(entry.dynamicProperties["signed"] == .integer(Int64.min))
+        #expect(entry.dynamicProperties["unsigned"] == .unsignedInteger(UInt64.max))
     }
 
     @Test("catalog keeps malformed workspace inspectable but unavailable for attachment")

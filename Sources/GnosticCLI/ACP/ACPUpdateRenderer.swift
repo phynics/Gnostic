@@ -17,7 +17,7 @@ enum ACPUpdateRenderer {
     ) -> [ACPRenderedNotification] {
         var metadata: [String: AnyCodable] = [
             "clientTurnID": .string(turnID),
-            "sequence": .number(Double(update.sequence)),
+            "sequence": .integer(Int64(update.sequence)),
             "kind": .string(update.kind),
             "replayed": .boolean(replayed),
         ]

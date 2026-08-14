@@ -110,6 +110,26 @@ public struct AscendantRuntimeIdentity: Sendable, Equatable {
     public let lastActiveAt: Date
     public let createdAt: Date
     public let updatedAt: Date
+
+    public init(
+        id: UUID,
+        name: String,
+        description: String,
+        privateTimelineID: UUID,
+        primaryWorkspaceID: UUID?,
+        lastActiveAt: Date,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.privateTimelineID = privateTimelineID
+        self.primaryWorkspaceID = primaryWorkspaceID
+        self.lastActiveAt = lastActiveAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
 }
 
 /// Gnostic's stable, provider-independent projection of a Timeline.
@@ -122,6 +142,26 @@ public struct AscendantRuntimeTimeline: Sendable, Equatable {
     public let isPrivate: Bool
     public let createdAt: Date
     public let updatedAt: Date
+
+    public init(
+        id: UUID,
+        title: String,
+        attachedWorkspaceIDs: [UUID],
+        attachedAgentInstanceID: UUID?,
+        isArchived: Bool,
+        isPrivate: Bool,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.title = title
+        self.attachedWorkspaceIDs = attachedWorkspaceIDs
+        self.attachedAgentInstanceID = attachedAgentInstanceID
+        self.isArchived = isArchived
+        self.isPrivate = isPrivate
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
 }
 
 /// Construction dependencies supplied by the node composition boundary.  The

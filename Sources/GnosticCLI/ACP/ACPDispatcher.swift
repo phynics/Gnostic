@@ -58,7 +58,7 @@ final class ACPDispatcher: Sendable {
     func initialize() async throws -> AnyCodable {
         ascendant = try await resolveAscendant()
         return .dictionary([
-            "protocolVersion": .number(Double(ACPProtocol.version)),
+            "protocolVersion": .integer(Int64(ACPProtocol.version)),
             "agentCapabilities": .dictionary([
                 "loadSession": .boolean(false),
                 "promptCapabilities": .dictionary([
