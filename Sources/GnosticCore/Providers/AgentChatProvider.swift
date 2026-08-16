@@ -45,36 +45,6 @@ public struct AgentChatResult: Codable, Sendable {
     }
 }
 
-/// Terminal failures retained by the serve-lifetime turn coordinator.
-public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
-    case conflict(timelineID: UUID, clientTurnID: String)
-    case failed(timelineID: UUID, clientTurnID: String, detail: String)
-    case cancelled(timelineID: UUID, clientTurnID: String)
-    case replayUnavailable(timelineID: UUID, clientTurnID: String)
-
-    public var errorDescription: String? {
-        switch self {
-        case let .conflict(timelineID, clientTurnID):
-            "clientTurnID \(clientTurnID) was already used with different content on Timeline \(timelineID.uuidString.lowercased())"
-        case let .failed(_, _, detail):
-            detail
-        case let .cancelled(_, clientTurnID):
-            "agent.chat turn \(clientTurnID) was cancelled"
-        case let .replayUnavailable(_, clientTurnID):
-            "the replay result for agent.chat turn \(clientTurnID) is no longer retained; the turn will not be rerun"
-        }
-    }
-
-    public var statusCode: Int {
-        switch self {
-        case .conflict: 409
-        case .failed: 500
-        case .cancelled: 499
-        case .replayUnavailable: 410
-        }
-    }
-}
-
 /// Hosts the `me.atkn.gnostic.agent.chat` unary Call/Return operation.
 ///
 /// A thin wire adapter: decodes an `AgentChatRequest`, invokes the injected

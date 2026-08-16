@@ -3,14 +3,6 @@
 import Foundation
 import PKShared
 
-/// Errors a method dispatcher can expose as a JSON-RPC protocol error.
-public enum JSONRPCMethodError: Error, Sendable {
-    case invalidParams(String)
-    case methodNotFound(String)
-    case invalidState(String)
-    case internalError(String)
-}
-
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
 /// cancellation; the injected handler owns domain semantics.
 public actor JSONRPCSession {
