@@ -146,13 +146,12 @@ struct ServeSubprocessTests {
             try? FileManager.default.removeItem(at: configDirectory)
         }
 
-        try await Task.sleep(for: signalDelay)
-        #expect(process.isRunning)
         if requireOnlineBeforeSignal {
-            try log.synchronize()
-            let startupLog = try String(contentsOf: logURL, encoding: .utf8)
-            #expect(startupLog.contains("objectCount=0"), Comment(rawValue: startupLog))
+            try await waitForOnline(log: log, logURL: logURL, process: process)
+        } else {
+            try await Task.sleep(for: signalDelay)
         }
+        #expect(process.isRunning)
         switch signal {
         case .interrupt: process.interrupt()
         case .terminate: process.terminate()
@@ -170,6 +169,27 @@ struct ServeSubprocessTests {
         #expect(exited, "gnostic serve ignored \(signal)")
         #expect(process.terminationReason == .exit, Comment(rawValue: standardError))
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+    }
+
+    /// Polls the serve log until it advertises its object graph. A fixed delay
+    /// is too short when the suite runs in parallel: subprocess launch and the
+    /// broker connection can take well over a second under load, so signaling
+    /// early could hit the default handler before the monitor is installed.
+    @MainActor
+    private func waitForOnline(log: FileHandle, logURL: URL, process: Process) async throws {
+        var sawOnline = false
+        for _ in 0..<150 {
+            try log.synchronize()
+            if try String(contentsOf: logURL, encoding: .utf8).contains("objectCount=0") {
+                sawOnline = true
+                break
+            }
+            if !process.isRunning { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try log.synchronize()
+        let startupLog = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(sawOnline, Comment(rawValue: startupLog))
     }
 }
 
