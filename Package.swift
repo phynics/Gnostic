@@ -14,7 +14,7 @@ let package = Package(
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.5.0"),
+        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.5.1"),
         .package(url: "https://github.com/phynics/PositronicKit.git", exact: "3.7.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
