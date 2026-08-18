@@ -23,26 +23,7 @@ public enum ConfiguredLLMService {
     ///   configuration is not valid (e.g. missing provider or API key).
     public static func make(from configuration: LLMConfiguration) -> any LanguageModel {
         guard configuration.isValid else { return UnconfiguredLLMService() }
-        return LLMService(
-            configuration: configuration,
-            clientFactory: { config in
-                let provider = config.activeProvider
-                switch provider {
-                case .openAI, .openAICompatible:
-                    let client = PKOpenAIProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (main: client, utility: nil, fast: nil)
-                case .openRouter:
-                    let client = PKOpenRouterProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (main: client, utility: nil, fast: nil)
-                case .ollama:
-                    let client = PKOllamaProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (main: client, utility: nil, fast: nil)
-                case .anthropic:
-                    let client = PKAnthropicProvider.makeClientAndRegisterStructuredOutputAdapter(configuration: config)
-                    return (main: client, utility: nil, fast: nil)
-                }
-            }
-        )
+        return LLMService(configuration: configuration, clients: makeClients(for: configuration))
     }
 
     /// Bridges a validated Core launch-plan profile without making GnosticCore
@@ -60,5 +41,36 @@ public enum ConfiguredLLMService {
         providerConfiguration.fastModel = profile.fastModel ?? providerConfiguration.fastModel
         configuration.providers[provider] = providerConfiguration
         return make(from: configuration)
+    }
+
+    private static func makeClients(for configuration: LLMConfiguration) -> LLMClientSet {
+        let provider = configuration.activeProvider
+        let providerConfiguration = configuration.activeProviderConfiguration
+        let makeClient: (String) -> any LLMClientProtocol
+
+        switch provider {
+        case .openAI, .openAICompatible:
+            makeClient = { modelName in
+                PKOpenAIProvider.makeClient(for: configuration, modelName: modelName)
+            }
+        case .openRouter:
+            makeClient = { modelName in
+                PKOpenRouterProvider.makeClient(for: configuration, modelName: modelName)
+            }
+        case .ollama:
+            makeClient = { modelName in
+                PKOllamaProvider.makeClient(for: configuration, modelName: modelName)
+            }
+        case .anthropic:
+            makeClient = { modelName in
+                PKAnthropicProvider.makeClient(for: configuration, modelName: modelName)
+            }
+        }
+
+        return LLMClientSet(
+            primary: makeClient(providerConfiguration.modelName),
+            utility: makeClient(providerConfiguration.utilityModel),
+            fast: makeClient(providerConfiguration.fastModel)
+        )
     }
 }
