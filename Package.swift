@@ -15,7 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.5.1"),
-        .package(url: "https://github.com/phynics/PositronicKit.git", revision: "6644286af611903a9c750045032dc7061c62ad18"),
+        .package(url: "https://github.com/phynics/PositronicKit.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
     targets: [

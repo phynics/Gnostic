@@ -46,31 +46,39 @@ public enum ConfiguredLLMService {
     private static func makeClients(for configuration: LLMConfiguration) -> LLMClientSet {
         let provider = configuration.activeProvider
         let providerConfiguration = configuration.activeProviderConfiguration
-        let makeClient: (String) -> any LLMClientProtocol
+        let makeClient: (LLMConfiguration) -> any LLMClientProtocol
 
         switch provider {
         case .openAI, .openAICompatible:
-            makeClient = { modelName in
-                PKOpenAIProvider.makeClient(for: configuration, modelName: modelName)
+            makeClient = { configuration in
+                PKOpenAIProvider.makeClient(configuration: configuration)
             }
         case .openRouter:
-            makeClient = { modelName in
-                PKOpenRouterProvider.makeClient(for: configuration, modelName: modelName)
+            makeClient = { configuration in
+                PKOpenRouterProvider.makeClient(configuration: configuration)
             }
         case .ollama:
-            makeClient = { modelName in
-                PKOllamaProvider.makeClient(for: configuration, modelName: modelName)
+            makeClient = { configuration in
+                PKOllamaProvider.makeClient(configuration: configuration)
             }
         case .anthropic:
-            makeClient = { modelName in
-                PKAnthropicProvider.makeClient(for: configuration, modelName: modelName)
+            makeClient = { configuration in
+                PKAnthropicProvider.makeClient(configuration: configuration)
             }
         }
 
         return LLMClientSet(
-            primary: makeClient(providerConfiguration.modelName),
-            utility: makeClient(providerConfiguration.utilityModel),
-            fast: makeClient(providerConfiguration.fastModel)
+            primary: makeClient(configurationWithModel(providerConfiguration.modelName)),
+            utility: makeClient(configurationWithModel(providerConfiguration.utilityModel)),
+            fast: makeClient(configurationWithModel(providerConfiguration.fastModel))
         )
+
+        func configurationWithModel(_ modelName: String) -> LLMConfiguration {
+            var configured = configuration
+            var providerConfiguration = configured.activeProviderConfiguration
+            providerConfiguration.modelName = modelName
+            configured.providers[provider] = providerConfiguration
+            return configured
+        }
     }
 }
