@@ -7,7 +7,7 @@ import PositronicKit
 
 /// Serializes turns independently of the node's transport/lifecycle shell.
 @MainActor
-public final class ChatTurnService {
+public final class TurnService {
     private let adapter: @MainActor (UUID) -> (any AscendantRuntimeAdapter)?
     private let registry: NodeRegistry
     private let coordinator: AscendantTurnCoordinator
@@ -18,7 +18,8 @@ public final class ChatTurnService {
         self.registry = registry; self.coordinator = coordinator; self.updates = updates; self.isRunning = isRunning; self.adapter = adapter
     }
 
-    func chat(_ request: AgentChatRequest) async throws -> AgentChatResult {
+    func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+        try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
         guard isRunning() else { throw NodeRuntimeError.notRunning }
         guard let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }

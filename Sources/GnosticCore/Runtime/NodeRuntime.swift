@@ -59,7 +59,7 @@ public final class NodeRuntime {
             projectionRelay.projectTimeline(timeline, replacing: true)
         }
     )
-    private lazy var chatService = ChatTurnService(
+    private lazy var turnService = TurnService(
         registry: registry,
         coordinator: turnCoordinator,
         updates: turnUpdates,
@@ -87,9 +87,9 @@ public final class NodeRuntime {
         },
         localWorkspaces: localWorkspaces,
         isAvailable: { [weak self] in self?.isRunning == true },
-        chat: { [weak self] request in
+        turn: { [weak self] request in
             guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.chatService.chat(request)
+            return try await self.turnService.turn(request)
         },
         timelineStatus: { [weak self] id in
             guard let self else { throw NodeRuntimeError.notRunning }
@@ -183,7 +183,7 @@ public final class NodeRuntime {
         let resolvedContainer = try Container.resolve(
             components: Components(
                 controllers: ["ObjectLifecycleController": ObjectLifecycleController.self],
-                objectTypes: [GnosticAgentObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self]
+                objectTypes: [GnosticAscendantObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self]
             ),
             configuration: Configuration(
                 common: CommonOptions(agentIdentity: ["name": "gnostic-node-\(plan.nodeID.uuidString.lowercased())"]),
@@ -282,7 +282,7 @@ public final class NodeRuntime {
             let events = await turnUpdates.events()
             turnUpdatePublishTask = Task { [communication] in
                 for await event in events {
-                    guard let channel = try? AgentChatProvider.updateEvent(event) else { continue }
+                    guard let channel = try? AscendantTurnProvider.updateEvent(event) else { continue }
                     communication.publishChannel(channel)
                 }
             }
@@ -371,11 +371,11 @@ public final class NodeRuntime {
         return await adapter.enabledToolIDs(for: timelineID)
     }
 
-    /// Runs one chat turn against the adapter selected by the
+    /// Runs one Turn against the adapter selected by the
     /// addressed timeline. Unoperated timelines remain observable but cannot
     /// accidentally fall through to an arbitrary Ascendant.
-    public func chat(_ request: AgentChatRequest) async throws -> AgentChatResult {
-        try await chatService.chat(request)
+    public func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+        try await turnService.turn(request)
     }
 
     /// Creates a timeline in the selected Ascendant's in-memory runtime. It
@@ -464,9 +464,9 @@ public final class NodeRuntime {
         try manifest.validate()
     }
 
-    private static func timeline(from configuration: NodeManifest.Timeline, agentID: UUID?) throws -> AscendantRuntimeTimeline {
+    private static func timeline(from configuration: NodeManifest.Timeline, ascendantID: UUID?) throws -> AscendantRuntimeTimeline {
         let now = Date()
-        return .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAgentInstanceID: agentID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        return .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
     }
 
     private static func mapTimeline(_ timeline: AscendantRuntimeTimeline) -> TimelineStatus {

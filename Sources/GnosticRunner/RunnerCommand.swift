@@ -12,7 +12,7 @@ import PositronicKit
 struct GnosticRunner: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gnostic-runner",
-        abstract: "Advertise Gnostic objects and drive the agent-network PoC."
+        abstract: "Advertise Gnostic objects and drive the Ascendant-network PoC."
     )
 
     @Option(help: "MQTT broker host (defaults to GNOSTIC_HOST or 127.0.0.1).")

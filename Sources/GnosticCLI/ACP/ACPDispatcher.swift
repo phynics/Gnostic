@@ -217,7 +217,7 @@ final class ACPDispatcher: Sendable {
             }
             return .dictionary(["stopReason": .string("end_turn")])
         }
-        let resultAndSequence: (AgentChatResult, Int)
+        let resultAndSequence: (AscendantTurnResult, Int)
         do {
             resultAndSequence = try await streamPrompt(
                 message: text,
@@ -270,7 +270,7 @@ final class ACPDispatcher: Sendable {
         message: String,
         record: ACPSessionRecord,
         turnID: String
-    ) async throws -> (AgentChatResult, Int) {
+    ) async throws -> (AscendantTurnResult, Int) {
         let providerID = try boundProviderID(for: record)
         let channel = try await client.observeTurnUpdates(providerID: providerID)
         let inbox = TurnUpdateInbox()
@@ -280,8 +280,8 @@ final class ACPDispatcher: Sendable {
                 await inbox.append(event.update)
             }
         }
-        let chat = Task {
-            try await client.chat(
+        let turnTask = Task {
+            try await client.turn(
                 message: message,
                 timelineID: record.timelineID,
                 clientTurnID: turnID,
@@ -291,14 +291,14 @@ final class ACPDispatcher: Sendable {
         let completion = PromptCompletion()
         let completionWatcher = Task {
             do {
-                await completion.set(.completed(try await chat.value))
+                await completion.set(.completed(try await turnTask.value))
             } catch {
                 await completion.set(.failed(String(describing: error)))
             }
         }
         let promptToken = UUID()
         let stopTasks = {
-            chat.cancel()
+            turnTask.cancel()
             collector.cancel()
             completionWatcher.cancel()
         }
@@ -314,7 +314,7 @@ final class ACPDispatcher: Sendable {
             }
         )
         defer {
-            chat.cancel()
+            turnTask.cancel()
             collector.cancel()
             completionWatcher.cancel()
             if activePrompts[record.id]?.token == promptToken {
@@ -353,7 +353,7 @@ final class ACPDispatcher: Sendable {
     }
 
     fileprivate enum PromptWaitOutcome: Sendable {
-        case completed(AgentChatResult)
+        case completed(AscendantTurnResult)
         case failed(String)
         case cancelled
     }
@@ -389,7 +389,7 @@ final class ACPDispatcher: Sendable {
                 guard let approved = ACPPermissionBridge.approved(from: response) else {
                     throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
-                try await client.respondToPermission(AgentPermissionResponse(
+                try await client.respondToPermission(AscendantPermissionResponse(
                     correlationID: state.correlationID,
                     timelineID: timelineID,
                     clientTurnID: turnID,
@@ -410,7 +410,7 @@ final class ACPDispatcher: Sendable {
         timelineID: UUID,
         turnID: String
     ) async throws {
-        try await client.respondToPermission(AgentPermissionResponse(
+        try await client.respondToPermission(AscendantPermissionResponse(
             correlationID: state.correlationID,
             timelineID: timelineID,
             clientTurnID: turnID,
@@ -443,7 +443,7 @@ final class ACPDispatcher: Sendable {
                 timelineID: selected.timelineID,
                 providerID: selected.providerID
             )
-        } catch let error as RemoteChatClientError {
+        } catch let error as RemoteTurnClientError {
             throw JSONRPCMethodError.invalidState(error.localizedDescription)
         }
     }

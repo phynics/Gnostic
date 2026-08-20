@@ -7,7 +7,7 @@ import Axoloty
 public final class GnosticSubscription {
     /// The exact object types observed by this subscription.
     public static let objectTypes = [
-        GnosticObjectType.agent,
+        GnosticObjectType.ascendant,
         GnosticObjectType.timeline,
         GnosticObjectType.workspace,
     ]

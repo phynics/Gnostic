@@ -11,7 +11,7 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let request = AgentChatRequest(
+        let request = AscendantTurnRequest(
             message: "hello",
             timelineID: timelineID,
             clientTurnID: "pi:session:entry-1"
@@ -42,8 +42,8 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let firstRequest = AgentChatRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
-        let conflictRequest = AgentChatRequest(message: "different", timelineID: timelineID, clientTurnID: "turn-1")
+        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
+        let conflictRequest = AscendantTurnRequest(message: "different", timelineID: timelineID, clientTurnID: "turn-1")
 
         _ = try await coordinator.execute(firstRequest) {
             await probe.enter("first")
@@ -66,9 +66,9 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let firstRequest = AgentChatRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
-        let secondRequest = AgentChatRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-2")
-        let otherRequest = AgentChatRequest(message: "other", timelineID: UUID(), clientTurnID: "turn-3")
+        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
+        let secondRequest = AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-2")
+        let otherRequest = AscendantTurnRequest(message: "other", timelineID: UUID(), clientTurnID: "turn-3")
 
         let first = Task {
             try await coordinator.execute(firstRequest) {
@@ -107,8 +107,8 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let firstRequest = AgentChatRequest(message: "first", timelineID: timelineID)
-        let secondRequest = AgentChatRequest(message: "second", timelineID: timelineID)
+        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID)
+        let secondRequest = AscendantTurnRequest(message: "second", timelineID: timelineID)
 
         let first = Task {
             try await coordinator.execute(firstRequest) {
@@ -136,7 +136,7 @@ struct AscendantTurnCoordinatorTests {
     func lostCallerDoesNotRetryTheTurn() async throws {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
-        let request = AgentChatRequest(message: "once", timelineID: UUID(), clientTurnID: "turn-cancelled")
+        let request = AscendantTurnRequest(message: "once", timelineID: UUID(), clientTurnID: "turn-cancelled")
 
         let caller = Task {
             try await coordinator.execute(request) {
@@ -165,8 +165,8 @@ struct AscendantTurnCoordinatorTests {
     func terminalFailuresAreCached() async throws {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
-        let failedRequest = AgentChatRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-fails")
-        let cancelledRequest = AgentChatRequest(message: "cancels", timelineID: UUID(), clientTurnID: "turn-cancels")
+        let failedRequest = AscendantTurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-fails")
+        let cancelledRequest = AscendantTurnRequest(message: "cancels", timelineID: UUID(), clientTurnID: "turn-cancels")
 
         await #expect(throws: AscendantTurnError.self) {
             _ = try await coordinator.execute(failedRequest) {
@@ -201,8 +201,8 @@ struct AscendantTurnCoordinatorTests {
     func evictedResultsNeverRerun() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1)
         let probe = TurnProbe()
-        let first = AgentChatRequest(message: "first", timelineID: UUID(), clientTurnID: "turn-1")
-        let second = AgentChatRequest(message: "second", timelineID: UUID(), clientTurnID: "turn-2")
+        let first = AscendantTurnRequest(message: "first", timelineID: UUID(), clientTurnID: "turn-1")
+        let second = AscendantTurnRequest(message: "second", timelineID: UUID(), clientTurnID: "turn-2")
 
         _ = try await coordinator.execute(first) {
             await probe.enter("first")

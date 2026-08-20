@@ -93,7 +93,7 @@ struct NodeRegistryTests {
             id: fixture.operated.id,
             title: "Rejected rename",
             attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            attachedAgentInstanceID: fixture.operated.attachedAgentInstanceID,
+            attachedAscendantID: fixture.operated.attachedAscendantID,
             isArchived: fixture.operated.isArchived,
             isPrivate: fixture.operated.isPrivate,
             createdAt: fixture.operated.createdAt,
@@ -116,7 +116,7 @@ struct NodeRegistryTests {
             id: fixture.operated.id,
             title: "Accepted rename",
             attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            attachedAgentInstanceID: fixture.operated.attachedAgentInstanceID,
+            attachedAscendantID: fixture.operated.attachedAscendantID,
             isArchived: fixture.operated.isArchived,
             isPrivate: fixture.operated.isPrivate,
             createdAt: fixture.operated.createdAt,
@@ -144,8 +144,8 @@ struct NodeRegistryTests {
 
         init() throws {
             let now = Date(timeIntervalSince1970: 1)
-            operated = .init(id: operatedID, title: "Operated", attachedWorkspaceIDs: [networkWorkspaceID], attachedAgentInstanceID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
-            unoperated = .init(id: unoperatedID, title: "Unoperated", attachedWorkspaceIDs: [], attachedAgentInstanceID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            operated = .init(id: operatedID, title: "Operated", attachedWorkspaceIDs: [networkWorkspaceID], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            unoperated = .init(id: unoperatedID, title: "Unoperated", attachedWorkspaceIDs: [], attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
             plan = try NodeManifest(
                 broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-registry-tests"),
                 node: .init(id: UUID(uuidString: "B21D0000-0000-4000-8000-000000000005")!),

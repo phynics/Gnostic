@@ -51,7 +51,7 @@ struct JSONRPCSessionTests {
     func domainErrorData() async throws {
         let output = JSONRPCOutputCapture()
         let session = JSONRPCSession(handler: { _ in
-            throw RemoteChatClientError.approvalRequired
+            throw RemoteTurnClientError.approvalRequired
         }, output: output.append)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))

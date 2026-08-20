@@ -8,8 +8,8 @@ import Foundation
 struct GnosticCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gnostic",
-        abstract: "Inspect Axoloty objects, configure MQTT and LLM details, and chat.",
+        abstract: "Inspect Axoloty objects, configure MQTT and LLM details, and run Turns.",
         version: "0.2.0",
-        subcommands: [ConfigCommand.self, InspectCommand.self, ChatCommand.self, ServeCommand.self, ACPCommand.self]
+        subcommands: [ConfigCommand.self, InspectCommand.self, TurnCommand.self, ServeCommand.self, ACPCommand.self]
     )
 }

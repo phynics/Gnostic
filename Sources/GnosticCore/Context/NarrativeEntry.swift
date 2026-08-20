@@ -48,7 +48,7 @@ public struct NarrativeConversationRange: Hashable, Codable, Sendable {
 }
 
 /// Provenance for a narrative entry. Reference identifiers only; never embeds
-/// Agent, Timeline, or Workspace object copies.
+/// Ascendant, Timeline, or Workspace object copies.
 public struct NarrativeSourceReference: Hashable, Codable, Sendable {
     /// The source conversation message range.
     public let conversation: NarrativeConversationRange
@@ -56,8 +56,8 @@ public struct NarrativeSourceReference: Hashable, Codable, Sendable {
     public let toolIDs: [String]
     /// Correlation identifiers involved.
     public let correlationIDs: [String]
-    /// The contributing Gnostic agent identifier, if any.
-    public let agentID: UUID?
+    /// The contributing Gnostic Ascendant identifier, if any.
+    public let ascendantID: UUID?
     /// The contributing Gnostic timeline identifier, if any.
     public let timelineID: UUID?
     /// The contributing Gnostic workspace identifiers, if any.
@@ -72,7 +72,7 @@ public struct NarrativeSourceReference: Hashable, Codable, Sendable {
         conversation: NarrativeConversationRange,
         toolIDs: [String] = [],
         correlationIDs: [String] = [],
-        agentID: UUID? = nil,
+        ascendantID: UUID? = nil,
         timelineID: UUID? = nil,
         workspaceIDs: [UUID] = [],
         taskID: String? = nil,
@@ -81,7 +81,7 @@ public struct NarrativeSourceReference: Hashable, Codable, Sendable {
         self.conversation = conversation
         self.toolIDs = toolIDs
         self.correlationIDs = correlationIDs
-        self.agentID = agentID
+        self.ascendantID = ascendantID
         self.timelineID = timelineID
         self.workspaceIDs = workspaceIDs
         self.taskID = taskID

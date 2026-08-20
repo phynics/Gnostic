@@ -37,15 +37,15 @@ public final class OrchestrationProjector {
     /// Projects and advertises all local orchestration objects.
     ///
     /// - Parameters:
-    ///   - agent: The local Ascendant identity.
+    ///   - ascendant: The local Ascendant identity.
     ///   - timeline: The local Timeline projection.
     ///   - workspaces: The local workspace references to advertise.
     public func advertise(
-        agent: AscendantRuntimeIdentity,
+        ascendant: AscendantRuntimeIdentity,
         timeline: AscendantRuntimeTimeline,
         workspaces: [WorkspaceReference]
     ) {
-        advertiseObject(GnosticAgentObject(identity: agent))
+        advertiseObject(GnosticAscendantObject(identity: ascendant))
         let timelineObject = GnosticTimelineObject(timeline: timeline)
         timelines[timeline.id] = timelineObject
         advertiseObject(timelineObject)

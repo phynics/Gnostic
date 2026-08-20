@@ -3,7 +3,7 @@
 import PKShared
 import PositronicKit
 
-/// The approval gate injected into the chat kit. Permissioned tool calls
+/// The approval gate injected into the Turn kit. Permissioned tool calls
 /// (attach_workspace) display the call and ask on stdin; EOF or a non-
 /// affirmative answer denies.
 public struct StdinApprovalPolicy: ToolApprovalPolicy {

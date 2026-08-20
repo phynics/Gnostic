@@ -6,7 +6,7 @@ import Testing
 
 @Suite("Narrative retrieval and open-thread reconstruction")
 struct NarrativeRetrievalTests {
-    private let agentID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
+    private let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
     private let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000002")!
     private let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!
 

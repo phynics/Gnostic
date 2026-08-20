@@ -4,13 +4,13 @@ import Foundation
 import PKShared
 import PositronicKit
 
-/// The interactive line loop for `gnostic chat`.
+/// The interactive line loop for `gnostic turn`.
 ///
 /// Reads lines from an injectable source (stdin in production, a scripted
 /// iterator in tests), dispatches slash-commands, and runs turns through a
-/// `ChatTurnRunning` session. Unhandled errors keep the REPL alive.
-public final class ChatREPL: Sendable {
-    private let session: any ChatTurnRunning
+/// `TurnRunning` session. Unhandled errors keep the REPL alive.
+public final class TurnREPL: Sendable {
+    private let session: any TurnRunning
     private let timelineID: UUID
     private let approval: any ToolApprovalPolicy
     private let readLine: @Sendable () -> String?
@@ -26,7 +26,7 @@ public final class ChatREPL: Sendable {
     ///   - readLine: The line source.
     ///   - writeOutput: The text sink (defaults to `print`).
     public init(
-        session: any ChatTurnRunning,
+        session: any TurnRunning,
         timelineID: UUID,
         approval: any ToolApprovalPolicy,
         readLine: @escaping @Sendable () -> String?,
@@ -116,12 +116,12 @@ public final class ChatREPL: Sendable {
     /// The effective active timeline id: the session's when it is a remote
     /// session (which can switch), otherwise the REPL's initial timeline.
     private var activeTimelineID: UUID {
-        (session as? RemoteChatSession)?.timelineID ?? timelineID
+        (session as? RemoteTurnSession)?.timelineID ?? timelineID
     }
 
     private func showTimelines() async {
-        guard let remote = session as? RemoteChatSession else {
-            writeOutput("Timeline commands are only available against a serve agent.")
+        guard let remote = session as? RemoteTurnSession else {
+            writeOutput("Timeline commands are only available against a serve ascendant.")
             return
         }
         do {
@@ -141,8 +141,8 @@ public final class ChatREPL: Sendable {
     }
 
     private func createAndActivateTimeline() async {
-        guard let remote = session as? RemoteChatSession else {
-            writeOutput("Timeline commands are only available against a serve agent.")
+        guard let remote = session as? RemoteTurnSession else {
+            writeOutput("Timeline commands are only available against a serve ascendant.")
             return
         }
         do {
@@ -154,9 +154,9 @@ public final class ChatREPL: Sendable {
     }
 
     private func switchTimeline(id: String) {
-        guard let remote = session as? RemoteChatSession,
+        guard let remote = session as? RemoteTurnSession,
               let timelineID = UUID(uuidString: id) else {
-            writeOutput("Invalid timeline id '\(id)' or no serve agent.")
+            writeOutput("Invalid timeline id '\(id)' or no serve ascendant.")
             return
         }
         remote.switchTimeline(to: timelineID)
@@ -164,8 +164,8 @@ public final class ChatREPL: Sendable {
     }
 
     private func renameActiveTimeline(title: String) async {
-        guard let remote = session as? RemoteChatSession else {
-            writeOutput("Timeline commands are only available against a serve agent.")
+        guard let remote = session as? RemoteTurnSession else {
+            writeOutput("Timeline commands are only available against a serve ascendant.")
             return
         }
         do {
@@ -177,8 +177,8 @@ public final class ChatREPL: Sendable {
     }
 
     private func showWorkspaces() async {
-        guard let remote = session as? RemoteChatSession else {
-            writeOutput("Workspace commands are only available against a serve agent.")
+        guard let remote = session as? RemoteTurnSession else {
+            writeOutput("Workspace commands are only available against a serve ascendant.")
             return
         }
         do {
@@ -200,9 +200,9 @@ public final class ChatREPL: Sendable {
     }
 
     private func mutateWorkspace(id: String, attach: Bool) async {
-        guard let remote = session as? RemoteChatSession,
+        guard let remote = session as? RemoteTurnSession,
               let workspaceID = UUID(uuidString: id) else {
-            writeOutput("Invalid workspace id '\(id)' or no serve agent.")
+            writeOutput("Invalid workspace id '\(id)' or no serve ascendant.")
             return
         }
         do {

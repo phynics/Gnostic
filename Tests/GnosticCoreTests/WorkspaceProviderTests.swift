@@ -81,7 +81,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000003")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
+        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
@@ -134,6 +134,48 @@ struct WorkspaceProviderTests {
         #expect(result.output == "found")
     }
 
+    @Test("provider wraps malformed and executor failures in protocol envelopes")
+    func providerHandleFailuresCarryProtocolMajor() async throws {
+        struct InjectedFailure: Error {}
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
+        let provider = WorkspaceProvider(
+            workspaceID: workspaceID,
+            tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
+        ) { _, _ in
+            throw InjectedFailure()
+        }
+
+        let malformed = try await provider.handle(parameters: #"{"protocolMajor":2}"#)
+        let malformedFailure = try protocolFailure(from: malformed)
+        #expect(malformedFailure.protocolMajor == GnosticProtocol.currentMajor)
+
+        let payload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(workspaceID: workspaceID, toolID: "custom", arguments: [:])
+        ), as: UTF8.self)
+        let executorFailure = try await provider.handle(parameters: payload)
+        let executorFailureEnvelope = try protocolFailure(from: executorFailure)
+        #expect(executorFailureEnvelope.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(executorFailureEnvelope.reasonCode == "workspaceInvocationFailed")
+    }
+
+    @Test("provider preserves cancellation from an executor")
+    func providerHandlePreservesCancellation() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000007")!
+        let provider = WorkspaceProvider(
+            workspaceID: workspaceID,
+            tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
+        ) { _, _ in
+            throw CancellationError()
+        }
+        let payload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(workspaceID: workspaceID, toolID: "custom", arguments: [:])
+        ), as: UTF8.self)
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await provider.handle(parameters: payload)
+        }
+    }
+
     @Test("remote proxy exposes advertised custom tools and rejects direct file access")
     func proxyExposesToolsWithoutFilesystemFallback() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000002")!
@@ -154,7 +196,7 @@ struct WorkspaceProviderTests {
         let id = UUID(uuidString: "B31D0000-0000-4000-8000-000000000004")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+        {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let called = InvocationRecorder()
@@ -259,8 +301,7 @@ struct WorkspaceProviderTests {
             context: target.identity
         ) { _ in
             try await Task.sleep(for: .milliseconds(100))
-            let result = try JSONEncoder().encode(ToolResult.success("target"))
-            return .success(result: String(decoding: result, as: UTF8.self))
+            return .success(result: try encodeProtocolToolResult("target"))
         }
         defer { targetRegistration.cancel() }
         let competingRegistration = try await competing.registerCallHandler(
@@ -283,8 +324,7 @@ struct WorkspaceProviderTests {
             operation: WorkspaceProvider.invocationOperation,
             context: target.identity
         ) { _ in
-            let result = try JSONEncoder().encode(ToolResult.success("forged"))
-            return .success(result: String(decoding: result, as: UTF8.self))
+            return .success(result: try encodeProtocolToolResult("forged"))
         }
         defer { forgedRegistration.cancel() }
 
@@ -304,6 +344,22 @@ private func schemaObject(_ schema: [String: AnyCodable]) throws -> [String: Any
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
+private func protocolFailure(from response: CallHandlerResult) throws -> GnosticProtocolFailure {
+    guard case let .failure(_, message, _) = response else {
+        Issue.record("expected a protocol failure, got \(response)")
+        return GnosticProtocolFailure(reasonCode: "missing", message: "missing")
+    }
+    return try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+}
+
+private func encodeProtocolToolResult(_ output: String) throws -> String {
+    let data = try JSONEncoder().encode(ToolResult.success(output))
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["protocolMajor"] = GnosticProtocol.currentMajor
+    let encoded = try JSONSerialization.data(withJSONObject: object)
+    return try #require(String(data: encoded, encoding: .utf8))
+}
+
 private final class TimelineRecorder: @unchecked Sendable {
     private(set) var ids: [UUID] = []
     func record(_ timeline: Thread) { ids.append(timeline.id) }
@@ -317,7 +373,7 @@ private actor InvocationRecorder {
 private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: String = "remote") async throws -> WorkspaceReference {
     let id = UUID()
     let payload = """
-    {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+    {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
     """
     await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
     return WorkspaceReference(

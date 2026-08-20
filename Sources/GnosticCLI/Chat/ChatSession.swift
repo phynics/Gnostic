@@ -5,7 +5,7 @@ import PositronicKit
 import PKShared
 
 /// The result of one REPL turn.
-public enum ChatTurnResult: Sendable, Equatable {
+public enum TurnResult: Sendable, Equatable {
     /// The assistant's final text.
     case text(String)
     /// The turn failed (LLM error, tool failure, etc.).
@@ -18,22 +18,22 @@ public enum ChatTurnResult: Sendable, Equatable {
 
 /// The turn-execution seam the REPL depends on.
 ///
-/// Both the local `ChatSession` (PositronicKit-backed) and the remote session
-/// (Axoloty `agent.chat`) satisfy it, so `ChatREPL` is transport-agnostic.
-public protocol ChatTurnRunning: Sendable {
+/// Both the local `TurnSession` (PositronicKit-backed) and the remote session
+/// (Axoloty `ascendant.turn`) satisfy it, so `TurnREPL` is transport-agnostic.
+public protocol TurnRunning: Sendable {
     /// The timeline the session talks to.
     var timelineID: UUID { get }
     /// Runs one user line and returns the outcome.
-    func run(line: String) async throws -> ChatTurnResult
+    func run(line: String) async throws -> TurnResult
 }
 
-/// A minimal, scriptable chat turn engine.
+/// A minimal, scriptable Turn engine.
 ///
 /// Owns one PositronicKit timeline and runs `run(_:)` turns, extracting the
 /// final assistant text from the event stream. Result and error surfaces are
 /// deliberately small so tests can script full conversations through the same
 /// code paths as the interactive REPL.
-public final class ChatSession: Sendable, ChatTurnRunning {
+public final class TurnSession: Sendable, TurnRunning {
     private let kit: PositronicKit
     private let tools: [any Tool]
     public let timelineID: UUID
@@ -54,7 +54,7 @@ public final class ChatSession: Sendable, ChatTurnRunning {
     ///
     /// - Parameter line: The user's message.
     /// - Returns: The turn result.
-    public func run(line: String) async throws -> ChatTurnResult {
+    public func run(line: String) async throws -> TurnResult {
         let stream = try await kit.run(ChatRunRequest(
             threadID: timelineID,
             message: line,
@@ -91,8 +91,8 @@ public final class ChatSession: Sendable, ChatTurnRunning {
     }
 }
 
-/// Structured errors for the chat REPL.
-public enum ChatREPLError: Error, Sendable, LocalizedError {
+/// Structured errors for the Turn REPL.
+public enum TurnREPLError: Error, Sendable, LocalizedError {
     case unconfiguredLLM
     case timelineCreationFailed
     case invalidCommand(String)

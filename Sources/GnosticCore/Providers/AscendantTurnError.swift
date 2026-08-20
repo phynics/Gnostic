@@ -16,9 +16,9 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case let .failed(_, _, detail):
             detail
         case let .cancelled(_, clientTurnID):
-            "agent.chat turn \(clientTurnID) was cancelled"
+            "ascendant.turn turn \(clientTurnID) was cancelled"
         case let .replayUnavailable(_, clientTurnID):
-            "the replay result for agent.chat turn \(clientTurnID) is no longer retained; the turn will not be rerun"
+            "the replay result for ascendant.turn turn \(clientTurnID) is no longer retained; the turn will not be rerun"
         }
     }
 
@@ -28,6 +28,15 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .failed: 500
         case .cancelled: 499
         case .replayUnavailable: 410
+        }
+    }
+
+    public var reasonCode: String {
+        switch self {
+        case .conflict: "turnConflict"
+        case .failed: "turnFailed"
+        case .cancelled: "turnCancelled"
+        case .replayUnavailable: "replayUnavailable"
         }
     }
 }

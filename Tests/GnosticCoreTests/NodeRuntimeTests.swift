@@ -31,7 +31,7 @@ struct NodeRuntimeTests {
         defer { Task { @MainActor in await runtime.shutdown() } }
 
         #expect(try await runtime.listTimelines().map(\.timelineID) == [timelineID])
-        #expect(try await runtime.chat(.init(message: "hello", timelineID: timelineID)).text == "fixture: hello")
+        #expect(try await runtime.turn(.init(message: "hello", timelineID: timelineID)).text == "fixture: hello")
         let created = try await runtime.createTimeline(title: "Scratch", ascendantID: ascendantID)
         #expect(created.title == "Scratch")
     }
@@ -55,7 +55,7 @@ struct NodeRuntimeTests {
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         try await runtime.start()
         let chat = Task {
-            try await runtime.chat(.init(message: "wait", timelineID: timelineID, clientTurnID: "cancel-me"))
+            try await runtime.turn(.init(message: "wait", timelineID: timelineID, clientTurnID: "cancel-me"))
         }
 
         await probe.waitUntilStarted()
@@ -141,8 +141,33 @@ struct NodeRuntimeTests {
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, providerID: "other-node", toolID: NodeRuntime.echoToolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
-        await #expect(throws: WorkspaceError.connectionFailed) {
-            _ = try await provider.handle(parameters: payload, expectedProviderID: "this-node")
+        let response = try await provider.handle(parameters: payload, expectedProviderID: "this-node")
+        guard case let .failure(_, message, _) = response else {
+            Issue.record("expected a structured provider-routing failure")
+            return
+        }
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(failure.reasonCode == "workspaceInvocationFailed")
+    }
+
+    @Test("multiplexed Workspace provider preserves cancellation from a workspace")
+    func multiplexedWorkspaceProviderPreservesCancellation() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000141")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "echo://provider-cancellation")!,
+            location: .runtime,
+            tools: [.custom(.init(id: NodeRuntime.echoToolID, name: "Echo", description: "Echoes."))]
+        )
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspaceID: CancellationWorkspace(reference: reference)]
+        )
+        let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: NodeRuntime.echoToolID, arguments: [:])
+        let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await provider.handle(parameters: payload)
         }
     }
 
@@ -168,11 +193,10 @@ struct NodeRuntimeTests {
         let snapshot = await runtime.snapshot()
 
         #expect(snapshot.ascendantIDs == [ascendantID])
-        #expect(snapshot.agentIDs == [ascendantID])
         #expect(snapshot.timelineIDs == [operatedTimelineID, unoperatedTimelineID])
         #expect(snapshot.operatedTimelineIDs == [operatedTimelineID])
         #expect(snapshot.workspaceIDs == [workspaceID])
-        #expect(snapshot.agentIDs.contains(ascendantID))
+        #expect(snapshot.ascendantIDs.contains(ascendantID))
     }
 
     @Test("empty node is a valid published graph with no modules")
@@ -324,22 +348,22 @@ struct NodeRuntimeTests {
         let target = try #require(await catalog.networkObjects().first {
             $0.objectType == GnosticObjectType.timeline && $0.objectID == secondTimeline
         })
-        let request = AgentChatRequest(message: "provider isolation", timelineID: secondTimeline, clientTurnID: "provider-turn-2")
+        let request = AscendantTurnRequest(message: "provider isolation", timelineID: secondTimeline, clientTurnID: "provider-turn-2")
         let response = try await consumer.call(
-            operation: AgentChatProvider.chatOperation,
+            operation: AscendantTurnProvider.turnOperation,
             parameters: String(decoding: try JSONEncoder().encode(request), as: UTF8.self),
             context: providerIsolationContext(target.providerID),
             timeout: .seconds(3)
         )
-        let result = try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
+        let result = try JSONDecoder().decode(AscendantTurnResult.self, from: Data(response.result.utf8))
         #expect(response.sourceId?.lowercased() == target.providerID.lowercased())
         #expect(result.text == "second-model-response")
         #expect(await firstModel.invocationCount == 0)
         #expect(await secondModel.invocationCount == 1)
 
-        let replayRequest = AgentChatReplayRequest(timelineID: secondTimeline, clientTurnID: "provider-turn-2")
+        let replayRequest = AscendantTurnReplayRequest(timelineID: secondTimeline, clientTurnID: "provider-turn-2")
         let replayResponse = try await consumer.call(
-            operation: AgentChatProvider.replayOperation,
+            operation: AscendantTurnProvider.replayOperation,
             parameters: String(decoding: try JSONEncoder().encode(replayRequest), as: UTF8.self),
             context: providerIsolationContext(target.providerID),
             timeout: .seconds(3)
@@ -433,7 +457,7 @@ struct NodeRuntimeTests {
 
         let listResponse = try await consumer.call(
             operation: TimelineManagementProvider.listOperation,
-            parameters: nil,
+            parameters: String(decoding: try JSONEncoder().encode(TimelineListRequest()), as: UTF8.self),
             context: context,
             timeout: .seconds(3)
         )
@@ -458,7 +482,7 @@ struct NodeRuntimeTests {
 
         let workspaceListResponse = try await consumer.call(
             operation: WorkspaceOpsProvider.listOperation,
-            parameters: nil,
+            parameters: String(decoding: try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: secondWorkspaceID, timelineID: secondTimelineID)), as: UTF8.self),
             context: context,
             timeout: .seconds(3)
         )
@@ -474,7 +498,7 @@ struct NodeRuntimeTests {
             timeout: .seconds(3)
         )
         #expect(attachResponse.sourceId?.lowercased() == target.providerID.lowercased())
-        #expect(attachResponse.result == "true")
+        #expect(try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(attachResponse.result.utf8)).accepted)
         #expect(await second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs == [secondWorkspaceID])
         #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
         #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
@@ -486,12 +510,12 @@ struct NodeRuntimeTests {
             timeout: .seconds(3)
         )
         #expect(detachResponse.sourceId?.lowercased() == target.providerID.lowercased())
-        #expect(detachResponse.result == "true")
+        #expect(try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(detachResponse.result.utf8)).accepted)
         #expect(await second.timeline(id: secondTimelineID)?.attachedWorkspaceIDs.isEmpty == true)
         #expect(await second.timeline(id: secondTimelineID)?.title == "Second renamed")
         #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
         #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
-        #expect(await second.timeline(id: secondTimelineID)?.attachedAgentInstanceID == initialSecondTimeline.attachedAgentInstanceID)
+        #expect(await second.timeline(id: secondTimelineID)?.attachedAscendantID == initialSecondTimeline.attachedAscendantID)
     }
 
     @Test("one running runtime multiplexes configured echo workspaces") @MainActor
@@ -544,7 +568,7 @@ struct NodeRuntimeTests {
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
 
         await #expect(throws: NodeRuntimeError.noOperatingAscendant(unoperatedID)) {
-            _ = try await runtime.chat(AgentChatRequest(message: "hello", timelineID: unoperatedID))
+            _ = try await runtime.turn(AscendantTurnRequest(message: "hello", timelineID: unoperatedID))
         }
     }
 
@@ -571,7 +595,7 @@ struct NodeRuntimeTests {
         let created = try await runtime.createTimeline(title: "Scratch", ascendantID: second)
 
         #expect(await runtime.ascendantID(forTimeline: created.timelineID) == second)
-        #expect(await runtime.timeline(id: created.timelineID)?.attachedAgentInstanceID == second)
+        #expect(await runtime.timeline(id: created.timelineID)?.attachedAscendantID == second)
         #expect(await runtime.snapshot().timelineIDs.contains(created.timelineID))
         #expect(!(await runtime.launchPlan).timelines.contains { $0.id == created.timelineID })
     }
@@ -742,7 +766,7 @@ struct NodeRuntimeTests {
         defer { Task { @MainActor in await runtime.shutdown() } }
         try await runtime.start()
 
-        _ = try await runtime.chat(AgentChatRequest(
+        _ = try await runtime.turn(AscendantTurnRequest(
             message: "find a workspace",
             timelineID: manifest.timelines[0].id
         ))
@@ -866,7 +890,7 @@ struct NodeRuntimeTests {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(await Set(catalog.networkObjects().map(\.objectType)) == Set([
-            GnosticObjectType.agent,
+            GnosticObjectType.ascendant,
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ]))
@@ -1072,14 +1096,14 @@ private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
         self.cancellationProbe = cancellationProbe
         self.creationProbe = creationProbe
         identity = .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
-        storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), attachedAgentInstanceID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
+        storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), attachedAscendantID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
     }
 
     func timelines() async throws -> [AscendantRuntimeTimeline] { storedTimelines }
     func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
         let now = Date()
         let createdID = creationProbe == nil ? id : UUID.makeVersion4()
-        let timeline = AscendantRuntimeTimeline(id: createdID, title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let timeline = AscendantRuntimeTimeline(id: createdID, title: title, attachedWorkspaceIDs: [], attachedAscendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         storedTimelines.append(timeline)
         return timeline
     }
@@ -1090,14 +1114,14 @@ private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
     func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
         guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
         let current = storedTimelines[index]
-        let renamed = AscendantRuntimeTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, attachedAgentInstanceID: current.attachedAgentInstanceID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
+        let renamed = AscendantRuntimeTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, attachedAscendantID: current.attachedAscendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
         storedTimelines[index] = renamed
         return renamed
     }
     func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {}
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
     func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
-    func runTurn(_ request: AgentChatRequest, updates: AscendantTurnUpdateStore) async throws -> String {
+    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String {
         if let cancellationProbe { return try await cancellationProbe.run() }
         return "fixture: \(request.message)"
     }
@@ -1217,6 +1241,21 @@ private struct ProjectedToolWorkspace: Workspace, Sendable {
 
     func listTools() async throws -> [ToolReference] { reference.tools }
     func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult { .success("ok") }
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
+}
+
+private struct CancellationWorkspace: Workspace, Sendable {
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+        throw CancellationError()
+    }
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
