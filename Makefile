@@ -13,10 +13,10 @@ SWIFT_CACHE_ARGS := --cache-path /workspace/.swiftpm-cache
 SWIFT_LOCKED_ARGS := $(SWIFT_CACHE_ARGS) --disable-automatic-resolution
 SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 
-.PHONY: help image require-package resolve worktree-bootstrap build test runner-smoke acp-smoke container-smoke verify shell clean
+.PHONY: help image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean
 
 help:
-	@echo "Targets: image resolve worktree-bootstrap build test runner-smoke acp-smoke container-smoke verify shell clean"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -39,6 +39,9 @@ test: build
 	@mkdir -p .testing
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; GNOSTIC_SERVE_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic GNOSTIC_CLI_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) | tee .testing/swift-test.log && grep -Eq "Test run with [1-9][0-9]* tests" .testing/swift-test.log'
 
+docs-check: build
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'node /workspace/Scripts/check-documentation.mjs --self-test; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path)/gnostic; test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; node /workspace/Scripts/check-documentation.mjs --root /workspace --cli "$$bin"'
+
 runner-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; output=$$(swift run $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) gnostic-runner --scenario --host 127.0.0.1 --port 1883 --namespace gnostic-smoke 2>&1); status=$$?; printf "%s\\n" "$$output" && test $$status -eq 0 && ! (printf "%s\\n" "$$output" | grep -F "workspace registration failed") && printf "%s\\n" "$$output" | grep -F "generic network call passed: list_files" && printf "%s\\n" "$$output" | grep -F "generic network call passed: read_file" && printf "%s\\n" "$$output" | grep -F "generic network call passed: workspace_echo" && printf "%s\\n" "$$output" | grep -F "timeline readvertised with fixture workspace" && printf "%s\\n" "$$output" | grep -F "fixture scenario passed:"'
 
@@ -48,7 +51,7 @@ acp-smoke: require-package image
 container-smoke: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
 
-verify: build test
+verify: docs-check test
 
 shell: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash
