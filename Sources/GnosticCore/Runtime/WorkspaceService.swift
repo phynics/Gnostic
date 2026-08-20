@@ -11,7 +11,8 @@ public final class WorkspaceService {
     private let registry: NodeRegistry
     private let discovery: any WorkspaceDiscovery
     private let localWorkspaces: [UUID: any Workspace]
-    private let adapter: @MainActor (UUID) -> (any AscendantRuntimeAdapter)?
+    private let backendWorkspaceService: GnosticWorkspaceBackendService?
+    private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isRunning: @MainActor () -> Bool
     private let readvertiseTimeline: @MainActor (AscendantRuntimeTimeline) -> Void
     private var references: [UUID: WorkspaceReference]
@@ -22,12 +23,14 @@ public final class WorkspaceService {
         discovery: any WorkspaceDiscovery,
         localWorkspaces: [UUID: any Workspace],
         references: [UUID: WorkspaceReference],
+        backendWorkspaceService: GnosticWorkspaceBackendService? = nil,
         isRunning: @escaping @MainActor () -> Bool,
-        adapter: @escaping @MainActor (UUID) -> (any AscendantRuntimeAdapter)?,
+        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
         readvertiseTimeline: @escaping @MainActor (AscendantRuntimeTimeline) -> Void
     ) {
         self.plan = plan; self.registry = registry; self.discovery = discovery
         self.localWorkspaces = localWorkspaces; self.references = references
+        self.backendWorkspaceService = backendWorkspaceService
         self.isRunning = isRunning; self.adapter = adapter
         self.readvertiseTimeline = readvertiseTimeline
     }
@@ -69,8 +72,8 @@ public final class WorkspaceService {
         } else {
             reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID)
         }
-        try await runtime.attachWorkspace(reference, to: request.timelineID)
-        if let timeline = try await runtime.timelines().first(where: { $0.id == request.timelineID }) {
+        try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: request.timelineID)
+        if let timeline = try await runtime.operatedTimelines().first(where: { $0.id == request.timelineID }) {
             do {
                 _ = try await registry.replaceTimeline(timeline, projecting: { [readvertiseTimeline] record in
                     readvertiseTimeline(record.timeline)
@@ -85,13 +88,13 @@ public final class WorkspaceService {
         let runtime = try await operatingAdapter(for: request.timelineID)
         let prior = references[request.workspaceID]
         try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
-        if let timeline = try await runtime.timelines().first(where: { $0.id == request.timelineID }) {
+        if let timeline = try await runtime.operatedTimelines().first(where: { $0.id == request.timelineID }) {
             do {
                 _ = try await registry.replaceTimeline(timeline, projecting: { [readvertiseTimeline] record in
                     readvertiseTimeline(record.timeline)
                 })
             }
-            catch { if let prior { try? await runtime.attachWorkspace(prior, to: request.timelineID) }; throw error }
+            catch { if let prior { try? await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID) }; throw error }
         }
         return true
     }
@@ -100,12 +103,20 @@ public final class WorkspaceService {
         guard isRunning() else { throw NodeRuntimeError.notRunning }
         await discovery.discover(timeout: timeout)
         let status = await discovery.attachmentStatus(id: workspaceID)
-        guard case let .available(_, uri) = status,
-              let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace,
-              let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+        await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status))
+        guard case let .available(_, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
+        guard let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+        }
+        guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+        }
         if let configured = await registry.workspace(id: workspaceID), configured.uri != uri {
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         try await installResolved(reference, workspaceID: workspaceID)
@@ -127,14 +138,21 @@ public final class WorkspaceService {
     func resolveAvailableNetworkWorkspace(_ workspaceID: UUID) async throws -> WorkspaceReference? {
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let status = await discovery.attachmentStatus(id: workspaceID)
+        await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status))
         guard case let .available(_, uri) = status, uri == expectedURI,
-              let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace,
-              let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else { return nil }
+              let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
+            if case .available = status { await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported) }
+            return nil
+        }
+        guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            return nil
+        }
         try await installResolved(reference, workspaceID: workspaceID)
         return reference
     }
 
-    private func operatingAdapter(for timelineID: UUID) async throws -> any AscendantRuntimeAdapter {
+    private func operatingAdapter(for timelineID: UUID) async throws -> any AscendantBackend {
         let ascendantID = try await registry.requireOperatingAscendant(for: timelineID)
         guard let runtime = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         return runtime
@@ -145,12 +163,22 @@ public final class WorkspaceService {
         for ascendantID in Set(attached.compactMap(\.operatingAscendantID)) {
             guard let runtime = adapter(ascendantID) else { continue }
             for timeline in attached where timeline.operatingAscendantID == ascendantID {
-                try await runtime.attachWorkspace(reference, to: timeline.id)
+                try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: timeline.id)
             }
         }
         guard try await registry.resolveLazyWorkspace(id: workspaceID, uri: reference.uri.description, toolIDs: reference.tools.map(\.toolID)) else {
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         references[workspaceID] = reference
+        backendWorkspaceService?.update(reference: reference)
+    }
+
+    private static func effectiveStatus(_ status: WorkspaceAttachmentStatus) -> NodeRegistry.WorkspaceEffectiveStatus {
+        switch status {
+        case .available: return .available
+        case .unavailable: return .unavailable
+        case .ambiguous, .malformed: return .unsupported
+        }
     }
 }

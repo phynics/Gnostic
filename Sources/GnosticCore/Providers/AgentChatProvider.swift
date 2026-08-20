@@ -142,7 +142,7 @@ public struct AgentChatProvider: Sendable {
     private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
         switch error {
         case .conflict, .replayUnavailable: return true
-        case .failed, .cancelled: return false
+        case .failed, .cancelled, .lifecycleUnusable: return false
         }
     }
 

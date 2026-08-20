@@ -6,31 +6,72 @@ import PKShared
 import PositronicKit
 
 public struct AscendantAdapterRegistry: Sendable {
+    /// Compatibility factory shape for adapters registered before RESET-004.
     public typealias Factory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ dependencies: AscendantRuntimeDependencies, _ timelines: [NodeManifest.Timeline], _ references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter
+    public typealias BackendFactory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline], _ references: [UUID: BackendWorkspaceReference]) async throws -> any AscendantBackend
 
-    private var factories: [String: Factory]
-
-    public init() {
-        factories = ["positronic": { ascendant, _, dependencies, timelines, references in
-            try await PositronicAscendantAdapter(ascendant: ascendant, dependencies: dependencies, timelines: timelines, references: references, languageModel: UnconfiguredLLMService())
-        }]
+    private enum RegisteredFactory: Sendable {
+        case backend(BackendFactory)
+        case legacy(Factory)
     }
 
+    private var factories: [String: RegisteredFactory]
+
+    public init() {
+        factories = ["positronic": .backend({ ascendant, backend, services, timelines, references in
+            try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, references: references, languageModel: UnconfiguredLLMService())
+        })]
+    }
+
+    /// Registers the backend-neutral contract. This is the only supported
+    /// selection point for a backend kind in new code.
+    public mutating func registerBackend<B: AscendantBackend>(
+        kind: String,
+        factory: @escaping @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline], _ references: [UUID: BackendWorkspaceReference]) async throws -> B
+    ) {
+        factories[kind] = .backend({ ascendant, backend, services, timelines, references in
+            try await factory(ascendant, backend, services, timelines, references)
+        })
+    }
+
+    public mutating func registerBackend(kind: String, factory: @escaping BackendFactory) {
+        factories[kind] = .backend(factory)
+    }
+
+    /// Compatibility registration for the pre-RESET-004 adapter surface.
     public mutating func register(kind: String, factory: @escaping Factory) {
-        factories[kind] = factory
+        factories[kind] = .legacy(factory)
+    }
+
+    /// Familiar registration label for backend-neutral implementations.
+    public mutating func register(kind: String, factory: @escaping BackendFactory) {
+        factories[kind] = .backend(factory)
     }
 
     /// Transitional composition seam for the CLI. Backend semantics remain
     /// outside Core; the closure receives only the opaque envelope.
     public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LanguageModel) {
-        factories[kind] = { ascendant, backend, dependencies, timelines, references in
-            try await PositronicAscendantAdapter(ascendant: ascendant, dependencies: dependencies, timelines: timelines, references: references, languageModel: factory(ascendant, backend))
-        }
+        factories[kind] = .backend({ ascendant, backend, services, timelines, references in
+            try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, references: references, languageModel: factory(ascendant, backend))
+        })
     }
 
-    func makeAdapter(for ascendant: NodeManifest.Ascendant, backend: AscendantBackendConfiguration, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter {
-        guard let factory = factories[ascendant.kind] else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
-        return try await factory(ascendant, backend, dependencies, timelines, references)
+    func makeBackend(for ascendant: NodeManifest.Ascendant, backend: AscendantBackendConfiguration, services: AscendantBackendServices, timelines: [NodeManifest.Timeline], references: [UUID: BackendWorkspaceReference]) async throws -> any AscendantBackend {
+        try AscendantBackendConfigurationValidator.validate(backend)
+        guard let factory = factories[backend.kind] else { throw NodeRuntimeError.unsupportedAscendantKind(backend.kind) }
+        switch factory {
+        case let .backend(factory):
+            return try await factory(ascendant, backend, services, timelines, references)
+        case let .legacy(factory):
+            let dependencies = AscendantRuntimeDependencies(services: services)
+            let legacyReferences = references.reduce(into: [UUID: WorkspaceReference]()) { result, pair in
+                guard let uri = WorkspaceURI(parsing: pair.value.uri) else { return }
+                result[pair.key] = WorkspaceReference(id: pair.key, uri: uri, location: .runtime, tools: pair.value.tools.map {
+                    .custom(WorkspaceToolDefinition(id: $0.id, name: $0.name, description: $0.description, parametersSchema: [:], requiresPermission: $0.requiresPermission))
+                })
+            }
+            return LegacyAscendantBackendBridge(adapter: try await factory(ascendant, backend, dependencies, timelines, legacyReferences))
+        }
     }
 
     func validate(kinds: some Sequence<String>) throws {

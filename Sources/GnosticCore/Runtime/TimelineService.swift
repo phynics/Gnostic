@@ -9,11 +9,11 @@ import PositronicKit
 public final class TimelineService {
     private let ascendantIDs: Set<UUID>
     private let registry: NodeRegistry
-    private let adapter: @MainActor (UUID) -> (any AscendantRuntimeAdapter)?
+    private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isClosed: @MainActor () -> Bool
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
 
-    init(ascendantIDs: Set<UUID>, registry: NodeRegistry, isClosed: @escaping @MainActor () -> Bool, adapter: @escaping @MainActor (UUID) -> (any AscendantRuntimeAdapter)?, advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void) {
+    init(ascendantIDs: Set<UUID>, registry: NodeRegistry, isClosed: @escaping @MainActor () -> Bool, adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?, advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void) {
         self.ascendantIDs = ascendantIDs; self.registry = registry; self.isClosed = isClosed; self.adapter = adapter; self.advertise = advertise
     }
 

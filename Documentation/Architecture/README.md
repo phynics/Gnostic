@@ -17,7 +17,8 @@ already exists.
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. It starts empty. A future exception must have a unique
+exception registry. RESET-004 records one bounded legacy adapter bridge. Every
+exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,
 packages, targets, or interfaces; wildcard target-wide exceptions are not
@@ -26,7 +27,8 @@ allowed.
 Exceptions are temporary evidence, not a second architecture. A closed issue
 cannot own an active exception, and an exception cannot be silently broadened.
 Each entry requires independent review and must be removed or renewed when its
-reconsideration condition is reached.
+reconsideration condition is reached. RESET-006 owns removal or reduction of
+the RESET-004 bridge to a test-only fixture.
 
 Generated-reference validation is not listed here because this repository has
 no generated documentation source or generator. The owning issue records that

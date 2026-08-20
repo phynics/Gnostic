@@ -1,4 +1,14 @@
 {
   "schemaVersion": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "id": "RESET-004-legacy-adapter-bridge",
+      "rule": "PositronicKit native types and raw host infrastructure must not enter the backend-neutral AscendantBackend contract",
+      "scope": "Sources/GnosticCore/Runtime/NodeRuntimeTypes.swift:AscendantRuntimeAdapter; Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift:AscendantAdapterRegistry.Factory; Sources/GnosticCore/Runtime/LegacyAscendantAdapterBridge.swift",
+      "rationale": "A bounded compatibility bridge keeps the pre-RESET-004 adapter registration shape available while all new backend construction uses AscendantBackend and AscendantBackendServices. The bridge is not part of the mandatory contract and is scheduled for removal or reduction to a test-only fixture at RESET-006.",
+      "issue": "#138",
+      "owner": "phynics",
+      "reconsiderWhen": "RESET-006 integration removes the legacy registration surface or proves that a smaller internal boundary-test fixture is sufficient."
+    }
+  ]
 }

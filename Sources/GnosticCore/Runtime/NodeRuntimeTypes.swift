@@ -84,8 +84,9 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
     }
 }
 
-/// A registry of downstream LLM adapters. GnosticCore owns the runtime shape;
-/// the CLI may supply provider-specific language models without being imported by Core.
+/// Compatibility spelling retained for adapters registered before the backend
+/// boundary was made explicit. New implementations should conform to
+/// ``AscendantBackend`` and use ``AscendantAdapterRegistry.registerBackend``.
 @MainActor public protocol AscendantRuntimeAdapter: AnyObject, Sendable {
     var identity: AscendantRuntimeIdentity { get }
     func timelines() async throws -> [AscendantRuntimeTimeline]
@@ -100,78 +101,17 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
     func shutdown() async
 }
 
-/// Gnostic's stable, provider-independent projection of an Ascendant identity.
-public struct AscendantRuntimeIdentity: Sendable, Equatable {
-    public let id: UUID
-    public let name: String
-    public let description: String
-    public let privateTimelineID: UUID
-    public let primaryWorkspaceID: UUID?
-    public let lastActiveAt: Date
-    public let createdAt: Date
-    public let updatedAt: Date
+/// Compatibility projections now share the backend-neutral value types.
+public typealias AscendantRuntimeIdentity = AscendantBackendIdentity
+public typealias AscendantRuntimeTimeline = AscendantBackendTimeline
 
-    public init(
-        id: UUID,
-        name: String,
-        description: String,
-        privateTimelineID: UUID,
-        primaryWorkspaceID: UUID?,
-        lastActiveAt: Date,
-        createdAt: Date,
-        updatedAt: Date
-    ) {
-        self.id = id
-        self.name = name
-        self.description = description
-        self.privateTimelineID = privateTimelineID
-        self.primaryWorkspaceID = primaryWorkspaceID
-        self.lastActiveAt = lastActiveAt
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-    }
-}
-
-/// Gnostic's stable, provider-independent projection of a Timeline.
-public struct AscendantRuntimeTimeline: Sendable, Equatable {
-    public let id: UUID
-    public let title: String
-    public let attachedWorkspaceIDs: [UUID]
-    public let attachedAgentInstanceID: UUID?
-    public let isArchived: Bool
-    public let isPrivate: Bool
-    public let createdAt: Date
-    public let updatedAt: Date
-
-    public init(
-        id: UUID,
-        title: String,
-        attachedWorkspaceIDs: [UUID],
-        attachedAgentInstanceID: UUID?,
-        isArchived: Bool,
-        isPrivate: Bool,
-        createdAt: Date,
-        updatedAt: Date
-    ) {
-        self.id = id
-        self.title = title
-        self.attachedWorkspaceIDs = attachedWorkspaceIDs
-        self.attachedAgentInstanceID = attachedAgentInstanceID
-        self.isArchived = isArchived
-        self.isPrivate = isPrivate
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-    }
-}
-
-/// Construction dependencies supplied by the node composition boundary.  The
-/// adapter owns all PositronicKit objects created from these values.
+/// Construction dependencies supplied by the node composition boundary. Raw
+/// transport and provider-native objects are intentionally absent. A legacy
+/// adapter can use the compatibility bridge supplied by the registry.
 @MainActor public struct AscendantRuntimeDependencies {
-    public let workspaces: [UUID: any Workspace]
-    public let catalog: NetworkCatalog
-    public let communication: CommunicationManager
-    public let permissionCoordinator: AscendantPermissionCoordinator
-    public init(workspaces: [UUID: any Workspace], catalog: NetworkCatalog, communication: CommunicationManager, permissionCoordinator: AscendantPermissionCoordinator) {
-        self.workspaces = workspaces; self.catalog = catalog; self.communication = communication; self.permissionCoordinator = permissionCoordinator
+    public let services: AscendantBackendServices
+
+    public init(services: AscendantBackendServices = .empty) {
+        self.services = services
     }
 }

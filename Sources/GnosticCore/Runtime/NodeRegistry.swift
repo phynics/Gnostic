@@ -7,6 +7,12 @@ import Foundation
 /// Configuration is copied into the registry at launch. Runtime-created state
 /// lives only here, so it can never be written back to the manifest.
 public actor NodeRegistry {
+    public enum WorkspaceEffectiveStatus: String, Codable, Sendable, Equatable {
+        case available
+        case unavailable
+        case unsupported
+    }
+
     public enum Provenance: String, Sendable, Equatable {
         case configured
         case runtime
@@ -23,8 +29,23 @@ public actor NodeRegistry {
     public struct WorkspaceRecord: Sendable, Equatable {
         public let id: UUID
         public let uri: String
+        public let status: WorkspaceEffectiveStatus
         public let isAvailable: Bool
         public let toolIDs: [String]
+
+        public init(id: UUID, uri: String, status: WorkspaceEffectiveStatus, toolIDs: [String]) {
+            self.id = id
+            self.uri = uri
+            self.status = status
+            self.isAvailable = status == .available
+            self.toolIDs = toolIDs
+        }
+
+        /// Compatibility initializer for callers that only know a boolean
+        /// health projection.
+        public init(id: UUID, uri: String, isAvailable: Bool, toolIDs: [String]) {
+            self.init(id: id, uri: uri, status: isAvailable ? .available : .unavailable, toolIDs: toolIDs)
+        }
     }
 
     private let nodeID: UUID
@@ -33,6 +54,7 @@ public actor NodeRegistry {
     private let configuredWorkspaceIDs: [UUID]
     private var timelines: [UUID: TimelineRecord]
     private var workspaces: [UUID: WorkspaceRecord]
+    private let attachmentIntents: [UUID: [NodeManifest.WorkspaceAttachment]]
 
     public init(plan: NodeLaunchPlan, operatedTimelines: [AscendantRuntimeTimeline]) throws {
         nodeID = plan.nodeID
@@ -41,6 +63,11 @@ public actor NodeRegistry {
         configuredWorkspaceIDs = plan.workspaces.map(\.id)
         timelines = [:]
         workspaces = [:]
+        var intents: [UUID: [NodeManifest.WorkspaceAttachment]] = [:]
+        for timeline in plan.timelines {
+            intents[timeline.id] = timeline.attachments
+        }
+        attachmentIntents = intents
 
         var projected: [UUID: AscendantRuntimeTimeline] = [:]
         for timeline in operatedTimelines {
@@ -63,7 +90,16 @@ public actor NodeRegistry {
                 guard value.attachedAgentInstanceID == operatorID else {
                     throw NodeRuntimeError.unknownAscendant(value.attachedAgentInstanceID ?? operatorID)
                 }
-                timeline = value
+                timeline = .init(
+                    id: value.id,
+                    title: value.title,
+                    attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID),
+                    ascendantID: value.ascendantID,
+                    isArchived: value.isArchived,
+                    isPrivate: value.isPrivate,
+                    createdAt: value.createdAt,
+                    updatedAt: value.updatedAt
+                )
             } else {
                 let now = Date()
                 timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAgentInstanceID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
@@ -72,14 +108,14 @@ public actor NodeRegistry {
         }
 
         for workspace in plan.workspaces {
-            workspaces[workspace.id] = .init(id: workspace.id, uri: workspace.uri, isAvailable: true, toolIDs: [])
+            workspaces[workspace.id] = .init(id: workspace.id, uri: workspace.uri, status: .available, toolIDs: [])
         }
         for attachment in plan.timelines.flatMap(\.attachments) where attachment.scope == .network {
             guard let uri = attachment.uri else { continue }
             if let existing = workspaces[attachment.workspaceID], existing.uri != uri {
                 throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
             }
-            workspaces[attachment.workspaceID] = .init(id: attachment.workspaceID, uri: uri, isAvailable: false, toolIDs: [])
+            workspaces[attachment.workspaceID] = .init(id: attachment.workspaceID, uri: uri, status: .unavailable, toolIDs: [])
         }
     }
 
@@ -153,6 +189,14 @@ public actor NodeRegistry {
     }
 
     public func workspace(id: UUID) -> WorkspaceRecord? { workspaces[id] }
+    public func effectiveWorkspaceStatus(id: UUID) -> WorkspaceEffectiveStatus? { workspaces[id]?.status }
+
+    /// Returns durable attachment intent exactly as accepted from the launch
+    /// plan. Runtime health changes never remove this relationship.
+    public func attachmentIntent(for timelineID: UUID) -> [NodeManifest.WorkspaceAttachment] {
+        guard timelines[timelineID] != nil else { return [] }
+        return attachmentIntents[timelineID] ?? []
+    }
     public func unresolvedWorkspaceIDs() -> [UUID] {
         workspaces.values.filter { !$0.isAvailable }.map(\.id).sorted { $0.uuidString < $1.uuidString }
     }
@@ -162,11 +206,20 @@ public actor NodeRegistry {
     @discardableResult
     public func resolveLazyWorkspace(id: UUID, uri: String, toolIDs: [String]) throws -> Bool {
         guard let current = workspaces[id] else {
-            workspaces[id] = .init(id: id, uri: uri, isAvailable: true, toolIDs: toolIDs.sorted())
+            workspaces[id] = .init(id: id, uri: uri, status: .available, toolIDs: toolIDs.sorted())
             return true
         }
         guard current.uri == uri else { return false }
-        workspaces[id] = .init(id: id, uri: current.uri, isAvailable: true, toolIDs: toolIDs.sorted())
+        workspaces[id] = .init(id: id, uri: current.uri, status: .available, toolIDs: toolIDs.sorted())
+        return true
+    }
+
+    /// Updates effective runtime status while retaining the record and its
+    /// Timeline attachment intent.
+    @discardableResult
+    public func setWorkspaceStatus(id: UUID, status: WorkspaceEffectiveStatus) -> Bool {
+        guard let current = workspaces[id] else { return false }
+        workspaces[id] = .init(id: id, uri: current.uri, status: status, toolIDs: current.toolIDs)
         return true
     }
 

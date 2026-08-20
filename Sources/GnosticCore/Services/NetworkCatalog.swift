@@ -9,7 +9,7 @@ public actor NetworkCatalog {
         "objectId", "coreType", "objectType", "name", "externalId", "parentObjectId", "locationId", "isDeactivated",
     ]
     private static let knownPropertyNames: [String: Set<String>] = [
-        GnosticObjectType.agent: ["agentDescription", "primaryWorkspaceID", "privateTimelineID", "lastActiveAt", "createdAt", "updatedAt"],
+        GnosticObjectType.agent: ["agentDescription", "primaryWorkspaceID", "privateTimelineID", "lastActiveAt", "createdAt", "updatedAt", "interoperabilityCapabilities", "backendKind", "backendVersion"],
         GnosticObjectType.timeline: ["title", "isArchived", "isPrivate", "attachedAgentID", "attachedWorkspaceIDs", "createdAt", "updatedAt"],
         GnosticObjectType.workspace: ["uri", "isAvailable", "trustLevel", "status", "tools", "createdAt"],
     ]

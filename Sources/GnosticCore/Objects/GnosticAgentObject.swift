@@ -24,7 +24,7 @@ public enum GnosticObjectType {
     }
 }
 
-/// A safe network projection of a PositronicKit ``AgentInstance``.
+/// A safe network projection of a backend-neutral Ascendant identity.
 public final class GnosticAgentObject: CoatyObject {
     /// The projected agent's public description.
     public var agentDescription: String
@@ -44,15 +44,16 @@ public final class GnosticAgentObject: CoatyObject {
     /// The agent's latest update timestamp.
     public var updatedAt: Date
 
+    /// Stable interoperability capabilities advertised for this Ascendant.
+    public var interoperabilityCapabilities: [String]
+
+    /// Diagnostic backend metadata; clients must not use it for selection.
+    public var backendKind: String?
+    public var backendVersion: String?
+
     /// Registers Gnostic's canonical agent object type.
     public override class var objectType: String {
         register(objectType: GnosticObjectType.agent, with: self)
-    }
-
-    /// Bridges a PositronicKit agent inside Gnostic's implementation boundary.
-    /// Public callers use `AscendantRuntimeIdentity` so PositronicKit remains replaceable.
-    convenience init(agent: AgentInstance) {
-        self.init(identity: .init(id: agent.id, name: agent.name, description: agent.description, privateTimelineID: agent.privateThreadID, primaryWorkspaceID: agent.primaryWorkspaceID, lastActiveAt: agent.lastActiveAt, createdAt: agent.createdAt, updatedAt: agent.updatedAt))
     }
 
     /// Creates a network projection without exposing a provider's agent type.
@@ -63,6 +64,9 @@ public final class GnosticAgentObject: CoatyObject {
         lastActiveAt = identity.lastActiveAt
         createdAt = identity.createdAt
         updatedAt = identity.updatedAt
+        interoperabilityCapabilities = identity.capabilities.interoperability.sorted()
+        backendKind = identity.capabilities.backendKind
+        backendVersion = identity.capabilities.backendVersion
         super.init(
             coreType: .CoatyObject,
             objectType: Self.objectType,
@@ -78,6 +82,9 @@ public final class GnosticAgentObject: CoatyObject {
         case lastActiveAt
         case createdAt
         case updatedAt
+        case interoperabilityCapabilities
+        case backendKind
+        case backendVersion
     }
 
     /// Decodes an advertised agent projection.
@@ -91,6 +98,9 @@ public final class GnosticAgentObject: CoatyObject {
         lastActiveAt = try container.decode(Date.self, forKey: .lastActiveAt)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        interoperabilityCapabilities = try container.decodeIfPresent([String].self, forKey: .interoperabilityCapabilities) ?? []
+        backendKind = try container.decodeIfPresent(String.self, forKey: .backendKind)
+        backendVersion = try container.decodeIfPresent(String.self, forKey: .backendVersion)
         try super.init(from: decoder)
     }
 
@@ -106,5 +116,8 @@ public final class GnosticAgentObject: CoatyObject {
         try container.encode(lastActiveAt, forKey: .lastActiveAt)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(interoperabilityCapabilities, forKey: .interoperabilityCapabilities)
+        try container.encodeIfPresent(backendKind, forKey: .backendKind)
+        try container.encodeIfPresent(backendVersion, forKey: .backendVersion)
     }
 }
