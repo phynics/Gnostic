@@ -11,10 +11,24 @@ public final class TimelineService {
     private let registry: NodeRegistry
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isClosed: @MainActor () -> Bool
+    private let lifecycleFailure: @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
+    private var quarantinedAscendantIDs: Set<UUID> = []
 
-    init(ascendantIDs: Set<UUID>, registry: NodeRegistry, isClosed: @escaping @MainActor () -> Bool, adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?, advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void) {
-        self.ascendantIDs = ascendantIDs; self.registry = registry; self.isClosed = isClosed; self.adapter = adapter; self.advertise = advertise
+    init(
+        ascendantIDs: Set<UUID>,
+        registry: NodeRegistry,
+        isClosed: @escaping @MainActor () -> Bool,
+        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
+        lifecycleFailure: @escaping @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void = { _, _ in },
+        advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
+    ) {
+        self.ascendantIDs = ascendantIDs
+        self.registry = registry
+        self.isClosed = isClosed
+        self.adapter = adapter
+        self.lifecycleFailure = lifecycleFailure
+        self.advertise = advertise
     }
 
     func selectAscendant(requested ascendantID: UUID?) throws -> UUID {
@@ -33,7 +47,8 @@ public final class TimelineService {
     }
     func create(title: String, ascendantID: UUID) async throws -> TimelineStatus {
         guard !isClosed() else { throw NodeRuntimeError.notRunning }
-        guard let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        guard !quarantinedAscendantIDs.contains(ascendantID),
+              let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let reservation = try await registry.registerRuntimeTimeline(title: title, ascendantID: ascendantID)
         var projectedID = reservation.id
         do {
@@ -43,8 +58,14 @@ public final class TimelineService {
             advertise(timeline, false)
             return Self.status(timeline)
         } catch {
-            if projectedID != reservation.id { await adapter.removeTimeline(id: projectedID) }
-            await adapter.removeTimeline(id: reservation.id)
+            if let backendError = error as? AscendantBackendError,
+               case let .lifecycleUnusable(failure) = backendError {
+                quarantinedAscendantIDs.insert(ascendantID)
+                await lifecycleFailure(ascendantID, failure)
+            } else {
+                if projectedID != reservation.id { await adapter.removeTimeline(id: projectedID) }
+                await adapter.removeTimeline(id: reservation.id)
+            }
             await registry.removeRuntimeTimeline(id: reservation.id)
             throw error
         }
@@ -55,11 +76,37 @@ public final class TimelineService {
     }
     func rename(_ request: TimelineUpdateRequest) async throws -> TimelineStatus {
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
-        guard let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        guard !quarantinedAscendantIDs.contains(ascendantID),
+              let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let previous = await registry.timeline(id: request.timelineID)?.timeline
-        let timeline = try await adapter.renameTimeline(id: request.timelineID, title: request.title)
+        let timeline: AscendantRuntimeTimeline
+        do {
+            timeline = try await adapter.renameTimeline(id: request.timelineID, title: request.title)
+        } catch let error as AscendantBackendError {
+            if case let .lifecycleUnusable(failure) = error {
+                quarantinedAscendantIDs.insert(ascendantID)
+                await lifecycleFailure(ascendantID, failure)
+            }
+            throw error
+        }
         do { _ = try await registry.replaceTimeline(timeline); advertise(timeline, true); return Self.status(timeline) }
-        catch { if let previous { _ = try? await adapter.renameTimeline(id: previous.id, title: previous.title) }; throw error }
+        catch {
+            if let previous {
+                do {
+                    _ = try await adapter.renameTimeline(id: previous.id, title: previous.title)
+                } catch let rollbackError as AscendantBackendError {
+                    if case let .lifecycleUnusable(failure) = rollbackError {
+                        quarantinedAscendantIDs.insert(ascendantID)
+                        await lifecycleFailure(ascendantID, failure)
+                    }
+                } catch {}
+            }
+            throw error
+        }
     }
     static func status(_ timeline: AscendantRuntimeTimeline) -> TimelineStatus { .init(timelineID: timeline.id, title: timeline.title, attachedWorkspaceIDs: timeline.attachedWorkspaceIDs, isArchived: timeline.isArchived, isPrivate: timeline.isPrivate) }
+
+    func restoreBackend(_ ascendantID: UUID) {
+        quarantinedAscendantIDs.remove(ascendantID)
+    }
 }

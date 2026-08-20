@@ -36,6 +36,22 @@ public actor NodeRegistry {
         }
     }
 
+    /// The authoritative input used to reconstruct one Ascendant backend.
+    ///
+    /// The revision and the Timeline configurations are captured by the same
+    /// actor turn. A reconstruction must compare the revision again before it
+    /// installs its candidate so a backend cannot replace a newer registry
+    /// projection.
+    public struct BackendReconstructionState: Sendable, Equatable {
+        public let revision: UInt64
+        public let timelines: [NodeManifest.Timeline]
+
+        public init(revision: UInt64, timelines: [NodeManifest.Timeline]) {
+            self.revision = revision
+            self.timelines = timelines
+        }
+    }
+
     public struct WorkspaceRecord: Sendable, Equatable {
         public let id: UUID
         public let uri: String
@@ -65,6 +81,8 @@ public actor NodeRegistry {
     private var timelines: [UUID: TimelineRecord]
     private var workspaces: [UUID: WorkspaceRecord]
     private var attachmentIntents: [UUID: [NodeManifest.WorkspaceAttachment]]
+    private var timelineMetadata: [UUID: (kind: String, flags: Set<String>)]
+    private var backendRevisions: [UUID: UInt64]
 
     public init(plan: NodeLaunchPlan, operatedTimelines: [AscendantRuntimeTimeline]) throws {
         nodeID = plan.nodeID
@@ -73,9 +91,15 @@ public actor NodeRegistry {
         configuredWorkspaceIDs = plan.workspaces.map(\.id)
         timelines = [:]
         workspaces = [:]
+        timelineMetadata = [:]
+        backendRevisions = [:]
         var intents: [UUID: [NodeManifest.WorkspaceAttachment]] = [:]
         for timeline in plan.timelines {
             intents[timeline.id] = timeline.attachments
+            timelineMetadata[timeline.id] = (timeline.kind, timeline.flags)
+            if let ascendantID = timeline.operatingAscendantID {
+                backendRevisions[ascendantID] = 0
+            }
         }
         attachmentIntents = intents
 
@@ -152,13 +176,17 @@ public actor NodeRegistry {
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
+        timelineMetadata[timeline.id] = ("timeline", [])
+        bumpRevision(for: ascendantID)
         return record
     }
 
     public func removeRuntimeTimeline(id: UUID) {
-        guard timelines[id]?.provenance == .runtime else { return }
+        guard let record = timelines[id], record.provenance == .runtime else { return }
         timelines.removeValue(forKey: id)
         attachmentIntents.removeValue(forKey: id)
+        timelineMetadata.removeValue(forKey: id)
+        if let ascendantID = record.operatorID { bumpRevision(for: ascendantID) }
     }
 
     /// Registers an adapter-created runtime timeline under an already selected operator.
@@ -169,6 +197,8 @@ public actor NodeRegistry {
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
+        timelineMetadata[timeline.id] = ("timeline", [])
+        bumpRevision(for: ascendantID)
         return record
     }
 
@@ -178,6 +208,7 @@ public actor NodeRegistry {
         guard timeline.attachedAscendantID == current.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
         let record = TimelineRecord(timeline: timeline, operatorID: current.operatorID, provenance: current.provenance)
         timelines[timeline.id] = record
+        if let ascendantID = current.operatorID { bumpRevision(for: ascendantID) }
         return record
     }
 
@@ -194,6 +225,7 @@ public actor NodeRegistry {
         timelines[timeline.id] = record
         do {
             try await projecting(record)
+            if let ascendantID = previous.operatorID { bumpRevision(for: ascendantID) }
             return record
         } catch {
             if timelines[timeline.id] == record { timelines[timeline.id] = previous }
@@ -219,6 +251,7 @@ public actor NodeRegistry {
         intents.removeAll { $0.workspaceID == attachment.workspaceID }
         intents.append(attachment)
         attachmentIntents[timelineID] = intents
+        if let ascendantID = timelines[timelineID]?.operatorID { bumpRevision(for: ascendantID) }
     }
 
     /// Removes one Workspace attachment intent after a backend has accepted a
@@ -226,6 +259,35 @@ public actor NodeRegistry {
     public func removeAttachmentIntent(workspaceID: UUID, from timelineID: UUID) {
         guard timelines[timelineID] != nil else { return }
         attachmentIntents[timelineID, default: []].removeAll { $0.workspaceID == workspaceID }
+        if let ascendantID = timelines[timelineID]?.operatorID { bumpRevision(for: ascendantID) }
+    }
+
+    /// Captures the current Gnostic-owned Timeline state and attachment intent
+    /// for one Ascendant atomically. Runtime-created Timelines and explicit
+    /// post-launch attachment mutations are therefore included in a backend's
+    /// next reconstruction.
+    public func backendReconstructionState(for ascendantID: UUID) -> BackendReconstructionState {
+        let configurations = timelines.values
+            .filter { $0.operatorID == ascendantID }
+            .map { record in
+                let metadata = timelineMetadata[record.id] ?? ("timeline", [])
+                return NodeManifest.Timeline(
+                    id: record.id,
+                    title: record.timeline.title,
+                    kind: metadata.kind,
+                    operatingAscendantID: ascendantID,
+                    flags: metadata.flags,
+                    attachments: attachmentIntents[record.id] ?? []
+                )
+            }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        return .init(revision: backendRevisions[ascendantID] ?? 0, timelines: configurations)
+    }
+
+    /// Returns only the current revision for callers that already captured a
+    /// reconstruction state and need a cheap staleness check.
+    public func backendRevision(for ascendantID: UUID) -> UInt64 {
+        backendRevisions[ascendantID] ?? 0
     }
 
     /// Returns the current runtime targets for a network Workspace intent.
@@ -273,5 +335,9 @@ public actor NodeRegistry {
 
     private func sortedTimelineRecords() -> [TimelineRecord] {
         timelines.values.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func bumpRevision(for ascendantID: UUID) {
+        backendRevisions[ascendantID, default: 0] &+= 1
     }
 }

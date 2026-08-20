@@ -14,8 +14,10 @@ public final class WorkspaceService {
     private let backendWorkspaceService: GnosticWorkspaceBackendService?
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isRunning: @MainActor () -> Bool
+    private let lifecycleFailure: @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void
     private let readvertiseTimeline: @MainActor (AscendantRuntimeTimeline) -> Void
     private var references: [UUID: WorkspaceReference]
+    private var quarantinedAscendantIDs: Set<UUID> = []
 
     init(
         plan: NodeLaunchPlan,
@@ -26,12 +28,14 @@ public final class WorkspaceService {
         backendWorkspaceService: GnosticWorkspaceBackendService? = nil,
         isRunning: @escaping @MainActor () -> Bool,
         adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
+        lifecycleFailure: @escaping @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void = { _, _ in },
         readvertiseTimeline: @escaping @MainActor (AscendantRuntimeTimeline) -> Void
     ) {
         self.plan = plan; self.registry = registry; self.discovery = discovery
         self.localWorkspaces = localWorkspaces; self.references = references
         self.backendWorkspaceService = backendWorkspaceService
         self.isRunning = isRunning; self.adapter = adapter
+        self.lifecycleFailure = lifecycleFailure
         self.readvertiseTimeline = readvertiseTimeline
     }
 
@@ -65,7 +69,7 @@ public final class WorkspaceService {
     }
 
     func attach(_ request: WorkspaceOpsRequest) async throws -> Bool {
-        let backend = try await operatingAdapter(for: request.timelineID)
+        let (ascendantID, backend) = try await operatingAdapter(for: request.timelineID)
         guard let runtime = backend as? any AscendantBackendWorkspaceCapability else {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
         }
@@ -75,8 +79,10 @@ public final class WorkspaceService {
         } else {
             reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID)
         }
-        try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: request.timelineID)
-        if let timeline = try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) {
+        try await runBackendOperation(ascendantID) {
+            try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: request.timelineID)
+        }
+        if let timeline = try await runBackendOperation(ascendantID, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
             do {
                 _ = try await registry.replaceTimeline(timeline, projecting: { [readvertiseTimeline] record in
                     readvertiseTimeline(record.timeline)
@@ -86,26 +92,40 @@ public final class WorkspaceService {
                     for: request.timelineID
                 )
             }
-            catch { try? await runtime.detachWorkspace(request.workspaceID, from: request.timelineID); throw error }
+            catch {
+                _ = try? await runBackendOperation(ascendantID) {
+                    try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
+                }
+                throw error
+            }
         }
         return true
     }
 
     func detach(_ request: WorkspaceOpsRequest) async throws -> Bool {
-        let backend = try await operatingAdapter(for: request.timelineID)
+        let (ascendantID, backend) = try await operatingAdapter(for: request.timelineID)
         guard let runtime = backend as? any AscendantBackendWorkspaceCapability else {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
         }
         let prior = references[request.workspaceID]
-        try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
-        if let timeline = try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) {
+        try await runBackendOperation(ascendantID) {
+            try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
+        }
+        if let timeline = try await runBackendOperation(ascendantID, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
             do {
                 _ = try await registry.replaceTimeline(timeline, projecting: { [readvertiseTimeline] record in
                     readvertiseTimeline(record.timeline)
                 })
                 await registry.removeAttachmentIntent(workspaceID: request.workspaceID, from: request.timelineID)
             }
-            catch { if let prior { try? await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID) }; throw error }
+            catch {
+                if let prior {
+                    _ = try? await runBackendOperation(ascendantID) {
+                        try await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID)
+                    }
+                }
+                throw error
+            }
         }
         return true
     }
@@ -165,17 +185,37 @@ public final class WorkspaceService {
         return reference
     }
 
-    private func operatingAdapter(for timelineID: UUID) async throws -> any AscendantBackend {
+    private func operatingAdapter(for timelineID: UUID) async throws -> (UUID, any AscendantBackend) {
         let ascendantID = try await registry.requireOperatingAscendant(for: timelineID)
-        guard let runtime = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        return runtime
+        guard !quarantinedAscendantIDs.contains(ascendantID),
+              let runtime = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        return (ascendantID, runtime)
+    }
+
+    private func runBackendOperation<T>(
+        _ ascendantID: UUID,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as AscendantBackendError {
+            if case let .lifecycleUnusable(failure) = error {
+                quarantinedAscendantIDs.insert(ascendantID)
+                await lifecycleFailure(ascendantID, failure)
+            }
+            throw error
+        }
     }
 
     private func installResolved(_ reference: WorkspaceReference, workspaceID: UUID) async throws {
         let backendReference = BackendWorkspaceReference(reference: reference)
         for target in await registry.attachmentTargets(for: workspaceID) {
-            guard let runtime = adapter(target.ascendantID) as? any AscendantBackendWorkspaceCapability else { continue }
-            try await runtime.attachWorkspace(backendReference, to: target.timelineID)
+            guard !quarantinedAscendantIDs.contains(target.ascendantID),
+                  let backend = adapter(target.ascendantID),
+                  let runtime = backend as? any AscendantBackendWorkspaceCapability else { continue }
+            try await runBackendOperation(target.ascendantID) {
+                try await runtime.attachWorkspace(backendReference, to: target.timelineID)
+            }
         }
         guard try await registry.resolveLazyWorkspace(id: workspaceID, uri: reference.uri.description, toolIDs: reference.tools.map(\.toolID)) else {
             await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
@@ -195,5 +235,9 @@ public final class WorkspaceService {
 
     private static func intent(for reference: WorkspaceReference, local: Bool) -> NodeManifest.WorkspaceAttachment {
         local ? .local(reference.id) : .network(reference.id, uri: reference.uri.description)
+    }
+
+    func restoreBackend(_ ascendantID: UUID) {
+        quarantinedAscendantIDs.remove(ascendantID)
     }
 }

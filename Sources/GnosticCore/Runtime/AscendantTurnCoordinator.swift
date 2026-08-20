@@ -43,13 +43,14 @@ public actor AscendantTurnCoordinator {
 
     /// Cancels admitted work during node shutdown. New requests are rejected by
     /// the owning NodeRuntime before reaching this coordinator.
-    public func cancelAll() async {
+    public func cancelAll(waitForCompletion: Bool = true) async {
         let turns = inFlight.values.map(\.task)
         let tails = Array(timelineTails.values)
         turns.forEach { $0.cancel() }
         tails.forEach { $0.cancel() }
         inFlight.removeAll()
         timelineTails.removeAll()
+        guard waitForCompletion else { return }
         for turn in turns { _ = await turn.result }
         for tail in tails { await tail.value }
     }
