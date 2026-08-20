@@ -64,10 +64,10 @@ public struct AscendantPermissionProvider: Sendable {
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 400, message: "Invalid Ascendant permission response")
+            return failure(code: 400, reasonCode: "invalidPermissionResponse", message: "Invalid Ascendant permission response")
         }
         guard !response.correlationID.isEmpty, !response.clientTurnID.isEmpty else {
-            return .failure(code: 400, message: "Invalid Ascendant permission response")
+            return failure(code: 400, reasonCode: "invalidPermissionResponse", message: "Invalid Ascendant permission response")
         }
         let accepted = await coordinator.respond(
             correlationID: response.correlationID,
@@ -76,9 +76,13 @@ public struct AscendantPermissionProvider: Sendable {
             approved: response.approved
         )
         guard accepted else {
-            return .failure(code: 409, message: "Permission correlation is stale or mismatched")
+            return failure(code: 409, reasonCode: "permissionCorrelationStale", message: "Permission correlation is stale or mismatched")
         }
         return .success(result: #"{"protocolMajor":2,"accepted":true}"#)
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     @MainActor

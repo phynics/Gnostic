@@ -81,11 +81,11 @@ public struct TimelineStatusProvider: Sendable {
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 400, message: "Invalid timeline.status payload")
+            return failure(code: 400, reasonCode: "invalidTimelineStatusPayload", message: "Invalid timeline.status payload")
         }
         guard let parameters,
               let request = try? JSONDecoder().decode(TimelineStatusRequest.self, from: Data(parameters.utf8)) else {
-            return .failure(code: 400, message: "Invalid timeline.status payload")
+            return failure(code: 400, reasonCode: "invalidTimelineStatusPayload", message: "Invalid timeline.status payload")
         }
         do {
             let status = try await executor(request)
@@ -93,12 +93,16 @@ public struct TimelineStatusProvider: Sendable {
             let encoded = try JSONEncoder().encode(status)
             return .success(result: String(decoding: encoded, as: UTF8.self))
         } catch let error as NodeRuntimeError {
-            return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 500, message: String(describing: error))
+            return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
         }
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     @MainActor

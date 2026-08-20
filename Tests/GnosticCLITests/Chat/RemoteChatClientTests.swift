@@ -23,6 +23,9 @@ struct RemoteTurnClientTests {
         try await poll(timeout: .seconds(8)) {
             await client.discoverAscendants().contains { $0.id == node.ascendantID }
         }
+        let discovered = await client.discoverAscendants()
+        let discoveredAscendant = try #require(discovered.first { $0.id == node.ascendantID })
+        #expect(discoveredAscendant.capabilities.contains(GnosticCapability.textTurnInput))
         let providerID = try await client.selectAscendant(id: node.ascendantID).providerID
 
         // Discover the served timeline from the advertised Agent.
@@ -40,6 +43,36 @@ struct RemoteTurnClientTests {
         let status = try await client.timelineStatus(timelineID: timelineID, providerID: providerID)
         #expect(status.timelineID == timelineID)
         #expect(status.attachedWorkspaceIDs.isEmpty)
+    }
+
+    @Test("Ascendant selection requires text turns and ignores unknown capabilities") @MainActor
+    func selectionRequiresStableTextTurnCapability() throws {
+        let timelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000021")!
+        let incapable = RemoteTurnClient.DiscoveredAscendant(
+            id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000022")!,
+            name: "Experimental",
+            timelineID: timelineID,
+            providerID: "provider-a",
+            capabilities: ["x-example.future-turn-mode"]
+        )
+        let capable = RemoteTurnClient.DiscoveredAscendant(
+            id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000023")!,
+            name: "Text Ascendant",
+            timelineID: timelineID,
+            providerID: "provider-b",
+            capabilities: ["x-example.future-turn-mode", GnosticCapability.textTurnInput]
+        )
+
+        let selected = try RemoteTurnClient.selectCandidate(from: [incapable, capable])
+        #expect(selected.id == capable.id)
+        #expect(selected.capabilities.contains("x-example.future-turn-mode"))
+
+        do {
+            _ = try RemoteTurnClient.selectCandidate(from: [incapable])
+            Issue.record("an Ascendant without textTurnInput was selected")
+        } catch let error as RemoteTurnClientError {
+            #expect(error.gnosticCode == "missingCapability")
+        }
     }
 
     @Test("attach and detach a workspace over the served ops") @MainActor

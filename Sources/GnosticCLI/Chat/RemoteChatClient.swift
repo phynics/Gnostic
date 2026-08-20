@@ -18,12 +18,14 @@ public final class RemoteTurnClient: Sendable {
         public let name: String
         public let timelineID: UUID
         public let providerID: String
+        public let capabilities: [String]
 
-        public init(id: UUID, name: String, timelineID: UUID, providerID: String) {
+        public init(id: UUID, name: String, timelineID: UUID, providerID: String, capabilities: [String] = []) {
             self.id = id
             self.name = name
             self.timelineID = timelineID
             self.providerID = providerID
+            self.capabilities = capabilities
         }
     }
     public let host: String
@@ -121,7 +123,22 @@ public final class RemoteTurnClient: Sendable {
             .compactMap { entry in
                 guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
                       let timelineID = UUID(uuidString: raw) else { return nil }
-                return DiscoveredAscendant(id: entry.objectID, name: entry.name, timelineID: timelineID, providerID: entry.providerID)
+                let capabilities: [String]
+                if case let .array(values) = entry.knownProperties["capabilities"] {
+                    capabilities = values.compactMap { value in
+                        guard case let .string(capability) = value else { return nil }
+                        return capability
+                    }
+                } else {
+                    capabilities = []
+                }
+                return DiscoveredAscendant(
+                    id: entry.objectID,
+                    name: entry.name,
+                    timelineID: timelineID,
+                    providerID: entry.providerID,
+                    capabilities: capabilities
+                )
             }
             .sorted { ($0.id.uuidString, $0.providerID) < ($1.id.uuidString, $1.providerID) }
     }
@@ -187,10 +204,12 @@ public final class RemoteTurnClient: Sendable {
         let payload = try JSONEncoder().encode(
             AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
         )
+        let targetProvider = try await resolvedProviderID(providerID, forTimeline: timelineID)
+        try await requireCapability(GnosticCapability.textTurnInput, providerID: targetProvider)
         let response = try await call(
             operation: AscendantTurnProvider.turnOperation,
             parameters: String(decoding: payload, as: UTF8.self),
-            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
+            providerID: targetProvider,
             timeout: promptTimeout
         )
         return try JSONDecoder().decode(AscendantTurnResult.self, from: Data(response.result.utf8))
@@ -209,10 +228,12 @@ public final class RemoteTurnClient: Sendable {
         let payload = try JSONEncoder().encode(
             AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
         )
+        let targetProvider = try await resolvedProviderID(providerID, forTimeline: timelineID)
+        try await requireCapability(GnosticCapability.textTurnInput, providerID: targetProvider)
         let response = try await call(
             operation: AscendantTurnProvider.replayOperation,
             parameters: String(decoding: payload, as: UTF8.self),
-            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
+            providerID: targetProvider,
             timeout: timeout
         )
         return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
@@ -338,7 +359,14 @@ public final class RemoteTurnClient: Sendable {
     }
 
     public func selectAscendant(id ascendantID: UUID? = nil, providerID: String? = nil) async throws -> DiscoveredAscendant {
-        let candidates = await discoverAscendants()
+        try Self.selectCandidate(from: await discoverAscendants(), id: ascendantID, providerID: providerID)
+    }
+
+    static func selectCandidate(
+        from candidates: [DiscoveredAscendant],
+        id ascendantID: UUID? = nil,
+        providerID: String? = nil
+    ) throws -> DiscoveredAscendant {
         if ascendantID != nil || providerID != nil {
             let matches = candidates.filter {
                 (ascendantID == nil || $0.id == ascendantID)
@@ -349,13 +377,18 @@ public final class RemoteTurnClient: Sendable {
                 throw RemoteTurnClientError.providerUnavailable(providerID ?? "")
             }
             guard matches.count == 1 else { throw RemoteTurnClientError.ambiguousAscendant }
+            guard candidate.capabilities.contains(GnosticCapability.textTurnInput) else {
+                throw RemoteTurnClientError.missingCapability(GnosticCapability.textTurnInput)
+            }
             return candidate
         }
-        guard candidates.count == 1 else {
-            if candidates.isEmpty { throw RemoteTurnClientError.noServedAscendant }
+        guard !candidates.isEmpty else { throw RemoteTurnClientError.noServedAscendant }
+        let capable = candidates.filter { $0.capabilities.contains(GnosticCapability.textTurnInput) }
+        guard !capable.isEmpty else { throw RemoteTurnClientError.missingCapability(GnosticCapability.textTurnInput) }
+        guard capable.count == 1 else {
             throw RemoteTurnClientError.ambiguousAscendant
         }
-        return candidates[0]
+        return capable[0]
     }
 
     private func discoveredProviderID(forTimeline timelineID: UUID) async throws -> String {
@@ -371,6 +404,16 @@ public final class RemoteTurnClient: Sendable {
     private func resolvedProviderID(_ explicit: String?, forTimeline timelineID: UUID) async throws -> String {
         if let explicit { return explicit }
         return try await discoveredProviderID(forTimeline: timelineID)
+    }
+
+    private func requireCapability(_ capability: String, providerID: String) async throws {
+        let candidates = await discoverAscendants()
+        guard candidates.contains(where: {
+            $0.providerID.caseInsensitiveCompare(providerID) == .orderedSame
+                && $0.capabilities.contains(capability)
+        }) else {
+            throw RemoteTurnClientError.missingCapability(capability)
+        }
     }
 
     private func singleProviderID() async throws -> String {

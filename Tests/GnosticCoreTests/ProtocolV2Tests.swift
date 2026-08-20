@@ -34,6 +34,12 @@ struct ProtocolV2Tests {
         #expect(!json.contains("me.atkn.gnostic.Agent"))
     }
 
+    @Test("stable capabilities do not advertise an unsupported cancellation seam")
+    func stableCapabilitiesOnlyAdvertiseImplementedSeams() {
+        #expect(GnosticCapability.stable.contains(GnosticCapability.textTurnInput))
+        #expect(!GnosticCapability.stable.contains(GnosticCapability.turnCancellation))
+    }
+
     @Test("Turn requests, results, replay updates, and errors carry the protocol major")
     func turnPayloadsCarryProtocolMajor() throws {
         let request = AscendantTurnRequest(
@@ -79,6 +85,64 @@ struct ProtocolV2Tests {
         }
         #expect(code == 400)
         #expect(message.contains("missingProtocolMajor"))
+    }
+
+    @Test("ordinary provider failures carry the protocol major envelope")
+    func ordinaryProviderFailuresCarryProtocolMajor() async throws {
+        let timelineID = UUID()
+        let turnProvider = AscendantTurnProvider(
+            execute: { _ in AscendantTurnResult(text: "unused") },
+            isAvailable: { false }
+        )
+        let turnFailure = try await turnProvider.handle(parameters: nil)
+
+        let permissionProvider = AscendantPermissionProvider(
+            coordinator: AscendantPermissionCoordinator(updates: AscendantTurnUpdateStore())
+        )
+        let permission = AscendantPermissionResponse(
+            correlationID: "stale",
+            timelineID: timelineID,
+            clientTurnID: "turn-1",
+            approved: true
+        )
+        let permissionFailure = try await permissionProvider.handle(
+            parameters: String(decoding: try JSONEncoder().encode(permission), as: UTF8.self)
+        )
+
+        let statusProvider = TimelineStatusProvider { _ in throw NodeRuntimeError.notRunning }
+        let statusFailure = try await statusProvider.handle(
+            parameters: String(decoding: try JSONEncoder().encode(TimelineStatusRequest(timelineID: timelineID)), as: UTF8.self)
+        )
+
+        let managementProvider = TimelineManagementProvider(
+            create: { _, _ in throw NodeRuntimeError.notRunning },
+            list: { throw NodeRuntimeError.notRunning },
+            update: { _ in throw NodeRuntimeError.notRunning }
+        )
+        let managementFailure = try await managementProvider.handle(
+            operation: TimelineManagementProvider.createOperation,
+            parameters: String(decoding: try JSONEncoder().encode(TimelineCreateRequest(title: "New")), as: UTF8.self)
+        )
+
+        let workspaceProvider = WorkspaceOpsProvider(
+            list: { throw NodeRuntimeError.notRunning },
+            attach: { _ in throw NodeRuntimeError.notRunning },
+            detach: { _ in throw NodeRuntimeError.notRunning }
+        )
+        let workspaceFailure = try await workspaceProvider.handle(
+            operation: WorkspaceOpsProvider.attachOperation,
+            parameters: String(decoding: try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: timelineID)), as: UTF8.self)
+        )
+
+        for response in [turnFailure, permissionFailure, statusFailure, managementFailure, workspaceFailure] {
+            guard case let .failure(_, message, _) = response,
+                  let data = message.data(using: .utf8),
+                  let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                Issue.record("ordinary failure was not a structured protocol envelope")
+                continue
+            }
+            #expect(envelope["protocolMajor"] as? Int == GnosticProtocol.currentMajor)
+        }
     }
 
     @Test("management and workspace payload decoders require the protocol major")

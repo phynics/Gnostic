@@ -127,7 +127,7 @@ public struct WorkspaceOpsProvider: Sendable {
         case Self.attachOperation:
             if let error = protocolError(parameters) { return error }
             guard let request = decode(parameters) else {
-                return .failure(code: 400, message: "Invalid workspace.attach payload")
+                return failure(code: 400, reasonCode: "invalidWorkspaceAttachPayload", message: "Invalid workspace.attach payload")
             }
             do {
                 let ok = try await attach(request)
@@ -138,7 +138,7 @@ public struct WorkspaceOpsProvider: Sendable {
         case Self.detachOperation:
             if let error = protocolError(parameters) { return error }
             guard let request = decode(parameters) else {
-                return .failure(code: 400, message: "Invalid workspace.detach payload")
+                return failure(code: 400, reasonCode: "invalidWorkspaceDetachPayload", message: "Invalid workspace.detach payload")
             }
             do {
                 let ok = try await detach(request)
@@ -147,7 +147,7 @@ public struct WorkspaceOpsProvider: Sendable {
                 return failure(for: error)
             }
         default:
-            return .failure(code: 404, message: "Unknown workspace operation")
+            return failure(code: 404, reasonCode: "unknownWorkspaceOperation", message: "Unknown workspace operation")
         }
     }
 
@@ -165,7 +165,7 @@ public struct WorkspaceOpsProvider: Sendable {
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 400, message: "Invalid workspace payload")
+            return failure(code: 400, reasonCode: "invalidWorkspacePayload", message: "Invalid workspace payload")
         }
     }
 
@@ -174,21 +174,25 @@ public struct WorkspaceOpsProvider: Sendable {
             return .failure(code: error.statusCode, message: error.failureMessage)
         }
         if let error = error as? NodeRuntimeError {
-            return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         }
         if let error = error as? DiscoveredWorkspaceAttachmentError {
             switch error {
             case .approvalRequired:
-                return .failure(code: 403, message: "approvalRequired: Workspace attachment requires approval.")
+                return failure(code: 403, reasonCode: "approvalRequired", message: "Workspace attachment requires approval.")
             case let .unavailable(status):
-                return .failure(code: 409, message: "workspaceUnavailable: Workspace is not uniquely available (\(status)).")
+                return failure(code: 409, reasonCode: "workspaceUnavailable", message: "Workspace is not uniquely available (\(status)).")
             case .invalidURI:
-                return .failure(code: 422, message: "invalidWorkspaceURI: Workspace advertised an invalid URI.")
+                return failure(code: 422, reasonCode: "invalidWorkspaceURI", message: "Workspace advertised an invalid URI.")
             case let .timelineNotOwned(id):
-                return .failure(code: 404, message: "timelineNotOwned: Timeline \(id.uuidString.lowercased()) is not owned by this Node.")
+                return failure(code: 404, reasonCode: "timelineNotOwned", message: "Timeline \(id.uuidString.lowercased()) is not owned by this Node.")
             }
         }
-        return .failure(code: 500, message: "workspaceOperationFailed: \(String(describing: error))")
+        return failure(code: 500, reasonCode: "workspaceOperationFailed", message: String(describing: error))
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     @MainActor

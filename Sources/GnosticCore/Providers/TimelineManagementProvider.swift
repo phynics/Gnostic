@@ -128,7 +128,7 @@ public struct TimelineManagementProvider: Sendable {
             if let parameters, let decoded = try? JSONDecoder().decode(TimelineCreateRequest.self, from: Data(parameters.utf8)) {
                 request = decoded
             } else {
-                return .failure(code: 400, message: "Invalid timeline.create payload")
+                return failure(code: 400, reasonCode: "invalidTimelineCreatePayload", message: "Invalid timeline.create payload")
             }
             do {
                 let status = try await create(request.title, request.ascendantID)
@@ -136,7 +136,7 @@ public struct TimelineManagementProvider: Sendable {
                 let encoded = try JSONEncoder().encode(status)
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
-                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
             }
@@ -148,7 +148,7 @@ public struct TimelineManagementProvider: Sendable {
                 let encoded = try JSONEncoder().encode(TimelineListResult(timelines: statuses))
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
-                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
             }
@@ -156,7 +156,7 @@ public struct TimelineManagementProvider: Sendable {
             if let error = protocolError(parameters) { return error }
             guard let parameters,
                   let request = try? JSONDecoder().decode(TimelineUpdateRequest.self, from: Data(parameters.utf8)) else {
-                return .failure(code: 400, message: "Invalid timeline.update payload")
+                return failure(code: 400, reasonCode: "invalidTimelineUpdatePayload", message: "Invalid timeline.update payload")
             }
             do {
                 let status = try await update(request)
@@ -164,12 +164,12 @@ public struct TimelineManagementProvider: Sendable {
                 let encoded = try JSONEncoder().encode(status)
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
-                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
             }
         default:
-            return .failure(code: 404, message: "Unknown timeline operation")
+            return failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")
         }
     }
 
@@ -180,8 +180,12 @@ public struct TimelineManagementProvider: Sendable {
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 400, message: "Invalid timeline payload")
+            return failure(code: 400, reasonCode: "invalidTimelinePayload", message: "Invalid timeline payload")
         }
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     @MainActor

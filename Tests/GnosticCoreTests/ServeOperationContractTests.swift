@@ -239,7 +239,9 @@ struct ServeOperationContractTests {
             return
         }
         #expect(listCode == 500)
-        #expect(listMessage.hasPrefix("workspaceOperationFailed:"))
+        let listFailure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(listMessage.utf8))
+        #expect(listFailure.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(listFailure.reasonCode == "workspaceOperationFailed")
 
         guard case let .failure(attachCode, attachMessage, _) = try await provider.handle(
             operation: WorkspaceOpsProvider.attachOperation,
@@ -249,7 +251,9 @@ struct ServeOperationContractTests {
             return
         }
         #expect(attachCode == 422)
-        #expect(attachMessage.hasPrefix("invalidWorkspaceURI:"))
+        let attachFailure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(attachMessage.utf8))
+        #expect(attachFailure.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(attachFailure.reasonCode == "invalidWorkspaceURI")
 
         guard case let .failure(detachCode, detachMessage, _) = try await provider.handle(
             operation: WorkspaceOpsProvider.detachOperation,
@@ -259,7 +263,9 @@ struct ServeOperationContractTests {
             return
         }
         #expect(detachCode == 503)
-        #expect(detachMessage.hasPrefix("notRunning:"))
+        let detachFailure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(detachMessage.utf8))
+        #expect(detachFailure.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(detachFailure.reasonCode == "notRunning")
     }
 
     @Test("timeline create/list/update route to the injected closures")

@@ -87,7 +87,7 @@ public struct AscendantTurnProvider: Sendable {
 
     public func handle(parameters: String?) async throws -> CallHandlerResult {
         guard await isAvailable() else {
-            return .failure(code: 503, message: "notRunning: The node runtime is not running.")
+            return failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
         }
         guard let parameters else {
             return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
@@ -98,11 +98,11 @@ public struct AscendantTurnProvider: Sendable {
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 400, message: "Invalid ascendant.turn payload")
+            return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         }
         if let clientTurnID = request.clientTurnID,
            clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .failure(code: 400, message: "clientTurnID must not be empty")
+            return failure(code: 400, reasonCode: "invalidClientTurnID", message: "clientTurnID must not be empty")
         }
         do {
             if let replayStore, let clientTurnID = request.clientTurnID {
@@ -145,7 +145,7 @@ public struct AscendantTurnProvider: Sendable {
                !isAdmissionOnlyError(error) {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
             }
-            return .failure(code: error.statusCode, message: error.localizedDescription)
+            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         } catch let error as NodeRuntimeError {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = await replayStore.append(
@@ -156,14 +156,14 @@ public struct AscendantTurnProvider: Sendable {
                     terminal: true
                 )
             }
-            return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
             }
-            return .failure(code: 500, message: String(describing: error))
+            return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
         }
     }
 
@@ -176,10 +176,10 @@ public struct AscendantTurnProvider: Sendable {
 
     public func handleReplay(parameters: String?) async throws -> CallHandlerResult {
         guard await isAvailable() else {
-            return .failure(code: 503, message: "notRunning: The node runtime is not running.")
+            return failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
         }
         guard let replayStore else {
-            return .failure(code: 400, message: "Invalid ascendant.turn.replay payload")
+            return failure(code: 400, reasonCode: "replayUnavailable", message: "Replay is not configured for this provider.")
         }
         guard let parameters else {
             return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
@@ -190,10 +190,10 @@ public struct AscendantTurnProvider: Sendable {
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return .failure(code: 400, message: "Invalid ascendant.turn.replay payload")
+            return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         }
         guard !request.clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .failure(code: 400, message: "Invalid ascendant.turn.replay payload")
+            return failure(code: 400, reasonCode: "invalidClientTurnID", message: "Invalid ascendant.turn.replay payload")
         }
         let replay = await replayStore.replay(
             timelineID: request.timelineID,
@@ -202,7 +202,7 @@ public struct AscendantTurnProvider: Sendable {
             afterSequence: request.afterSequence
         )
         if replay.conflict {
-            return .failure(code: 409, message: "clientTurnID was already used with different content")
+            return failure(code: 409, reasonCode: "turnConflict", message: "clientTurnID was already used with different content")
         }
         do {
             try GnosticProtocol.validate(replay.protocolMajor)
@@ -211,6 +211,10 @@ public struct AscendantTurnProvider: Sendable {
         }
         let encoded = try JSONEncoder().encode(replay)
         return .success(result: String(decoding: encoded, as: UTF8.self))
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     @MainActor

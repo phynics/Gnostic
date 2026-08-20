@@ -30,4 +30,13 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .replayUnavailable: 410
         }
     }
+
+    public var reasonCode: String {
+        switch self {
+        case .conflict: "turnConflict"
+        case .failed: "turnFailed"
+        case .cancelled: "turnCancelled"
+        case .replayUnavailable: "replayUnavailable"
+        }
+    }
 }

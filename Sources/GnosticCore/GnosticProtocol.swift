@@ -2,6 +2,19 @@
 
 import Foundation
 
+/// A protocol-bearing failure envelope for every Gnostic Call/Return error.
+public struct GnosticProtocolFailure: Codable, Sendable, Equatable {
+    public let protocolMajor: Int
+    public let reasonCode: String
+    public let message: String
+
+    public init(reasonCode: String, message: String, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
+        self.reasonCode = reasonCode
+        self.message = message
+    }
+}
+
 /// The single incompatible network contract implemented by this Gnostic node.
 ///
 /// The major is deliberately explicit on every Gnostic advertisement and
@@ -9,6 +22,12 @@ import Foundation
 /// or an omitted field.
 public enum GnosticProtocol {
     public static let currentMajor = 2
+
+    public static func failureMessage(reasonCode: String, message: String) -> String {
+        let envelope = GnosticProtocolFailure(reasonCode: reasonCode, message: message)
+        let data = try! JSONEncoder().encode(envelope)
+        return String(decoding: data, as: UTF8.self)
+    }
 
     public static func isCompatible(_ protocolMajor: Int?) -> Bool {
         protocolMajor == currentMajor
@@ -53,7 +72,6 @@ public enum GnosticCapability {
     public static let stable: Set<String> = [
         textTurnInput,
         streamedTurnUpdates,
-        turnCancellation,
         turnReplay,
         permissionMediation,
         workspaceAttachment,
@@ -98,9 +116,7 @@ public enum GnosticProtocolError: Error, Codable, Sendable, Equatable, Localized
     /// A deterministic message for Axoloty's string-only Call/Return failure
     /// surface.  The response still carries the current major for clients that
     /// need to recover without guessing.
-    public var failureMessage: String {
-        "{\"protocolMajor\":\(GnosticProtocol.currentMajor),\"reasonCode\":\"\(reasonCode)\",\"message\":\"\(errorDescription ?? reasonCode)\"}"
-    }
+    public var failureMessage: String { GnosticProtocol.failureMessage(reasonCode: reasonCode, message: errorDescription ?? reasonCode) }
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, reasonCode, message }
 
