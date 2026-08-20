@@ -19,7 +19,7 @@ The delivered 0.3 compatibility declaration is [documented here](../Compatibilit
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. RESET-004 records one bounded legacy adapter bridge. Every
+exception registry. It is empty in the delivered 0.3 baseline. Every future
 exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,
@@ -29,8 +29,7 @@ allowed.
 Exceptions are temporary evidence, not a second architecture. A closed issue
 cannot own an active exception, and an exception cannot be silently broadened.
 Each entry requires independent review and must be removed or renewed when its
-reconsideration condition is reached. RESET-006 owns removal or reduction of
-the RESET-004 bridge to a test-only fixture.
+reconsideration condition is reached.
 
 Generated-reference validation is not listed here because this repository has
 no generated documentation source or generator. The owning issue records that
