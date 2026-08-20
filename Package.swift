@@ -10,6 +10,7 @@ let package = Package(
     ],
     products: [
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
+        .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
@@ -27,6 +28,13 @@ let package = Package(
                 .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKShared", package: "PositronicKit"),
                 .product(name: "PKUtilities", package: "PositronicKit"),
+            ]
+        ),
+        .target(
+            name: "GnosticPositronicAtlas",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "PositronicKit", package: "PositronicKit"),
             ]
         ),
         .testTarget(

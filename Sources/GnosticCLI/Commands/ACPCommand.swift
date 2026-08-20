@@ -54,7 +54,7 @@ struct ACPCommand: AsyncParsableCommand {
             }
             return id
         }
-        let client = try GnosticRemoteClient(
+        let client = try RemoteTurnClient(
             host: host ?? stored.mqttHost,
             port: port ?? stored.mqttPort,
             namespace: namespace ?? stored.mqttNamespace,
@@ -84,7 +84,7 @@ struct ACPCommand: AsyncParsableCommand {
             try writeProfiles(cached)
             return
         }
-        let client = try GnosticRemoteClient(
+        let client = try RemoteTurnClient(
             host: brokerKey.host,
             port: brokerKey.port,
             namespace: brokerKey.namespace

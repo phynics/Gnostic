@@ -282,17 +282,22 @@ public final class NodeRuntime {
             backendWorkspaceCapability = workspaceCapability
             var specs: [UUID: BackendSpec] = [:]
             var leases: [UUID: UUID] = [:]
+            var attachmentCapabilities: [(ascendantID: UUID, lease: UUID, capability: BackendWorkspaceAttachmentCapability)] = []
             for ascendant in plan.ascendants {
                 guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
+                let lease = UUID.makeVersion4()
+                let attachmentCapability = BackendWorkspaceAttachmentCapability()
                 specs[ascendant.id] = BackendSpec(
                     ascendant: ascendant,
                     configuration: backend
                 )
+                leases[ascendant.id] = lease
+                attachmentCapabilities.append((ascendant.id, lease, attachmentCapability))
                 let backendServices = AscendantBackendServices(
                     workspace: backendWorkspaceService,
                     permission: permissionCoordinator,
-                    optionalCapabilities: [workspaceCapability]
+                    optionalCapabilities: [workspaceCapability, attachmentCapability]
                 )
                 let backendInstance = try await adapters.ascendants.makeBackend(for: ascendant, backend: backend, services: backendServices, timelines: timelineConfigurations)
                 do {
@@ -302,7 +307,6 @@ public final class NodeRuntime {
                     throw error
                 }
                 ascendantAdapters[ascendant.id] = backendInstance
-                leases[ascendant.id] = UUID.makeVersion4()
                 backendHealthByID[ascendant.id] = .healthy
                 identities.append(backendInstance.identity)
                 operatedTimelines += try await backendInstance.operatedTimelines()
@@ -315,6 +319,17 @@ public final class NodeRuntime {
             backendLeases = leases
             backendSpecs = specs
             backendIdentities = identities
+            for attachment in attachmentCapabilities {
+                attachment.capability.bind { [weak self] workspaceID, timelineID in
+                    guard let self else { throw NodeRuntimeError.notRunning }
+                    try await self.workspaceService.attachFromBackend(
+                        workspaceID: workspaceID,
+                        timelineID: timelineID,
+                        ascendantID: attachment.ascendantID,
+                        backendLease: attachment.lease
+                    )
+                }
+            }
         } catch {
             for adapter in ascendantAdapters.values {
                 await adapter.shutdown()
@@ -549,10 +564,24 @@ public final class NodeRuntime {
                     throw NodeRuntimeError.notRunning
                 }
                 let state = await self.registry.backendReconstructionState(for: ascendantID)
+                let lease = UUID.makeVersion4()
+                let attachmentCapability = BackendWorkspaceAttachmentCapability { [weak self] workspaceID, timelineID in
+                    guard let self else { throw NodeRuntimeError.notRunning }
+                    try await self.workspaceService.attachFromBackend(
+                        workspaceID: workspaceID,
+                        timelineID: timelineID,
+                        ascendantID: ascendantID,
+                        backendLease: lease
+                    )
+                }
+                var optionalCapabilities: [any AscendantBackendOptionalCapability] = [attachmentCapability]
+                if let workspaceCapability = self.backendWorkspaceCapability {
+                    optionalCapabilities.insert(workspaceCapability, at: 0)
+                }
                 let services = AscendantBackendServices(
                     workspace: self.backendWorkspaceService,
                     permission: self.permissionCoordinator,
-                    optionalCapabilities: self.backendWorkspaceCapability.map { [$0] } ?? []
+                    optionalCapabilities: optionalCapabilities
                 )
                 let created = try await self.adapters.ascendants.makeBackend(
                     for: spec.ascendant,
@@ -594,7 +623,6 @@ public final class NodeRuntime {
                 // Publication is part of the shared reconstruction task. Every
                 // waiter receives this installed instance only after the
                 // generation and the exact captured revision have been fenced.
-                let lease = UUID.makeVersion4()
                 await self.registry.activateBackendLease(lease, for: ascendantID)
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     await self.registry.invalidateBackendLease(for: ascendantID)

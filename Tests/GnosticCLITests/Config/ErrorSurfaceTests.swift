@@ -40,12 +40,4 @@ struct ErrorSurfaceTests {
         #expect(unreachable.reasonCode == "brokerUnreachable")
     }
 
-    @Test("NarrativeStoreError exposes stable descriptions and reason codes")
-    func narrativeStoreErrorSurface() {
-        let duplicate = NarrativeStoreError.duplicateEntryID(
-            NarrativeEntryID(rawValue: UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!)
-        )
-        #expect(duplicate.errorDescription?.contains("000000000001") == true)
-        #expect(duplicate.reasonCode == "duplicateEntryID")
-    }
 }

@@ -12,7 +12,7 @@ import Testing
 /// A deterministic, credential-free LanguageModel for chat tests.
 ///
 /// The stub emits tool calls for a fixed script and then final assistant text,
-/// mirroring the runner fixture's `workspace_echo` narrative without any LLM.
+/// mirroring the runner fixture's `workspace_echo` flow without any LLM.
 final class StubLanguageModel: LanguageModel, @unchecked Sendable {
     private let counter = CallCounter()
     private let shouldFail: Bool

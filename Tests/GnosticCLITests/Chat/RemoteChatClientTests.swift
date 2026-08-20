@@ -28,7 +28,7 @@ struct RemoteTurnClientTests {
         #expect(discoveredAscendant.capabilities.contains(GnosticCapability.textTurnInput))
         let providerID = try await client.selectAscendant(id: node.ascendantID).providerID
 
-        // Discover the served timeline from the advertised Agent.
+        // Discover the served timeline from the advertised Ascendant.
         let timelineID = try await client.discoverServedTimeline()
         #expect(timelineID == node.timelineID)
 
@@ -95,8 +95,8 @@ struct RemoteTurnClientTests {
             ]
         )
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
-            CapabilityFixtureAdapter(
+        adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
+            CapabilityFixtureBackend(
                 ascendant: ascendant,
                 timelines: timelines,
                 capabilities: ascendant.id == capableAscendantID ? Array(GnosticCapability.stable).sorted() : []
@@ -304,9 +304,9 @@ struct RemoteTurnClientTests {
 }
 
 @MainActor
-private final class CapabilityFixtureAdapter: AscendantRuntimeAdapter {
-    let identity: AscendantRuntimeIdentity
-    private var records: [UUID: AscendantRuntimeTimeline]
+private final class CapabilityFixtureBackend: AscendantBackend {
+    let identity: AscendantBackendIdentity
+    private var records: [UUID: AscendantBackendTimeline]
 
     init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], capabilities: [String]) {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -319,16 +319,16 @@ private final class CapabilityFixtureAdapter: AscendantRuntimeAdapter {
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: capabilities
+            capabilities: .init(interoperability: Set(capabilities))
         )
         records = Dictionary(uniqueKeysWithValues: timelines.map { timeline in
             (
                 timeline.id,
-                AscendantRuntimeTimeline(
+                AscendantBackendTimeline(
                     id: timeline.id,
                     title: timeline.title,
                     attachedWorkspaceIDs: timeline.attachments.map(\.workspaceID),
-                    attachedAscendantID: ascendant.id,
+                    ascendantID: ascendant.id,
                     isArchived: false,
                     isPrivate: false,
                     createdAt: now,
@@ -338,15 +338,16 @@ private final class CapabilityFixtureAdapter: AscendantRuntimeAdapter {
         })
     }
 
-    func timelines() async throws -> [AscendantRuntimeTimeline] { Array(records.values) }
+    func validateConfiguration() throws {}
+    func operatedTimelines() async throws -> [AscendantBackendTimeline] { Array(records.values) }
 
-    func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        let timeline = AscendantRuntimeTimeline(
+        let timeline = AscendantBackendTimeline(
             id: id,
             title: title,
             attachedWorkspaceIDs: [],
-            attachedAscendantID: identity.id,
+            ascendantID: identity.id,
             isArchived: false,
             isPrivate: false,
             createdAt: now,
@@ -358,13 +359,13 @@ private final class CapabilityFixtureAdapter: AscendantRuntimeAdapter {
 
     func removeTimeline(id: UUID) async { records[id] = nil }
 
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         guard let timeline = records[id] else { throw NodeRuntimeError.missingTimeline(id) }
-        let renamed = AscendantRuntimeTimeline(
+        let renamed = AscendantBackendTimeline(
             id: timeline.id,
             title: title,
             attachedWorkspaceIDs: timeline.attachedWorkspaceIDs,
-            attachedAscendantID: timeline.attachedAscendantID,
+            ascendantID: timeline.ascendantID,
             isArchived: timeline.isArchived,
             isPrivate: timeline.isPrivate,
             createdAt: timeline.createdAt,
@@ -374,10 +375,10 @@ private final class CapabilityFixtureAdapter: AscendantRuntimeAdapter {
         return renamed
     }
 
-    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {}
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {}
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
     func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
-    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String { "fixture: \(request.message)" }
-    func cancelAll() async {}
+    func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String { "fixture: \(request.message)" }
+    func cancel() async {}
     func shutdown() async {}
 }

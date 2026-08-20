@@ -2,10 +2,10 @@
 
 This index is the stable entry point for accepted Gnostic architecture
 decisions. Canonical domain terms live in [`CONTEXT.md`](../../CONTEXT.md).
-Implementation work is tracked in [Epic #140](https://github.com/phynics/Gnostic/issues/140)
-and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145); an ADR
-describes an accepted target decision without claiming that undelivered code
-already exists.
+Implementation work is tracked in [Epic #140](https://github.com/phynics/Gnostic/issues/140),
+[RESET-006 #144](https://github.com/phynics/Gnostic/issues/144), and
+[RESET-001 #145](https://github.com/phynics/Gnostic/issues/145); each ADR states
+whether its decision is delivered or remains a target.
 
 ## Accepted decisions
 
@@ -13,6 +13,8 @@ already exists.
 2. [ADR 0002 — Gnostic identity versus backend state](ADRs/0002-gnostic-identity-vs-backend-state.md)
 3. [ADR 0003 — Pre-1.0 manifest and protocol reset](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md)
 4. [ADR 0004 — Atlas supersedes Narrative](ADRs/0004-atlas-supersedes-narrative.md)
+
+The delivered 0.3 compatibility declaration is [documented here](../Compatibility/0.3.0.md).
 
 ## Architecture exceptions
 

@@ -71,20 +71,6 @@ struct FixtureScenario {
         guard readvertised.latest?.attachedWorkspaceIDs == [workspaceID] else { throw RunnerError.timelineNotReadvertised }
         print("timeline readvertised with fixture workspace: \(workspaceID.uuidString.lowercased())")
 
-        let narrative = NarrativeRuntime()
-        let source = NarrativeSourceReference(
-            conversation: NarrativeConversationRange(firstMessageID: "f-1", lastMessageID: "f-3"),
-            toolIDs: ["list_files", "read_file", "workspace_echo"],
-            workspaceIDs: [workspaceID]
-        )
-        _ = await narrative.capture.capture(input: NarrativeCaptureInput(
-            taskID: "fixture",
-            outcome: .success,
-            affectsLaterBehavior: true,
-            openThread: nil,
-            source: source
-        ))
-        await narrative.shutdown()
         print("fixture scenario passed: list_files, read_file, workspace_echo used me.atkn.gnostic.workspace.invoke")
     }
 }

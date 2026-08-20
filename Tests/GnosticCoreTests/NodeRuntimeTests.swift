@@ -22,8 +22,8 @@ struct NodeRuntimeTests {
             timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
         )
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
-            FixtureAscendantAdapter(ascendant: ascendant, timelines: timelines)
+        adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
+            FixtureAscendantBackend(ascendant: ascendant, timelines: timelines)
         }
 
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
@@ -49,8 +49,8 @@ struct NodeRuntimeTests {
             timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
         )
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
-            FixtureAscendantAdapter(ascendant: ascendant, timelines: timelines, cancellationProbe: probe)
+        adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
+            FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, cancellationProbe: probe)
         }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         try await runtime.start()
@@ -83,8 +83,8 @@ struct NodeRuntimeTests {
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
         )
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
-            FixtureAscendantAdapter(ascendant: ascendant, timelines: timelines, creationProbe: probe)
+        adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
+            FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, creationProbe: probe)
         }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
 
@@ -909,7 +909,7 @@ struct NodeRuntimeTests {
 
     @Test("each backend identity is published from one runtime") @MainActor
     func twoBackendsPublishBothAscendants() async throws {
-        let namespace = "node-runtime-two-backend-agents-\(UUID().uuidString.lowercased())"
+        let namespace = "node-runtime-two-backend-ascendants-\(UUID().uuidString.lowercased())"
         let firstAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000301")!
         let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000302")!
         let secondAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000303")!
@@ -929,7 +929,7 @@ struct NodeRuntimeTests {
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
 
-        let consumer = makeNodeRuntimeBrokerManager("two-backend-agents-consumer", namespace: namespace)
+        let consumer = makeNodeRuntimeBrokerManager("two-backend-ascendants-consumer", namespace: namespace)
         defer { consumer.stop() }
         try await startNodeRuntimeBrokerManager(consumer)
         let catalog = NetworkCatalog()
@@ -939,14 +939,14 @@ struct NodeRuntimeTests {
 
         for _ in 0..<20 {
             await subscription.discover(using: consumer, timeout: .milliseconds(200))
-            let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
-            if agents.count == 2 { break }
+            let ascendants = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
+            if ascendants.count == 2 { break }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
-        #expect(Set(agents.map(\.objectID)) == Set([firstAscendantID, secondAscendantID]))
-        #expect(Set(agents.map(\.providerID)).count == 1)
+        let ascendants = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
+        #expect(Set(ascendants.map(\.objectID)) == Set([firstAscendantID, secondAscendantID]))
+        #expect(Set(ascendants.map(\.providerID)).count == 1)
     }
 
     @Test("startup actively discovers an already-online lazy Workspace") @MainActor
@@ -1127,9 +1127,9 @@ struct NodeRuntimeTests {
 }
 
 @MainActor
-private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
-    let identity: AscendantRuntimeIdentity
-    private var storedTimelines: [AscendantRuntimeTimeline]
+private final class FixtureAscendantBackend: AscendantBackend {
+    let identity: AscendantBackendIdentity
+    private var storedTimelines: [AscendantBackendTimeline]
     private let cancellationProbe: AdapterCancellationProbe?
     private let creationProbe: AdapterCreationProbe?
 
@@ -1138,14 +1138,15 @@ private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
         self.cancellationProbe = cancellationProbe
         self.creationProbe = creationProbe
         identity = .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
-        storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), attachedAscendantID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
+        storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), ascendantID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
     }
 
-    func timelines() async throws -> [AscendantRuntimeTimeline] { storedTimelines }
-    func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+    func validateConfiguration() throws {}
+    func operatedTimelines() async throws -> [AscendantBackendTimeline] { storedTimelines }
+    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         let now = Date()
         let createdID = creationProbe == nil ? id : UUID.makeVersion4()
-        let timeline = AscendantRuntimeTimeline(id: createdID, title: title, attachedWorkspaceIDs: [], attachedAscendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let timeline = AscendantBackendTimeline(id: createdID, title: title, attachedWorkspaceIDs: [], ascendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         storedTimelines.append(timeline)
         return timeline
     }
@@ -1153,21 +1154,21 @@ private final class FixtureAscendantAdapter: AscendantRuntimeAdapter {
         storedTimelines.removeAll { $0.id == id }
         await creationProbe?.recordRemoval(id)
     }
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
         let current = storedTimelines[index]
-        let renamed = AscendantRuntimeTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, attachedAscendantID: current.attachedAscendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
+        let renamed = AscendantBackendTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, ascendantID: current.ascendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
         storedTimelines[index] = renamed
         return renamed
     }
-    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {}
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {}
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
     func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
-    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String {
+    func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
         if let cancellationProbe { return try await cancellationProbe.run() }
         return "fixture: \(request.message)"
     }
-    func cancelAll() async { await cancellationProbe?.cancel() }
+    func cancel() async { await cancellationProbe?.cancel() }
     func shutdown() async {}
 }
 

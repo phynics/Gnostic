@@ -272,7 +272,7 @@ struct ServeOperationContractTests {
     func timelineManagementContract() async throws {
         let createdID = UUID()
         let provider = TimelineManagementProvider(
-            create: { title in TimelineStatus(timelineID: createdID, title: title, attachedWorkspaceIDs: []) },
+            create: { title, _ in TimelineStatus(timelineID: createdID, title: title, attachedWorkspaceIDs: []) },
             list: {
                 [TimelineStatus(timelineID: createdID, title: "Existing", attachedWorkspaceIDs: [])]
             },
@@ -301,7 +301,7 @@ struct ServeOperationContractTests {
     @Test("timeline ops reject malformed payloads")
     func timelineManagementRejectsMalformed() async throws {
         let provider = TimelineManagementProvider(
-            create: { _ in TimelineStatus(timelineID: UUID(), title: "x", attachedWorkspaceIDs: []) },
+            create: { _, _ in TimelineStatus(timelineID: UUID(), title: "x", attachedWorkspaceIDs: []) },
             list: { [] },
             update: { _ in TimelineStatus(timelineID: UUID(), title: "x", attachedWorkspaceIDs: []) }
         )

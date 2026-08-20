@@ -27,7 +27,7 @@ final class ACPDispatcher: Sendable {
         let task: Task<AnyCodable, Error>
     }
 
-    private let client: GnosticRemoteClient
+    private let client: RemoteTurnClient
     private let registry: ACPSessionRegistry
     private let requestedAscendantID: UUID?
     private let requestedProviderID: String?
@@ -40,7 +40,7 @@ final class ACPDispatcher: Sendable {
     private var cancelledSessions: Set<String> = []
 
     init(
-        client: GnosticRemoteClient,
+        client: RemoteTurnClient,
         registry: ACPSessionRegistry,
         requestedAscendantID: UUID?,
         requestedProviderID: String? = nil,

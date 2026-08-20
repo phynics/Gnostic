@@ -1,20 +1,31 @@
 # Gnostic
 
-Gnostic bridges PositronicKit orchestration with Axoloty networking.
+Gnostic 0.3.0 bridges PositronicKit orchestration with Axoloty networking.
 
-## Status
+## Delivered baseline
 
-Early proof of concept. The current package provides the delivered 0.2
-discovery, Workspace attachment, Timeline readvertisement, and ACP behavior
-described below.
+The 0.3 package delivers the protocol-major-2 Ascendant/Turn contract,
+manifest-v2 persistence with v1 migration, lifecycle-safe multi-backend hosting,
+and authoritative Timeline/Workspace discovery and attachment. The bundled
+Ascendant backend is `positronic`; the local Workspace backend is `echo`.
+
+`GnosticPositronicAtlas` is an optional scaffold for future Positronic-specific
+continuity work. It has no Atlas behavior in this release and is not a
+dependency of `GnosticCore`. Narrative has been removed from Core and is
+superseded by Atlas as recorded in [ADR 0004](Documentation/Architecture/ADRs/0004-atlas-supersedes-narrative.md).
+
+See the [0.3.0 compatibility declaration](Documentation/Compatibility/0.3.0.md)
+for the protocol, migration, bundled implementation, and intentional 0.2
+break details.
 
 ## Discovered workspaces
 
 Gnostic can inspect advertised network objects with `list_network_objects` and
 `inspect_network_object`. A discovered workspace is imported only when one
 available, well-formed provider advertises it. `attach_workspace` requires user
-approval, imports the workspace as a runtime reference, attaches it through
-PositronicKit's `ThreadManager`, and readvertises the changed Timeline.
+approval and routes through Gnostic's authoritative Workspace service. Gnostic
+records attachment intent in `NodeRegistry`, projects it into the Positronic
+backend, and readvertises the changed Timeline.
 
 Attached workspaces expose only their advertised custom tool definitions. Tool
 calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` Call/Return
@@ -35,15 +46,11 @@ extension with:
 gnostic acp profiles --json
 ```
 
-## Bridge removal
+## Compatibility
 
-Gnostic 0.2.0 removes the deprecated `gnostic bridge` command and its custom
-`gnostic.*` JSON-RPC frontend. Use `gnostic acp` with a standard ACP client.
-Pi users should migrate from the retired
-[`gnostic-pi`](https://github.com/phynics/gnostic-pi) extension to
-[`pi-acp-client`](https://github.com/phynics/pi-acp-client); existing Pi
-transcripts start a new ACP-backed session because authority cannot be safely
-rebound in place.
+The pre-1.0 0.2 network and schema-v1 contracts are intentionally not
+interoperable with 0.3. Use the Ascendant/Turn and manifest-v2 contracts, and
+use `gnostic acp` with a standard ACP client.
 
 ## Development
 

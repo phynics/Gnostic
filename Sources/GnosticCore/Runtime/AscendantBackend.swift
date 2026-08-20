@@ -83,31 +83,6 @@ public struct AscendantBackendIdentity: Sendable, Equatable {
         self.capabilities = capabilities
     }
 
-    /// Compatibility initializer for protocol-v2 runtime fixtures, which
-    /// provide only the stable interoperability names.
-    public init(
-        id: UUID,
-        name: String,
-        description: String,
-        privateTimelineID: UUID,
-        primaryWorkspaceID: UUID?,
-        lastActiveAt: Date,
-        createdAt: Date,
-        updatedAt: Date,
-        capabilities: [String]
-    ) {
-        self.init(
-            id: id,
-            name: name,
-            description: description,
-            privateTimelineID: privateTimelineID,
-            primaryWorkspaceID: primaryWorkspaceID,
-            lastActiveAt: lastActiveAt,
-            createdAt: createdAt,
-            updatedAt: updatedAt,
-            capabilities: AscendantBackendCapabilities(interoperability: Set(capabilities))
-        )
-    }
 }
 
 /// The backend's private projection of a Gnostic Timeline.
@@ -164,31 +139,6 @@ public struct AscendantBackendTimeline: Sendable, Equatable {
         )
     }
 
-    public init(
-        id: UUID,
-        title: String,
-        attachedWorkspaceIDs: [UUID],
-        attachedAgentInstanceID: UUID?,
-        isArchived: Bool,
-        isPrivate: Bool,
-        createdAt: Date,
-        updatedAt: Date
-    ) {
-        self.init(
-            id: id,
-            title: title,
-            attachedWorkspaceIDs: attachedWorkspaceIDs,
-            ascendantID: attachedAgentInstanceID,
-            isArchived: isArchived,
-            isPrivate: isPrivate,
-            createdAt: createdAt,
-            updatedAt: updatedAt
-        )
-    }
-
-    /// Compatibility spelling retained while the protocol reset migrates
-    /// external Agent terminology. It is not a backend-native type.
-    public var attachedAgentInstanceID: UUID? { ascendantID }
     public var attachedAscendantID: UUID? { ascendantID }
 }
 

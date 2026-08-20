@@ -79,59 +79,6 @@ struct RunnerFixtureE2ETests {
         #expect(readvertised.timelines.last?.attachedWorkspaceIDs == [workspaceID])
     }
 
-    @Test("a later turn uses a captured outcome without the full transcript")
-    func laterTurnUsesCapturedOutcome() async throws {
-        let store = InMemoryNarrativeStore()
-        let capture = NarrativeCaptureService(
-            store: store,
-            proposer: CapturingProposer(),
-            validator: NarrativeValidator(
-                sensitiveValueMatch: { _ in false },
-                existingEntries: { [] }
-            ),
-            sensitiveValueHandler: { _ in false }
-        )
-        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!
-        _ = await capture.capture(input: NarrativeCaptureInput(
-            taskID: "e2e",
-            outcome: .success,
-            affectsLaterBehavior: true,
-            openThread: nil,
-            source: NarrativeSourceReference(
-                conversation: NarrativeConversationRange(firstMessageID: "e-1", lastMessageID: "e-2"),
-                toolIDs: ["list_files"],
-                workspaceIDs: [workspaceID]
-            )
-        ))
-        await capture.shutdown()
-
-        let packet = await capture.relevantPacket(
-            query: NarrativeRetrievalQuery(currentUserText: "outcome", limit: 5)
-        )
-        let text = try #require(packet?.text)
-        #expect(text.contains("Reuse earlier outcomes in later turns."))
-        #expect(!text.contains("full original transcript text"))
-    }
-}
-
-/// A deterministic proposer that yields a reusable lesson without any LLM.
-private struct CapturingProposer: NarrativeProposer {
-    func propose(for input: NarrativeCaptureInput) async -> NarrativeProposal? {
-        NarrativeProposal(
-            id: NarrativeEntryID(),
-            kind: .lesson,
-            occurredAt: Date(),
-            source: input.source,
-            observation: "A bounded task completed.",
-            interpretation: "Reusable outcome captured.",
-            lesson: ProposedLesson(summary: "Reuse earlier outcomes in later turns."),
-            importance: 0.6,
-            confidence: 0.85,
-            supportingEpisodes: [],
-            isFactStatedSpeculation: false,
-            isOverbroadSelfCharacterization: false
-        )
-    }
 }
 
 @MainActor

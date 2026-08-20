@@ -25,6 +25,30 @@ final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapabil
     }
 }
 
+/// Gnostic-owned authority for backend-originated Workspace attachment tools.
+/// The handler is bound by NodeRuntime to one Ascendant backend lease; the
+/// backend receives only this narrow capability and never the registry or
+/// transport objects behind it.
+@MainActor
+final class BackendWorkspaceAttachmentCapability: AscendantBackendOptionalCapability, @unchecked Sendable {
+    typealias Handler = @MainActor @Sendable (UUID, UUID) async throws -> Void
+
+    private var handler: Handler?
+
+    init(handler: Handler? = nil) {
+        self.handler = handler
+    }
+
+    func bind(_ handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func attach(workspaceID: UUID, timelineID: UUID) async throws {
+        guard let handler else { throw NodeRuntimeError.notRunning }
+        try await handler(workspaceID, timelineID)
+    }
+}
+
 @MainActor
 final class AxolotyWorkspaceDiscovery: WorkspaceDiscovery {
     private let catalog: NetworkCatalog

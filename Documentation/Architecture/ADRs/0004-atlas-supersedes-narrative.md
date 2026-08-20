@@ -2,10 +2,11 @@
 
 ## Status
 
-Accepted target architecture. Delivery is tracked by [Epic #140](https://github.com/phynics/Gnostic/issues/140)
-and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145); this ADR
-does not claim that Atlas has been implemented or that Narrative has already
-been removed.
+Accepted and delivered as the RESET-006 boundary. Delivery is tracked by
+[Epic #140](https://github.com/phynics/Gnostic/issues/140), [RESET-006 #144](https://github.com/phynics/Gnostic/issues/144),
+and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145). The 0.3
+package contains an optional Atlas scaffold only; Atlas behavior is not yet
+implemented.
 
 ## Context
 
@@ -36,9 +37,9 @@ resource invariant.
 ## Consequences
 
 Future Atlas work can iterate without changing GnosticCore's identity and
-transport contracts. Narrative code and tests require classification and
-removal work in a later reset increment; this ADR records the accepted target,
-not delivery of that increment.
+transport contracts. Narrative production code and its obsolete tests have
+been removed from Core and the runner fixture; any continuity implementation
+belongs behind the optional Atlas boundary.
 
 ## Reconsideration triggers
 
@@ -50,4 +51,5 @@ preserve backend ownership of context and persistence.
 ## Links
 
 - [Epic #140](https://github.com/phynics/Gnostic/issues/140)
+- [RESET-006 #144](https://github.com/phynics/Gnostic/issues/144)
 - [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145)
