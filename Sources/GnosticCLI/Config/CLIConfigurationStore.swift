@@ -169,6 +169,12 @@ public struct CLIConfigurationStore: Sendable {
         if hasSchemaVersion {
             do {
                 let manifest = try JSONDecoder().decode(NodeManifest.self, from: data)
+                if manifest.schemaVersion == 1 {
+                    let migrated = try manifest.migratedToV2()
+                    try retainLegacyBackupUnlocked(data)
+                    try writeManifestUnlocked(migrated)
+                    return migrated
+                }
                 try manifest.validate()
                 return manifest
             } catch let error as NodeManifestError {

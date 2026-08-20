@@ -139,7 +139,7 @@ public final class NodeRuntime {
         permissionCoordinator = AscendantPermissionCoordinator(updates: updates)
         turnCoordinator = AscendantTurnCoordinator()
 
-        try adapters.ascendants.validate(kinds: plan.ascendants.map(\.kind))
+        try adapters.ascendants.validate(kinds: plan.ascendants.map { plan.backend(for: $0.id)?.kind ?? $0.kind })
         try adapters.workspaces.validate(kinds: plan.workspaces.map(\.kind))
 
         var references: [UUID: WorkspaceReference] = [:]
@@ -211,10 +211,13 @@ public final class NodeRuntime {
         do {
             var operatedTimelines: [AscendantRuntimeTimeline] = []
             for ascendant in plan.ascendants {
-                let profile = ascendant.llmProfileID.flatMap { id in plan.llmProfiles.first(where: { $0.id == id }) }
+                let profile = plan.profile(for: ascendant.id)
+                let backendKind = plan.backend(for: ascendant.id)?.kind ?? ascendant.kind
+                var configuredAscendant = ascendant
+                configuredAscendant.kind = backendKind
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
                 let dependencies = AscendantRuntimeDependencies(workspaces: workspaces, catalog: catalog, communication: communication, permissionCoordinator: permissionCoordinator)
-                let adapter = try await adapters.ascendants.makeAdapter(for: ascendant, profile: profile, dependencies: dependencies, timelines: timelineConfigurations, references: references)
+                let adapter = try await adapters.ascendants.makeAdapter(for: configuredAscendant, profile: profile, dependencies: dependencies, timelines: timelineConfigurations, references: references)
                 ascendantAdapters[ascendant.id] = adapter
                 operatedTimelines += try await adapter.timelines()
             }

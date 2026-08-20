@@ -7,6 +7,95 @@ import Testing
 
 @Suite("Versioned node manifest")
 struct NodeManifestTests {
+    @Test("schema v2 stores backend configuration on each Ascendant")
+    func schemaV2UsesPerAscendantBackendEnvelope() throws {
+        let nodeID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000101"))
+        let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000102"))
+        let timelineID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000103"))
+        let backend = NodeManifest.BackendConfiguration(
+            kind: "positronic",
+            schemaVersion: 1,
+            settings: ["provider": .string("anthropic"), "model": .string("claude")],
+            secrets: ["apiKey": .string("secret")]
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "localhost", port: 1883, namespace: "gnostic"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "Alice", defaultTimelineID: timelineID, backend: backend)],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
+        )
+
+        try manifest.validate()
+        let encoded = try JSONEncoder().encode(manifest)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["schemaVersion"] as? Int == NodeManifest.currentSchemaVersion)
+        #expect(object["llmProfiles"] == nil)
+        #expect(object["ascendants"] is [Any])
+        #expect(!manifest.redactedDescription().contains("llm-secret"))
+        #expect(!manifest.redactedDescription().contains("apiKey"))
+    }
+
+    @Test("schema v1 migration preserves graph identities and inlines profiles")
+    func schemaV1MigrationPreservesIdentities() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        let node = "A21D0000-0000-4000-8000-000000000111"
+        let profile = "A21D0000-0000-4000-8000-000000000112"
+        let ascendant = "A21D0000-0000-4000-8000-000000000113"
+        let timeline = "A21D0000-0000-4000-8000-000000000114"
+        let workspace = "A21D0000-0000-4000-8000-000000000115"
+        let source = """
+        {"schemaVersion":1,"broker":{"host":"legacy.example","port":1883,"namespace":"gnostic","username":"alice","password":"broker-secret"},"node":{"id":"\(node)","kind":"node","approvalMode":"auto","logLevel":"info"},"llmProfiles":[{"id":"\(profile)","name":"Legacy","provider":"anthropic","model":"claude","apiKey":"llm-secret"}],"ascendants":[{"id":"\(ascendant)","kind":"positronic","name":"Alice","description":"old","metadata":{},"llmProfileID":"\(profile)","defaultTimelineID":"\(timeline)"}],"timelines":[{"id":"\(timeline)","kind":"timeline","title":"Default","operatingAscendantID":"\(ascendant)","flags":[],"attachments":[{"workspaceID":"\(workspace)","scope":"local"}]}],"workspaces":[{"id":"\(workspace)","kind":"echo","name":"Echo","uri":"echo://default"}]}
+        """
+        try Data(source.utf8).write(to: path)
+
+        let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(migrated.schemaVersion == 2)
+        #expect(migrated.node.id.uuidString.lowercased() == node.lowercased())
+        #expect(migrated.ascendants.first?.id.uuidString.lowercased() == ascendant.lowercased())
+        #expect(migrated.timelines.first?.id.uuidString.lowercased() == timeline.lowercased())
+        #expect(migrated.workspaces.first?.id.uuidString.lowercased() == workspace.lowercased())
+        #expect(migrated.ascendants.first?.backend.settings["provider"] == .string("anthropic"))
+        #expect(migrated.ascendants.first?.backend.secrets["apiKey"] == .string("llm-secret"))
+        let canonical = try Data(contentsOf: path)
+        #expect(String(data: canonical, encoding: .utf8)?.contains("llmProfiles") == false)
+        #expect(FileManager.default.fileExists(atPath: path.appendingPathExtension("legacy").path))
+    }
+
+    @Test("v1 shared profiles are inlined independently for each Ascendant")
+    func sharedV1ProfilesAreInlinedPerAscendant() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        let source = """
+        {"schemaVersion":1,"broker":{"host":"localhost","port":1883,"namespace":"gnostic"},"node":{"id":"A21D0000-0000-4000-8000-000000000121","kind":"node","approvalMode":"auto","logLevel":"info"},"llmProfiles":[{"id":"A21D0000-0000-4000-8000-000000000122","name":"Shared","provider":"stub","model":"deterministic"}],"ascendants":[{"id":"A21D0000-0000-4000-8000-000000000123","kind":"positronic","name":"One","metadata":{},"llmProfileID":"A21D0000-0000-4000-8000-000000000122","defaultTimelineID":"A21D0000-0000-4000-8000-000000000125"},{"id":"A21D0000-0000-4000-8000-000000000124","kind":"positronic","name":"Two","metadata":{},"llmProfileID":"A21D0000-0000-4000-8000-000000000122","defaultTimelineID":"A21D0000-0000-4000-8000-000000000126"}],"timelines":[{"id":"A21D0000-0000-4000-8000-000000000125","kind":"timeline","title":"One","operatingAscendantID":"A21D0000-0000-4000-8000-000000000123","flags":[],"attachments":[]},{"id":"A21D0000-0000-4000-8000-000000000126","kind":"timeline","title":"Two","operatingAscendantID":"A21D0000-0000-4000-8000-000000000124","flags":[],"attachments":[]}],"workspaces":[]}
+        """
+        try Data(source.utf8).write(to: path)
+
+        let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(migrated.ascendants.allSatisfy { $0.backend.settings["provider"] == .string("stub") })
+        #expect(Set(migrated.llmProfiles.map(\.id)).count == 2)
+        #expect(migrated.llmProfiles.count == 2)
+    }
+
+    @Test("backend settings and secrets are bounded")
+    func backendEnvelopeRejectsUnboundedValues() throws {
+        let manifest = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
+        var invalid = manifest
+        invalid.ascendants[0].backend.settings = ["payload": .string(String(repeating: "x", count: NodeManifest.BackendConfiguration.maxJSONBytes + 1))]
+        #expect(throws: NodeManifestError.self) { try invalid.validate() }
+    }
+
+    @Test("changing a backend binding preserves the Ascendant identity")
+    func backendBindingCanChangeAcrossRestarts() throws {
+        let original = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
+        var changed = original
+        changed.ascendants[0].backend = .init(kind: "fixture", settings: ["mode": .string("deterministic")])
+
+        try changed.validate(against: original)
+        #expect(changed.ascendants[0].id == original.ascendants[0].id)
+        #expect(changed.ascendants[0].backend.kind == "fixture")
+    }
+
     @Test("manifest validates its graph and compiles a launch plan")
     func manifestValidatesAndCompilesLaunchPlan() throws {
         let profileID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000001"))
@@ -16,7 +105,7 @@ struct NodeManifestTests {
         let nodeID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000005"))
 
         let manifest = NodeManifest(
-            schemaVersion: 1,
+            schemaVersion: 2,
             broker: .init(host: "broker.example", port: 1883, namespace: "gnostic", username: "alice", password: "secret"),
             node: .init(id: nodeID, kind: "node"),
             llmProfiles: [.init(id: profileID, kind: "positronic", provider: "anthropic", endpoint: nil, model: "claude")],
@@ -39,7 +128,7 @@ struct NodeManifestTests {
     func manifestRejectsInvalidGraphAndIdentityChanges() throws {
         let id = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000011"))
         let manifest = NodeManifest(
-            schemaVersion: 1,
+            schemaVersion: 2,
             broker: .init(host: "localhost", port: 1883, namespace: "gnostic"),
             node: .init(id: id, kind: "node"),
             llmProfiles: [.init(id: id, kind: "positronic", provider: "openai")],
@@ -76,7 +165,7 @@ struct NodeManifestTests {
         let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
         let manifest = try store.loadManifest()
 
-        #expect(manifest.schemaVersion == 1)
+        #expect(manifest.schemaVersion == 2)
         #expect(manifest.broker.host == "legacy.example")
         #expect(manifest.broker.password == "broker-secret")
         #expect(manifest.llmProfiles.count == 1)
@@ -206,8 +295,8 @@ struct NodeManifestTests {
     @Test("schema, kind, profile, and attachment errors retain structured reason codes")
     func errorsRetainReasonCodes() throws {
         var unknown = NodeManifest.empty(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
-        unknown.schemaVersion = 2
-        #expect(manifestError(unknown) == .unsupportedSchemaVersion(2))
+        unknown.schemaVersion = 3
+        #expect(manifestError(unknown) == .unsupportedSchemaVersion(3))
 
         let workspaceID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000031"))
         let timelineID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000032"))

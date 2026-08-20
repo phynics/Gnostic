@@ -281,7 +281,7 @@ struct ACPProviderAcceptanceTests {
     }
 
     @Test(
-        "legacy flat config migrates to schema v1 and drives a configured NodeRuntime chat tool turn",
+        "legacy flat config migrates to schema v2 and drives a configured NodeRuntime chat tool turn",
         .timeLimit(.minutes(1))
     )
     @MainActor
@@ -296,7 +296,7 @@ struct ACPProviderAcceptanceTests {
 
         let store = CLIConfigurationStore(configPath: configURL, environment: [:])
         let migrated = try store.loadManifest()
-        #expect(migrated.schemaVersion == 1)
+        #expect(migrated.schemaVersion == 2)
         #expect(migrated.llmProfiles.count == 1)
         #expect(FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
 
