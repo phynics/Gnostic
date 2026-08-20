@@ -39,6 +39,7 @@ public final class NodeRuntime {
     private let backendIdentities: [AscendantBackendIdentity]
     private var backendSpecs: [UUID: BackendSpec] = [:]
     private var backendHealthByID: [UUID: AscendantBackendHealth] = [:]
+    private var backendLeases: [UUID: UUID] = [:]
     private var reconstructionTasks: [UUID: Task<any AscendantBackend, Error>] = [:]
     /// Changes whenever the serve generation changes. A reconstruction may
     /// finish after shutdown, but it can never install into a newer generation.
@@ -79,6 +80,9 @@ public final class NodeRuntime {
         isCurrentBackend: { [weak self] ascendantID, backend, generation in
             self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
         },
+        backendLease: { [weak self] ascendantID, backend in
+            self?.lease(for: ascendantID, backend: backend)
+        },
         adapter: { [weak self] ascendantID in
             guard let self, self.backendHealthByID[ascendantID] == .healthy else { return nil }
             return self.ascendantAdapters[ascendantID]
@@ -111,6 +115,9 @@ public final class NodeRuntime {
         lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
         isCurrentBackend: { [weak self] ascendantID, backend, generation in
             self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
+        },
+        backendLease: { [weak self] ascendantID, backend in
+            self?.lease(for: ascendantID, backend: backend)
         },
         adapter: { [weak self] ascendantID in
             guard let self, self.backendHealthByID[ascendantID] == .healthy else { return nil }
@@ -274,6 +281,7 @@ public final class NodeRuntime {
             let workspaceCapability = BackendWorkspaceDiscoveryCapability(discovery: backendDiscovery)
             backendWorkspaceCapability = workspaceCapability
             var specs: [UUID: BackendSpec] = [:]
+            var leases: [UUID: UUID] = [:]
             for ascendant in plan.ascendants {
                 guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
@@ -294,14 +302,17 @@ public final class NodeRuntime {
                     throw error
                 }
                 ascendantAdapters[ascendant.id] = backendInstance
+                leases[ascendant.id] = UUID.makeVersion4()
                 backendHealthByID[ascendant.id] = .healthy
                 identities.append(backendInstance.identity)
                 operatedTimelines += try await backendInstance.operatedTimelines()
             }
             registry = try NodeRegistry(
                 plan: plan,
-                operatedTimelines: operatedTimelines
+                operatedTimelines: operatedTimelines,
+                backendLeases: leases
             )
+            backendLeases = leases
             backendSpecs = specs
             backendIdentities = identities
         } catch {
@@ -489,6 +500,15 @@ public final class NodeRuntime {
         return (currentBackend as AnyObject) === (backend as AnyObject)
     }
 
+    private func lease(
+        for ascendantID: UUID,
+        backend: any AscendantBackend
+    ) -> UUID? {
+        guard let currentBackend = ascendantAdapters[ascendantID],
+              (currentBackend as AnyObject) === (backend as AnyObject) else { return nil }
+        return backendLeases[ascendantID]
+    }
+
     private func markBackendLifecycleFailure(
         _ ascendantID: UUID,
         backend failedBackend: any AscendantBackend,
@@ -502,6 +522,8 @@ public final class NodeRuntime {
         // A failed backend must not receive another operation while its
         // replacement is being built. Its Gnostic identity remains routed by
         // the registry and is never removed here.
+        backendLeases.removeValue(forKey: ascendantID)
+        await registry.invalidateBackendLease(for: ascendantID)
         if let backend = ascendantAdapters.removeValue(forKey: ascendantID) {
             await backend.shutdown()
         }
@@ -572,6 +594,15 @@ public final class NodeRuntime {
                 // Publication is part of the shared reconstruction task. Every
                 // waiter receives this installed instance only after the
                 // generation and the exact captured revision have been fenced.
+                let lease = UUID.makeVersion4()
+                await self.registry.activateBackendLease(lease, for: ascendantID)
+                guard self.isCurrentReconstructionGeneration(generation) else {
+                    await self.registry.invalidateBackendLease(for: ascendantID)
+                    candidate = nil
+                    await created.shutdown()
+                    throw NodeRuntimeError.notRunning
+                }
+                self.backendLeases[ascendantID] = lease
                 self.ascendantAdapters[ascendantID] = created
                 self.backendHealthByID[ascendantID] = .healthy
                 self.timelineService.restoreBackend(ascendantID)
@@ -701,6 +732,11 @@ public final class NodeRuntime {
 
     private func rollbackStart(close: Bool) async {
         lifecycleGeneration &+= 1
+        let leasedAscendantIDs = backendLeases.keys
+        backendLeases.removeAll()
+        for ascendantID in leasedAscendantIDs {
+            await registry.invalidateBackendLease(for: ascendantID)
+        }
         await transport.cancel()
         let reconstructions = reconstructionTasks.values
         reconstructionTasks.removeAll()

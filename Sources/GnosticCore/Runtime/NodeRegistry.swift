@@ -83,8 +83,13 @@ public actor NodeRegistry {
     private var attachmentIntents: [UUID: [NodeManifest.WorkspaceAttachment]]
     private var timelineMetadata: [UUID: (kind: String, flags: Set<String>)]
     private var backendRevisions: [UUID: UInt64]
+    private var backendLeases: [UUID: UUID]
 
-    public init(plan: NodeLaunchPlan, operatedTimelines: [AscendantRuntimeTimeline]) throws {
+    public init(
+        plan: NodeLaunchPlan,
+        operatedTimelines: [AscendantRuntimeTimeline],
+        backendLeases: [UUID: UUID] = [:]
+    ) throws {
         nodeID = plan.nodeID
         configuredAscendantIDs = plan.ascendants.map(\.id)
         ascendantIDs = Set(configuredAscendantIDs)
@@ -93,6 +98,7 @@ public actor NodeRegistry {
         workspaces = [:]
         timelineMetadata = [:]
         backendRevisions = [:]
+        self.backendLeases = backendLeases
         var intents: [UUID: [NodeManifest.WorkspaceAttachment]] = [:]
         for timeline in plan.timelines {
             intents[timeline.id] = timeline.attachments
@@ -169,6 +175,17 @@ public actor NodeRegistry {
         return operatorID
     }
 
+    /// Replaces the lease accepted by canonical mutation methods. Updating the
+    /// lease and checking it both happen on this actor, closing the suspension
+    /// window between a service-side backend check and a registry write.
+    public func activateBackendLease(_ lease: UUID, for ascendantID: UUID) {
+        backendLeases[ascendantID] = lease
+    }
+
+    public func invalidateBackendLease(for ascendantID: UUID) {
+        backendLeases.removeValue(forKey: ascendantID)
+    }
+
     public func registerRuntimeTimeline(title: String, ascendantID: UUID) throws -> TimelineRecord {
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let now = Date()
@@ -190,7 +207,12 @@ public actor NodeRegistry {
     }
 
     /// Registers an adapter-created runtime timeline under an already selected operator.
-    public func registerRuntimeTimeline(_ timeline: AscendantRuntimeTimeline, ascendantID: UUID) throws -> TimelineRecord {
+    public func registerRuntimeTimeline(
+        _ timeline: AscendantRuntimeTimeline,
+        ascendantID: UUID,
+        backendLease: UUID? = nil
+    ) throws -> TimelineRecord {
+        try requireBackendLease(backendLease, for: ascendantID)
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         guard timelines[timeline.id] == nil else { throw NodeRuntimeError.missingTimeline(timeline.id) }
         guard timeline.attachedAscendantID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? ascendantID) }
@@ -209,6 +231,37 @@ public actor NodeRegistry {
         let record = TimelineRecord(timeline: timeline, operatorID: current.operatorID, provenance: current.provenance)
         timelines[timeline.id] = record
         if let ascendantID = current.operatorID { bumpRevision(for: ascendantID) }
+        return record
+    }
+
+    /// Atomically verifies backend ownership and commits one Timeline plus its
+    /// optional attachment-intent mutation. A retired backend can therefore
+    /// never write canonical state after its lease changes.
+    public func commitBackendTimeline(
+        _ timeline: AscendantRuntimeTimeline,
+        ascendantID: UUID,
+        backendLease: UUID?,
+        upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
+        removingWorkspaceID: UUID? = nil
+    ) throws -> TimelineRecord {
+        try requireBackendLease(backendLease, for: ascendantID)
+        guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
+        guard current.operatorID == ascendantID,
+              timeline.attachedAscendantID == ascendantID else {
+            throw NodeRuntimeError.noOperatingAscendant(timeline.id)
+        }
+        let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: current.provenance)
+        timelines[timeline.id] = record
+        if let attachment {
+            var intents = attachmentIntents[timeline.id] ?? []
+            intents.removeAll { $0.workspaceID == attachment.workspaceID }
+            intents.append(attachment)
+            attachmentIntents[timeline.id] = intents
+        }
+        if let removingWorkspaceID {
+            attachmentIntents[timeline.id, default: []].removeAll { $0.workspaceID == removingWorkspaceID }
+        }
+        bumpRevision(for: ascendantID)
         return record
     }
 
@@ -339,5 +392,10 @@ public actor NodeRegistry {
 
     private func bumpRevision(for ascendantID: UUID) {
         backendRevisions[ascendantID, default: 0] &+= 1
+    }
+
+    private func requireBackendLease(_ lease: UUID?, for ascendantID: UUID) throws {
+        guard let lease else { return }
+        guard backendLeases[ascendantID] == lease else { throw NodeRuntimeError.notRunning }
     }
 }

@@ -13,6 +13,7 @@ public final class TimelineService {
     private let isClosed: @MainActor () -> Bool
     private let lifecycleGeneration: @MainActor () -> UInt64
     private let isCurrentBackend: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
+    private let backendLease: @MainActor (UUID, any AscendantBackend) -> UUID?
     private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
     private var quarantinedAscendantIDs: Set<UUID> = []
@@ -23,6 +24,7 @@ public final class TimelineService {
         isClosed: @escaping @MainActor () -> Bool,
         lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
         isCurrentBackend: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool = { _, _, _ in true },
+        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID? = { _, _ in nil },
         adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
         lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
         advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
@@ -32,6 +34,7 @@ public final class TimelineService {
         self.isClosed = isClosed
         self.lifecycleGeneration = lifecycleGeneration
         self.isCurrentBackend = isCurrentBackend
+        self.backendLease = backendLease
         self.adapter = adapter
         self.lifecycleFailure = lifecycleFailure
         self.advertise = advertise
@@ -57,6 +60,7 @@ public final class TimelineService {
               let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let generation = lifecycleGeneration()
         guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+        let lease = backendLease(ascendantID, adapter)
         let requestedID = UUID.makeVersion4()
         var projectedID = requestedID
         do {
@@ -65,7 +69,11 @@ public final class TimelineService {
             projectedID = timeline.id
             guard timeline.id == requestedID else { throw NodeRuntimeError.missingTimeline(timeline.id) }
             guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
-            _ = try await registry.registerRuntimeTimeline(timeline, ascendantID: ascendantID)
+            _ = try await registry.registerRuntimeTimeline(
+                timeline,
+                ascendantID: ascendantID,
+                backendLease: lease
+            )
             guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, false)
             return Self.status(timeline)
@@ -97,6 +105,7 @@ public final class TimelineService {
               let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let generation = lifecycleGeneration()
         guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+        let lease = backendLease(ascendantID, adapter)
         let previous = await registry.timeline(id: request.timelineID)?.timeline
         guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
         let timeline: AscendantRuntimeTimeline
@@ -113,7 +122,11 @@ public final class TimelineService {
         }
         do {
             guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
-            _ = try await registry.replaceTimeline(timeline)
+            _ = try await registry.commitBackendTimeline(
+                timeline,
+                ascendantID: ascendantID,
+                backendLease: lease
+            )
             guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, true)
             return Self.status(timeline)
