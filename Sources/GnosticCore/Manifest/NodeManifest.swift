@@ -390,7 +390,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
     }
 
     private func profile(for ascendant: Ascendant) -> LLMProfile? {
-            profile(from: ascendant.backend, fallbackID: ascendant.llmProfileID ?? encodedProfileID(in: ascendant.backend) ?? stableProfileID(for: ascendant.id))
+        profile(from: ascendant.backend, fallbackID: ascendant.llmProfileID ?? encodedProfileID(in: ascendant.backend) ?? stableProfileID(for: ascendant.id))
     }
 
     private func profile(from backend: AscendantBackendConfiguration, fallbackID: UUID?) -> LLMProfile? {
