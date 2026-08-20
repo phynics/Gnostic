@@ -18,9 +18,9 @@ public enum AscendantTurnPermissionContext {
 }
 
 public struct AscendantToolApprovalPolicy: ToolApprovalPolicy {
-    private let coordinator: AscendantPermissionCoordinator
+    private let coordinator: any AscendantBackendPermissionService
 
-    public init(coordinator: AscendantPermissionCoordinator) {
+    public init(coordinator: any AscendantBackendPermissionService) {
         self.coordinator = coordinator
     }
 
@@ -30,7 +30,7 @@ public struct AscendantToolApprovalPolicy: ToolApprovalPolicy {
     ) async -> ToolApprovalDecision {
         guard let context = AscendantTurnPermissionContext.current else { return .deny }
         let correlationID = UUID().uuidString.lowercased()
-        let approved = await coordinator.request(AscendantPermissionRequest(
+        let approved = await coordinator.request(BackendPermissionRequest(
             correlationID: correlationID,
             timelineID: context.timelineID,
             clientTurnID: context.clientTurnID,
@@ -126,5 +126,17 @@ public actor AscendantPermissionCoordinator {
                 status: status
             )
         )
+    }
+}
+
+extension AscendantPermissionCoordinator: AscendantBackendPermissionService {
+    public func request(_ request: BackendPermissionRequest) async -> Bool {
+        await self.request(AscendantPermissionRequest(
+            correlationID: request.correlationID,
+            timelineID: request.timelineID,
+            clientTurnID: request.clientTurnID,
+            toolCallID: request.toolCallID,
+            title: request.title
+        ))
     }
 }

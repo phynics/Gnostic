@@ -16,6 +16,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
     case unknownAscendant(UUID)
     case noConfiguredAscendant
     case ambiguousAscendant
+    case workspaceCapabilityUnavailable(UUID)
     case turnFailed(String)
     case startInProgress
     case notRunning
@@ -31,6 +32,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case let .unknownAscendant(id): "Ascendant \(id.uuidString) is not in the launch plan."
         case .noConfiguredAscendant: "The node has no configured Ascendant."
         case .ambiguousAscendant: "The node has multiple Ascendants; select one explicitly."
+        case let .workspaceCapabilityUnavailable(id): "Ascendant operating Timeline \(id.uuidString) does not support Workspace operations."
         case let .turnFailed(detail): detail
         case .startInProgress: "The node runtime is already starting."
         case .notRunning: "The node runtime is not running."
@@ -48,6 +50,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case .unknownAscendant: "unknownAscendant"
         case .noConfiguredAscendant: "noConfiguredAscendant"
         case .ambiguousAscendant: "ambiguousAscendant"
+        case .workspaceCapabilityUnavailable: "workspaceCapabilityUnavailable"
         case .turnFailed: "turnFailed"
         case .startInProgress: "startInProgress"
         case .notRunning: "notRunning"
@@ -59,6 +62,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case .missingTimeline, .missingWorkspace, .unknownAscendant: 404
         case .noOperatingAscendant: 409
         case .startInProgress, .notRunning: 503
+        case .workspaceCapabilityUnavailable: 501
         case .turnFailed: 500
         default: 400
         }
@@ -99,80 +103,18 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
 }
 
 /// Gnostic's stable, provider-independent projection of an Ascendant identity.
-public struct AscendantRuntimeIdentity: Sendable, Equatable {
-    public let id: UUID
-    public let name: String
-    public let description: String
-    public let privateTimelineID: UUID
-    public let primaryWorkspaceID: UUID?
-    public let lastActiveAt: Date
-    public let createdAt: Date
-    public let updatedAt: Date
-    public let capabilities: [String]
+/// Compatibility names for the backend-neutral projections. The aliases
+/// keep protocol-v2 call sites independent of any provider-native type.
+public typealias AscendantRuntimeIdentity = AscendantBackendIdentity
+public typealias AscendantRuntimeTimeline = AscendantBackendTimeline
 
-    public init(
-        id: UUID,
-        name: String,
-        description: String,
-        privateTimelineID: UUID,
-        primaryWorkspaceID: UUID?,
-        lastActiveAt: Date,
-        createdAt: Date,
-        updatedAt: Date,
-        capabilities: [String] = Array(GnosticCapability.stable).sorted()
-    ) {
-        self.id = id
-        self.name = name
-        self.description = description
-        self.privateTimelineID = privateTimelineID
-        self.primaryWorkspaceID = primaryWorkspaceID
-        self.lastActiveAt = lastActiveAt
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-        self.capabilities = capabilities
-    }
-}
-
-/// Gnostic's stable, provider-independent projection of a Timeline.
-public struct AscendantRuntimeTimeline: Sendable, Equatable {
-    public let id: UUID
-    public let title: String
-    public let attachedWorkspaceIDs: [UUID]
-    public let attachedAscendantID: UUID?
-    public let isArchived: Bool
-    public let isPrivate: Bool
-    public let createdAt: Date
-    public let updatedAt: Date
-
-    public init(
-        id: UUID,
-        title: String,
-        attachedWorkspaceIDs: [UUID],
-        attachedAscendantID: UUID?,
-        isArchived: Bool,
-        isPrivate: Bool,
-        createdAt: Date,
-        updatedAt: Date
-    ) {
-        self.id = id
-        self.title = title
-        self.attachedWorkspaceIDs = attachedWorkspaceIDs
-        self.attachedAscendantID = attachedAscendantID
-        self.isArchived = isArchived
-        self.isPrivate = isPrivate
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-    }
-}
-
-/// Construction dependencies supplied by the node composition boundary.  The
-/// adapter owns all PositronicKit objects created from these values.
+/// Construction dependencies supplied by the node composition boundary. Raw
+/// transport and provider-native objects are intentionally absent. A legacy
+/// adapter can use the compatibility bridge supplied by the registry.
 @MainActor public struct AscendantRuntimeDependencies {
-    public let workspaces: [UUID: any Workspace]
-    public let catalog: NetworkCatalog
-    public let communication: CommunicationManager
-    public let permissionCoordinator: AscendantPermissionCoordinator
-    public init(workspaces: [UUID: any Workspace], catalog: NetworkCatalog, communication: CommunicationManager, permissionCoordinator: AscendantPermissionCoordinator) {
-        self.workspaces = workspaces; self.catalog = catalog; self.communication = communication; self.permissionCoordinator = permissionCoordinator
+    public let services: AscendantBackendServices
+
+    public init(services: AscendantBackendServices = .empty) {
+        self.services = services
     }
 }

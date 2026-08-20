@@ -197,6 +197,23 @@ struct AscendantTurnCoordinatorTests {
         #expect(await probe.starts == 2)
     }
 
+    @Test("backend terminal metadata survives coordination")
+    func backendTerminalMetadataIsPreserved() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        let request = AscendantTurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-terminal")
+
+        do {
+            _ = try await coordinator.execute(request) {
+                throw AscendantBackendError.terminal(.init(code: "providerUnavailable", message: "provider is offline", retryable: true))
+            }
+            Issue.record("The terminal backend failure unexpectedly succeeded.")
+        } catch let error as AscendantTurnError {
+            #expect(error.reasonCode == "providerUnavailable")
+            #expect(error.retryable)
+            #expect(error.localizedDescription == "provider is offline")
+        }
+    }
+
     @Test("evicted results retain a non-retryable identity tombstone")
     func evictedResultsNeverRerun() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1)

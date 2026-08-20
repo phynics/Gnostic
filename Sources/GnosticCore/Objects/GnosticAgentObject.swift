@@ -9,6 +9,10 @@ public enum GnosticObjectType {
     /// The object type for a projected Gnostic Ascendant.
     public static let ascendant = "me.atkn.gnostic.Ascendant"
 
+    /// Compatibility spelling for pre-protocol-v2 source callers. The wire
+    /// value remains the protocol-v2 Ascendant type.
+    public static let agent = ascendant
+
     /// The object type for a projected PositronicKit timeline.
     public static let timeline = "me.atkn.gnostic.Timeline"
 
@@ -24,13 +28,17 @@ public enum GnosticObjectType {
     }
 }
 
-/// A safe network projection of a PositronicKit ``AgentInstance``.
+/// A safe network projection of a backend-neutral Ascendant identity.
 public final class GnosticAscendantObject: CoatyObject {
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 
     /// Stable and namespaced experimental capabilities of this Ascendant.
     public let capabilities: [String]
+
+    /// Diagnostic backend metadata; clients must not use it for selection.
+    public var backendKind: String?
+    public var backendVersion: String?
 
     /// The projected Ascendant's public description.
     public var ascendantDescription: String
@@ -55,16 +63,12 @@ public final class GnosticAscendantObject: CoatyObject {
         register(objectType: GnosticObjectType.ascendant, with: self)
     }
 
-    /// Bridges a PositronicKit agent inside Gnostic's implementation boundary.
-    /// Public callers use `AscendantRuntimeIdentity` so PositronicKit remains replaceable.
-    convenience init(ascendant: AgentInstance) {
-        self.init(identity: .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.privateThreadID, primaryWorkspaceID: ascendant.primaryWorkspaceID, lastActiveAt: ascendant.lastActiveAt, createdAt: ascendant.createdAt, updatedAt: ascendant.updatedAt))
-    }
-
     /// Creates a network projection without exposing a provider's agent type.
     public init(identity: AscendantRuntimeIdentity, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
-        capabilities = identity.capabilities
+        capabilities = identity.capabilities.interoperability.sorted()
+        backendKind = identity.capabilities.backendKind
+        backendVersion = identity.capabilities.backendVersion
         ascendantDescription = identity.description
         primaryWorkspaceID = identity.primaryWorkspaceID
         privateTimelineID = identity.privateTimelineID
@@ -82,6 +86,8 @@ public final class GnosticAscendantObject: CoatyObject {
     private enum CodingKeys: String, CodingKey {
         case protocolMajor
         case capabilities
+        case backendKind
+        case backendVersion
         case ascendantDescription
         case primaryWorkspaceID
         case privateTimelineID
@@ -97,6 +103,8 @@ public final class GnosticAscendantObject: CoatyObject {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        backendKind = try container.decodeIfPresent(String.self, forKey: .backendKind)
+        backendVersion = try container.decodeIfPresent(String.self, forKey: .backendVersion)
         ascendantDescription = try container.decode(String.self, forKey: .ascendantDescription)
         primaryWorkspaceID = try container.decodeIfPresent(UUID.self, forKey: .primaryWorkspaceID)
         privateTimelineID = try container.decode(UUID.self, forKey: .privateTimelineID)
@@ -114,6 +122,8 @@ public final class GnosticAscendantObject: CoatyObject {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(capabilities, forKey: .capabilities)
+        try container.encodeIfPresent(backendKind, forKey: .backendKind)
+        try container.encodeIfPresent(backendVersion, forKey: .backendVersion)
         try container.encode(ascendantDescription, forKey: .ascendantDescription)
         try container.encodeIfPresent(primaryWorkspaceID, forKey: .primaryWorkspaceID)
         try container.encode(privateTimelineID, forKey: .privateTimelineID)
@@ -122,3 +132,7 @@ public final class GnosticAscendantObject: CoatyObject {
         try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
+
+/// Compatibility spelling retained for pre-protocol-v2 source callers. It
+/// still projects the protocol-v2 Ascendant wire type.
+public typealias GnosticAgentObject = GnosticAscendantObject

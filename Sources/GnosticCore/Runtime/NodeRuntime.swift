@@ -24,7 +24,8 @@ public final class NodeRuntime {
     public let port: Int
     public let namespace: String
     public var isRunning: Bool { lifecycleState == .running }
-    private var ascendantAdapters: [UUID: any AscendantRuntimeAdapter]
+    private var ascendantAdapters: [UUID: any AscendantBackend]
+    private let backendIdentities: [AscendantBackendIdentity]
     /// Canonical domain state. Adapter persistence and network objects are
     /// projections of the records accepted by this actor.
     private let registry: NodeRegistry
@@ -37,6 +38,7 @@ public final class NodeRuntime {
     private let adapters: NodeRuntimeAdapters
     private let initialWorkspaceReferences: [UUID: WorkspaceReference]
     private let localWorkspaces: [UUID: any Workspace]
+    private let backendWorkspaceService: GnosticWorkspaceBackendService
     private var lifecycleState: LifecycleState = .stopped
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
@@ -53,6 +55,7 @@ public final class NodeRuntime {
         discovery: workspaceDiscovery,
         localWorkspaces: localWorkspaces,
         references: initialWorkspaceReferences,
+        backendWorkspaceService: backendWorkspaceService,
         isRunning: { [weak self] in self?.isRunning == true },
         adapter: { [weak self] in self?.ascendantAdapters[$0] },
         readvertiseTimeline: { [projectionRelay] timeline in
@@ -79,7 +82,7 @@ public final class NodeRuntime {
         communication: communication,
         lifecycle: lifecycle,
         registry: registry,
-        ascendantIdentities: { [weak self] in self?.ascendantAdapters.values.map(\.identity) ?? [] },
+        ascendantIdentities: { [weak self] in self?.backendIdentities ?? [] },
         workspaceReferences: { [initialWorkspaceReferences, plan] in
             initialWorkspaceReferences.values.filter { reference in
                 plan.workspaces.contains { $0.id == reference.id }
@@ -207,24 +210,46 @@ public final class NodeRuntime {
         lifecycle = lifecycleController
         catalog = objectCatalog
         subscription = GnosticSubscription(catalog: objectCatalog, communicationManager: communicationManager)
+        backendWorkspaceService = GnosticWorkspaceBackendService(
+            localWorkspaces: workspaces,
+            references: references,
+            catalog: objectCatalog,
+            communication: communicationManager
+        )
 
         do {
             var operatedTimelines: [AscendantRuntimeTimeline] = []
+            var identities: [AscendantBackendIdentity] = []
+            let backendDiscovery = AxolotyWorkspaceDiscovery(
+                catalog: objectCatalog,
+                subscription: subscription,
+                communication: communicationManager
+            )
+            let workspaceCapability = BackendWorkspaceDiscoveryCapability(discovery: backendDiscovery)
             for ascendant in plan.ascendants {
                 guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
-                let backendKind = backend.kind
-                var configuredAscendant = ascendant
-                configuredAscendant.kind = backendKind
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
-                let dependencies = AscendantRuntimeDependencies(workspaces: workspaces, catalog: catalog, communication: communication, permissionCoordinator: permissionCoordinator)
-                let adapter = try await adapters.ascendants.makeAdapter(for: configuredAscendant, backend: backend, dependencies: dependencies, timelines: timelineConfigurations, references: references)
-                ascendantAdapters[ascendant.id] = adapter
-                operatedTimelines += try await adapter.timelines()
+                let backendServices = AscendantBackendServices(
+                    workspace: backendWorkspaceService,
+                    permission: permissionCoordinator,
+                    optionalCapabilities: [workspaceCapability]
+                )
+                let backendInstance = try await adapters.ascendants.makeBackend(for: ascendant, backend: backend, services: backendServices, timelines: timelineConfigurations)
+                do {
+                    try backendInstance.validateConfiguration()
+                } catch {
+                    await backendInstance.shutdown()
+                    throw error
+                }
+                ascendantAdapters[ascendant.id] = backendInstance
+                identities.append(backendInstance.identity)
+                operatedTimelines += try await backendInstance.operatedTimelines()
             }
             registry = try NodeRegistry(
                 plan: plan,
                 operatedTimelines: operatedTimelines
             )
+            backendIdentities = identities
         } catch {
             for adapter in ascendantAdapters.values {
                 await adapter.shutdown()
@@ -365,9 +390,10 @@ public final class NodeRuntime {
     /// Returns the tool identifiers currently available to an operated Timeline.
     public func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
         guard let ascendantID = await ascendantID(forTimeline: timelineID),
-              let adapter = ascendantAdapters[ascendantID] else {
+              let backend = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(timelineID)
         }
+        guard let adapter = backend as? any AscendantBackendWorkspaceCapability else { return [] }
         return await adapter.enabledToolIDs(for: timelineID)
     }
 
@@ -448,7 +474,7 @@ public final class NodeRuntime {
         let resolutionTask = networkResolutionTask
         publishTask?.cancel(); turnUpdatePublishTask = nil
         resolutionTask?.cancel(); networkResolutionTask = nil
-        for adapter in ascendantAdapters.values { await adapter.cancelAll() }
+        for adapter in ascendantAdapters.values { await adapter.cancel() }
         await turnCoordinator.cancelAll()
         for adapter in ascendantAdapters.values { await adapter.shutdown() }
         await permissionCoordinator.denyAll(reason: "connection_lost")
@@ -487,14 +513,5 @@ public final class NodeRuntime {
 
     private static func echoToolDefinition(for _: NodeManifest.Workspace) -> WorkspaceToolDefinition {
         WorkspaceToolDefinition(id: echoToolID, name: "Workspace echo", description: "Echoes a value from the workspace.", parametersSchema: ["type": AnyCodable("object"), "properties": AnyCodable(["value": AnyCodable(["type": AnyCodable("string")])]), "required": AnyCodable(["value"]), "additionalProperties": AnyCodable(false)])
-    }
-}
-
-struct RuntimeWorkspaceFactory: WorkspaceFactory, Sendable {
-    let local: [UUID: any Workspace]
-    let remote: AxolotyWorkspaceFactory
-    func create(from reference: WorkspaceReference) throws -> any Workspace {
-        if let workspace = local[reference.id] { return workspace }
-        return try remote.create(from: reference)
     }
 }

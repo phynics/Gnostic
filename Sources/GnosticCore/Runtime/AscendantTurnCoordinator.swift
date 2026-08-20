@@ -108,6 +108,36 @@ public actor AscendantTurnCoordinator {
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID
                 )
+            } catch let error as AscendantBackendError {
+                if case .cancelled = error {
+                    throw AscendantTurnError.cancelled(
+                        timelineID: request.timelineID,
+                        clientTurnID: clientTurnID
+                    )
+                }
+                if case let .lifecycleUnusable(failure) = error {
+                    throw AscendantTurnError.lifecycleUnusable(
+                        timelineID: request.timelineID,
+                        clientTurnID: clientTurnID,
+                        detail: failure.message
+                    )
+                }
+                if case let .terminal(failure) = error {
+                    throw AscendantTurnError.terminal(
+                        timelineID: request.timelineID,
+                        clientTurnID: clientTurnID,
+                        code: failure.code,
+                        detail: failure.message,
+                        retryable: failure.retryable
+                    )
+                }
+                throw AscendantTurnError.terminal(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    code: error.reasonCode,
+                    detail: error.localizedDescription,
+                    retryable: false
+                )
             } catch let error as AscendantTurnError {
                 throw error
             } catch {

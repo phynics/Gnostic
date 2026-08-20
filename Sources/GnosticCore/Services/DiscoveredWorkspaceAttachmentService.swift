@@ -20,7 +20,7 @@ public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
 /// Imports safe discovered workspace references and attaches them through `ThreadManager`.
 @MainActor
 final class DiscoveredWorkspaceAttachmentService {
-    private let catalog: NetworkCatalog
+    private let discovery: any WorkspaceDiscovery
     private let threadManager: ThreadManager
     private let allowedTimelineIDs: Set<UUID>?
     private let readvertiseTimeline: ((Thread) -> Void)?
@@ -29,25 +29,44 @@ final class DiscoveredWorkspaceAttachmentService {
     /// Workspace references are imported into the manager's own store via
     /// `ThreadManager.importWorkspace`, so attach validates correctly.
     init(
-        catalog: NetworkCatalog,
+        discovery: any WorkspaceDiscovery,
         threadManager: ThreadManager,
         allowedTimelineIDs: Set<UUID>? = nil,
         readvertiseTimeline: ((Thread) -> Void)? = nil
     ) {
-        self.catalog = catalog
+        self.discovery = discovery
         self.threadManager = threadManager
         self.allowedTimelineIDs = allowedTimelineIDs
         self.readvertiseTimeline = readvertiseTimeline
     }
 
+    /// Compatibility initializer for callers that still own the Axoloty
+    /// catalog directly. Backend construction uses the Gnostic discovery seam
+    /// above so raw host values do not cross into adapter services.
+    convenience init(
+        catalog: NetworkCatalog,
+        threadManager: ThreadManager,
+        allowedTimelineIDs: Set<UUID>? = nil,
+        readvertiseTimeline: ((Thread) -> Void)? = nil
+    ) {
+        self.init(
+            discovery: CatalogWorkspaceDiscovery(catalog: catalog),
+            threadManager: threadManager,
+            allowedTimelineIDs: allowedTimelineIDs,
+            readvertiseTimeline: readvertiseTimeline
+        )
+    }
+
     /// Lists provider-scoped catalog entries for `list_network_objects`.
     func listNetworkObjects() async -> [NetworkCatalogEntry] {
-        await catalog.networkObjects()
+        await discovery.objects()
     }
 
     /// Returns an inspection record for `inspect_network_object` without attaching it.
     func inspectNetworkObject(id: UUID, providerID: String) async -> NetworkCatalogEntry? {
-        await catalog.object(id: id, providerID: providerID)
+        await discovery.objects().first { entry in
+            entry.objectID == id && entry.providerID == providerID
+        }
     }
 
     /// Imports a uniquely advertised workspace as a runtime reference and attaches it after approval.
@@ -57,11 +76,11 @@ final class DiscoveredWorkspaceAttachmentService {
         if let allowedTimelineIDs, !allowedTimelineIDs.contains(timelineID) {
             throw DiscoveredWorkspaceAttachmentError.timelineNotOwned(timelineID)
         }
-        let status = await catalog.workspaceAttachmentStatus(id: workspaceID)
+        let status = await discovery.attachmentStatus(id: workspaceID)
         guard case let .available(_, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
-        guard let descriptor = await catalog.networkObjects().first(where: {
+        guard let descriptor = await discovery.objects().first(where: {
             $0.objectID == workspaceID && $0.workspace?.uri == uri
         })?.workspace,
             let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
@@ -73,5 +92,22 @@ final class DiscoveredWorkspaceAttachmentService {
             readvertiseTimeline?(thread)
         }
         return reference
+    }
+}
+
+/// Adapts the legacy catalog owner to the narrow discovery seam used by
+/// backend-specific optional services.
+@MainActor
+private final class CatalogWorkspaceDiscovery: WorkspaceDiscovery {
+    private let catalog: NetworkCatalog
+
+    init(catalog: NetworkCatalog) {
+        self.catalog = catalog
+    }
+
+    func discover(timeout _: Duration) async {}
+    func objects() async -> [NetworkCatalogEntry] { await catalog.networkObjects() }
+    func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
+        await catalog.workspaceAttachmentStatus(id: id)
     }
 }

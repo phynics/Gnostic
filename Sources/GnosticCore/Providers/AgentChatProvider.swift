@@ -170,7 +170,7 @@ public struct AscendantTurnProvider: Sendable {
     private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
         switch error {
         case .conflict, .replayUnavailable: return true
-        case .failed, .cancelled: return false
+        case .failed, .terminal, .cancelled, .lifecycleUnusable: return false
         }
     }
 
