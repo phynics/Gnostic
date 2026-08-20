@@ -174,10 +174,10 @@ function validateExceptions(root, failures) {
 function validateVolatileText(root, failures) {
   for (const file of ["AGENTS.md", "README.md"]) {
     const text = readText(root, file);
-    if (/^##+\s+(?:current\s+)?baseline\b/im.test(text) || /^##+\s+current\s+(?:status|state)\b/im.test(text)) {
+    if (/^##+\s+(?:current\s+)?baseline\b/im.test(text) || /^##+\s+(?:current|repository)\s+(?:status|state|environment|versions?)\b/im.test(text) || /^##+\s+volatile\b/im.test(text)) {
       failures.push(`${file}: volatile baseline/status section is not allowed`);
     }
-    if (/\b\d+\s+(?:swift\s+testing\s+)?tests?\s+in\s+\d+\s+suites?\b/i.test(text) || /\b\d+\s+suites?\b/i.test(text)) {
+    if (/\b\d+\s+(?:swift\s+testing\s+)?tests?\b/i.test(text) || /\b\d+\s+suites?\b/i.test(text)) {
       failures.push(`${file}: exact test/suite counts are not allowed`);
     }
     if (/(?:revision|commit|sha|pinned|pinned\s+to|temporary)\b[^\n]{0,100}\b[0-9a-f]{7,40}\b/i.test(text)) {
@@ -334,6 +334,8 @@ function selfTest() {
     expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "make nonexistent-target\n"), "nonexistent-target");
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "AGENTS.md"), "## Current baseline\n"), "volatile baseline/status");
+    writeFixture(root);
+    expectFailure(root, options, () => writeFileSync(join(root, "AGENTS.md"), "245 tests\n"), "exact test/suite counts");
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/exceptions.json"), JSON.stringify({ schemaVersion: 1, exceptions: [{ id: "x" }] })), "exceptions[0].rule");
     writeFixture(root);
