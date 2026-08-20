@@ -60,7 +60,7 @@ struct BackendArchitectureFitnessTests {
             "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
             "Sources/GnosticCore/Providers/AgentChatProvider.swift",
             "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
-            "Sources/GnosticCLI/Chat/RemoteChatClient.swift",
+            "Sources/GnosticCLI/ACP/RemoteTurnClient.swift",
         ]
         let forbidden = [
             "GnosticObjectType.agent",
@@ -85,6 +85,27 @@ struct BackendArchitectureFitnessTests {
         #expect(!FileManager.default.fileExists(
             atPath: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/LegacyAscendantAdapterBridge.swift").path
         ))
+
+        for relativePath in [
+            "Sources/GnosticCLI/Commands/ChatCommand.swift",
+            "Sources/GnosticCLI/Chat",
+        ] {
+            #expect(!FileManager.default.fileExists(
+                atPath: rootURL.appendingPathComponent(relativePath).path
+            ), "Removed direct Turn CLI path remains: \(relativePath)")
+        }
+
+        let cliSourceRoot = rootURL.appendingPathComponent("Sources/GnosticCLI")
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: cliSourceRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: cliSourceRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for removedName in ["TurnCommand", "TurnREPL", "ChatREPL", "RemoteTurnSession"] {
+                #expect(!source.contains(removedName), "Removed direct Turn CLI symbol '\(removedName)' remains in \(relativePath).")
+            }
+        }
 
         let sourceRoot = rootURL.appendingPathComponent("Sources")
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)

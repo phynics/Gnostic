@@ -8,11 +8,11 @@ import Testing
 
 @testable import GnosticCLI
 
-@Suite("Remote chat client over the broker")
+@Suite("Remote Turn client over the broker")
 struct RemoteTurnClientTests {
-    @Test("chat, timeline status, and workspace ops resolve against a live serve") @MainActor
+    @Test("turn, timeline status, and workspace ops resolve against a live serve") @MainActor
     func roundTripWithLiveServe() async throws {
-        let namespace = "remote-chat-tests"
+        let namespace = "remote-turn-tests"
         let node = try await nodeRuntime(namespace: namespace)
         defer { Task { await node.runtime.shutdown() } }
         try await node.runtime.start()
@@ -32,7 +32,7 @@ struct RemoteTurnClientTests {
         let timelineID = try await client.discoverServedTimeline()
         #expect(timelineID == node.timelineID)
 
-        // Chat turn over ascendant.turn. The serve runs with an unconfigured LLM, so
+        // Turn over ascendant.turn. The serve runs with an unconfigured LLM, so
         // the round-trip returns the serve's structured failure — proving the
         // Axoloty Call/Return path reached the served handler.
         await #expect(throws: RemoteCallFailure.self) {
@@ -77,7 +77,7 @@ struct RemoteTurnClientTests {
 
     @Test("Turn capability is scoped to the Ascendant attached to the Timeline") @MainActor
     func turnRequiresTimelineAscendantCapability() async throws {
-        let namespace = "remote-chat-capability-scope-\(UUID().uuidString.lowercased())"
+        let namespace = "remote-turn-capability-scope-\(UUID().uuidString.lowercased())"
         let incapableAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000024")!
         let capableAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000025")!
         let incapableTimelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000026")!
@@ -123,7 +123,7 @@ struct RemoteTurnClientTests {
 
     @Test("attach and detach a workspace over the served ops") @MainActor
     func attachDetachOverBroker() async throws {
-        let namespace = "remote-chat-attach-tests"
+        let namespace = "remote-turn-attach-tests"
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
         let node = try await nodeRuntime(
             namespace: namespace,
@@ -164,53 +164,9 @@ struct RemoteTurnClientTests {
         }
     }
 
-    @Test("timeline create/list/rename resolve over the broker") @MainActor
-    func timelineManagementOverBroker() async throws {
-        let namespace = "remote-chat-timeline-tests"
-        let node = try await nodeRuntime(namespace: namespace)
-        defer { Task { await node.runtime.shutdown() } }
-        try await node.runtime.start()
-
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { client.stop() }
-        try await client.connect()
-        try await poll(timeout: .seconds(8)) {
-            await client.discoverAscendants().contains { $0.id == node.ascendantID }
-        }
-        let providerID = try await client.selectAscendant(id: node.ascendantID).providerID
-
-        // The Node already created a default timeline at startup; list it.
-        let initial = try await client.listTimelines(providerID: providerID)
-        #expect(initial.contains { $0.timelineID == node.timelineID })
-
-        // Create + activate a second timeline via the session.
-        let session = RemoteTurnSession(
-            client: client,
-            timelineID: node.timelineID,
-            ascendantID: node.ascendantID,
-            providerID: providerID
-        )
-        try await session.createActivateTimeline(title: "Research")
-        #expect(session.timelineID != node.timelineID)
-
-        // Rename the active timeline.
-        let renamed = try await session.renameActiveTimeline(title: "Renamed Topic")
-        #expect(renamed.title == "Renamed Topic")
-        #expect(renamed.timelineID == session.timelineID)
-
-        // Both timelines are now listed.
-        let after = try await client.listTimelines(providerID: providerID)
-        #expect(after.count == initial.count + 1)
-        #expect(after.contains { $0.timelineID == session.timelineID && $0.title == "Renamed Topic" })
-
-        // Switching back to the first timeline targets it.
-        session.switchTimeline(to: node.timelineID)
-        #expect(session.timelineID == node.timelineID)
-    }
-
     @Test("workspace invocation keeps duplicate Timeline IDs scoped to the Workspace provider") @MainActor
     func workspaceInvocationScopesDuplicateTimelineIDs() async throws {
-        let namespace = "remote-chat-duplicate-timeline-provider-tests"
+        let namespace = "remote-turn-duplicate-timeline-provider-tests"
         let timelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000011")!
         let firstWorkspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000012")!
         let secondWorkspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000013")!

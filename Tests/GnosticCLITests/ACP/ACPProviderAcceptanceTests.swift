@@ -309,7 +309,7 @@ struct ACPProviderAcceptanceTests {
         #expect(plan.timelines.first?.attachments == [.local(workspaceID)])
 
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, _ in StubLanguageModel() }
+        adapters.ascendants.register(kind: "positronic") { _, _ in LegacyMigrationToolLanguageModel() }
         let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
         defer {
             Task { @MainActor in await runtime.shutdown() }
@@ -515,6 +515,96 @@ private final class AcceptanceFinalLanguageModel: LanguageModel, @unchecked Send
         }
     }
 
+    func loadConfiguration() async {}
+    func updateConfiguration(_: LLMConfiguration) async throws {}
+    func clearConfiguration() async {}
+    func restoreFromBackup() async throws {}
+    func exportConfiguration() async throws -> Data { Data() }
+    func importConfiguration(from _: Data) async throws {}
+    func sendMessage(_ content: String) async throws -> String { content }
+    func sendMessage(
+        _: String,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        useUtilityModel _: Bool
+    ) async throws -> String { "ok" }
+    func generateTags(for _: String) async throws -> [String] { [] }
+    func generateTitle(for _: [Message]) async throws -> String { "acceptance" }
+    func evaluateRecallPerformance(
+        transcript _: String,
+        recalledMemories _: [Memory]
+    ) async throws -> [String: Double] { [:] }
+    func fetchAvailableModels() async throws -> [String]? { nil }
+}
+
+/// Deterministic two-step model for the migrated-config ACP acceptance path.
+private final class LegacyMigrationToolLanguageModel: LanguageModel, @unchecked Sendable {
+    private actor Counter {
+        private var value = 0
+        func next() -> Int {
+            value += 1
+            return value
+        }
+    }
+
+    private let counter = Counter()
+    var isConfigured: Bool { get async { true } }
+    var configuration: LLMConfiguration { get async { .init(activeProvider: .openAI, providers: [:]) } }
+
+    func chatStream(
+        messages: [LLMMessage],
+        tools _: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        if await counter.next() == 1 {
+            let chunk = LLMStreamChunk(
+                id: "legacy-tool",
+                model: "acceptance",
+                choices: [LLMStreamChoice(
+                    index: 0,
+                    delta: LLMStreamDelta(
+                        role: .assistant,
+                        toolCalls: [LLMToolCallDelta(
+                            index: 0,
+                            id: "call_1",
+                            function: LLMToolCallDeltaFunction(
+                                name: "workspace_echo",
+                                arguments: #"{"value":"network"}"#
+                            )
+                        )]
+                    ),
+                    finishReason: "tool_calls"
+                )]
+            )
+            return AsyncThrowingStream { continuation in
+                continuation.yield(chunk)
+                continuation.finish()
+            }
+        }
+        guard messages.contains(where: {
+            $0.role == .tool && $0.toolCallID == "call_1" && $0.content == "network"
+        }) else {
+            return AsyncThrowingStream { $0.finish(throwing: ModelError.missingToolResult) }
+        }
+        let chunk = LLMStreamChunk(
+            id: "legacy-final",
+            model: "acceptance",
+            choices: [LLMStreamChoice(
+                index: 0,
+                delta: LLMStreamDelta(content: "Echo received: network"),
+                finishReason: "stop"
+            )]
+        )
+        return AsyncThrowingStream { continuation in
+            continuation.yield(chunk)
+            continuation.finish()
+        }
+    }
+
+    private enum ModelError: Error { case missingToolResult }
     func loadConfiguration() async {}
     func updateConfiguration(_: LLMConfiguration) async throws {}
     func clearConfiguration() async {}

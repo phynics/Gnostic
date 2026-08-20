@@ -34,8 +34,10 @@ malformed, or ambiguous advertisements cannot be attached or executed.
 
 ## ACP frontend
 
-`gnostic acp` is the supported stable ACP v1 stdio agent. It projects one
-Gnostic Ascendant and maps ACP sessions to authoritative Gnostic Timelines,
+`gnostic acp` is the supported stable ACP v1 stdio agent and the sole
+user-facing interface for running Turns. There is no direct interactive
+`gnostic turn` command. ACP projects one Gnostic Ascendant and maps its sessions
+to authoritative Gnostic Timelines,
 represented privately as PositronicKit Threads inside the built-in adapter. The process owns one Axoloty/MQTT connection and accepts text
 prompts, Timeline resume/list/close, cancellation, and replay metadata.
 
