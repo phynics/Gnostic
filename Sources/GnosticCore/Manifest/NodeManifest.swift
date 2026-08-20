@@ -303,7 +303,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
     }
 
     public func compileLaunchPlan() throws -> NodeLaunchPlan {
-        try validate(); return NodeLaunchPlan(node: node, broker: broker, backends: Dictionary(uniqueKeysWithValues: ascendants.map { ($0.id, $0.backend) }), ascendants: ascendants, timelines: timelines, workspaces: workspaces)
+        try validate(); return NodeLaunchPlan(node: node, broker: broker, ascendants: ascendants, timelines: timelines, workspaces: workspaces)
     }
 
     public func redactedDescription() -> String {
@@ -437,15 +437,14 @@ public struct NodeManifest: Codable, Equatable, Sendable {
 public struct NodeLaunchPlan: Codable, Equatable, Sendable {
     public let node: NodeManifest.Node
     public let broker: NodeManifest.Broker
-    public let backends: [UUID: AscendantBackendConfiguration]
     public let ascendants: [NodeManifest.Ascendant]
     public let timelines: [NodeManifest.Timeline]
     public let workspaces: [NodeManifest.Workspace]
 
-    public init(node: NodeManifest.Node, broker: NodeManifest.Broker, backends: [UUID: AscendantBackendConfiguration] = [:], ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) {
-        self.node = node; self.broker = broker; self.backends = backends; self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces
+    public init(node: NodeManifest.Node, broker: NodeManifest.Broker, ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) {
+        self.node = node; self.broker = broker; self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces
     }
-    public init(nodeID: UUID, broker: NodeManifest.Broker, backends: [UUID: AscendantBackendConfiguration] = [:], ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) { self.init(node: .init(id: nodeID), broker: broker, backends: backends, ascendants: ascendants, timelines: timelines, workspaces: workspaces) }
+    public init(nodeID: UUID, broker: NodeManifest.Broker, ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) { self.init(node: .init(id: nodeID), broker: broker, ascendants: ascendants, timelines: timelines, workspaces: workspaces) }
     public var nodeID: UUID { node.id }
-    public func backend(for ascendantID: UUID) -> AscendantBackendConfiguration? { backends[ascendantID] ?? ascendants.first { $0.id == ascendantID }?.backend }
+    public func backend(for ascendantID: UUID) -> AscendantBackendConfiguration? { ascendants.first { $0.id == ascendantID }?.backend }
 }
