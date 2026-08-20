@@ -4,8 +4,9 @@ Gnostic bridges PositronicKit orchestration with Axoloty networking.
 
 ## Status
 
-Early proof of concept. The package uses the released PositronicKit `3.7.0`
-surface and the Axoloty discovery revision that follows the `0.3.0` release.
+Early proof of concept. The current package provides the delivered 0.2
+discovery, Workspace attachment, Timeline readvertisement, and ACP behavior
+described below.
 
 ## Discovered workspaces
 
@@ -51,9 +52,10 @@ Canonical development uses the repository container:
 ```sh
 make container-smoke
 make shell
+make docs-check
 ```
 
-After `Package.swift` lands:
+For package development:
 
 ```sh
 make worktree-bootstrap
