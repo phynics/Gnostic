@@ -139,7 +139,7 @@ public final class NodeRuntime {
         permissionCoordinator = AscendantPermissionCoordinator(updates: updates)
         turnCoordinator = AscendantTurnCoordinator()
 
-        try adapters.ascendants.validate(kinds: plan.ascendants.map(\.kind))
+        try adapters.ascendants.validate(kinds: plan.ascendants.map { plan.backend(for: $0.id)?.kind ?? $0.kind })
         try adapters.workspaces.validate(kinds: plan.workspaces.map(\.kind))
 
         var references: [UUID: WorkspaceReference] = [:]
@@ -211,10 +211,13 @@ public final class NodeRuntime {
         do {
             var operatedTimelines: [AscendantRuntimeTimeline] = []
             for ascendant in plan.ascendants {
-                let profile = ascendant.llmProfileID.flatMap { id in plan.llmProfiles.first(where: { $0.id == id }) }
+                guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
+                let backendKind = backend.kind
+                var configuredAscendant = ascendant
+                configuredAscendant.kind = backendKind
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
                 let dependencies = AscendantRuntimeDependencies(workspaces: workspaces, catalog: catalog, communication: communication, permissionCoordinator: permissionCoordinator)
-                let adapter = try await adapters.ascendants.makeAdapter(for: ascendant, profile: profile, dependencies: dependencies, timelines: timelineConfigurations, references: references)
+                let adapter = try await adapters.ascendants.makeAdapter(for: configuredAscendant, backend: backend, dependencies: dependencies, timelines: timelineConfigurations, references: references)
                 ascendantAdapters[ascendant.id] = adapter
                 operatedTimelines += try await adapter.timelines()
             }
@@ -457,7 +460,7 @@ public final class NodeRuntime {
     }
 
     private static func validate(plan: NodeLaunchPlan) throws {
-        let manifest = NodeManifest(schemaVersion: NodeManifest.currentSchemaVersion, broker: plan.broker, node: plan.node, llmProfiles: plan.llmProfiles, ascendants: plan.ascendants, timelines: plan.timelines, workspaces: plan.workspaces)
+        let manifest = NodeManifest(schemaVersion: NodeManifest.currentSchemaVersion, broker: plan.broker, node: plan.node, ascendants: plan.ascendants, timelines: plan.timelines, workspaces: plan.workspaces)
         try manifest.validate()
     }
 

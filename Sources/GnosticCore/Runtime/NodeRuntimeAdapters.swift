@@ -6,13 +6,13 @@ import PKShared
 import PositronicKit
 
 public struct AscendantAdapterRegistry: Sendable {
-    public typealias Factory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ profile: NodeManifest.LLMProfile?, _ dependencies: AscendantRuntimeDependencies, _ timelines: [NodeManifest.Timeline], _ references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter
+    public typealias Factory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ dependencies: AscendantRuntimeDependencies, _ timelines: [NodeManifest.Timeline], _ references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter
 
     private var factories: [String: Factory]
 
     public init() {
-        factories = ["positronic": { ascendant, profile, dependencies, timelines, references in
-            try await PositronicAscendantAdapter(ascendant: ascendant, profile: profile, dependencies: dependencies, timelines: timelines, references: references, languageModel: UnconfiguredLLMService())
+        factories = ["positronic": { ascendant, _, dependencies, timelines, references in
+            try await PositronicAscendantAdapter(ascendant: ascendant, dependencies: dependencies, timelines: timelines, references: references, languageModel: UnconfiguredLLMService())
         }]
     }
 
@@ -20,17 +20,17 @@ public struct AscendantAdapterRegistry: Sendable {
         factories[kind] = factory
     }
 
-    /// Transitional provider seam retained for CLI composition. It configures
-    /// the Positronic adapter without exposing its construction to NodeRuntime.
-    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ profile: NodeManifest.LLMProfile?) -> any LanguageModel) {
-        factories[kind] = { ascendant, profile, dependencies, timelines, references in
-            try await PositronicAscendantAdapter(ascendant: ascendant, profile: profile, dependencies: dependencies, timelines: timelines, references: references, languageModel: factory(ascendant, profile))
+    /// Transitional composition seam for the CLI. Backend semantics remain
+    /// outside Core; the closure receives only the opaque envelope.
+    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LanguageModel) {
+        factories[kind] = { ascendant, backend, dependencies, timelines, references in
+            try await PositronicAscendantAdapter(ascendant: ascendant, dependencies: dependencies, timelines: timelines, references: references, languageModel: factory(ascendant, backend))
         }
     }
 
-    func makeAdapter(for ascendant: NodeManifest.Ascendant, profile: NodeManifest.LLMProfile?, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter {
+    func makeAdapter(for ascendant: NodeManifest.Ascendant, backend: AscendantBackendConfiguration, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference]) async throws -> any AscendantRuntimeAdapter {
         guard let factory = factories[ascendant.kind] else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
-        return try await factory(ascendant, profile, dependencies, timelines, references)
+        return try await factory(ascendant, backend, dependencies, timelines, references)
     }
 
     func validate(kinds: some Sequence<String>) throws {

@@ -2,9 +2,109 @@
 
 import Foundation
 
+/// A JSON value used by backend-owned manifest settings.
+public enum ManifestJSONValue: Codable, Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: ManifestJSONValue])
+    case array([ManifestJSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
+        if let value = try? container.decode(String.self) { self = .string(value); return }
+        if let value = try? container.decode(Bool.self) { self = .bool(value); return }
+        if let value = try? container.decode(Double.self) { self = .number(value); return }
+        if let value = try? container.decode([String: ManifestJSONValue].self) { self = .object(value); return }
+        if let value = try? container.decode([ManifestJSONValue].self) { self = .array(value); return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        case let .object(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+
+    public var stringValue: String? {
+        guard case let .string(value) = self else { return nil }
+        return value
+    }
+
+    var encodedByteCount: Int {
+        (try? JSONEncoder().encode(self).count) ?? Int.max
+    }
+
+    var maximumDepth: Int {
+        switch self {
+        case .string, .number, .bool, .null: return 1
+        case let .object(values): return 1 + (values.values.map(\.maximumDepth).max() ?? 0)
+        case let .array(values): return 1 + (values.map(\.maximumDepth).max() ?? 0)
+        }
+    }
+
+    var entryCount: Int {
+        switch self {
+        case .string, .number, .bool, .null: return 1
+        case let .object(values): return values.count + values.values.reduce(0) { $0 + $1.entryCount }
+        case let .array(values): return values.count + values.reduce(0) { $0 + $1.entryCount }
+        }
+    }
+}
+
+/// The backend-owned configuration envelope attached to one Ascendant.
+public struct AscendantBackendConfiguration: Codable, Equatable, Sendable {
+    public static let maxJSONBytes = 64 * 1024
+    public static let maxNestingDepth = 8
+    public static let maxEntryCount = 256
+
+    public var kind: String
+    public var schemaVersion: Int
+    public var settings: [String: ManifestJSONValue]
+    public var secrets: [String: ManifestJSONValue]
+
+    public init(
+        kind: String,
+        schemaVersion: Int = 1,
+        settings: [String: ManifestJSONValue] = [:],
+        secrets: [String: ManifestJSONValue] = [:]
+    ) {
+        self.kind = kind
+        self.schemaVersion = schemaVersion
+        self.settings = settings
+        self.secrets = secrets
+    }
+
+    func validate() -> Bool {
+        guard !kind.isEmpty, schemaVersion >= 1 else { return false }
+        guard settings.keys.allSatisfy({ !$0.isEmpty }), secrets.keys.allSatisfy({ !$0.isEmpty }) else { return false }
+        guard settings.count + secrets.count <= Self.maxEntryCount else { return false }
+        let values = Array(settings.values) + Array(secrets.values)
+        guard values.allSatisfy({ $0.maximumDepth <= Self.maxNestingDepth && $0.entryCount <= Self.maxEntryCount }) else { return false }
+        let bytes = (try? JSONEncoder().encode(self).count) ?? Int.max
+        return bytes <= Self.maxJSONBytes
+    }
+
+    public typealias JSONValue = ManifestJSONValue
+}
+
+/// Compatibility spelling used by early reset consumers.
+public typealias BackendConfiguration = AscendantBackendConfiguration
+
 /// The versioned, graph-shaped configuration persisted by Gnostic.
 public struct NodeManifest: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
+    public typealias BackendConfiguration = AscendantBackendConfiguration
+    public typealias Backend = AscendantBackendConfiguration
+    public typealias JSONValue = ManifestJSONValue
 
     public struct Broker: Codable, Equatable, Sendable {
         public var host: String
@@ -30,47 +130,67 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         }
     }
 
-    public struct LLMProfile: Codable, Equatable, Sendable {
-        public var id: UUID
-        public var name: String
-        public var provider: String
-        public var endpoint: String?
-        public var model: String?
-        public var utilityModel: String?
-        public var fastModel: String?
-        public var apiKey: String?
-
-        public var kind: String { get { "positronic" } set { _ = newValue } }
-
-        public init(id: UUID, provider: String, name: String = "Default LLM Profile", endpoint: String? = nil, model: String? = nil, utilityModel: String? = nil, fastModel: String? = nil, apiKey: String? = nil) {
-            self.id = id; self.name = name; self.provider = provider; self.endpoint = endpoint
-            self.model = model; self.utilityModel = utilityModel; self.fastModel = fastModel; self.apiKey = apiKey
-        }
-
-        public init(id: UUID, kind _: String, provider: String, name: String = "Default LLM Profile", endpoint: String? = nil, model: String? = nil, utilityModel: String? = nil, fastModel: String? = nil, apiKey: String? = nil) {
-            self.init(id: id, provider: provider, name: name, endpoint: endpoint, model: model, utilityModel: utilityModel, fastModel: fastModel, apiKey: apiKey)
-        }
-    }
-
     public struct Ascendant: Codable, Equatable, Sendable {
+        public typealias Backend = AscendantBackendConfiguration
+        public typealias BackendConfiguration = AscendantBackendConfiguration
         public var id: UUID
         public var kind: String
         public var name: String
         public var description: String
         public var metadata: [String: String]
-        public var llmProfileID: UUID?
+        public var backend: AscendantBackendConfiguration
         public var defaultTimelineID: UUID
 
-        public init(id: UUID, name: String, defaultTimelineID: UUID, kind: String = "positronic", description: String = "", metadata: [String: String] = [:], llmProfileID: UUID? = nil) {
+        public init(
+            id: UUID,
+            name: String,
+            defaultTimelineID: UUID,
+            kind: String = "positronic",
+            description: String = "",
+            metadata: [String: String] = [:],
+            backend: AscendantBackendConfiguration? = nil
+        ) {
             self.id = id; self.kind = kind; self.name = name; self.description = description
-            self.metadata = metadata; self.llmProfileID = llmProfileID; self.defaultTimelineID = defaultTimelineID
+            self.metadata = metadata; self.defaultTimelineID = defaultTimelineID
+            self.backend = backend ?? .init(kind: kind)
         }
 
-        public init(id: UUID, name: String, llmProfileID: UUID, timelineID: UUID, kind: String = "positronic") {
-            self.init(id: id, name: name, defaultTimelineID: timelineID, kind: kind, llmProfileID: llmProfileID)
+        public init(id: UUID, name: String, defaultTimelineID: UUID, backend: AscendantBackendConfiguration, kind: String? = nil, description: String = "", metadata: [String: String] = [:]) {
+            self.init(id: id, name: name, defaultTimelineID: defaultTimelineID, kind: kind ?? backend.kind, description: description, metadata: metadata, backend: backend)
         }
 
         public var timelineID: UUID { get { defaultTimelineID } set { defaultTimelineID = newValue } }
+
+        enum CodingKeys: String, CodingKey { case id, kind, name, description, metadata, backend, defaultTimelineID, timelineID }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "positronic"
+            name = try container.decode(String.self, forKey: .name)
+            description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+            metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+            backend = try container.decode(AscendantBackendConfiguration.self, forKey: .backend)
+            defaultTimelineID = try container.decodeIfPresent(UUID.self, forKey: .defaultTimelineID)
+                ?? container.decode(UUID.self, forKey: .timelineID)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(name, forKey: .name)
+            try container.encode(description, forKey: .description)
+            try container.encode(metadata, forKey: .metadata)
+            try container.encode(backend, forKey: .backend)
+            try container.encode(defaultTimelineID, forKey: .defaultTimelineID)
+        }
+
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id && lhs.kind == rhs.kind && lhs.name == rhs.name
+                && lhs.description == rhs.description && lhs.metadata == rhs.metadata
+                && lhs.backend == rhs.backend && lhs.defaultTimelineID == rhs.defaultTimelineID
+        }
     }
 
     public enum AttachmentScope: String, Codable, Equatable, Sendable { case local, network }
@@ -119,7 +239,6 @@ public struct NodeManifest: Codable, Equatable, Sendable {
 
     public typealias BrokerConfiguration = Broker
     public typealias NodeConfiguration = Node
-    public typealias LLMProfileConfiguration = LLMProfile
     public typealias AscendantConfiguration = Ascendant
     public typealias TimelineConfiguration = Timeline
     public typealias WorkspaceConfiguration = Workspace
@@ -127,25 +246,26 @@ public struct NodeManifest: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var broker: Broker
     public var node: Node
-    public var llmProfiles: [LLMProfile]
     public var ascendants: [Ascendant]
     public var timelines: [Timeline]
     public var workspaces: [Workspace]
+    private var legacyMigrationError: Bool
 
-    public init(schemaVersion: Int = currentSchemaVersion, broker: Broker, node: Node, llmProfiles: [LLMProfile] = [], ascendants: [Ascendant] = [], timelines: [Timeline] = [], workspaces: [Workspace] = []) {
-        self.schemaVersion = schemaVersion; self.broker = broker; self.node = node; self.llmProfiles = llmProfiles
-        self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces
+    public init(schemaVersion: Int = currentSchemaVersion, broker: Broker, node: Node, ascendants: [Ascendant] = [], timelines: [Timeline] = [], workspaces: [Workspace] = []) {
+        self.schemaVersion = schemaVersion; self.broker = broker; self.node = node
+        self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces; self.legacyMigrationError = false
     }
 
     public static func makeDefault(broker: Broker) -> Self {
-        let node = UUID.makeVersion4(), profile = UUID.makeVersion4(), ascendant = UUID.makeVersion4()
+        let node = UUID.makeVersion4(), ascendant = UUID.makeVersion4()
         let timeline = UUID.makeVersion4(), workspace = UUID.makeVersion4()
-        return .init(broker: broker, node: .init(id: node), llmProfiles: [.init(id: profile, provider: "positronic")], ascendants: [.init(id: ascendant, name: "Default Ascendant", defaultTimelineID: timeline, llmProfileID: profile)], timelines: [.init(id: timeline, title: "Default Timeline", operatingAscendantID: ascendant)], workspaces: [.init(id: workspace, name: "Echo Workspace", uri: "echo://default")])
+        return .init(broker: broker, node: .init(id: node), ascendants: [.init(id: ascendant, name: "Default Ascendant", defaultTimelineID: timeline, backend: .init(kind: "positronic"))], timelines: [.init(id: timeline, title: "Default Timeline", operatingAscendantID: ascendant)], workspaces: [.init(id: workspace, name: "Echo Workspace", uri: "echo://default")])
     }
 
     public static func empty(broker: Broker) -> Self { .init(broker: broker, node: .init(id: UUID.makeVersion4())) }
     public static func defaultManifest(broker: Broker) -> Self { makeDefault(broker: broker) }
-    public var allIDs: [UUID] { [node.id] + llmProfiles.map(\.id) + ascendants.map(\.id) + timelines.map(\.id) + workspaces.map(\.id) }
+
+    public var allIDs: [UUID] { [node.id] + ascendants.map(\.id) + timelines.map(\.id) + workspaces.map(\.id) }
 
     public func validate() throws {
         guard schemaVersion == Self.currentSchemaVersion else { throw NodeManifestError.unsupportedSchemaVersion(schemaVersion) }
@@ -153,10 +273,9 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         guard node.kind == "node" else { throw NodeManifestError.invalidKind(kind: node.kind, objectID: node.id) }
         guard ["auto", "deny"].contains(node.approvalMode), ["trace", "debug", "info", "warning", "error"].contains(node.logLevel) else { throw NodeManifestError.invalidNodeSettings }
         var ids = Set<UUID>(); for id in allIDs { guard id.isVersion4 && id.isRFC4122Variant else { throw NodeManifestError.invalidUUID(id) }; guard ids.insert(id).inserted else { throw NodeManifestError.duplicateID(id) } }
-        for profile in llmProfiles where profile.name.isEmpty || profile.provider.isEmpty { throw NodeManifestError.invalidProfile(profile.id) }
         for ascendant in ascendants {
             guard !ascendant.kind.isEmpty, !ascendant.name.isEmpty else { throw NodeManifestError.invalidKind(kind: ascendant.kind, objectID: ascendant.id) }
-            if let profile = ascendant.llmProfileID, !llmProfiles.contains(where: { $0.id == profile }) { throw NodeManifestError.missingReference(from: ascendant.id, to: profile) }
+            guard ascendant.backend.validate() else { throw NodeManifestError.invalidBackend(ascendant.id) }
             guard let timeline = timelines.first(where: { $0.id == ascendant.defaultTimelineID }) else { throw NodeManifestError.missingReference(from: ascendant.id, to: ascendant.defaultTimelineID) }
             guard timeline.operatingAscendantID == ascendant.id else { throw NodeManifestError.invalidDefaultTimeline(ascendant.id, timeline.id) }
         }
@@ -171,11 +290,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
                     guard workspaces.contains(where: { $0.id == attachment.workspaceID }), attachment.uri == nil else { throw NodeManifestError.invalidAttachment(timeline.id) }
                 case .network:
                     guard let uri = attachment.uri, !uri.isEmpty else { throw NodeManifestError.invalidAttachment(timeline.id) }
-                    // A lazy external identity must never be resolved through a
-                    // configured local object that happens to share its UUID.
-                    guard !allIDs.contains(attachment.workspaceID) else {
-                        throw NodeManifestError.duplicateID(attachment.workspaceID)
-                    }
+                    guard !allIDs.contains(attachment.workspaceID) else { throw NodeManifestError.duplicateID(attachment.workspaceID) }
                 }
             }
         }
@@ -188,29 +303,148 @@ public struct NodeManifest: Codable, Equatable, Sendable {
     }
 
     public func compileLaunchPlan() throws -> NodeLaunchPlan {
-        try validate(); return NodeLaunchPlan(node: node, broker: broker, llmProfiles: llmProfiles, ascendants: ascendants, timelines: timelines, workspaces: workspaces)
+        try validate(); return NodeLaunchPlan(node: node, broker: broker, ascendants: ascendants, timelines: timelines, workspaces: workspaces)
     }
 
     public func redactedDescription() -> String {
-        var copy = self; copy.broker.password = copy.broker.password.map { _ in "<redacted>" }
-        copy.llmProfiles = copy.llmProfiles.map { var value = $0; value.apiKey = value.apiKey.map { _ in "<redacted>" }; return value }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return (try? String(data: encoder.encode(copy), encoding: .utf8)) ?? "{}"
+        guard let data = try? encoder.encode(self), let object = try? JSONSerialization.jsonObject(with: data) else { return "{}" }
+        func redact(_ value: Any) -> Any {
+            if let dictionary = value as? [String: Any] {
+                return dictionary.reduce(into: [String: Any]()) { result, pair in
+                    result[pair.key] = ["secrets", "password"].contains(pair.key) ? "<redacted>" : redact(pair.value)
+                }
+            }
+            if let array = value as? [Any] { return array.map(redact) }
+            return value
+        }
+        guard let redacted = try? JSONSerialization.data(withJSONObject: redact(object), options: [.prettyPrinted, .sortedKeys]) else { return "{}" }
+        return String(data: redacted, encoding: .utf8) ?? "{}"
+    }
+
+    /// Converts a validated v1 manifest to canonical v2 without changing any
+    /// Node, Ascendant, Timeline, or Workspace identity.
+    public func migratedToV2() throws -> Self {
+        guard !legacyMigrationError else { throw NodeManifestError.invalidBackend(ascendants.first?.id ?? node.id) }
+        var copy = self
+        copy.schemaVersion = Self.currentSchemaVersion
+        copy.legacyMigrationError = false
+        try copy.validate()
+        return copy
     }
 
     private var identityMap: [UUID: String] {
-        var map = [node.id: node.kind]; for value in llmProfiles { map[value.id] = "llmProfile" }; for value in ascendants { map[value.id] = value.kind }; for value in timelines { map[value.id] = value.kind }; for value in workspaces { map[value.id] = value.kind }; return map
+        var map = [node.id: node.kind]; for value in ascendants { map[value.id] = "ascendant" }; for value in timelines { map[value.id] = value.kind }; for value in workspaces { map[value.id] = value.kind }; return map
+    }
+
+    enum CodingKeys: String, CodingKey { case schemaVersion, broker, node, ascendants, timelines, workspaces, llmProfiles }
+
+    private struct LegacyRecord: Decodable {
+        let id: UUID
+        let values: [String: ManifestJSONValue]
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: AnyCodingKey.self)
+            id = try container.decode(UUID.self, forKey: AnyCodingKey("id"))
+            var values: [String: ManifestJSONValue] = [:]
+            for key in container.allKeys where key.stringValue != "id" {
+                values[key.stringValue] = try container.decode(ManifestJSONValue.self, forKey: key)
+            }
+            self.values = values
+        }
+    }
+
+    private struct LegacyAscendant: Decodable {
+        let id: UUID
+        let kind: String
+        let name: String
+        let description: String
+        let metadata: [String: String]
+        let profileID: UUID?
+        let timelineID: UUID
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyCodingKey.self)
+            id = try c.decode(UUID.self, forKey: AnyCodingKey("id"))
+            kind = try c.decodeIfPresent(String.self, forKey: AnyCodingKey("kind")) ?? "positronic"
+            name = try c.decode(String.self, forKey: AnyCodingKey("name"))
+            description = try c.decodeIfPresent(String.self, forKey: AnyCodingKey("description")) ?? ""
+            metadata = try c.decodeIfPresent([String: String].self, forKey: AnyCodingKey("metadata")) ?? [:]
+            profileID = try c.decodeIfPresent(UUID.self, forKey: AnyCodingKey("llmProfileID"))
+                ?? c.decodeIfPresent(UUID.self, forKey: AnyCodingKey("profileID"))
+            timelineID = try c.decodeIfPresent(UUID.self, forKey: AnyCodingKey("defaultTimelineID"))
+                ?? c.decode(UUID.self, forKey: AnyCodingKey("timelineID"))
+        }
+    }
+
+    private struct AnyCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+        init(_ string: String) { stringValue = string }
+        init?(stringValue: String) { self.init(stringValue) }
+        init?(intValue: Int) { return nil }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        broker = try container.decode(Broker.self, forKey: .broker)
+        node = try container.decode(Node.self, forKey: .node)
+        ascendants = []
+        timelines = try container.decodeIfPresent([Timeline].self, forKey: .timelines) ?? []
+        workspaces = try container.decodeIfPresent([Workspace].self, forKey: .workspaces) ?? []
+        legacyMigrationError = false
+        if schemaVersion == 1 {
+            let profiles = try container.decodeIfPresent([LegacyRecord].self, forKey: .llmProfiles) ?? []
+            legacyMigrationError = profiles.contains { record in
+                (record.values["name"]?.stringValue ?? "").isEmpty || (record.values["provider"]?.stringValue ?? "").isEmpty
+            }
+            let byID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+            let legacy = try container.decodeIfPresent([LegacyAscendant].self, forKey: .ascendants) ?? []
+            legacyMigrationError = legacy.contains { value in value.profileID != nil && byID[value.profileID!] == nil }
+                || legacyMigrationError
+            let references = legacy.compactMap(\.profileID).reduce(into: [:]) { $0[$1, default: 0] += 1 }
+            ascendants = legacy.map { value in
+                var settings = byID[value.profileID ?? UUID()]?.values ?? [:]
+                let migratedID = (value.profileID.flatMap { references[$0] == 1 ? $0 : nil }) ?? value.id
+                settings["_legacyID"] = .string(migratedID.uuidString.lowercased())
+                let secrets = settings.filter { key, _ in
+                    let normalized = key.lowercased()
+                    return normalized.contains("secret") || normalized.contains("password") || normalized.contains("token") || normalized.hasSuffix("key")
+                }
+                settings = settings.filter { !secrets.keys.contains($0.key) }
+                return Ascendant(id: value.id, name: value.name, defaultTimelineID: value.timelineID, kind: value.kind, description: value.description, metadata: value.metadata, backend: .init(kind: value.kind, settings: settings, secrets: secrets))
+            }
+        } else {
+            if container.contains(.llmProfiles) {
+                throw DecodingError.dataCorruptedError(forKey: .llmProfiles, in: container, debugDescription: "Manifest v2 does not accept a top-level llmProfiles collection")
+            }
+            ascendants = try container.decodeIfPresent([Ascendant].self, forKey: .ascendants) ?? []
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try container.encode(broker, forKey: .broker)
+        try container.encode(node, forKey: .node)
+        try container.encode(ascendants, forKey: .ascendants)
+        try container.encode(timelines, forKey: .timelines)
+        try container.encode(workspaces, forKey: .workspaces)
     }
 }
 
 public struct NodeLaunchPlan: Codable, Equatable, Sendable {
     public let node: NodeManifest.Node
     public let broker: NodeManifest.Broker
-    public let llmProfiles: [NodeManifest.LLMProfile]
     public let ascendants: [NodeManifest.Ascendant]
     public let timelines: [NodeManifest.Timeline]
     public let workspaces: [NodeManifest.Workspace]
-    public init(node: NodeManifest.Node, broker: NodeManifest.Broker, llmProfiles: [NodeManifest.LLMProfile], ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) { self.node = node; self.broker = broker; self.llmProfiles = llmProfiles; self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces }
-    public init(nodeID: UUID, broker: NodeManifest.Broker, llmProfiles: [NodeManifest.LLMProfile], ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) { self.init(node: .init(id: nodeID), broker: broker, llmProfiles: llmProfiles, ascendants: ascendants, timelines: timelines, workspaces: workspaces) }
+
+    public init(node: NodeManifest.Node, broker: NodeManifest.Broker, ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) {
+        self.node = node; self.broker = broker; self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces
+    }
+    public init(nodeID: UUID, broker: NodeManifest.Broker, ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline], workspaces: [NodeManifest.Workspace]) { self.init(node: .init(id: nodeID), broker: broker, ascendants: ascendants, timelines: timelines, workspaces: workspaces) }
     public var nodeID: UUID { node.id }
+    public func backend(for ascendantID: UUID) -> AscendantBackendConfiguration? { ascendants.first { $0.id == ascendantID }?.backend }
 }

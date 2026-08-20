@@ -489,20 +489,24 @@ public enum ConfigCommandLogic {
     public static func addLLM(provider: String?, name: String, endpoint: String?, model: String?, utilityModel: String?, fastModel: String?, store: CLIConfigurationStore) throws {
         guard let provider, !provider.isEmpty else { throw CLIConfigurationError.invalidArgument("An LLM provider is required.") }
         let profileID = UUID.makeVersion4()
-        _ = try store.mutateManifest { $0.llmProfiles.append(.init(id: profileID, provider: provider, name: name, endpoint: endpoint, model: model, utilityModel: utilityModel, fastModel: fastModel)) }
+        _ = try store.mutateManifest { manifest in
+            guard let ascendantID = manifest.ascendants.first?.id else { throw CLIConfigurationError.invalidArgument("An LLM profile must target an existing Ascendant.") }
+            manifest.llmProfiles = [PositronicProfile(id: profileID, ascendantID: ascendantID, provider: provider, name: name, endpoint: endpoint, model: model, utilityModel: utilityModel, fastModel: fastModel)] + manifest.llmProfiles.dropFirst()
+        }
         printID("Added llm profile", profileID)
     }
 
     public static func updateLLM(id: String, name: String?, provider: String?, endpoint: String?, model: String?, utilityModel: String?, fastModel: String?, store: CLIConfigurationStore) throws {
         let profileID = try parseID(id, kind: "llm profile")
         _ = try store.mutateManifest { manifest in
-            guard let index = manifest.llmProfiles.firstIndex(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            if let name { manifest.llmProfiles[index].name = name }
-            if let provider { manifest.llmProfiles[index].provider = provider }
-            if let endpoint { manifest.llmProfiles[index].endpoint = endpoint }
-            if let model { manifest.llmProfiles[index].model = model }
-            if let utilityModel { manifest.llmProfiles[index].utilityModel = utilityModel }
-            if let fastModel { manifest.llmProfiles[index].fastModel = fastModel }
+            guard var profile = manifest.llmProfiles.first(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
+            if let name { profile.name = name }
+            if let provider { profile.provider = provider }
+            if let endpoint { profile.endpoint = endpoint }
+            if let model { profile.model = model }
+            if let utilityModel { profile.utilityModel = utilityModel }
+            if let fastModel { profile.fastModel = fastModel }
+            manifest.llmProfiles = manifest.llmProfiles.map { $0.id == profileID ? profile : $0 }
         }
     }
 
@@ -510,17 +514,18 @@ public enum ConfigCommandLogic {
         let profileID = try parseID(id, kind: "llm profile")
         _ = try store.mutateManifest { manifest in
             guard manifest.llmProfiles.contains(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            let references = manifest.ascendants.filter { $0.llmProfileID == profileID }.map { "ascendant \($0.id.uuidString.lowercased())" }
-            guard references.isEmpty else { throw CLIConfigurationError.resourceReferenced(kind: "llm profile", id: profileID, references: references) }
-            manifest.llmProfiles.removeAll { $0.id == profileID }
+            for index in manifest.ascendants.indices where manifest.ascendants[index].llmProfileID == profileID {
+                manifest.ascendants[index].backend = .init(kind: manifest.ascendants[index].kind)
+            }
         }
     }
 
     public static func setLLMAPIKey(id: String, value: String, store: CLIConfigurationStore) throws {
         let profileID = try parseID(id, kind: "llm profile")
         _ = try store.mutateManifest { manifest in
-            guard let index = manifest.llmProfiles.firstIndex(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            manifest.llmProfiles[index].apiKey = value
+            guard var profile = manifest.llmProfiles.first(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
+            profile.apiKey = value
+            manifest.llmProfiles = manifest.llmProfiles.map { $0.id == profileID ? profile : $0 }
         }
     }
 
@@ -531,7 +536,8 @@ public enum ConfigCommandLogic {
         let profileID = try llmProfileID.map { try parseID($0, kind: "llm profile") }
         _ = try store.mutateManifest { manifest in
             if let profileID, !manifest.llmProfiles.contains(where: { $0.id == profileID }) { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, llmProfileID: profileID))
+            let backend = profileID.flatMap { id in manifest.llmProfiles.first(where: { $0.id == id })?.backend() } ?? .init(kind: "positronic")
+            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, backend: backend))
             manifest.timelines.append(.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID))
         }
         printID("Added ascendant", ascendantID)
@@ -555,10 +561,10 @@ public enum ConfigCommandLogic {
             if let name { manifest.ascendants[index].name = name }
             if let description { manifest.ascendants[index].description = description }
             if clearLLMProfile {
-                manifest.ascendants[index].llmProfileID = nil
+                manifest.ascendants[index].backend = .init(kind: manifest.ascendants[index].kind)
             } else if llmProfileID != nil {
                 guard let profileID, manifest.llmProfiles.contains(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID ?? UUID()) }
-                manifest.ascendants[index].llmProfileID = profileID
+                if let profile = manifest.llmProfiles.first(where: { $0.id == profileID }) { manifest.ascendants[index].backend = profile.backend(kind: manifest.ascendants[index].kind) }
             }
             if let timelineID {
                 guard manifest.timelines.contains(where: { $0.id == timelineID && $0.operatingAscendantID == ascendantID }) else { throw CLIConfigurationError.invalidArgument("Default Timeline \(timelineID.uuidString.lowercased()) must exist and be operated by Ascendant \(ascendantID.uuidString.lowercased()).") }

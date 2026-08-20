@@ -28,7 +28,7 @@ public enum ConfiguredLLMService {
 
     /// Bridges a validated Core launch-plan profile without making GnosticCore
     /// depend on CLI provider packages.
-    public static func make(from profile: NodeManifest.LLMProfile) -> any LanguageModel {
+    public static func make(from profile: PositronicProfile) -> any LanguageModel {
         guard let provider = LLMProvider.allCases.first(where: {
             $0.rawValue.lowercased() == profile.provider.lowercased()
         }) else { return UnconfiguredLLMService() }
