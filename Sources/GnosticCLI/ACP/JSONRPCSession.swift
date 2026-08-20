@@ -184,7 +184,7 @@ public actor JSONRPCSession {
             } catch let error as JSONRPCMethodError {
                 guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, error: self?.errorObject(for: error) ?? JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
-            } catch let error as RemoteChatClientError {
+            } catch let error as RemoteTurnClientError {
                 guard !Task.isCancelled else { return }
                 await self?.complete(id: id, response: JSONRPCResponse(id: id, error: self?.errorObject(for: error) ?? JSONRPCErrorObject(code: JSONRPCErrorCode.internalError.rawValue, message: "Internal error")))
             } catch {
@@ -233,12 +233,12 @@ public actor JSONRPCSession {
         }
     }
 
-    private func errorObject(for error: RemoteChatClientError) -> JSONRPCErrorObject {
+    private func errorObject(for error: RemoteTurnClientError) -> JSONRPCErrorObject {
         let code: JSONRPCErrorCode = switch error {
         case .brokerUnreachable: .internalError
-        case .noServedAgent, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
+        case .noServedAscendant, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
              .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .timelineUnavailable,
-             .timelineAmbiguous, .providerMismatch: .invalidState
+             .timelineAmbiguous, .providerMismatch, .missingCapability: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI: .invalidParams
         }
         return JSONRPCErrorObject(

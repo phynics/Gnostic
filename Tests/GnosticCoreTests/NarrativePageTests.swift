@@ -6,7 +6,7 @@ import Testing
 
 @Suite("Immutable narrative image pages")
 struct NarrativePageTests {
-    private let agentID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
+    private let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
     private let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!
 
     private func sampleEntries() -> [NarrativeEntry] {
@@ -125,7 +125,7 @@ struct NarrativePageTests {
                 conversation: NarrativeConversationRange(firstMessageID: "m1", lastMessageID: "m2"),
                 workspaceIDs: [workspaceID]
             ),
-            observation: "used \(agentID.uuidString)",
+            observation: "used \(ascendantID.uuidString)",
             interpretation: "value=1700000000",
             importance: 0.5,
             confidence: 0.8,
@@ -133,7 +133,7 @@ struct NarrativePageTests {
         )
         let renderer = NarrativePageRenderer()
         let page = renderer.render(entries: [entry], title: "IDs")
-        #expect(page.indexText.contains(agentID.uuidString))
+        #expect(page.indexText.contains(ascendantID.uuidString))
         #expect(page.indexText.contains(workspaceID.uuidString))
         #expect(page.indexText.contains("value=1700000000"))
     }

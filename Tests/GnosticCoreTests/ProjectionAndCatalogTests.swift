@@ -9,7 +9,7 @@ import Testing
 
 @Suite("Gnostic projections and network catalog")
 struct ProjectionAndCatalogTests {
-    private let agentID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
+    private let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
     private let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000002")!
     private let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!
     private let attachedWorkspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000004")!
@@ -18,8 +18,8 @@ struct ProjectionAndCatalogTests {
 
     @Test("projections preserve model identities and omit unsafe state")
     func projectionsPreserveModelIdentitiesAndOmitUnsafeState() throws {
-        let agent = AscendantRuntimeIdentity(
-            id: agentID, name: "Atlas", description: "Coordinates analysis.",
+        let ascendant = AscendantRuntimeIdentity(
+            id: ascendantID, name: "Atlas", description: "Coordinates analysis.",
             privateTimelineID: timelineID, primaryWorkspaceID: workspaceID,
             lastActiveAt: updateDate, createdAt: creationDate, updatedAt: updateDate
         )
@@ -27,7 +27,7 @@ struct ProjectionAndCatalogTests {
             id: timelineID,
             title: "Private research",
             attachedWorkspaceIDs: [workspaceID, attachedWorkspaceID],
-            attachedAgentInstanceID: agentID,
+            attachedAscendantID: ascendantID,
             isArchived: false,
             isPrivate: true,
             createdAt: creationDate,
@@ -51,19 +51,19 @@ struct ProjectionAndCatalogTests {
             createdAt: creationDate
         )
 
-        let agentObject = GnosticAgentObject(identity: agent)
+        let agentObject = GnosticAscendantObject(identity: ascendant)
         let timelineObject = GnosticTimelineObject(timeline: timeline)
         let workspaceObject = GnosticWorkspaceObject(workspace: workspace)
 
-        #expect(agentObject.objectType == "me.atkn.gnostic.Agent")
+        #expect(agentObject.objectType == "me.atkn.gnostic.Ascendant")
         #expect(timelineObject.objectType == "me.atkn.gnostic.Timeline")
         #expect(workspaceObject.objectType == "me.atkn.gnostic.Workspace")
-        #expect(agentObject.objectId.string == agentID.uuidString.lowercased())
+        #expect(agentObject.objectId.string == ascendantID.uuidString.lowercased())
         #expect(timelineObject.objectId.string == timelineID.uuidString.lowercased())
         #expect(workspaceObject.objectId.string == workspaceID.uuidString.lowercased())
         #expect(agentObject.primaryWorkspaceID == workspaceID)
         #expect(agentObject.privateTimelineID == timelineID)
-        #expect(timelineObject.attachedAgentID == agentID)
+        #expect(timelineObject.attachedAscendantID == ascendantID)
         #expect(timelineObject.attachedWorkspaceIDs == [workspaceID, attachedWorkspaceID])
 
         let encoded = try JSONEncoder().encode([agentObject, timelineObject, workspaceObject])
@@ -82,20 +82,20 @@ struct ProjectionAndCatalogTests {
             advertise: { recorded.appendAdvertised($0) },
             readvertise: { recorded.appendReadvertised($0) }
         )
-        let agent = AscendantRuntimeIdentity(id: agentID, name: "Atlas", description: "Coordinates analysis.", privateTimelineID: timelineID, primaryWorkspaceID: nil, lastActiveAt: creationDate, createdAt: creationDate, updatedAt: creationDate)
-        let initialTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [], attachedAgentInstanceID: agentID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: creationDate)
-        let changedTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [workspaceID], attachedAgentInstanceID: agentID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: updateDate)
+        let agent = AscendantRuntimeIdentity(id: ascendantID, name: "Atlas", description: "Coordinates analysis.", privateTimelineID: timelineID, primaryWorkspaceID: nil, lastActiveAt: creationDate, createdAt: creationDate, updatedAt: creationDate)
+        let initialTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: creationDate)
+        let changedTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [workspaceID], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: updateDate)
         let workspace = WorkspaceReference(
             id: workspaceID,
             uri: WorkspaceURI(parsing: "workspace://atlas")!,
             location: .runtime
         )
 
-        projector.advertise(agent: agent, timeline: initialTimeline, workspaces: [workspace])
+        projector.advertise(ascendant: agent, timeline: initialTimeline, workspaces: [workspace])
         let updated = projector.readvertise(timeline: changedTimeline)
 
         #expect(recorded.advertisedObjectTypes == [
-            "me.atkn.gnostic.Agent",
+            "me.atkn.gnostic.Ascendant",
             "me.atkn.gnostic.Timeline",
             "me.atkn.gnostic.Workspace",
         ])
@@ -138,6 +138,43 @@ struct ProjectionAndCatalogTests {
             providerID: "provider-a",
             uri: "workspace://resolved"
         ))
+    }
+
+    @Test("catalog hydrates protocol fields from a resolved response envelope")
+    func catalogHydratesProtocolFieldsFromResolvedResponseEnvelope() async throws {
+        let catalog = NetworkCatalog()
+        let advertised = CoatyObjectSnapshot(
+            objectId: ascendantID.uuidString.lowercased(),
+            coreType: .CoatyObject,
+            objectType: GnosticObjectType.ascendant,
+            name: "Remote Ascendant"
+        )
+        let fullObject = try payload([
+            "objectId": ascendantID.uuidString.lowercased(),
+            "coreType": "CoatyObject",
+            "objectType": GnosticObjectType.ascendant,
+            "name": "Remote Ascendant",
+            "protocolMajor": 2,
+            "privateTimelineID": timelineID.uuidString.lowercased(),
+            "ascendantDescription": "Coordinates analysis.",
+            "capabilities": [],
+            "lastActiveAt": creationDate.timeIntervalSince1970,
+            "createdAt": creationDate.timeIntervalSince1970,
+            "updatedAt": updateDate.timeIntervalSince1970,
+        ])
+        let response = ResponseEventSnapshot(
+            eventType: "resolve",
+            sourceId: "provider-a",
+            correlationId: "correlation-2",
+            payload: try payload(["object": try JSONSerialization.jsonObject(with: Data(fullObject.utf8))]),
+            object: advertised
+        )
+
+        await catalog.ingest(response)
+
+        let entry = try #require(await catalog.object(id: ascendantID, providerID: "provider-a"))
+        #expect(entry.protocolMajor == 2)
+        #expect(entry.isProtocolCompatible)
     }
 
     @Test("catalog retains unknown dynamic object fields for inspection")
@@ -243,7 +280,7 @@ struct ProjectionAndCatalogTests {
         try await subscription.start()
 
         #expect(await recorded.filters == [
-            "me.atkn.gnostic.Agent",
+            "me.atkn.gnostic.Ascendant",
             "me.atkn.gnostic.Timeline",
             "me.atkn.gnostic.Workspace",
         ])
@@ -282,9 +319,9 @@ struct ProjectionAndCatalogTests {
         try await subscription.start()
 
         #expect(await attempts.filters == [
-            GnosticObjectType.agent,
+            GnosticObjectType.ascendant,
             GnosticObjectType.timeline,
-            GnosticObjectType.agent,
+            GnosticObjectType.ascendant,
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
@@ -322,6 +359,8 @@ struct ProjectionAndCatalogTests {
     }
 
     private func payload(_ object: [String: Any]) throws -> String {
+        var object = object
+        object["protocolMajor"] = 2
         let data = try JSONSerialization.data(withJSONObject: object)
         return try #require(String(data: data, encoding: .utf8))
     }

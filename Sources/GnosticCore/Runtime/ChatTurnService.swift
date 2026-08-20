@@ -7,7 +7,7 @@ import PositronicKit
 
 /// Serializes turns independently of the node's transport/lifecycle shell.
 @MainActor
-public final class ChatTurnService {
+public final class TurnService {
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let registry: NodeRegistry
     private let coordinator: AscendantTurnCoordinator
@@ -18,29 +18,24 @@ public final class ChatTurnService {
         self.registry = registry; self.coordinator = coordinator; self.updates = updates; self.isRunning = isRunning; self.adapter = adapter
     }
 
-    func chat(_ request: AgentChatRequest) async throws -> AgentChatResult {
+    func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+        try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
         guard isRunning() else { throw NodeRuntimeError.notRunning }
         guard let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        return try await coordinator.execute(request) { [updates] in
-            let backendRequest = AscendantBackendTurnRequest(
-                timelineID: request.timelineID,
-                message: request.message,
-                clientTurnID: request.clientTurnID
-            )
-            return try await adapter.runTurn(
-                backendRequest,
-                updates: BackendTurnUpdateSink(store: updates, request: request)
+        let sink = BackendTurnUpdateSink(store: updates, request: request)
+        return try await coordinator.execute(request) {
+            try await adapter.runTurn(
+                AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
+                updates: sink
             )
         }
     }
 }
 
-/// Binds the backend-neutral update sink to Gnostic's replay identity. The
-/// backend never receives the transport update store itself.
 private struct BackendTurnUpdateSink: AscendantBackendUpdateSink {
     let store: AscendantTurnUpdateStore
-    let request: AgentChatRequest
+    let request: AscendantTurnRequest
 
     func append(_ update: AscendantBackendUpdate) async {
         guard let clientTurnID = request.clientTurnID else { return }

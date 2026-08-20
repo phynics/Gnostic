@@ -14,7 +14,7 @@ struct NodeTransportTests {
         var handled = false
         let transport = NodeTransport(
             isAvailable: { true },
-            chat: { request in
+            turn: { request in
                 handled = true
                 return .init(text: "handled: \(request.message)")
             },
@@ -28,13 +28,13 @@ struct NodeTransportTests {
             detachWorkspace: { _ in fatalError("not used") }
         )
 
-        let result = try await transport.chat(.init(message: "hello", timelineID: UUID()))
+        let result = try await transport.turn(.init(message: "hello", timelineID: UUID()))
 
         #expect(result.text == "handled: hello")
         #expect(handled)
     }
 
-    @Test("chat and timeline services run against an adapter stub without transport")
+    @Test("turn and timeline services run against an adapter stub without transport")
     @MainActor
     func servicesUseAdapterBoundaryWithoutBroker() async throws {
         let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000001")!
@@ -55,7 +55,7 @@ struct NodeTransportTests {
             adapter: { $0 == ascendantID ? backend : nil },
             advertise: { _, _ in }
         )
-        let chatService = ChatTurnService(
+        let turnService = TurnService(
             registry: registry,
             coordinator: AscendantTurnCoordinator(),
             updates: AscendantTurnUpdateStore(),
@@ -64,7 +64,7 @@ struct NodeTransportTests {
         )
 
         let renamed = try await timelineService.rename(.init(timelineID: timelineID, title: "After"))
-        let reply = try await chatService.chat(.init(message: "hello", timelineID: timelineID))
+        let reply = try await turnService.turn(.init(message: "hello", timelineID: timelineID))
 
         #expect(renamed.title == "After")
         #expect(reply.text == "stub: hello")
@@ -217,7 +217,7 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
             id: timelineID,
             title: "Before",
             attachedWorkspaceIDs: [],
-            attachedAgentInstanceID: ascendantID,
+            attachedAscendantID: ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,
@@ -228,7 +228,7 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
     func timelines() async throws -> [AscendantRuntimeTimeline] { storedTimelines }
     func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
         let now = Date()
-        let timeline = AscendantRuntimeTimeline(id: id, title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let timeline = AscendantRuntimeTimeline(id: id, title: title, attachedWorkspaceIDs: [], attachedAscendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         storedTimelines.append(timeline)
         return timeline
     }
@@ -236,7 +236,7 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
     func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
         guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
         let old = storedTimelines[index]
-        let renamed = AscendantRuntimeTimeline(id: id, title: title, attachedWorkspaceIDs: old.attachedWorkspaceIDs, attachedAgentInstanceID: old.attachedAgentInstanceID, isArchived: old.isArchived, isPrivate: old.isPrivate, createdAt: old.createdAt, updatedAt: Date())
+        let renamed = AscendantRuntimeTimeline(id: id, title: title, attachedWorkspaceIDs: old.attachedWorkspaceIDs, attachedAscendantID: old.attachedAscendantID, isArchived: old.isArchived, isPrivate: old.isPrivate, createdAt: old.createdAt, updatedAt: Date())
         storedTimelines[index] = renamed
         return renamed
     }
@@ -274,7 +274,7 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
         )
     }
     func enabledToolIDs(for _: UUID) async -> [String] { [] }
-    func runTurn(_ request: AgentChatRequest, updates _: AscendantTurnUpdateStore) async throws -> String { "stub: \(request.message)" }
+    func runTurn(_ request: AscendantTurnRequest, updates _: AscendantTurnUpdateStore) async throws -> String { "stub: \(request.message)" }
     func cancelAll() async {}
     func shutdown() async {}
 }

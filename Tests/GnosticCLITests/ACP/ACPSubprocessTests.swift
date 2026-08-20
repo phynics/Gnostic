@@ -59,7 +59,7 @@ struct ACPSubprocessTests {
         process.standardError = error
         try process.run()
         let attachTask = Task { @MainActor in
-            let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+            let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
             defer { client.stop() }
             try await client.connect()
             let providerID = try await client.selectAscendant(id: agentID).providerID
@@ -200,7 +200,7 @@ struct ACPSubprocessTests {
         process.standardError = error
         try process.run()
         let attachTask = Task { @MainActor in
-            let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+            let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
             defer { client.stop() }
             try await client.connect()
             try await poll(timeout: .seconds(30)) {
@@ -316,7 +316,7 @@ struct ACPSubprocessTests {
         #expect(metadata["gnosticWorkspaceAttachmentState"] == .string("none"))
         #expect(metadata["gnosticAttachedWorkspaceIDs"] == .array([]))
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {
@@ -516,7 +516,7 @@ private func makeACPNode(
 
 @MainActor
 private func discoverProviderID(namespace: String, ascendantID: UUID) async throws -> String {
-    let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+    let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
     defer { client.stop() }
     try await client.connect()
     let clock = ContinuousClock()

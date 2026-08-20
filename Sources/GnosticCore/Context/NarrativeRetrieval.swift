@@ -4,14 +4,14 @@ import Foundation
 
 /// A Sendable retrieval query for long-horizon narrative context.
 ///
-/// Carries the current user text and the exact Agent/Timeline/Workspace/task/
+/// Carries the current user text and the exact Ascendant/Timeline/Workspace/task/
 /// file/tool identifiers so retrieval can rank by identifier match, ranked
 /// first, without any embedding or LLM.
 public struct NarrativeRetrievalQuery: Sendable, Equatable {
     /// The current user text.
     public let currentUserText: String
-    /// The current agent identifier.
-    public let agentID: UUID?
+    /// The current Ascendant identifier.
+    public let ascendantID: UUID?
     /// The current timeline identifiers.
     public let timelineIDs: [UUID]
     /// The current attached workspace identifiers.
@@ -28,7 +28,7 @@ public struct NarrativeRetrievalQuery: Sendable, Equatable {
     /// Creates a retrieval query.
     public init(
         currentUserText: String,
-        agentID: UUID? = nil,
+        ascendantID: UUID? = nil,
         timelineIDs: [UUID] = [],
         workspaceIDs: [UUID] = [],
         taskIDs: [String] = [],
@@ -37,7 +37,7 @@ public struct NarrativeRetrievalQuery: Sendable, Equatable {
         limit: Int
     ) {
         self.currentUserText = currentUserText
-        self.agentID = agentID
+        self.ascendantID = ascendantID
         self.timelineIDs = timelineIDs
         self.workspaceIDs = workspaceIDs
         self.taskIDs = taskIDs

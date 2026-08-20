@@ -6,32 +6,80 @@ import PKShared
 
 /// The wire payload to create a new timeline.
 public struct TimelineCreateRequest: Codable, Sendable {
+    public let protocolMajor: Int
     public let title: String
     public let ascendantID: UUID?
 
-    public init(title: String, ascendantID: UUID? = nil) {
+    public init(title: String, ascendantID: UUID? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.title = title
         self.ascendantID = ascendantID
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, title, ascendantID }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        title = try container.decode(String.self, forKey: .title)
+        ascendantID = try container.decodeIfPresent(UUID.self, forKey: .ascendantID)
     }
 }
 
 /// The wire payload to rename / update a timeline.
 public struct TimelineUpdateRequest: Codable, Sendable {
+    public let protocolMajor: Int
     public let timelineID: UUID
     public let title: String
 
-    public init(timelineID: UUID, title: String) {
+    public init(timelineID: UUID, title: String, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.timelineID = timelineID
         self.title = title
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, title }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        timelineID = try container.decode(UUID.self, forKey: .timelineID)
+        title = try container.decode(String.self, forKey: .title)
     }
 }
 
 /// The wire result of `timeline.list`.
 public struct TimelineListResult: Codable, Sendable {
+    public let protocolMajor: Int
     public let timelines: [TimelineStatus]
 
-    public init(timelines: [TimelineStatus]) {
+    public init(timelines: [TimelineStatus], protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.timelines = timelines
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, timelines }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        timelines = try container.decode([TimelineStatus].self, forKey: .timelines)
+    }
+}
+
+/// The protocol-bearing request for `timeline.list`.
+public struct TimelineListRequest: Codable, Sendable {
+    public let protocolMajor: Int
+
+    public init(protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
     }
 }
 
@@ -75,42 +123,75 @@ public struct TimelineManagementProvider: Sendable {
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
         switch operation {
         case Self.createOperation:
+            if let error = protocolError(parameters) { return error }
             let request: TimelineCreateRequest
             if let parameters, let decoded = try? JSONDecoder().decode(TimelineCreateRequest.self, from: Data(parameters.utf8)) {
                 request = decoded
             } else {
-                return .failure(code: 400, message: "Invalid timeline.create payload")
+                return failure(code: 400, reasonCode: "invalidTimelineCreatePayload", message: "Invalid timeline.create payload")
             }
             do {
                 let status = try await create(request.title, request.ascendantID)
+                try GnosticProtocol.validate(status.protocolMajor)
                 let encoded = try JSONEncoder().encode(status)
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
-                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+            } catch let error as GnosticProtocolError {
+                return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch {
+                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
             }
         case Self.listOperation:
+            if let error = protocolError(parameters) { return error }
             do {
                 let statuses = try await list()
+                try statuses.forEach { try GnosticProtocol.validate($0.protocolMajor) }
                 let encoded = try JSONEncoder().encode(TimelineListResult(timelines: statuses))
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
-                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+            } catch let error as GnosticProtocolError {
+                return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch {
+                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
             }
         case Self.updateOperation:
+            if let error = protocolError(parameters) { return error }
             guard let parameters,
                   let request = try? JSONDecoder().decode(TimelineUpdateRequest.self, from: Data(parameters.utf8)) else {
-                return .failure(code: 400, message: "Invalid timeline.update payload")
+                return failure(code: 400, reasonCode: "invalidTimelineUpdatePayload", message: "Invalid timeline.update payload")
             }
             do {
                 let status = try await update(request)
+                try GnosticProtocol.validate(status.protocolMajor)
                 let encoded = try JSONEncoder().encode(status)
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
-                return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+            } catch let error as GnosticProtocolError {
+                return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch {
+                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
             }
         default:
-            return .failure(code: 404, message: "Unknown timeline operation")
+            return failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")
         }
+    }
+
+    private func protocolError(_ parameters: String?) -> CallHandlerResult? {
+        do {
+            try GnosticProtocol.validatePayload(parameters)
+            return nil
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch {
+            return failure(code: 400, reasonCode: "invalidTimelinePayload", message: "Invalid timeline payload")
+        }
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     @MainActor

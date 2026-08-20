@@ -14,7 +14,7 @@ import PositronicKit
 /// The per-provider client factory routes the active provider to its bundled
 /// client package (`PKOpenAIProvider`, `PKOpenRouterProvider`, ...) so the LLM
 /// service can actually create a transport client. Shared by the CLI and the
-/// serve runtime so served chat turns run against the user's configured model.
+/// serve runtime so served Turns run against the user's configured model.
 public enum ConfiguredLLMService {
     /// Creates a PositronicKit model backed by the active provider's client.
     ///

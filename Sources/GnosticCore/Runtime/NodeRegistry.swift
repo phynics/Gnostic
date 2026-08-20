@@ -97,8 +97,8 @@ public actor NodeRegistry {
                 guard ascendantIDs.contains(operatorID), let value = projected[configuration.id] else {
                     throw NodeRuntimeError.missingTimeline(configuration.id)
                 }
-                guard value.attachedAgentInstanceID == operatorID else {
-                    throw NodeRuntimeError.unknownAscendant(value.attachedAgentInstanceID ?? operatorID)
+                guard value.attachedAscendantID == operatorID else {
+                    throw NodeRuntimeError.unknownAscendant(value.attachedAscendantID ?? operatorID)
                 }
                 timeline = .init(
                     id: value.id,
@@ -112,7 +112,7 @@ public actor NodeRegistry {
                 )
             } else {
                 let now = Date()
-                timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAgentInstanceID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+                timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
             }
             timelines[configuration.id] = .init(timeline: timeline, operatorID: configuration.operatingAscendantID, provenance: .configured)
         }
@@ -131,7 +131,7 @@ public actor NodeRegistry {
 
     public func snapshot() -> NodeRuntimeSnapshot {
         let records = sortedTimelineRecords()
-        return .init(nodeID: nodeID, ascendantIDs: configuredAscendantIDs, agentIDs: configuredAscendantIDs, timelineIDs: records.map(\.id), operatedTimelineIDs: records.compactMap { $0.operatorID == nil ? nil : $0.id }, workspaceIDs: configuredWorkspaceIDs + workspaces.values.filter { !configuredWorkspaceIDs.contains($0.id) }.map(\.id).sorted { $0.uuidString < $1.uuidString })
+        return .init(nodeID: nodeID, ascendantIDs: configuredAscendantIDs, timelineIDs: records.map(\.id), operatedTimelineIDs: records.compactMap { $0.operatorID == nil ? nil : $0.id }, workspaceIDs: configuredWorkspaceIDs + workspaces.values.filter { !configuredWorkspaceIDs.contains($0.id) }.map(\.id).sorted { $0.uuidString < $1.uuidString })
     }
 
     public func listTimelines() -> [AscendantRuntimeTimeline] { sortedTimelineRecords().map(\.timeline) }
@@ -148,7 +148,7 @@ public actor NodeRegistry {
     public func registerRuntimeTimeline(title: String, ascendantID: UUID) throws -> TimelineRecord {
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let now = Date()
-        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
@@ -165,7 +165,7 @@ public actor NodeRegistry {
     public func registerRuntimeTimeline(_ timeline: AscendantRuntimeTimeline, ascendantID: UUID) throws -> TimelineRecord {
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         guard timelines[timeline.id] == nil else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.attachedAgentInstanceID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAgentInstanceID ?? ascendantID) }
+        guard timeline.attachedAscendantID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? ascendantID) }
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
@@ -175,7 +175,7 @@ public actor NodeRegistry {
     /// Replaces only an existing timeline's projection after the adapter has accepted a mutation.
     public func replaceTimeline(_ timeline: AscendantRuntimeTimeline) throws -> TimelineRecord {
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.attachedAgentInstanceID == current.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
+        guard timeline.attachedAscendantID == current.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
         let record = TimelineRecord(timeline: timeline, operatorID: current.operatorID, provenance: current.provenance)
         timelines[timeline.id] = record
         return record
@@ -189,7 +189,7 @@ public actor NodeRegistry {
         projecting: @MainActor @Sendable (TimelineRecord) throws -> Void
     ) async throws -> TimelineRecord {
         guard let previous = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.attachedAgentInstanceID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
+        guard timeline.attachedAscendantID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
         let record = TimelineRecord(timeline: timeline, operatorID: previous.operatorID, provenance: previous.provenance)
         timelines[timeline.id] = record
         do {

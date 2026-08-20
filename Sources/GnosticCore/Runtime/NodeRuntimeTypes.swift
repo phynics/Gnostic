@@ -32,7 +32,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case let .unknownAscendant(id): "Ascendant \(id.uuidString) is not in the launch plan."
         case .noConfiguredAscendant: "The node has no configured Ascendant."
         case .ambiguousAscendant: "The node has multiple Ascendants; select one explicitly."
-        case let .workspaceCapabilityUnavailable(id): "Ascendant \(id.uuidString) does not support Workspace operations."
+        case let .workspaceCapabilityUnavailable(id): "Ascendant operating Timeline \(id.uuidString) does not support Workspace operations."
         case let .turnFailed(detail): detail
         case .startInProgress: "The node runtime is already starting."
         case .notRunning: "The node runtime is not running."
@@ -73,24 +73,21 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
 public struct NodeRuntimeSnapshot: Sendable, Equatable {
     public let nodeID: UUID
     public let ascendantIDs: [UUID]
-    public let agentIDs: [UUID]
     public let timelineIDs: [UUID]
     public let operatedTimelineIDs: [UUID]
     public let workspaceIDs: [UUID]
 
-    public init(nodeID: UUID, ascendantIDs: [UUID], agentIDs: [UUID], timelineIDs: [UUID], operatedTimelineIDs: [UUID], workspaceIDs: [UUID]) {
+    public init(nodeID: UUID, ascendantIDs: [UUID], timelineIDs: [UUID], operatedTimelineIDs: [UUID], workspaceIDs: [UUID]) {
         self.nodeID = nodeID
         self.ascendantIDs = ascendantIDs
-        self.agentIDs = agentIDs
         self.timelineIDs = timelineIDs
         self.operatedTimelineIDs = operatedTimelineIDs
         self.workspaceIDs = workspaceIDs
     }
 }
 
-/// Compatibility spelling retained for adapters registered before the backend
-/// boundary was made explicit. New implementations should conform to
-/// ``AscendantBackend`` and use ``AscendantAdapterRegistry.registerBackend``.
+/// A registry of downstream LLM adapters. GnosticCore owns the runtime shape;
+/// the CLI may supply provider-specific language models without being imported by Core.
 @MainActor public protocol AscendantRuntimeAdapter: AnyObject, Sendable {
     var identity: AscendantRuntimeIdentity { get }
     func timelines() async throws -> [AscendantRuntimeTimeline]
@@ -100,12 +97,14 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
     func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
     func enabledToolIDs(for timelineID: UUID) async -> [String]
-    func runTurn(_ request: AgentChatRequest, updates: AscendantTurnUpdateStore) async throws -> String
+    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String
     func cancelAll() async
     func shutdown() async
 }
 
-/// Compatibility projections now share the backend-neutral value types.
+/// Gnostic's stable, provider-independent projection of an Ascendant identity.
+/// Compatibility names for the backend-neutral projections. The aliases
+/// keep protocol-v2 call sites independent of any provider-native type.
 public typealias AscendantRuntimeIdentity = AscendantBackendIdentity
 public typealias AscendantRuntimeTimeline = AscendantBackendTimeline
 

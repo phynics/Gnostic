@@ -9,22 +9,15 @@ public actor NetworkCatalog {
         "objectId", "coreType", "objectType", "name", "externalId", "parentObjectId", "locationId", "isDeactivated",
     ]
     private static let knownPropertyNames: [String: Set<String>] = [
-        GnosticObjectType.agent: ["agentDescription", "primaryWorkspaceID", "privateTimelineID", "lastActiveAt", "createdAt", "updatedAt", "interoperabilityCapabilities", "backendKind", "backendVersion"],
-        GnosticObjectType.timeline: ["title", "isArchived", "isPrivate", "attachedAgentID", "attachedWorkspaceIDs", "createdAt", "updatedAt"],
-        GnosticObjectType.workspace: ["uri", "isAvailable", "trustLevel", "status", "tools", "createdAt"],
+        GnosticObjectType.ascendant: ["protocolMajor", "capabilities", "backendKind", "backendVersion", "ascendantDescription", "primaryWorkspaceID", "privateTimelineID", "lastActiveAt", "createdAt", "updatedAt"],
+        GnosticObjectType.timeline: ["protocolMajor", "title", "isArchived", "isPrivate", "attachedAscendantID", "attachedWorkspaceIDs", "createdAt", "updatedAt"],
+        GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "tools", "createdAt"],
     ]
 
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
 
     /// Creates an empty catalog.
-    public init() {
-        // Active Resolve responses can exceed Axoloty's borrowed wire limit;
-        // host decoding must know every Gnostic object type before it
-        // re-encodes those responses for the snapshot boundary.
-        _ = GnosticAgentObject.objectType
-        _ = GnosticTimelineObject.objectType
-        _ = GnosticWorkspaceObject.objectType
-    }
+    public init() {}
 
     /// Ingests an advertisement or readvertisement for a supported Gnostic object type.
     ///
@@ -37,12 +30,21 @@ public actor NetworkCatalog {
         }
 
         let providerID = event.sourceId ?? Self.anonymousProviderID
+        if Self.isMetadataOnly(snapshot),
+           entries[objectID]?[providerID]?.isProtocolCompatible == true {
+            // Axoloty may deliver a metadata-only advertisement before or
+            // after a full resolve response. Never let that transport
+            // projection evict a provider-scoped, protocol-valid object.
+            return
+        }
+        let protocolMajor = Self.protocolMajor(from: snapshot)
         let knownProperties = knownProperties(from: snapshot)
         let dynamicProperties = dynamicProperties(from: snapshot)
         let workspace = workspaceDescriptor(from: snapshot, id: objectID)
         let entry = NetworkCatalogEntry(
             objectID: objectID,
             objectType: snapshot.objectType,
+            protocolMajor: protocolMajor,
             providerID: providerID,
             name: snapshot.name,
             knownProperties: knownProperties,
@@ -58,7 +60,8 @@ public actor NetworkCatalog {
     /// advertisement, so they share the catalog's provider-scoped projection
     /// and replacement semantics.
     public func ingest(_ event: ResponseEventSnapshot) {
-        guard let object = event.object else { return }
+        guard let snapshot = event.object else { return }
+        let object = Self.hydrateResponseObject(snapshot, from: event.payload)
         ingest(AdvertiseEventSnapshot(sourceId: event.sourceId, object: object))
     }
 
@@ -87,9 +90,10 @@ public actor NetworkCatalog {
     }
 
     /// Returns every currently advertised object, preserving provider scope for inspection.
-    public func networkObjects() -> [NetworkCatalogEntry] {
+    public func networkObjects(includeIncompatible: Bool = false) -> [NetworkCatalogEntry] {
         entries.values
             .flatMap { $0.values }
+            .filter { includeIncompatible || $0.isProtocolCompatible }
             .sorted {
                 ($0.objectID.uuidString, $0.providerID) < ($1.objectID.uuidString, $1.providerID)
             }
@@ -100,7 +104,7 @@ public actor NetworkCatalog {
     /// - Parameter id: The workspace identifier.
     /// - Returns: The workspace attachment status.
     public func workspaceAttachmentStatus(id: UUID) -> WorkspaceAttachmentStatus {
-        let workspaceEntries = entries[id]?.values.filter { $0.objectType == GnosticObjectType.workspace } ?? []
+        let workspaceEntries = entries[id]?.values.filter { $0.objectType == GnosticObjectType.workspace && $0.isProtocolCompatible } ?? []
         guard !workspaceEntries.isEmpty else { return .unavailable }
         guard workspaceEntries.count == 1 else { return .ambiguous }
         guard let entry = workspaceEntries.first,
@@ -118,6 +122,37 @@ public actor NetworkCatalog {
         }
         let known = Self.corePropertyNames.union(Self.knownPropertyNames[snapshot.objectType] ?? [])
         return fields.filter { !known.contains($0.key) }
+    }
+
+    private static func protocolMajor(from snapshot: CoatyObjectSnapshot) -> Int? {
+        guard let payload = snapshot.payload,
+              let fields = try? JSONDecoder().decode([String: NetworkDynamicValue].self, from: Data(payload.utf8)) else {
+            return nil
+        }
+        switch fields["protocolMajor"] {
+        case let .integer(value): return Int(exactly: value)
+        case let .unsignedInteger(value): return value <= UInt64(Int.max) ? Int(value) : nil
+        default: return nil
+        }
+    }
+
+    private static func isMetadataOnly(_ snapshot: CoatyObjectSnapshot) -> Bool {
+        guard let payload = snapshot.payload,
+              let fields = try? JSONDecoder().decode([String: NetworkDynamicValue].self, from: Data(payload.utf8)) else {
+            return true
+        }
+        return fields.keys.allSatisfy { corePropertyNames.contains($0) }
+    }
+
+    private static func hydrateResponseObject(_ snapshot: CoatyObjectSnapshot, from payload: String) -> CoatyObjectSnapshot {
+        guard isMetadataOnly(snapshot),
+              let envelope = try? JSONDecoder().decode([String: NetworkDynamicValue].self, from: Data(payload.utf8)),
+              case let .object(fields) = envelope["object"],
+              let objectData = try? JSONEncoder().encode(NetworkDynamicValue.object(fields)),
+              let objectPayload = String(data: objectData, encoding: .utf8) else {
+            return snapshot
+        }
+        return snapshot.withPayload(objectPayload)
     }
 
     private func knownProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {

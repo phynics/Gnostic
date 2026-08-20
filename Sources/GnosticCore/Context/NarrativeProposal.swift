@@ -71,8 +71,8 @@ public struct NarrativeProposal: Hashable, Sendable {
 /// The authoritative orchestration state a validator consults without copying
 /// it into the narrative.
 public struct NarrativeAuthoritativeState: Sendable {
-    /// The current agent identifier.
-    public var agentID: UUID?
+    /// The current Ascendant identifier.
+    public var ascendantID: UUID?
     /// The current timeline identifiers.
     public var timelineIDs: [UUID]
     /// The current attached workspace identifiers.
@@ -84,13 +84,13 @@ public struct NarrativeAuthoritativeState: Sendable {
 
     /// Creates authoritative state.
     public init(
-        agentID: UUID? = nil,
+        ascendantID: UUID? = nil,
         timelineIDs: [UUID] = [],
         workspaceIDs: [UUID] = [],
         filePaths: [String] = [],
         unsafeMetadataValues: [String] = []
     ) {
-        self.agentID = agentID
+        self.ascendantID = ascendantID
         self.timelineIDs = timelineIDs
         self.workspaceIDs = workspaceIDs
         self.filePaths = filePaths

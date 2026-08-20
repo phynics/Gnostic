@@ -80,7 +80,7 @@ final class LegacyAscendantBackendBridge: AscendantBackend, AscendantBackendWork
         }
         do {
             let result = try await adapter.runTurn(
-                AgentChatRequest(message: request.message, timelineID: request.timelineID, clientTurnID: request.clientTurnID),
+                AscendantTurnRequest(message: request.message, timelineID: request.timelineID, clientTurnID: request.clientTurnID),
                 updates: store
             )
             forwarding.cancel()

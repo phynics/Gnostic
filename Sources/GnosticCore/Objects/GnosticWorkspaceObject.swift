@@ -39,6 +39,9 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
 
 /// A safe network projection of a PositronicKit ``WorkspaceReference``.
 public final class GnosticWorkspaceObject: CoatyObject {
+    /// The protocol major carried by this advertisement.
+    public let protocolMajor: Int
+
     /// The workspace URI, without any filesystem root path.
     public var uri: String
 
@@ -65,7 +68,8 @@ public final class GnosticWorkspaceObject: CoatyObject {
     /// Creates a safe Axoloty projection of a workspace reference.
     ///
     /// - Parameter workspace: The PositronicKit workspace reference to expose on the network.
-    public init(workspace: WorkspaceReference) {
+    public init(workspace: WorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         uri = workspace.uri.description
         isAvailable = workspace.status == .active
         trustLevel = workspace.trustLevel
@@ -85,6 +89,7 @@ public final class GnosticWorkspaceObject: CoatyObject {
 
     private enum CodingKeys: String, CodingKey {
         case uri
+        case protocolMajor
         case isAvailable
         case trustLevel
         case status
@@ -97,6 +102,7 @@ public final class GnosticWorkspaceObject: CoatyObject {
     /// - Parameter decoder: The source decoder.
     public required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         uri = try container.decode(String.self, forKey: .uri)
         isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
         trustLevel = try container.decodeIfPresent(WorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
@@ -112,6 +118,7 @@ public final class GnosticWorkspaceObject: CoatyObject {
     public override func encode(to encoder: Encoder) throws {
         try super.encode(to: encoder)
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(uri, forKey: .uri)
         try container.encode(isAvailable, forKey: .isAvailable)
         try container.encode(trustLevel, forKey: .trustLevel)
