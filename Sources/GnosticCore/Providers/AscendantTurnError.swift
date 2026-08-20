@@ -9,6 +9,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
     case terminal(timelineID: UUID, clientTurnID: String, code: String, detail: String, retryable: Bool)
     case cancelled(timelineID: UUID, clientTurnID: String)
     case lifecycleUnusable(timelineID: UUID, clientTurnID: String, detail: String)
+    case backendUnavailable(timelineID: UUID, clientTurnID: String, detail: String)
     case replayUnavailable(timelineID: UUID, clientTurnID: String)
 
     public var errorDescription: String? {
@@ -23,6 +24,8 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
             "ascendant.turn turn \(clientTurnID) was cancelled"
         case let .lifecycleUnusable(_, _, detail):
             detail
+        case let .backendUnavailable(_, _, detail):
+            detail
         case let .replayUnavailable(_, clientTurnID):
             "the replay result for ascendant.turn turn \(clientTurnID) is no longer retained; the turn will not be rerun"
         }
@@ -33,7 +36,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .conflict: 409
         case .failed, .terminal: 500
         case .cancelled: 499
-        case .lifecycleUnusable: 503
+        case .lifecycleUnusable, .backendUnavailable: 503
         case .replayUnavailable: 410
         }
     }
@@ -45,6 +48,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case let .terminal(_, _, code, _, _): code
         case .cancelled: "turnCancelled"
         case .lifecycleUnusable: "backendLifecycleUnusable"
+        case .backendUnavailable: "backendUnavailable"
         case .replayUnavailable: "replayUnavailable"
         }
     }

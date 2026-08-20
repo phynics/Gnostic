@@ -66,6 +66,9 @@ struct AscendantBackendBoundaryTests {
         #expect(await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported))
         #expect(await registry.effectiveWorkspaceStatus(id: workspaceID) == .unsupported)
         #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: "workspace://remote")])
+        #expect(await registry.setWorkspaceStatus(id: workspaceID, status: .available))
+        #expect(await registry.effectiveWorkspaceStatus(id: workspaceID) == .available)
+        #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: "workspace://remote")])
     }
 }
 

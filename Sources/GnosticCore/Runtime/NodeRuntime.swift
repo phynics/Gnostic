@@ -9,6 +9,17 @@ import PositronicKit
 /// per-Ascendant runtime adapters, and complete canonical advertisements.
 @MainActor
 public final class NodeRuntime {
+    private struct BackendSpec {
+        let ascendant: NodeManifest.Ascendant
+        let configuration: AscendantBackendConfiguration
+    }
+
+    private struct BackendReconstructionFailure: Error, LocalizedError, Sendable {
+        let detail: String
+
+        var errorDescription: String? { "Backend reconstruction failed: \(detail)" }
+    }
+
     private enum LifecycleState {
         case stopped
         case starting
@@ -26,6 +37,13 @@ public final class NodeRuntime {
     public var isRunning: Bool { lifecycleState == .running }
     private var ascendantAdapters: [UUID: any AscendantBackend]
     private let backendIdentities: [AscendantBackendIdentity]
+    private var backendSpecs: [UUID: BackendSpec] = [:]
+    private var backendHealthByID: [UUID: AscendantBackendHealth] = [:]
+    private var backendLeases: [UUID: UUID] = [:]
+    private var reconstructionTasks: [UUID: Task<any AscendantBackend, Error>] = [:]
+    /// Changes whenever the serve generation changes. A reconstruction may
+    /// finish after shutdown, but it can never install into a newer generation.
+    private var lifecycleGeneration: UInt64 = 0
     /// Canonical domain state. Adapter persistence and network objects are
     /// projections of the records accepted by this actor.
     private let registry: NodeRegistry
@@ -39,6 +57,7 @@ public final class NodeRuntime {
     private let initialWorkspaceReferences: [UUID: WorkspaceReference]
     private let localWorkspaces: [UUID: any Workspace]
     private let backendWorkspaceService: GnosticWorkspaceBackendService
+    private var backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?
     private var lifecycleState: LifecycleState = .stopped
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
@@ -57,7 +76,20 @@ public final class NodeRuntime {
         references: initialWorkspaceReferences,
         backendWorkspaceService: backendWorkspaceService,
         isRunning: { [weak self] in self?.isRunning == true },
-        adapter: { [weak self] in self?.ascendantAdapters[$0] },
+        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        isCurrentBackend: { [weak self] ascendantID, backend, generation in
+            self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
+        },
+        backendLease: { [weak self] ascendantID, backend in
+            self?.lease(for: ascendantID, backend: backend)
+        },
+        adapter: { [weak self] ascendantID in
+            guard let self, self.backendHealthByID[ascendantID] == .healthy else { return nil }
+            return self.ascendantAdapters[ascendantID]
+        },
+        lifecycleFailure: { [weak self] ascendantID, backend, failure in
+            await self?.markBackendLifecycleFailure(ascendantID, backend: backend, failure: failure)
+        },
         readvertiseTimeline: { [projectionRelay] timeline in
             projectionRelay.projectTimeline(timeline, replacing: true)
         }
@@ -67,13 +99,33 @@ public final class NodeRuntime {
         coordinator: turnCoordinator,
         updates: turnUpdates,
         isRunning: { [weak self] in self?.isRunning == true },
-        adapter: { [weak self] in self?.ascendantAdapters[$0] }
+        backend: { [weak self] ascendantID in
+            guard let self else { throw NodeRuntimeError.notRunning }
+            return try await self.backendForTurn(ascendantID)
+        },
+        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        lifecycleFailure: { [weak self] ascendantID, backend, failure in
+            await self?.markBackendLifecycleFailure(ascendantID, backend: backend, failure: failure)
+        }
     )
     private lazy var timelineService = TimelineService(
         ascendantIDs: Set(plan.ascendants.map(\.id)),
         registry: registry,
         isClosed: { [weak self] in self?.lifecycleState == .closed },
-        adapter: { [weak self] in self?.ascendantAdapters[$0] },
+        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        isCurrentBackend: { [weak self] ascendantID, backend, generation in
+            self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
+        },
+        backendLease: { [weak self] ascendantID, backend in
+            self?.lease(for: ascendantID, backend: backend)
+        },
+        adapter: { [weak self] ascendantID in
+            guard let self, self.backendHealthByID[ascendantID] == .healthy else { return nil }
+            return self.ascendantAdapters[ascendantID]
+        },
+        lifecycleFailure: { [weak self] ascendantID, backend, failure in
+            await self?.markBackendLifecycleFailure(ascendantID, backend: backend, failure: failure)
+        },
         advertise: { [projectionRelay] timeline, replacing in
             projectionRelay.projectTimeline(timeline, replacing: replacing)
         }
@@ -83,6 +135,7 @@ public final class NodeRuntime {
         lifecycle: lifecycle,
         registry: registry,
         ascendantIdentities: { [weak self] in self?.backendIdentities ?? [] },
+        ascendantHealth: { [weak self] id in self?.backendHealthByID[id] ?? .unknown },
         workspaceReferences: { [initialWorkspaceReferences, plan] in
             initialWorkspaceReferences.values.filter { reference in
                 plan.workspaces.contains { $0.id == reference.id }
@@ -226,9 +279,16 @@ public final class NodeRuntime {
                 communication: communicationManager
             )
             let workspaceCapability = BackendWorkspaceDiscoveryCapability(discovery: backendDiscovery)
+            backendWorkspaceCapability = workspaceCapability
+            var specs: [UUID: BackendSpec] = [:]
+            var leases: [UUID: UUID] = [:]
             for ascendant in plan.ascendants {
                 guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
+                specs[ascendant.id] = BackendSpec(
+                    ascendant: ascendant,
+                    configuration: backend
+                )
                 let backendServices = AscendantBackendServices(
                     workspace: backendWorkspaceService,
                     permission: permissionCoordinator,
@@ -242,13 +302,18 @@ public final class NodeRuntime {
                     throw error
                 }
                 ascendantAdapters[ascendant.id] = backendInstance
+                leases[ascendant.id] = UUID.makeVersion4()
+                backendHealthByID[ascendant.id] = .healthy
                 identities.append(backendInstance.identity)
                 operatedTimelines += try await backendInstance.operatedTimelines()
             }
             registry = try NodeRegistry(
                 plan: plan,
-                operatedTimelines: operatedTimelines
+                operatedTimelines: operatedTimelines,
+                backendLeases: leases
             )
+            backendLeases = leases
+            backendSpecs = specs
             backendIdentities = identities
         } catch {
             for adapter in ascendantAdapters.values {
@@ -273,6 +338,7 @@ public final class NodeRuntime {
         case .closed:
             throw NodeRuntimeError.notRunning
         case .stopped:
+            lifecycleGeneration &+= 1
             lifecycleState = .starting
         }
 
@@ -335,6 +401,7 @@ public final class NodeRuntime {
             return
         }
         guard lifecycleState != .closed else { return }
+        lifecycleGeneration &+= 1
         lifecycleState = .closed
 
         let startup = startupTask
@@ -353,6 +420,12 @@ public final class NodeRuntime {
         shutdownTask = cleanup
         await cleanup.value
         shutdownTask = nil
+    }
+
+    /// Returns the current health slot for an Ascendant's backend. Health is
+    /// intentionally independent from the Gnostic-owned Timeline route.
+    public func backendHealth(for ascendantID: UUID) async -> AscendantBackendHealth {
+        backendHealthByID[ascendantID] ?? .unknown
     }
 
     public func snapshot() async -> NodeRuntimeSnapshot {
@@ -390,6 +463,7 @@ public final class NodeRuntime {
     /// Returns the tool identifiers currently available to an operated Timeline.
     public func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
         guard let ascendantID = await ascendantID(forTimeline: timelineID),
+              backendHealthByID[ascendantID] == .healthy,
               let backend = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(timelineID)
         }
@@ -402,6 +476,194 @@ public final class NodeRuntime {
     /// accidentally fall through to an arbitrary Ascendant.
     public func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
         try await turnService.turn(request)
+    }
+
+    private func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend {
+        guard lifecycleState == .running else { throw NodeRuntimeError.notRunning }
+        guard backendSpecs[ascendantID] != nil else {
+            throw NodeRuntimeError.unknownAscendant(ascendantID)
+        }
+        if backendHealthByID[ascendantID] == .healthy, let backend = ascendantAdapters[ascendantID] {
+            return backend
+        }
+        return try await reconstructBackend(for: ascendantID)
+    }
+
+    private func isCurrentBackend(
+        _ ascendantID: UUID,
+        backend: any AscendantBackend,
+        generation: UInt64
+    ) -> Bool {
+        guard lifecycleState != .closed,
+              lifecycleGeneration == generation,
+              let currentBackend = ascendantAdapters[ascendantID] else { return false }
+        return (currentBackend as AnyObject) === (backend as AnyObject)
+    }
+
+    private func lease(
+        for ascendantID: UUID,
+        backend: any AscendantBackend
+    ) -> UUID? {
+        guard let currentBackend = ascendantAdapters[ascendantID],
+              (currentBackend as AnyObject) === (backend as AnyObject) else { return nil }
+        return backendLeases[ascendantID]
+    }
+
+    private func markBackendLifecycleFailure(
+        _ ascendantID: UUID,
+        backend failedBackend: any AscendantBackend,
+        failure: AscendantBackendLifecycleFailure
+    ) async {
+        guard backendSpecs[ascendantID] != nil,
+              let currentBackend = ascendantAdapters[ascendantID],
+              (currentBackend as AnyObject) === (failedBackend as AnyObject) else { return }
+        backendHealthByID[ascendantID] = .failed
+        readvertiseAscendant(ascendantID, health: .failed)
+        // A failed backend must not receive another operation while its
+        // replacement is being built. Its Gnostic identity remains routed by
+        // the registry and is never removed here.
+        backendLeases.removeValue(forKey: ascendantID)
+        await registry.invalidateBackendLease(for: ascendantID)
+        if let backend = ascendantAdapters.removeValue(forKey: ascendantID) {
+            await backend.shutdown()
+        }
+        _ = failure
+    }
+
+    private func reconstructBackend(for ascendantID: UUID) async throws -> any AscendantBackend {
+        if let task = reconstructionTasks[ascendantID] {
+            return try await task.value
+        }
+        guard let spec = backendSpecs[ascendantID] else {
+            throw NodeRuntimeError.unknownAscendant(ascendantID)
+        }
+
+        let generation = lifecycleGeneration
+        backendHealthByID[ascendantID] = .unknown
+        readvertiseAscendant(ascendantID, health: .unknown)
+        let task = Task { @MainActor [weak self] () throws -> any AscendantBackend in
+            guard let self else { throw NodeRuntimeError.notRunning }
+            var candidate: (any AscendantBackend)?
+            do {
+                guard self.isCurrentReconstructionGeneration(generation) else {
+                    throw NodeRuntimeError.notRunning
+                }
+                let state = await self.registry.backendReconstructionState(for: ascendantID)
+                let services = AscendantBackendServices(
+                    workspace: self.backendWorkspaceService,
+                    permission: self.permissionCoordinator,
+                    optionalCapabilities: self.backendWorkspaceCapability.map { [$0] } ?? []
+                )
+                let created = try await self.adapters.ascendants.makeBackend(
+                    for: spec.ascendant,
+                    backend: spec.configuration,
+                    services: services,
+                    timelines: state.timelines
+                )
+                candidate = created
+                guard self.isCurrentReconstructionGeneration(generation) else {
+                    candidate = nil
+                    await created.shutdown()
+                    throw NodeRuntimeError.notRunning
+                }
+                try created.validateConfiguration()
+                let projected = try await created.operatedTimelines()
+                try Self.validateReplacement(
+                    candidate: created,
+                    projected: projected,
+                    spec: spec,
+                    state: state
+                )
+                guard self.isCurrentReconstructionGeneration(generation) else {
+                    candidate = nil
+                    await created.shutdown()
+                    throw NodeRuntimeError.notRunning
+                }
+                let currentRevision = await self.registry.backendRevision(for: ascendantID)
+                guard self.isCurrentReconstructionGeneration(generation) else {
+                    candidate = nil
+                    await created.shutdown()
+                    throw NodeRuntimeError.notRunning
+                }
+                guard currentRevision == state.revision else {
+                    candidate = nil
+                    await created.shutdown()
+                    throw BackendReconstructionFailure(detail: "registry changed during reconstruction")
+                }
+
+                // Publication is part of the shared reconstruction task. Every
+                // waiter receives this installed instance only after the
+                // generation and the exact captured revision have been fenced.
+                let lease = UUID.makeVersion4()
+                await self.registry.activateBackendLease(lease, for: ascendantID)
+                guard self.isCurrentReconstructionGeneration(generation) else {
+                    await self.registry.invalidateBackendLease(for: ascendantID)
+                    candidate = nil
+                    await created.shutdown()
+                    throw NodeRuntimeError.notRunning
+                }
+                self.backendLeases[ascendantID] = lease
+                self.ascendantAdapters[ascendantID] = created
+                self.backendHealthByID[ascendantID] = .healthy
+                self.timelineService.restoreBackend(ascendantID)
+                self.workspaceService.restoreBackend(ascendantID)
+                self.readvertiseAscendant(ascendantID, health: .healthy)
+                candidate = nil
+                return created
+            } catch {
+                if let candidate { await candidate.shutdown() }
+                guard generation == self.lifecycleGeneration, self.lifecycleState == .running else {
+                    throw error
+                }
+                self.backendHealthByID[ascendantID] = .failed
+                self.readvertiseAscendant(ascendantID, health: .failed)
+                if let failure = error as? BackendReconstructionFailure {
+                    throw failure
+                }
+                throw BackendReconstructionFailure(detail: error.localizedDescription)
+            }
+        }
+        reconstructionTasks[ascendantID] = task
+        do {
+            let backend = try await task.value
+            reconstructionTasks.removeValue(forKey: ascendantID)
+            return backend
+        } catch {
+            reconstructionTasks.removeValue(forKey: ascendantID)
+            throw error
+        }
+    }
+
+    private func readvertiseAscendant(_ ascendantID: UUID, health: AscendantBackendHealth) {
+        guard let identity = backendIdentities.first(where: { $0.id == ascendantID }) else { return }
+        projectionRelay.projectAscendant(identity, health: health, replacing: true)
+    }
+
+    private func isCurrentReconstructionGeneration(_ generation: UInt64) -> Bool {
+        generation == lifecycleGeneration && lifecycleState == .running && !Task.isCancelled
+    }
+
+    private static func validateReplacement(
+        candidate: any AscendantBackend,
+        projected: [AscendantBackendTimeline],
+        spec: BackendSpec,
+        state: NodeRegistry.BackendReconstructionState
+    ) throws {
+        guard candidate.identity.id == spec.ascendant.id,
+              candidate.identity.privateTimelineID == spec.ascendant.defaultTimelineID else {
+            throw NodeRuntimeError.unknownAscendant(candidate.identity.id)
+        }
+        let expectedIDs = Set(state.timelines.map(\.id))
+        let projectedIDs = Set(projected.map(\.id))
+        guard expectedIDs.isSubset(of: projectedIDs) else {
+            let missing = expectedIDs.subtracting(projectedIDs).first!
+            throw NodeRuntimeError.missingTimeline(missing)
+        }
+        for timeline in projected where expectedIDs.contains(timeline.id) {
+            guard timeline.attachedAscendantID == spec.ascendant.id else {
+                throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? spec.ascendant.id)
+            }
+        }
     }
 
     /// Creates a timeline in the selected Ascendant's in-memory runtime. It
@@ -469,13 +731,22 @@ public final class NodeRuntime {
     }
 
     private func rollbackStart(close: Bool) async {
+        lifecycleGeneration &+= 1
+        let leasedAscendantIDs = backendLeases.keys
+        backendLeases.removeAll()
+        for ascendantID in leasedAscendantIDs {
+            await registry.invalidateBackendLease(for: ascendantID)
+        }
         await transport.cancel()
+        let reconstructions = reconstructionTasks.values
+        reconstructionTasks.removeAll()
+        reconstructions.forEach { $0.cancel() }
         let publishTask = turnUpdatePublishTask
         let resolutionTask = networkResolutionTask
         publishTask?.cancel(); turnUpdatePublishTask = nil
         resolutionTask?.cancel(); networkResolutionTask = nil
         for adapter in ascendantAdapters.values { await adapter.cancel() }
-        await turnCoordinator.cancelAll()
+        await turnCoordinator.cancelAll(waitForCompletion: false)
         for adapter in ascendantAdapters.values { await adapter.shutdown() }
         await permissionCoordinator.denyAll(reason: "connection_lost")
         await publishTask?.value
