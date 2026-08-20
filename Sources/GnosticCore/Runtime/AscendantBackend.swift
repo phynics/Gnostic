@@ -5,13 +5,13 @@ import Foundation
 /// Stable interoperability behaviors a remote client may select by name.
 /// Backend kind and version are intentionally not capabilities.
 public enum AscendantInteroperabilityCapability: String, Codable, Sendable, Equatable, CaseIterable {
-    case textTurn = "gnostic.turn.text"
-    case streamedUpdates = "gnostic.turn.updates"
-    case cancellation = "gnostic.turn.cancel"
-    case replay = "gnostic.turn.replay"
-    case permissionMediation = "gnostic.permission.mediation"
-    case workspaceAttachment = "gnostic.workspace.attachment"
-    case workspaceToolInvocation = "gnostic.workspace.tool.invoke"
+    case textTurn = "me.atkn.gnostic.capability.turn.text"
+    case streamedUpdates = "me.atkn.gnostic.capability.turn.stream"
+    case cancellation = "me.atkn.gnostic.capability.turn.cancel"
+    case replay = "me.atkn.gnostic.capability.turn.replay"
+    case permissionMediation = "me.atkn.gnostic.capability.permission.mediation"
+    case workspaceAttachment = "me.atkn.gnostic.capability.workspace.attach"
+    case workspaceToolInvocation = "me.atkn.gnostic.capability.workspace.tool"
 }
 
 public struct AscendantBackendCapabilities: Codable, Sendable, Equatable {

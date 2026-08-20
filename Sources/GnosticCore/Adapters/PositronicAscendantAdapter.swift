@@ -57,7 +57,6 @@ import struct PositronicKit.Thread
                 interoperability: Set([
                     AscendantInteroperabilityCapability.textTurn.rawValue,
                     AscendantInteroperabilityCapability.streamedUpdates.rawValue,
-                    AscendantInteroperabilityCapability.cancellation.rawValue,
                     AscendantInteroperabilityCapability.replay.rawValue,
                     AscendantInteroperabilityCapability.permissionMediation.rawValue,
                     AscendantInteroperabilityCapability.workspaceAttachment.rawValue,

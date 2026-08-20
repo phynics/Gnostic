@@ -200,7 +200,7 @@ struct AscendantTurnCoordinatorTests {
     @Test("backend terminal metadata survives coordination")
     func backendTerminalMetadataIsPreserved() async throws {
         let coordinator = AscendantTurnCoordinator()
-        let request = AgentChatRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-terminal")
+        let request = AscendantTurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-terminal")
 
         do {
             _ = try await coordinator.execute(request) {
