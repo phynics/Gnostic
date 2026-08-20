@@ -14,6 +14,17 @@ public enum AscendantInteroperabilityCapability: String, Codable, Sendable, Equa
     case workspaceToolInvocation = "me.atkn.gnostic.capability.workspace.tool"
 }
 
+/// Runtime health of an Ascendant's bound backend.
+///
+/// Health is deliberately separate from routability: a failed backend keeps
+/// its Gnostic-owned Ascendant and Timeline relationships available for a
+/// bounded reconstruction attempt.
+public enum AscendantBackendHealth: String, Codable, Sendable, Equatable {
+    case healthy
+    case failed
+    case unknown
+}
+
 public struct AscendantBackendCapabilities: Codable, Sendable, Equatable {
     public let interoperability: Set<String>
     public let host: Set<String>
