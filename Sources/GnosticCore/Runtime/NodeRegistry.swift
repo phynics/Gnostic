@@ -26,6 +26,16 @@ public actor NodeRegistry {
         public var id: UUID { timeline.id }
     }
 
+    public struct WorkspaceAttachmentTarget: Sendable, Equatable {
+        public let timelineID: UUID
+        public let ascendantID: UUID
+
+        public init(timelineID: UUID, ascendantID: UUID) {
+            self.timelineID = timelineID
+            self.ascendantID = ascendantID
+        }
+    }
+
     public struct WorkspaceRecord: Sendable, Equatable {
         public let id: UUID
         public let uri: String
@@ -217,6 +227,24 @@ public actor NodeRegistry {
         guard timelines[timelineID] != nil else { return }
         attachmentIntents[timelineID, default: []].removeAll { $0.workspaceID == workspaceID }
     }
+
+    /// Returns the current runtime targets for a network Workspace intent.
+    /// This includes process-only Timelines and excludes stale launch-plan
+    /// relationships that were explicitly detached after startup.
+    public func attachmentTargets(for workspaceID: UUID) -> [WorkspaceAttachmentTarget] {
+        timelines.values.compactMap { record in
+            guard let ascendantID = record.operatorID,
+                  attachmentIntents[record.id]?.contains(where: {
+                      $0.workspaceID == workspaceID && $0.scope == .network
+                  }) == true else { return nil }
+            return WorkspaceAttachmentTarget(timelineID: record.id, ascendantID: ascendantID)
+        }
+        .sorted {
+            ($0.timelineID.uuidString, $0.ascendantID.uuidString)
+                < ($1.timelineID.uuidString, $1.ascendantID.uuidString)
+        }
+    }
+
     public func unresolvedWorkspaceIDs() -> [UUID] {
         workspaces.values.filter { !$0.isAvailable }.map(\.id).sorted { $0.uuidString < $1.uuidString }
     }

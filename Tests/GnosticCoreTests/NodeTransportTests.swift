@@ -106,6 +106,61 @@ struct NodeTransportTests {
         #expect(listings.map(\.id) == [workspaceID])
         #expect(listings.first?.name == "Remote stub")
     }
+
+    @Test("dynamic Workspace attachments are restored after loss and rediscovery")
+    @MainActor
+    func dynamicWorkspaceAttachmentSurvivesRediscovery() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000006")!
+        let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000007")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000008")!
+        let uri = "gnostic://workspace/dynamic"
+        let discovery = MutableServiceStubWorkspaceDiscovery(
+            entry: .init(
+                objectID: workspaceID,
+                objectType: GnosticObjectType.workspace,
+                providerID: "stub-provider",
+                name: "Dynamic remote",
+                knownProperties: [:],
+                dynamicProperties: [:],
+                workspace: .init(id: workspaceID, uri: uri, isAvailable: true, tools: [])
+            )
+        )
+        let adapter = ServiceStubAscendantAdapter(ascendantID: ascendantID, timelineID: timelineID)
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-service-dynamic-attachment"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000009")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Dynamic", operatingAscendantID: ascendantID)]
+        ).compileLaunchPlan()
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.timelines())
+        let backend = LegacyAscendantBackendBridge(adapter: adapter)
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: discovery,
+            localWorkspaces: [:],
+            references: [:],
+            isRunning: { true },
+            adapter: { $0 == ascendantID ? backend : nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        _ = try await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
+        #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
+        #expect(try await adapter.timelines().first?.attachedWorkspaceIDs == [workspaceID])
+
+        try await adapter.detachWorkspace(workspaceID, from: timelineID)
+        discovery.isAvailable = false
+        await registry.setWorkspaceStatus(id: workspaceID, status: .unavailable)
+        await service.refreshUnresolved()
+        #expect(try await adapter.timelines().first?.attachedWorkspaceIDs.isEmpty == true)
+
+        discovery.isAvailable = true
+        await service.refreshUnresolved()
+
+        #expect(try await adapter.timelines().first?.attachedWorkspaceIDs == [workspaceID])
+        #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
+    }
 }
 
 @MainActor
@@ -121,6 +176,24 @@ private final class ServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
     func discover(timeout _: Duration) async {}
     func objects() async -> [NetworkCatalogEntry] { [entry] }
     func attachmentStatus(id _: UUID) async -> WorkspaceAttachmentStatus { status }
+}
+
+@MainActor
+private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
+    let entry: NetworkCatalogEntry
+    var isAvailable = true
+
+    init(entry: NetworkCatalogEntry) {
+        self.entry = entry
+    }
+
+    func discover(timeout _: Duration) async {}
+    func objects() async -> [NetworkCatalogEntry] { [entry] }
+    func attachmentStatus(id _: UUID) async -> WorkspaceAttachmentStatus {
+        isAvailable
+            ? .available(providerID: entry.providerID, uri: entry.workspace?.uri ?? "")
+            : .unavailable
+    }
 }
 
 @MainActor
@@ -167,8 +240,39 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
         storedTimelines[index] = renamed
         return renamed
     }
-    func attachWorkspace(_: WorkspaceReference, to _: UUID) async throws {}
-    func detachWorkspace(_: UUID, from _: UUID) async throws {}
+    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {
+        guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else {
+            throw NodeRuntimeError.missingTimeline(timelineID)
+        }
+        let old = storedTimelines[index]
+        let attached = old.attachedWorkspaceIDs + (old.attachedWorkspaceIDs.contains(reference.id) ? [] : [reference.id])
+        storedTimelines[index] = AscendantRuntimeTimeline(
+            id: old.id,
+            title: old.title,
+            attachedWorkspaceIDs: attached,
+            attachedAgentInstanceID: old.attachedAgentInstanceID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+    }
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
+        guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else {
+            throw NodeRuntimeError.missingTimeline(timelineID)
+        }
+        let old = storedTimelines[index]
+        storedTimelines[index] = AscendantRuntimeTimeline(
+            id: old.id,
+            title: old.title,
+            attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
+            attachedAgentInstanceID: old.attachedAgentInstanceID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+    }
     func enabledToolIDs(for _: UUID) async -> [String] { [] }
     func runTurn(_ request: AgentChatRequest, updates _: AscendantTurnUpdateStore) async throws -> String { "stub: \(request.message)" }
     func cancelAll() async {}

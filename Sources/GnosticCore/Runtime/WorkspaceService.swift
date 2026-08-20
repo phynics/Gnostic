@@ -172,12 +172,10 @@ public final class WorkspaceService {
     }
 
     private func installResolved(_ reference: WorkspaceReference, workspaceID: UUID) async throws {
-        let attached = plan.timelines.filter { $0.attachments.contains { $0.workspaceID == workspaceID && $0.scope == .network } }
-        for ascendantID in Set(attached.compactMap(\.operatingAscendantID)) {
-            guard let runtime = adapter(ascendantID) as? any AscendantBackendWorkspaceCapability else { continue }
-            for timeline in attached where timeline.operatingAscendantID == ascendantID {
-                try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: timeline.id)
-            }
+        let backendReference = BackendWorkspaceReference(reference: reference)
+        for target in await registry.attachmentTargets(for: workspaceID) {
+            guard let runtime = adapter(target.ascendantID) as? any AscendantBackendWorkspaceCapability else { continue }
+            try await runtime.attachWorkspace(backendReference, to: target.timelineID)
         }
         guard try await registry.resolveLazyWorkspace(id: workspaceID, uri: reference.uri.description, toolIDs: reference.tools.map(\.toolID)) else {
             await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
