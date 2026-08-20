@@ -139,6 +139,8 @@ public struct TimelineManagementProvider: Sendable {
                 return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch {
+                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
             }
         case Self.listOperation:
             if let error = protocolError(parameters) { return error }
@@ -151,6 +153,8 @@ public struct TimelineManagementProvider: Sendable {
                 return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch {
+                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
             }
         case Self.updateOperation:
             if let error = protocolError(parameters) { return error }
@@ -167,6 +171,8 @@ public struct TimelineManagementProvider: Sendable {
                 return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch {
+                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
             }
         default:
             return failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")

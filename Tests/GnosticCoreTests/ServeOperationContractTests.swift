@@ -312,6 +312,29 @@ struct ServeOperationContractTests {
         }
         #expect(code == 400)
     }
+
+    @Test("timeline ops wrap arbitrary backend failures in protocol envelopes")
+    func timelineManagementUnexpectedFailureContract() async throws {
+        struct InjectedFailure: Error {}
+        let provider = TimelineManagementProvider(
+            create: { _, _ in throw InjectedFailure() },
+            list: { throw InjectedFailure() },
+            update: { _ in throw InjectedFailure() }
+        )
+
+        let response = try await provider.handle(
+            operation: TimelineManagementProvider.createOperation,
+            parameters: payload(TimelineCreateRequest(title: "Fails"))
+        )
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured timeline failure")
+            return
+        }
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(code == 500)
+        #expect(failure.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(failure.reasonCode == "internalError")
+    }
 }
 
 /// Records attach/detach calls across the Sendable closures.

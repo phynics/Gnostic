@@ -134,6 +134,48 @@ struct WorkspaceProviderTests {
         #expect(result.output == "found")
     }
 
+    @Test("provider wraps malformed and executor failures in protocol envelopes")
+    func providerHandleFailuresCarryProtocolMajor() async throws {
+        struct InjectedFailure: Error {}
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
+        let provider = WorkspaceProvider(
+            workspaceID: workspaceID,
+            tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
+        ) { _, _ in
+            throw InjectedFailure()
+        }
+
+        let malformed = try await provider.handle(parameters: #"{"protocolMajor":2}"#)
+        let malformedFailure = try protocolFailure(from: malformed)
+        #expect(malformedFailure.protocolMajor == GnosticProtocol.currentMajor)
+
+        let payload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(workspaceID: workspaceID, toolID: "custom", arguments: [:])
+        ), as: UTF8.self)
+        let executorFailure = try await provider.handle(parameters: payload)
+        let executorFailureEnvelope = try protocolFailure(from: executorFailure)
+        #expect(executorFailureEnvelope.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(executorFailureEnvelope.reasonCode == "workspaceInvocationFailed")
+    }
+
+    @Test("provider preserves cancellation from an executor")
+    func providerHandlePreservesCancellation() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000007")!
+        let provider = WorkspaceProvider(
+            workspaceID: workspaceID,
+            tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
+        ) { _, _ in
+            throw CancellationError()
+        }
+        let payload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(workspaceID: workspaceID, toolID: "custom", arguments: [:])
+        ), as: UTF8.self)
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await provider.handle(parameters: payload)
+        }
+    }
+
     @Test("remote proxy exposes advertised custom tools and rejects direct file access")
     func proxyExposesToolsWithoutFilesystemFallback() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000002")!
@@ -300,6 +342,14 @@ private func schemaObject(_ schema: Schema) throws -> [String: Any] {
 private func schemaObject(_ schema: [String: AnyCodable]) throws -> [String: Any] {
     let data = try JSONEncoder().encode(schema)
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func protocolFailure(from response: CallHandlerResult) throws -> GnosticProtocolFailure {
+    guard case let .failure(_, message, _) = response else {
+        Issue.record("expected a protocol failure, got \(response)")
+        return GnosticProtocolFailure(reasonCode: "missing", message: "missing")
+    }
+    return try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
 }
 
 private func encodeProtocolToolResult(_ output: String) throws -> String {

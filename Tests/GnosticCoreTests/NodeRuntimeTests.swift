@@ -141,8 +141,33 @@ struct NodeRuntimeTests {
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, providerID: "other-node", toolID: NodeRuntime.echoToolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
-        await #expect(throws: WorkspaceError.connectionFailed) {
-            _ = try await provider.handle(parameters: payload, expectedProviderID: "this-node")
+        let response = try await provider.handle(parameters: payload, expectedProviderID: "this-node")
+        guard case let .failure(_, message, _) = response else {
+            Issue.record("expected a structured provider-routing failure")
+            return
+        }
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.protocolMajor == GnosticProtocol.currentMajor)
+        #expect(failure.reasonCode == "workspaceInvocationFailed")
+    }
+
+    @Test("multiplexed Workspace provider preserves cancellation from a workspace")
+    func multiplexedWorkspaceProviderPreservesCancellation() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000141")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "echo://provider-cancellation")!,
+            location: .runtime,
+            tools: [.custom(.init(id: NodeRuntime.echoToolID, name: "Echo", description: "Echoes."))]
+        )
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspaceID: CancellationWorkspace(reference: reference)]
+        )
+        let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: NodeRuntime.echoToolID, arguments: [:])
+        let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await provider.handle(parameters: payload)
         }
     }
 
@@ -1216,6 +1241,21 @@ private struct ProjectedToolWorkspace: Workspace, Sendable {
 
     func listTools() async throws -> [ToolReference] { reference.tools }
     func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult { .success("ok") }
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
+}
+
+private struct CancellationWorkspace: Workspace, Sendable {
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+        throw CancellationError()
+    }
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }

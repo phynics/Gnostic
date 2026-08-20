@@ -76,13 +76,19 @@ public actor WorkspaceProvider {
     public func handle(parameters: String?) async throws -> CallHandlerResult {
         do {
             try GnosticProtocol.validatePayload(parameters)
+            guard let parameters else { throw WorkspaceError.toolExecutionNotSupported }
+            let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
+            let result = try await invoke(invocation)
+            return .success(result: try Self.encodeResult(result))
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch let error as DecodingError {
+            return failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: String(describing: error))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return failure(code: 500, reasonCode: "workspaceInvocationFailed", message: String(describing: error))
         }
-        guard let parameters else { throw WorkspaceError.toolExecutionNotSupported }
-        let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
-        let result = try await invoke(invocation)
-        return .success(result: try Self.encodeResult(result))
     }
 
     private static func encodeResult(_ result: ToolResult) throws -> String {
@@ -92,6 +98,10 @@ public actor WorkspaceProvider {
         }
         object["protocolMajor"] = GnosticProtocol.currentMajor
         return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+    }
+
+    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
     }
 
     /// Registers this provider with Axoloty's released unary Call handler.

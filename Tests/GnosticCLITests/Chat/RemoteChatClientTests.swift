@@ -75,6 +75,52 @@ struct RemoteTurnClientTests {
         }
     }
 
+    @Test("Turn capability is scoped to the Ascendant attached to the Timeline") @MainActor
+    func turnRequiresTimelineAscendantCapability() async throws {
+        let namespace = "remote-chat-capability-scope-\(UUID().uuidString.lowercased())"
+        let incapableAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000024")!
+        let capableAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000025")!
+        let incapableTimelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000026")!
+        let capableTimelineID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000027")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "C41D0000-0000-4000-8000-000000000028")!),
+            ascendants: [
+                .init(id: incapableAscendantID, name: "Incapable", defaultTimelineID: incapableTimelineID, kind: "fixture"),
+                .init(id: capableAscendantID, name: "Capable", defaultTimelineID: capableTimelineID, kind: "fixture"),
+            ],
+            timelines: [
+                .init(id: incapableTimelineID, title: "Incapable timeline", operatingAscendantID: incapableAscendantID),
+                .init(id: capableTimelineID, title: "Capable timeline", operatingAscendantID: capableAscendantID),
+            ]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.register(kind: "fixture") { ascendant, _, _, timelines, _ in
+            CapabilityFixtureAdapter(
+                ascendant: ascendant,
+                timelines: timelines,
+                capabilities: ascendant.id == capableAscendantID ? Array(GnosticCapability.stable).sorted() : []
+            )
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        defer { Task { @MainActor in await runtime.shutdown() } }
+        try await runtime.start()
+
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { client.stop() }
+        try await client.connect()
+        try await poll(timeout: .seconds(8)) {
+            await client.discoverAscendants().count == 2
+        }
+
+        do {
+            _ = try await client.turn(message: "should not route", timelineID: incapableTimelineID, clientTurnID: nil)
+            Issue.record("Turn unexpectedly routed through a sibling Ascendant")
+        } catch let error as RemoteTurnClientError {
+            #expect(error.gnosticCode == "missingCapability")
+        }
+    }
+
     @Test("attach and detach a workspace over the served ops") @MainActor
     func attachDetachOverBroker() async throws {
         let namespace = "remote-chat-attach-tests"
@@ -255,4 +301,83 @@ struct RemoteTurnClientTests {
         )
         return (try await NodeRuntime(plan: manifest.compileLaunchPlan()), ascendantID, timelineID)
     }
+}
+
+@MainActor
+private final class CapabilityFixtureAdapter: AscendantRuntimeAdapter {
+    let identity: AscendantRuntimeIdentity
+    private var records: [UUID: AscendantRuntimeTimeline]
+
+    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], capabilities: [String]) {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        identity = AscendantRuntimeIdentity(
+            id: ascendant.id,
+            name: ascendant.name,
+            description: ascendant.description,
+            privateTimelineID: ascendant.defaultTimelineID,
+            primaryWorkspaceID: nil,
+            lastActiveAt: now,
+            createdAt: now,
+            updatedAt: now,
+            capabilities: capabilities
+        )
+        records = Dictionary(uniqueKeysWithValues: timelines.map { timeline in
+            (
+                timeline.id,
+                AscendantRuntimeTimeline(
+                    id: timeline.id,
+                    title: timeline.title,
+                    attachedWorkspaceIDs: timeline.attachments.map(\.workspaceID),
+                    attachedAscendantID: ascendant.id,
+                    isArchived: false,
+                    isPrivate: false,
+                    createdAt: now,
+                    updatedAt: now
+                )
+            )
+        })
+    }
+
+    func timelines() async throws -> [AscendantRuntimeTimeline] { Array(records.values) }
+
+    func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let timeline = AscendantRuntimeTimeline(
+            id: id,
+            title: title,
+            attachedWorkspaceIDs: [],
+            attachedAscendantID: identity.id,
+            isArchived: false,
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now
+        )
+        records[id] = timeline
+        return timeline
+    }
+
+    func removeTimeline(id: UUID) async { records[id] = nil }
+
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+        guard let timeline = records[id] else { throw NodeRuntimeError.missingTimeline(id) }
+        let renamed = AscendantRuntimeTimeline(
+            id: timeline.id,
+            title: title,
+            attachedWorkspaceIDs: timeline.attachedWorkspaceIDs,
+            attachedAscendantID: timeline.attachedAscendantID,
+            isArchived: timeline.isArchived,
+            isPrivate: timeline.isPrivate,
+            createdAt: timeline.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_001)
+        )
+        records[id] = renamed
+        return renamed
+    }
+
+    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {}
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
+    func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
+    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String { "fixture: \(request.message)" }
+    func cancelAll() async {}
+    func shutdown() async {}
 }
