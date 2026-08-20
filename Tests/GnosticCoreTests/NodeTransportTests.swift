@@ -45,9 +45,9 @@ struct NodeTransportTests {
             ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
             timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)]
         ).compileLaunchPlan()
-        let adapter = ServiceStubAscendantAdapter(ascendantID: ascendantID, timelineID: timelineID)
-        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.timelines())
-        let backend = LegacyAscendantBackendBridge(adapter: adapter)
+        let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let backend = adapter
         let timelineService = TimelineService(
             ascendantIDs: [ascendantID],
             registry: registry,
@@ -60,7 +60,10 @@ struct NodeTransportTests {
             coordinator: AscendantTurnCoordinator(),
             updates: AscendantTurnUpdateStore(),
             isRunning: { true },
-            adapter: { $0 == ascendantID ? backend : nil }
+            backend: { id in
+                guard id == ascendantID else { throw NodeRuntimeError.unknownAscendant(id) }
+                return backend
+            }
         )
 
         let renamed = try await timelineService.rename(.init(timelineID: timelineID, title: "After"))
@@ -125,15 +128,15 @@ struct NodeTransportTests {
                 workspace: .init(id: workspaceID, uri: uri, isAvailable: true, tools: [])
             )
         )
-        let adapter = ServiceStubAscendantAdapter(ascendantID: ascendantID, timelineID: timelineID)
+        let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
         let plan = try NodeManifest(
             broker: .init(host: "unused", port: 1883, namespace: "workspace-service-dynamic-attachment"),
             node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000009")!),
             ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
             timelines: [.init(id: timelineID, title: "Dynamic", operatingAscendantID: ascendantID)]
         ).compileLaunchPlan()
-        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.timelines())
-        let backend = LegacyAscendantBackendBridge(adapter: adapter)
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let backend = adapter
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
@@ -147,18 +150,18 @@ struct NodeTransportTests {
 
         _ = try await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
         #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
-        #expect(try await adapter.timelines().first?.attachedWorkspaceIDs == [workspaceID])
+        #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs == [workspaceID])
 
         try await adapter.detachWorkspace(workspaceID, from: timelineID)
         discovery.isAvailable = false
         await registry.setWorkspaceStatus(id: workspaceID, status: .unavailable)
         await service.refreshUnresolved()
-        #expect(try await adapter.timelines().first?.attachedWorkspaceIDs.isEmpty == true)
+        #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs.isEmpty == true)
 
         discovery.isAvailable = true
         await service.refreshUnresolved()
 
-        #expect(try await adapter.timelines().first?.attachedWorkspaceIDs == [workspaceID])
+        #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs == [workspaceID])
         #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
     }
 }
@@ -197,9 +200,9 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
 }
 
 @MainActor
-private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
-    let identity: AscendantRuntimeIdentity
-    private var storedTimelines: [AscendantRuntimeTimeline]
+private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
+    let identity: AscendantBackendIdentity
+    private var storedTimelines: [AscendantBackendTimeline]
 
     init(ascendantID: UUID, timelineID: UUID) {
         let now = Date()
@@ -217,7 +220,7 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
             id: timelineID,
             title: "Before",
             attachedWorkspaceIDs: [],
-            attachedAscendantID: ascendantID,
+            ascendantID: ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,
@@ -225,32 +228,33 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
         )]
     }
 
-    func timelines() async throws -> [AscendantRuntimeTimeline] { storedTimelines }
-    func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+    func validateConfiguration() throws {}
+    func operatedTimelines() async throws -> [AscendantBackendTimeline] { storedTimelines }
+    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         let now = Date()
-        let timeline = AscendantRuntimeTimeline(id: id, title: title, attachedWorkspaceIDs: [], attachedAscendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let timeline = AscendantBackendTimeline(id: id, title: title, attachedWorkspaceIDs: [], ascendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         storedTimelines.append(timeline)
         return timeline
     }
     func removeTimeline(id: UUID) async { storedTimelines.removeAll { $0.id == id } }
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline {
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
         let old = storedTimelines[index]
-        let renamed = AscendantRuntimeTimeline(id: id, title: title, attachedWorkspaceIDs: old.attachedWorkspaceIDs, attachedAscendantID: old.attachedAscendantID, isArchived: old.isArchived, isPrivate: old.isPrivate, createdAt: old.createdAt, updatedAt: Date())
+        let renamed = AscendantBackendTimeline(id: id, title: title, attachedWorkspaceIDs: old.attachedWorkspaceIDs, ascendantID: old.ascendantID, isArchived: old.isArchived, isPrivate: old.isPrivate, createdAt: old.createdAt, updatedAt: Date())
         storedTimelines[index] = renamed
         return renamed
     }
-    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws {
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else {
             throw NodeRuntimeError.missingTimeline(timelineID)
         }
         let old = storedTimelines[index]
         let attached = old.attachedWorkspaceIDs + (old.attachedWorkspaceIDs.contains(reference.id) ? [] : [reference.id])
-        storedTimelines[index] = AscendantRuntimeTimeline(
+        storedTimelines[index] = AscendantBackendTimeline(
             id: old.id,
             title: old.title,
             attachedWorkspaceIDs: attached,
-            attachedAgentInstanceID: old.attachedAgentInstanceID,
+            ascendantID: old.ascendantID,
             isArchived: old.isArchived,
             isPrivate: old.isPrivate,
             createdAt: old.createdAt,
@@ -262,11 +266,11 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
             throw NodeRuntimeError.missingTimeline(timelineID)
         }
         let old = storedTimelines[index]
-        storedTimelines[index] = AscendantRuntimeTimeline(
+        storedTimelines[index] = AscendantBackendTimeline(
             id: old.id,
             title: old.title,
             attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
-            attachedAgentInstanceID: old.attachedAgentInstanceID,
+            ascendantID: old.ascendantID,
             isArchived: old.isArchived,
             isPrivate: old.isPrivate,
             createdAt: old.createdAt,
@@ -274,7 +278,7 @@ private final class ServiceStubAscendantAdapter: AscendantRuntimeAdapter {
         )
     }
     func enabledToolIDs(for _: UUID) async -> [String] { [] }
-    func runTurn(_ request: AscendantTurnRequest, updates _: AscendantTurnUpdateStore) async throws -> String { "stub: \(request.message)" }
-    func cancelAll() async {}
+    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String { "stub: \(request.message)" }
+    func cancel() async {}
     func shutdown() async {}
 }

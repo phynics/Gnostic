@@ -111,6 +111,39 @@ struct WorkspaceProviderTests {
         #expect(recorder.ids == [timeline.id])
     }
 
+    @Test("backend attachment tools delegate authority to the Gnostic host") @MainActor
+    func backendAttachmentUsesHostAuthority() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000009")!
+        let catalog = NetworkCatalog()
+        let payload = """
+        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote-authority","isAvailable":true,"tools":[]}
+        """
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+
+        let manager = ThreadManager(workspaceProfile: .noWorkspace)
+        let timeline = try await manager.createThread(title: "Timeline")
+        let recorder = BackendAttachmentRecorder()
+        let host = BackendWorkspaceAttachmentCapability { workspace, timeline in
+            await recorder.record(workspaceID: workspace, timelineID: timeline)
+        }
+        let service = DiscoveredWorkspaceAttachmentService(
+            catalog: catalog,
+            threadManager: manager,
+            hostAttachment: host
+        )
+        let tool = AttachWorkspaceTool(service: service)
+
+        let result = try await tool.execute(parameters: [
+            "workspaceId": AnyCodable(workspaceID.uuidString),
+            "timelineId": AnyCodable(timeline.id.uuidString),
+        ])
+
+        #expect(result.success)
+        #expect(await recorder.workspaceID == workspaceID)
+        #expect(await recorder.timelineID == timeline.id)
+        #expect(try await manager.getWorkspaces(for: timeline.id).primary == nil)
+    }
+
     @Test("provider preserves advertised custom definitions and dispatches the addressed tool")
     func providerDispatchesAdvertisedTool() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000001")!
@@ -363,6 +396,16 @@ private func encodeProtocolToolResult(_ output: String) throws -> String {
 private final class TimelineRecorder: @unchecked Sendable {
     private(set) var ids: [UUID] = []
     func record(_ timeline: Thread) { ids.append(timeline.id) }
+}
+
+private actor BackendAttachmentRecorder {
+    private(set) var workspaceID: UUID?
+    private(set) var timelineID: UUID?
+
+    func record(workspaceID: UUID, timelineID: UUID) {
+        self.workspaceID = workspaceID
+        self.timelineID = timelineID
+    }
 }
 
 private actor InvocationRecorder {

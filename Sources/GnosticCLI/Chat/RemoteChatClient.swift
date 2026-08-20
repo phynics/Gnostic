@@ -470,7 +470,3 @@ public final class RemoteTurnClient: Sendable {
         ))
     }
 }
-
-/// The long-lived bridge client name. The Turn client remains source-compatible
-/// for the interactive command while both surfaces share one Axoloty connection.
-public typealias GnosticRemoteClient = RemoteTurnClient

@@ -28,7 +28,6 @@ struct BackendArchitectureFitnessTests {
         let wiringSources = [
             "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
             "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
-            "Sources/GnosticCore/Runtime/LegacyAscendantAdapterBridge.swift",
         ]
         for relativePath in wiringSources {
             let wiring = try String(
@@ -49,8 +48,54 @@ struct BackendArchitectureFitnessTests {
         #expect(nodeRuntime.contains("BackendWorkspaceDiscoveryCapability"))
     }
 
-    @Test("the exception registry keeps the compatibility bridge narrow")
-    func compatibilityExceptionIsExplicit() throws {
+    @Test("pre-reset Agent and Chat compatibility does not remain in Gnostic seams")
+    func preResetCompatibilityIsRemoved() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourcePaths = [
+            "Sources/GnosticCore/Objects/GnosticAscendantObject.swift",
+            "Sources/GnosticCore/Runtime/AscendantBackend.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
+            "Sources/GnosticCore/Providers/AgentChatProvider.swift",
+            "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
+            "Sources/GnosticCLI/Chat/RemoteChatClient.swift",
+        ]
+        let forbidden = [
+            "GnosticObjectType.agent",
+            "GnosticAgentObject",
+            "attachedAgentInstanceID",
+            "AgentChatRequest",
+            "AgentChatResult",
+            "AgentChatProvider",
+            "me.atkn.gnostic.agent.chat",
+            "LegacyCreateExecutor",
+            "LegacyAscendantBackendBridge",
+            "GnosticRemoteClient",
+        ]
+
+        for relativePath in sourcePaths {
+            let source = try String(contentsOf: rootURL.appendingPathComponent(relativePath), encoding: .utf8)
+            for forbiddenName in forbidden {
+                #expect(!source.contains(forbiddenName), "The removed compatibility name '\(forbiddenName)' remains in \(relativePath).")
+            }
+        }
+
+        #expect(!FileManager.default.fileExists(
+            atPath: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/LegacyAscendantAdapterBridge.swift").path
+        ))
+
+        let sourceRoot = rootURL.appendingPathComponent("Sources")
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            where relativePath.hasSuffix(".swift") && relativePath != "GnosticCore/Adapters/PositronicAscendantAdapter.swift" {
+            let source = try String(contentsOf: sourceRoot.appendingPathComponent(relativePath), encoding: .utf8)
+            #expect(!source.contains("attachedAgentInstanceID"), "Provider-native AgentInstance linkage escaped its PositronicKit boundary: (relativePath).")
+        }
+    }
+
+    @Test("the removed compatibility bridge has no lingering exception")
+    func compatibilityExceptionIsRemoved() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -59,9 +104,46 @@ struct BackendArchitectureFitnessTests {
         let data = try Data(contentsOf: sourceURL)
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let exceptions = try #require(object["exceptions"] as? [[String: Any]])
-        let compatibility = try #require(exceptions.first { $0["id"] as? String == "RESET-004-legacy-adapter-bridge" })
-        #expect((compatibility["issue"] as? String) == "#138")
-        #expect((compatibility["scope"] as? String)?.contains("*") == false)
-        #expect((compatibility["reconsiderWhen"] as? String)?.contains("RESET-006") == true)
+        #expect(exceptions.allSatisfy { $0["id"] as? String != "RESET-004-legacy-adapter-bridge" })
+    }
+
+    @Test("Atlas is an optional boundary and Narrative is absent from Core")
+    func atlasBoundaryIsOptionalAndNarrativeIsRemoved() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let package = try String(
+            contentsOf: rootURL.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        #expect(package.contains(".library(name: \"GnosticPositronicAtlas\", targets: [\"GnosticPositronicAtlas\"])"))
+
+        let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
+        let atlasTarget = try #require(Self.targetBlock(named: "GnosticPositronicAtlas", in: package))
+        #expect(!coreTarget.contains("GnosticPositronicAtlas"))
+        #expect(atlasTarget.contains("\"GnosticCore\""))
+        #expect(atlasTarget.contains("PositronicKit"))
+
+        let sourceRoot = rootURL.appendingPathComponent("Sources/GnosticCore")
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(!source.contains("Narrative"), "Narrative must not remain in Core: \(relativePath)")
+            #expect(!source.contains("import GnosticPositronicAtlas"), "Core must not import Atlas: \(relativePath)")
+        }
+    }
+
+    private static func targetBlock(named name: String, in package: String) -> String? {
+        guard let targetStart = package.range(of: ".target(\n            name: \"\(name)\"")?.lowerBound else {
+            return nil
+        }
+        guard let targetEnd = package.range(of: "\n        ),", range: targetStart..<package.endIndex) else {
+            return nil
+        }
+        return String(package[targetStart..<targetEnd.upperBound])
     }
 }

@@ -89,29 +89,81 @@ public final class WorkspaceService {
         } else {
             reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID)
         }
-        try await runBackendOperation(ascendantID, backend: backend, generation: generation) {
-            try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: request.timelineID)
+        try await attach(
+            reference: reference,
+            workspaceID: request.workspaceID,
+            timelineID: request.timelineID,
+            ascendantID: ascendantID,
+            backend: backend,
+            generation: generation,
+            lease: lease,
+            runtime: runtime
+        )
+        return true
+    }
+
+    /// Handles an attachment requested by a backend-owned model/tool path.
+    /// The capability is bound to the caller's Ascendant and backend lease;
+    /// canonical intent is committed only after the backend projection is
+    /// accepted and the current Timeline is readvertised.
+    func attachFromBackend(
+        workspaceID: UUID,
+        timelineID: UUID,
+        ascendantID expectedAscendantID: UUID,
+        backendLease expectedBackendLease: UUID
+    ) async throws {
+        let (ascendantID, backend, generation, lease) = try await operatingAdapter(for: timelineID)
+        guard ascendantID == expectedAscendantID, lease == expectedBackendLease else {
+            throw NodeRuntimeError.notRunning
         }
-        if let timeline = try await runBackendOperation(ascendantID, backend: backend, generation: generation, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
+        let reference = try await resolveNetworkWorkspace(workspaceID: workspaceID)
+        guard let runtime = backend as? any AscendantBackendWorkspaceCapability else {
+            throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
+        }
+        try await attach(
+            reference: reference,
+            workspaceID: workspaceID,
+            timelineID: timelineID,
+            ascendantID: ascendantID,
+            backend: backend,
+            generation: generation,
+            lease: lease,
+            runtime: runtime
+        )
+    }
+
+    private func attach(
+        reference: WorkspaceReference,
+        workspaceID: UUID,
+        timelineID: UUID,
+        ascendantID: UUID,
+        backend: any AscendantBackend,
+        generation: UInt64,
+        lease: UUID?,
+        runtime: any AscendantBackendWorkspaceCapability
+    ) async throws {
+        try await runBackendOperation(ascendantID, backend: backend, generation: generation) {
+            try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: timelineID)
+        }
+        if let timeline = try await runBackendOperation(ascendantID, backend: backend, generation: generation, { try await backend.operatedTimelines().first(where: { $0.id == timelineID }) }) {
             do {
                 guard isCurrentBackend(ascendantID, backend, generation) else { throw NodeRuntimeError.notRunning }
                 let record = try await registry.commitBackendTimeline(
                     timeline,
                     ascendantID: ascendantID,
                     backendLease: lease,
-                    upserting: Self.intent(for: reference, local: localWorkspaces[request.workspaceID] != nil)
+                    upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
                 )
                 guard isCurrentBackend(ascendantID, backend, generation) else { throw NodeRuntimeError.notRunning }
                 readvertiseTimeline(record.timeline)
             }
             catch {
                 _ = try? await runBackendOperation(ascendantID, backend: backend, generation: generation) {
-                    try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
+                    try await runtime.detachWorkspace(workspaceID, from: timelineID)
                 }
                 throw error
             }
         }
-        return true
     }
 
     func detach(_ request: WorkspaceOpsRequest) async throws -> Bool {

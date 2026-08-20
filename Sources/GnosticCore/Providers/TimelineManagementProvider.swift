@@ -94,7 +94,6 @@ public struct TimelineManagementProvider: Sendable {
     public static let updateOperation = "me.atkn.gnostic.timeline.update"
 
     public typealias CreateExecutor = @Sendable (String, UUID?) async throws -> TimelineStatus
-    public typealias LegacyCreateExecutor = @Sendable (String) async throws -> TimelineStatus
     public typealias ListExecutor = @Sendable () async throws -> [TimelineStatus]
     public typealias UpdateExecutor = @Sendable (TimelineUpdateRequest) async throws -> TimelineStatus
 
@@ -110,14 +109,6 @@ public struct TimelineManagementProvider: Sendable {
         self.create = create
         self.list = list
         self.update = update
-    }
-
-    public init(
-        create: @escaping LegacyCreateExecutor,
-        list: @escaping ListExecutor,
-        update: @escaping UpdateExecutor
-    ) {
-        self.init(create: { title, _ in try await create(title) }, list: list, update: update)
     }
 
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {

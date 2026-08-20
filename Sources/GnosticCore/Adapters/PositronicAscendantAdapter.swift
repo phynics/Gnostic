@@ -117,9 +117,11 @@ import struct PositronicKit.Thread
         lifecycleFailure = nil
 
         if let host = services.capability(BackendWorkspaceDiscoveryCapability.self) {
+            let attachmentHost = services.capability(BackendWorkspaceAttachmentCapability.self)
             let attachmentService = DiscoveredWorkspaceAttachmentService(
                 discovery: host.discovery,
                 threadManager: createdKit.threadManager,
+                hostAttachment: attachmentHost,
                 allowedTimelineIDs: Set(timelines.map(\.id))
             )
             networkTools = [

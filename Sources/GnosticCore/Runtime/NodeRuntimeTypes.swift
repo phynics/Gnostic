@@ -86,35 +86,8 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
     }
 }
 
-/// A registry of downstream LLM adapters. GnosticCore owns the runtime shape;
-/// the CLI may supply provider-specific language models without being imported by Core.
-@MainActor public protocol AscendantRuntimeAdapter: AnyObject, Sendable {
-    var identity: AscendantRuntimeIdentity { get }
-    func timelines() async throws -> [AscendantRuntimeTimeline]
-    func createTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline
-    func removeTimeline(id: UUID) async
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantRuntimeTimeline
-    func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws
-    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
-    func enabledToolIDs(for timelineID: UUID) async -> [String]
-    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String
-    func cancelAll() async
-    func shutdown() async
-}
-
 /// Gnostic's stable, provider-independent projection of an Ascendant identity.
-/// Compatibility names for the backend-neutral projections. The aliases
-/// keep protocol-v2 call sites independent of any provider-native type.
+/// These aliases keep the runtime's existing projection seams independent of
+/// any provider-native type while the backend contract remains canonical.
 public typealias AscendantRuntimeIdentity = AscendantBackendIdentity
 public typealias AscendantRuntimeTimeline = AscendantBackendTimeline
-
-/// Construction dependencies supplied by the node composition boundary. Raw
-/// transport and provider-native objects are intentionally absent. A legacy
-/// adapter can use the compatibility bridge supplied by the registry.
-@MainActor public struct AscendantRuntimeDependencies {
-    public let services: AscendantBackendServices
-
-    public init(services: AscendantBackendServices = .empty) {
-        self.services = services
-    }
-}

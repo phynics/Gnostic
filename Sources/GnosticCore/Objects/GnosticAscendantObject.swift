@@ -4,14 +4,10 @@ import Axoloty
 import Foundation
 import PKShared
 
-/// Canonical Axoloty object type identifiers advertised by Gnostic.
+/// Canonical Gnostic object type identifiers advertised through Axoloty.
 public enum GnosticObjectType {
     /// The object type for a projected Gnostic Ascendant.
     public static let ascendant = "me.atkn.gnostic.Ascendant"
-
-    /// Compatibility spelling for pre-protocol-v2 source callers. The wire
-    /// value remains the protocol-v2 Ascendant type.
-    public static let agent = ascendant
 
     /// The object type for a projected PositronicKit timeline.
     public static let timeline = "me.atkn.gnostic.Timeline"
@@ -67,7 +63,7 @@ public final class GnosticAscendantObject: CoatyObject {
         register(objectType: GnosticObjectType.ascendant, with: self)
     }
 
-    /// Creates a network projection without exposing a provider's agent type.
+    /// Creates a network projection without exposing provider-native state.
     public init(
         identity: AscendantRuntimeIdentity,
         backendHealth: AscendantBackendHealth = .unknown,
@@ -144,7 +140,3 @@ public final class GnosticAscendantObject: CoatyObject {
         try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
-
-/// Compatibility spelling retained for pre-protocol-v2 source callers. It
-/// still projects the protocol-v2 Ascendant wire type.
-public typealias GnosticAgentObject = GnosticAscendantObject

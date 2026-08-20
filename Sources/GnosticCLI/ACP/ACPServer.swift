@@ -6,11 +6,11 @@ import Foundation
 @MainActor
 struct ACPServer: Sendable {
     private let session: JSONRPCSession
-    private let client: GnosticRemoteClient
+    private let client: RemoteTurnClient
     private let requestBroker: ACPClientRequestBroker
 
     init(
-        client: GnosticRemoteClient,
+        client: RemoteTurnClient,
         ascendantID: UUID?,
         providerID: String? = nil,
         registry: ACPSessionRegistry,

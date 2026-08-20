@@ -34,30 +34,6 @@ public final class TurnService {
         self.lifecycleFailure = lifecycleFailure
     }
 
-    /// Compatibility initializer for tests and host seams that own a stable
-    /// adapter without lifecycle reconstruction.
-    convenience init(
-        registry: NodeRegistry,
-        coordinator: AscendantTurnCoordinator,
-        updates: AscendantTurnUpdateStore,
-        isRunning: @escaping @MainActor () -> Bool,
-        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?
-    ) {
-        self.init(
-            registry: registry,
-            coordinator: coordinator,
-            updates: updates,
-            isRunning: isRunning,
-            backend: { ascendantID in
-                guard let backend = adapter(ascendantID) else {
-                    throw NodeRuntimeError.unknownAscendant(ascendantID)
-                }
-                return backend
-            },
-            lifecycleFailure: { _, _, _ in }
-        )
-    }
-
     func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)

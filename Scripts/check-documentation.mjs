@@ -14,6 +14,7 @@ const REQUIRED_FILES = [
   "Documentation/Architecture/ADRs/0003-pre-1-0-manifest-and-protocol-reset.md",
   "Documentation/Architecture/ADRs/0004-atlas-supersedes-narrative.md",
   "Documentation/Architecture/exceptions.json",
+  "Documentation/Compatibility/0.3.0.md",
 ];
 
 const ADR_FILES = REQUIRED_FILES.filter((file) => file.includes("/ADRs/"));
@@ -91,21 +92,27 @@ function documentedCLIChains(readme) {
 }
 
 function sourceText(root) {
+  return sourceFiles(root, "Sources").map(({ text }) => text).join("\n");
+}
+
+function sourceFiles(root, directory) {
   const files = [];
   const visit = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && /\.(swift|m|mm|h|c|cpp|cc|js|mjs|ts)$/.test(entry.name)) files.push(readFileSync(path, "utf8"));
+      else if (entry.isFile() && /\.(swift|m|mm|h|c|cpp|cc|js|mjs|ts)$/.test(entry.name)) {
+        files.push({ path, text: readFileSync(path, "utf8") });
+      }
     }
   };
-  const sources = join(root, "Sources");
+  const sources = join(root, directory);
   try {
     visit(sources);
   } catch {
-    return "";
+    return [];
   }
-  return files.join("\n");
+  return files;
 }
 
 function validateMarkdownLinks(root, failures) {
@@ -169,6 +176,44 @@ function validateExceptions(root, failures) {
     const scopes = Array.isArray(entry.scope) ? entry.scope : [entry.scope];
     if (scopes.some((scope) => typeof scope === "string" && /\*/.test(scope))) failures.push(`${prefix}.scope may not use wildcard targets`);
   });
+}
+
+function swiftTargetBlock(packageText, name) {
+  const targetStart = packageText.search(new RegExp(`\\.target\\(\\s*name:\\s*"${name}"`));
+  const targetEndMarker = "\n        ),";
+  const targetEnd = targetStart < 0 ? -1 : packageText.indexOf(targetEndMarker, targetStart);
+  if (targetStart < 0 || targetEnd < 0) return null;
+  return packageText.slice(targetStart, targetEnd + targetEndMarker.length);
+}
+
+function validateResetBaseline(root, failures) {
+  const packageText = readText(root, "Package.swift");
+  if (!packageText.includes('.library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"])')) {
+    failures.push("Package.swift: Atlas boundary product is missing");
+  }
+  const coreTarget = swiftTargetBlock(packageText, "GnosticCore");
+  if (!coreTarget) {
+    failures.push("Package.swift: GnosticCore target is missing");
+  } else if (coreTarget.includes("GnosticPositronicAtlas")) {
+    failures.push("Package.swift: GnosticCore must not depend on GnosticPositronicAtlas");
+  }
+  const atlasTarget = swiftTargetBlock(packageText, "GnosticPositronicAtlas");
+  if (!atlasTarget) {
+    failures.push("Package.swift: GnosticPositronicAtlas target is missing");
+  } else {
+    if (!atlasTarget.includes('"GnosticCore"')) failures.push("Package.swift: Atlas target must depend on GnosticCore");
+    if (!atlasTarget.includes("PositronicKit")) failures.push("Package.swift: Atlas target must depend on PositronicKit");
+  }
+
+  for (const { path, text } of sourceFiles(root, "Sources/GnosticCore")) {
+    if (/Narrative/.test(text)) failures.push(`${relative(root, path)}: Narrative must not remain in GnosticCore`);
+    if (/import\s+GnosticPositronicAtlas\b/.test(text)) failures.push(`${relative(root, path)}: GnosticCore must not import Atlas`);
+  }
+
+  const compatibility = readText(root, "Documentation/Compatibility/0.3.0.md").toLowerCase();
+  for (const phrase of ["0.3.0", "protocol major", "manifest v2", "v1", "migration", "bundled", "atlas", "narrative", "0.2"]) {
+    if (!compatibility.includes(phrase)) failures.push(`Documentation/Compatibility/0.3.0.md: compatibility declaration must mention '${phrase}'`);
+  }
 }
 
 function validateVolatileText(root, failures) {
@@ -243,6 +288,11 @@ export function checkRepository({ root = process.cwd(), cliPath = null, cliArgs 
     failures.push(`Documentation/Architecture/exceptions.json: ${error.message}`);
   }
   try {
+    validateResetBaseline(root, failures);
+  } catch (error) {
+    failures.push(`RESET-006 baseline: ${error.message}`);
+  }
+  try {
     validateADRs(root, failures);
   } catch (error) {
     failures.push(`Documentation/Architecture/ADRs: ${error.message}`);
@@ -275,7 +325,26 @@ function writeFixture(root) {
     "README.md": "# Fixture\n\nRun `make docs-check`. Protocol: `me.atkn.gnostic.workspace.invoke`.\n\n```sh\ngnostic acp profiles --json\n```\n",
     "CONTEXT.md": "# Context\n",
     "Makefile": "docs-check:\nverify:\n",
-    "Package.swift": "let package = Package(name: \"Fixture\")\n",
+    "Package.swift": `let package = Package(
+    products: [
+        .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
+    ],
+    targets: [
+        .target(
+            name: "GnosticCore"
+        ),
+        .target(
+            name: "GnosticPositronicAtlas",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "PositronicKit", package: "PositronicKit"),
+            ]
+        ),
+    ]
+)
+`,
+    "Documentation/Compatibility/0.3.0.md": "# Compatibility\n\nPackage 0.3.0 uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n",
+    "Sources/GnosticCore/Core.swift": "let core = true\n",
     "Sources/Protocol.swift": "let route = \"me.atkn.gnostic.workspace.invoke\"\n",
     "Documentation/Architecture/README.md": "# Architecture\n\n[ADR 0001](ADRs/0001-axoloty-native-multi-backend-host.md) [ADR 0002](ADRs/0002-gnostic-identity-vs-backend-state.md) [ADR 0003](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md) [ADR 0004](ADRs/0004-atlas-supersedes-narrative.md)\n",
     "Documentation/Architecture/exceptions.json": JSON.stringify({ schemaVersion: 1, exceptions: [] }, null, 2),
@@ -329,6 +398,10 @@ function selfTest() {
       cliRunner: ({ chain }) => ({ status: chain.includes("does-not-exist") ? 1 : 0, stderr: "unknown command" }),
     };
     assert.deepEqual(checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
+    expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Compatibility/0.3.0.md"), "# Compatibility\n"), "must mention '0.3.0'");
+    writeFixture(root);
+    expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n', "")), "Atlas target must depend on GnosticCore");
+    writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/README.md"), "[broken](missing.md)"), "broken local Markdown link");
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "make nonexistent-target\n"), "nonexistent-target");
