@@ -17,7 +17,14 @@ public actor NetworkCatalog {
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
 
     /// Creates an empty catalog.
-    public init() {}
+    public init() {
+        // Active Resolve responses can exceed Axoloty's borrowed wire limit;
+        // host decoding must know every Gnostic object type before it
+        // re-encodes those responses for the snapshot boundary.
+        _ = GnosticAgentObject.objectType
+        _ = GnosticTimelineObject.objectType
+        _ = GnosticWorkspaceObject.objectType
+    }
 
     /// Ingests an advertisement or readvertisement for a supported Gnostic object type.
     ///

@@ -5,22 +5,10 @@ import PKShared
 import PositronicKit
 import struct PositronicKit.Thread
 
-/// Positronic-only optional host capability. It is deliberately not part of
-/// ``AscendantBackendServices``' mandatory contract.
-final class PositronicBackendHostServices: AscendantBackendOptionalCapability, @unchecked Sendable {
-    let catalog: NetworkCatalog
-    let communication: CommunicationManager
-
-    init(catalog: NetworkCatalog, communication: CommunicationManager) {
-        self.catalog = catalog
-        self.communication = communication
-    }
-}
-
 /// The built-in adapter owns PositronicKit construction, tool wiring, event
 /// translation, timeline persistence, and provider shutdown. PositronicKit
 /// native values do not cross the AscendantBackend contract.
-@MainActor public final class PositronicAscendantAdapter: AscendantBackend {
+@MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
     private let kit: PositronicKit
     private let threadStore: InMemoryThreadPersistence
@@ -32,12 +20,21 @@ final class PositronicBackendHostServices: AscendantBackendOptionalCapability, @
         backend: AscendantBackendConfiguration,
         services: AscendantBackendServices,
         timelines: [NodeManifest.Timeline],
-        references: [UUID: BackendWorkspaceReference],
         languageModel: any LanguageModel
     ) async throws {
         try AscendantBackendConfigurationValidator.validate(backend)
         guard timelines.contains(where: { $0.id == ascendant.defaultTimelineID }) else {
             throw NodeRuntimeError.missingTimeline(ascendant.defaultTimelineID)
+        }
+
+        var references: [UUID: BackendWorkspaceReference] = [:]
+        for attachment in timelines.flatMap(\.attachments) {
+            guard references[attachment.workspaceID] == nil,
+                  let workspace = services.workspace,
+                  let reference = await workspace.reference(id: attachment.workspaceID) else {
+                throw NodeRuntimeError.missingWorkspace(attachment.workspaceID)
+            }
+            references[attachment.workspaceID] = reference
         }
 
         let agent = AgentInstance(
@@ -89,9 +86,9 @@ final class PositronicBackendHostServices: AscendantBackendOptionalCapability, @
             )
             try await stores.1.saveThread(thread)
             for workspaceID in configuration.attachments.map(\.workspaceID) {
-                guard let reference = references[workspaceID], let native = try? Self.positronicReference(reference) else {
-                    throw NodeRuntimeError.missingWorkspace(workspaceID)
-                }
+                guard let reference = references[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
+                guard reference.status == .available,
+                      let native = try? Self.positronicReference(reference) else { continue }
                 try await stores.3.saveWorkspace(native)
             }
         }
@@ -120,9 +117,9 @@ final class PositronicBackendHostServices: AscendantBackendOptionalCapability, @
         threadStore = stores.1
         lifecycleFailure = nil
 
-        if let host = services.capability(PositronicBackendHostServices.self) {
+        if let host = services.capability(BackendWorkspaceDiscoveryCapability.self) {
             let attachmentService = DiscoveredWorkspaceAttachmentService(
-                catalog: host.catalog,
+                discovery: host.discovery,
                 threadManager: createdKit.threadManager,
                 allowedTimelineIDs: Set(timelines.map(\.id))
             )
@@ -138,7 +135,7 @@ final class PositronicBackendHostServices: AscendantBackendOptionalCapability, @
 
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
         try requireUsable()
-        try await kit.threadManager.listThreads().map(Self.projection)
+        return try await kit.threadManager.listThreads().map(Self.projection)
     }
 
     public func validateConfiguration() throws {}
@@ -324,7 +321,7 @@ final class PositronicBackendHostServices: AscendantBackendOptionalCapability, @
 }
 
 private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
-    let service: any AscendantBackendWorkspaceService
+    let service: (any AscendantBackendWorkspaceService)?
 
     func create(from reference: WorkspaceReference) throws -> any Workspace {
         PositronicBackendWorkspace(reference: reference, service: service)
@@ -333,13 +330,16 @@ private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
 
 private struct PositronicBackendWorkspace: Workspace, Sendable {
     let reference: WorkspaceReference
-    let service: any AscendantBackendWorkspaceService
+    let service: (any AscendantBackendWorkspaceService)?
 
     var id: UUID { reference.id }
 
     func listTools() async throws -> [ToolReference] { reference.tools }
 
     func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
+        guard let service else {
+            throw AscendantBackendError.invalidConfiguration("Workspace consumption is unavailable.")
+        }
         let arguments = parameters.reduce(into: [String: ManifestJSONValue]()) { result, pair in
             result[pair.key] = Self.manifestValue(pair.value.value)
         }
@@ -348,26 +348,31 @@ private struct PositronicBackendWorkspace: Workspace, Sendable {
     }
 
     func readFile(path: String) async throws -> String {
+        guard let service else { throw WorkspaceError.toolExecutionNotSupported }
         guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
         return try await files.readFile(workspaceID: reference.id, path: path)
     }
 
     func writeFile(path: String, content: String) async throws {
+        guard let service else { throw WorkspaceError.toolExecutionNotSupported }
         guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
         try await files.writeFile(workspaceID: reference.id, path: path, content: content)
     }
 
     func listFiles(path: String) async throws -> [String] {
+        guard let service else { throw WorkspaceError.toolExecutionNotSupported }
         guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
         return try await files.listFiles(workspaceID: reference.id, path: path)
     }
 
     func deleteFile(path: String) async throws {
+        guard let service else { throw WorkspaceError.toolExecutionNotSupported }
         guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
         try await files.deleteFile(workspaceID: reference.id, path: path)
     }
 
     func healthCheck() async -> Bool {
+        guard let service else { return false }
         guard let value = await service.reference(id: reference.id) else { return false }
         return value.status == .available
     }
@@ -382,6 +387,12 @@ private struct PositronicBackendWorkspace: Workspace, Sendable {
         }
         if let value = value as? [AnyCodable] {
             return .array(value.map { manifestValue($0.value) })
+        }
+        if let value = value as? [String: Any] {
+            return .object(value.mapValues(manifestValue))
+        }
+        if let value = value as? [Any] {
+            return .array(value.map(manifestValue))
         }
         return .null
     }

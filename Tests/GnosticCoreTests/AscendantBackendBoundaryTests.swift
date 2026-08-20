@@ -9,6 +9,7 @@ struct AscendantBackendBoundaryTests {
     @Test("a backend-neutral fixture can satisfy the mandatory contract")
     @MainActor
     func fixtureDoesNotNeedPositronicKit() async throws {
+        #expect(AscendantBackendServices.empty.workspace == nil)
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000701")!
         let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000702")!
         let fixture = try FixtureBackend(
@@ -125,15 +126,11 @@ private final class FixtureBackend: AscendantBackend {
         return timeline
     }
 
-    func attachWorkspace(_: BackendWorkspaceReference, to _: UUID) async throws {}
-    func detachWorkspace(_: UUID, from _: UUID) async throws {}
-    func enabledToolIDs(for _: UUID) async -> [String] { [] }
-
     func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
         guard !isShutdown else {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "fixtureShutdown", message: "fixture is shut down"))
         }
-        "fixture: \(request.message)"
+        return "fixture: \(request.message)"
     }
 
     func cancel() async {}

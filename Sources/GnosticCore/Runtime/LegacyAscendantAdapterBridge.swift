@@ -8,7 +8,7 @@ import PositronicKit
 /// It is kept solely so existing integrations can migrate without making the
 /// backend-neutral contract depend on their old provider types.
 @MainActor
-final class LegacyAscendantBackendBridge: AscendantBackend {
+final class LegacyAscendantBackendBridge: AscendantBackend, AscendantBackendWorkspaceCapability {
     private let adapter: any AscendantRuntimeAdapter
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
 
@@ -23,12 +23,12 @@ final class LegacyAscendantBackendBridge: AscendantBackend {
 
     func operatedTimelines() async throws -> [AscendantBackendTimeline] {
         try requireUsable()
-        try await adapter.timelines()
+        return try await adapter.timelines()
     }
 
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         try requireUsable()
-        try await adapter.createTimeline(id: id, title: title)
+        return try await adapter.createTimeline(id: id, title: title)
     }
 
     func removeTimeline(id: UUID) async {
@@ -38,7 +38,7 @@ final class LegacyAscendantBackendBridge: AscendantBackend {
 
     func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         try requireUsable()
-        try await adapter.renameTimeline(id: id, title: title)
+        return try await adapter.renameTimeline(id: id, title: title)
     }
 
     func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
@@ -53,7 +53,7 @@ final class LegacyAscendantBackendBridge: AscendantBackend {
 
     func enabledToolIDs(for timelineID: UUID) async -> [String] {
         guard lifecycleFailure == nil else { return [] }
-        await adapter.enabledToolIDs(for: timelineID)
+        return await adapter.enabledToolIDs(for: timelineID)
     }
 
     func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {

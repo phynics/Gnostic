@@ -84,6 +84,19 @@ struct NodeRegistryTests {
         #expect(resolved.toolIDs == ["remote_echo"])
     }
 
+    @Test("runtime attachment intent is authoritative across attach and detach")
+    func runtimeAttachmentIntentTracksMutations() async throws {
+        let fixture = try Fixture()
+        let registry = try NodeRegistry(plan: fixture.plan, operatedTimelines: [fixture.operated])
+        let runtime = try await registry.registerRuntimeTimeline(title: "Runtime", ascendantID: fixture.ascendantID)
+
+        #expect(await registry.attachmentIntent(for: runtime.id).isEmpty)
+        await registry.upsertAttachmentIntent(.network(fixture.networkWorkspaceID, uri: "workspace://expected"), for: runtime.id)
+        #expect(await registry.attachmentIntent(for: runtime.id) == [.network(fixture.networkWorkspaceID, uri: "workspace://expected")])
+        await registry.removeAttachmentIntent(workspaceID: fixture.networkWorkspaceID, from: runtime.id)
+        #expect(await registry.attachmentIntent(for: runtime.id).isEmpty)
+    }
+
     @Test("a failed required projection restores the accepted Timeline record")
     func projectionFailureCompensatesRegistryMutation() async throws {
         struct ProjectionFailure: Error {}

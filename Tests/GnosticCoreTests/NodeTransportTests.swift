@@ -47,11 +47,12 @@ struct NodeTransportTests {
         ).compileLaunchPlan()
         let adapter = ServiceStubAscendantAdapter(ascendantID: ascendantID, timelineID: timelineID)
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.timelines())
+        let backend = LegacyAscendantBackendBridge(adapter: adapter)
         let timelineService = TimelineService(
             ascendantIDs: [ascendantID],
             registry: registry,
             isClosed: { false },
-            adapter: { $0 == ascendantID ? adapter : nil },
+            adapter: { $0 == ascendantID ? backend : nil },
             advertise: { _, _ in }
         )
         let chatService = ChatTurnService(
@@ -59,7 +60,7 @@ struct NodeTransportTests {
             coordinator: AscendantTurnCoordinator(),
             updates: AscendantTurnUpdateStore(),
             isRunning: { true },
-            adapter: { $0 == ascendantID ? adapter : nil }
+            adapter: { $0 == ascendantID ? backend : nil }
         )
 
         let renamed = try await timelineService.rename(.init(timelineID: timelineID, title: "After"))

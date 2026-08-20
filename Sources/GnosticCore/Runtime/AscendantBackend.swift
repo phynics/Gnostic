@@ -242,7 +242,8 @@ public struct BackendWorkspaceResult: Sendable, Equatable {
 
 /// Workspace consumption is an optional host capability, not a transport
 /// object passed to every backend. Backends that do not consume Workspaces can
-/// use ``AscendantBackendServices.empty``.
+/// use ``AscendantBackendServices.empty`` without manufacturing a no-op
+/// Workspace service.
 @MainActor
 public protocol AscendantBackendWorkspaceService: Sendable {
     func reference(id: UUID) async -> BackendWorkspaceReference?
@@ -274,16 +275,26 @@ public protocol AscendantBackendPermissionService: Sendable {
 /// backend implementation. The mandatory contract never depends on it.
 public protocol AscendantBackendOptionalCapability: Sendable {}
 
+/// Optional Workspace operations implemented only by backends that consume
+/// Gnostic's Workspace service. A backend that does not support Workspaces can
+/// satisfy the mandatory contract without manufacturing no-op operations.
+@MainActor
+public protocol AscendantBackendWorkspaceCapability: AnyObject, Sendable {
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
+    func enabledToolIDs(for timelineID: UUID) async -> [String]
+}
+
 /// The only construction-time host values available to a backend-neutral
 /// contract. Axoloty and Coaty objects remain in the Gnostic host composition
 /// layer and in backend-specific adapters.
 public struct AscendantBackendServices: Sendable {
-    public let workspace: any AscendantBackendWorkspaceService
+    public let workspace: (any AscendantBackendWorkspaceService)?
     public let permission: any AscendantBackendPermissionService
     public let optionalCapabilities: [any AscendantBackendOptionalCapability]
 
     public init(
-        workspace: any AscendantBackendWorkspaceService,
+        workspace: (any AscendantBackendWorkspaceService)? = nil,
         permission: any AscendantBackendPermissionService,
         optionalCapabilities: [any AscendantBackendOptionalCapability] = []
     ) {
@@ -294,7 +305,7 @@ public struct AscendantBackendServices: Sendable {
 
     @MainActor
     public static var empty: Self {
-        .init(workspace: EmptyBackendWorkspaceService(), permission: EmptyBackendPermissionService())
+        .init(permission: EmptyBackendPermissionService())
     }
 
     public func capability<C: AscendantBackendOptionalCapability>(_: C.Type) -> C? {
@@ -392,20 +403,9 @@ public protocol AscendantBackend: AnyObject, Sendable {
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
     func removeTimeline(id: UUID) async
     func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
-    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws
-    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
-    func enabledToolIDs(for timelineID: UUID) async -> [String]
     func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String
     func cancel() async
     func shutdown() async
-}
-
-@MainActor
-private struct EmptyBackendWorkspaceService: AscendantBackendWorkspaceService {
-    func reference(id _: UUID) async -> BackendWorkspaceReference? { nil }
-    func invoke(_: BackendWorkspaceInvocation) async throws -> BackendWorkspaceResult {
-        throw AscendantBackendError.invalidConfiguration("Workspace consumption is unavailable.")
-    }
 }
 
 private struct EmptyBackendPermissionService: AscendantBackendPermissionService {

@@ -16,6 +16,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
     case unknownAscendant(UUID)
     case noConfiguredAscendant
     case ambiguousAscendant
+    case workspaceCapabilityUnavailable(UUID)
     case turnFailed(String)
     case startInProgress
     case notRunning
@@ -31,6 +32,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case let .unknownAscendant(id): "Ascendant \(id.uuidString) is not in the launch plan."
         case .noConfiguredAscendant: "The node has no configured Ascendant."
         case .ambiguousAscendant: "The node has multiple Ascendants; select one explicitly."
+        case let .workspaceCapabilityUnavailable(id): "Ascendant \(id.uuidString) does not support Workspace operations."
         case let .turnFailed(detail): detail
         case .startInProgress: "The node runtime is already starting."
         case .notRunning: "The node runtime is not running."
@@ -48,6 +50,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case .unknownAscendant: "unknownAscendant"
         case .noConfiguredAscendant: "noConfiguredAscendant"
         case .ambiguousAscendant: "ambiguousAscendant"
+        case .workspaceCapabilityUnavailable: "workspaceCapabilityUnavailable"
         case .turnFailed: "turnFailed"
         case .startInProgress: "startInProgress"
         case .notRunning: "notRunning"
@@ -59,6 +62,7 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         case .missingTimeline, .missingWorkspace, .unknownAscendant: 404
         case .noOperatingAscendant: 409
         case .startInProgress, .notRunning: 503
+        case .workspaceCapabilityUnavailable: 501
         case .turnFailed: 500
         default: 400
         }

@@ -121,10 +121,21 @@ public actor AscendantTurnCoordinator {
                         detail: failure.message
                     )
                 }
-                throw AscendantTurnError.failed(
+                if case let .terminal(failure) = error {
+                    throw AscendantTurnError.terminal(
+                        timelineID: request.timelineID,
+                        clientTurnID: clientTurnID,
+                        code: failure.code,
+                        detail: failure.message,
+                        retryable: failure.retryable
+                    )
+                }
+                throw AscendantTurnError.terminal(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    detail: error.localizedDescription
+                    code: error.reasonCode,
+                    detail: error.localizedDescription,
+                    retryable: false
                 )
             } catch let error as AscendantTurnError {
                 throw error

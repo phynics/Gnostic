@@ -119,7 +119,7 @@ public struct AgentChatProvider: Sendable {
                !isAdmissionOnlyError(error) {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
             }
-            return .failure(code: error.statusCode, message: error.localizedDescription)
+            return .failure(code: error.statusCode, message: error.publicMessage)
         } catch let error as NodeRuntimeError {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = await replayStore.append(
@@ -142,7 +142,7 @@ public struct AgentChatProvider: Sendable {
     private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
         switch error {
         case .conflict, .replayUnavailable: return true
-        case .failed, .cancelled, .lifecycleUnusable: return false
+        case .failed, .terminal, .cancelled, .lifecycleUnusable: return false
         }
     }
 

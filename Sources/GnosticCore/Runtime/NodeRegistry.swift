@@ -54,7 +54,7 @@ public actor NodeRegistry {
     private let configuredWorkspaceIDs: [UUID]
     private var timelines: [UUID: TimelineRecord]
     private var workspaces: [UUID: WorkspaceRecord]
-    private let attachmentIntents: [UUID: [NodeManifest.WorkspaceAttachment]]
+    private var attachmentIntents: [UUID: [NodeManifest.WorkspaceAttachment]]
 
     public init(plan: NodeLaunchPlan, operatedTimelines: [AscendantRuntimeTimeline]) throws {
         nodeID = plan.nodeID
@@ -141,12 +141,14 @@ public actor NodeRegistry {
         let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAgentInstanceID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
+        attachmentIntents[timeline.id] = []
         return record
     }
 
     public func removeRuntimeTimeline(id: UUID) {
         guard timelines[id]?.provenance == .runtime else { return }
         timelines.removeValue(forKey: id)
+        attachmentIntents.removeValue(forKey: id)
     }
 
     /// Registers an adapter-created runtime timeline under an already selected operator.
@@ -156,6 +158,7 @@ public actor NodeRegistry {
         guard timeline.attachedAgentInstanceID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAgentInstanceID ?? ascendantID) }
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
+        attachmentIntents[timeline.id] = []
         return record
     }
 
@@ -191,11 +194,28 @@ public actor NodeRegistry {
     public func workspace(id: UUID) -> WorkspaceRecord? { workspaces[id] }
     public func effectiveWorkspaceStatus(id: UUID) -> WorkspaceEffectiveStatus? { workspaces[id]?.status }
 
-    /// Returns durable attachment intent exactly as accepted from the launch
-    /// plan. Runtime health changes never remove this relationship.
+    /// Returns the authoritative attachment intent. Runtime health changes
+    /// never remove this relationship; explicit attach/detach mutations do.
     public func attachmentIntent(for timelineID: UUID) -> [NodeManifest.WorkspaceAttachment] {
         guard timelines[timelineID] != nil else { return [] }
         return attachmentIntents[timelineID] ?? []
+    }
+
+    /// Adds or replaces one Workspace attachment intent after a backend has
+    /// accepted the corresponding operation.
+    public func upsertAttachmentIntent(_ attachment: NodeManifest.WorkspaceAttachment, for timelineID: UUID) {
+        guard timelines[timelineID] != nil else { return }
+        var intents = attachmentIntents[timelineID] ?? []
+        intents.removeAll { $0.workspaceID == attachment.workspaceID }
+        intents.append(attachment)
+        attachmentIntents[timelineID] = intents
+    }
+
+    /// Removes one Workspace attachment intent after a backend has accepted a
+    /// detach operation.
+    public func removeAttachmentIntent(workspaceID: UUID, from timelineID: UUID) {
+        guard timelines[timelineID] != nil else { return }
+        attachmentIntents[timelineID, default: []].removeAll { $0.workspaceID == workspaceID }
     }
     public func unresolvedWorkspaceIDs() -> [UUID] {
         workspaces.values.filter { !$0.isAvailable }.map(\.id).sorted { $0.uuidString < $1.uuidString }

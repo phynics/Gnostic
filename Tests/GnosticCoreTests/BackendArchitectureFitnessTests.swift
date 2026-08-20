@@ -7,11 +7,11 @@ import Testing
 struct BackendArchitectureFitnessTests {
     @Test("the mandatory backend contract has no transport or Positronic host types")
     func mandatoryContractIsBackendNeutral() throws {
-        let sourceURL = URL(fileURLWithPath: #filePath)
+        let rootURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/GnosticCore/Runtime/AscendantBackend.swift")
+        let sourceURL = rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/AscendantBackend.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         for forbidden in [
             "import Axoloty",
@@ -24,6 +24,29 @@ struct BackendArchitectureFitnessTests {
         ] {
             #expect(!source.contains(forbidden), "The mandatory contract mentions forbidden type '\(forbidden)'.")
         }
+
+        let wiringSources = [
+            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
+            "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
+            "Sources/GnosticCore/Runtime/LegacyAscendantAdapterBridge.swift",
+        ]
+        for relativePath in wiringSources {
+            let wiring = try String(
+                contentsOf: rootURL.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for forbidden in ["CommunicationManager", "NetworkCatalog", "CoatyObject"] {
+                #expect(!wiring.contains(forbidden), "Backend wiring leaks forbidden host type '\(forbidden)' in \(relativePath).")
+            }
+        }
+
+        let nodeRuntime = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntime.swift"),
+            encoding: .utf8
+        )
+        #expect(!nodeRuntime.contains("if backend.kind == \"positronic\""))
+        #expect(!nodeRuntime.contains("PositronicBackendHostServices"))
+        #expect(nodeRuntime.contains("BackendWorkspaceDiscoveryCapability"))
     }
 
     @Test("the exception registry keeps the compatibility bridge narrow")

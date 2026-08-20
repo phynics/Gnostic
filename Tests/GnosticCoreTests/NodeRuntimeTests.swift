@@ -883,6 +883,48 @@ struct NodeRuntimeTests {
         #expect(await catalog.networkObjects().first(where: { $0.objectID == manifest.timelines[0].id })?.name == "Renamed")
     }
 
+    @Test("each backend identity is published from one runtime") @MainActor
+    func twoBackendsPublishBothAscendants() async throws {
+        let namespace = "node-runtime-two-backend-agents-\(UUID().uuidString.lowercased())"
+        let firstAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000301")!
+        let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000302")!
+        let secondAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000303")!
+        let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000304")!
+        let runtime = try await NodeRuntime(plan: NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000305")!),
+            ascendants: [
+                .init(id: firstAscendantID, name: "First backend", defaultTimelineID: firstTimelineID),
+                .init(id: secondAscendantID, name: "Second backend", defaultTimelineID: secondTimelineID),
+            ],
+            timelines: [
+                .init(id: firstTimelineID, title: "First timeline", operatingAscendantID: firstAscendantID),
+                .init(id: secondTimelineID, title: "Second timeline", operatingAscendantID: secondAscendantID),
+            ]
+        ).compileLaunchPlan())
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let consumer = makeNodeRuntimeBrokerManager("two-backend-agents-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
+
+        for _ in 0..<20 {
+            await subscription.discover(using: consumer, timeout: .milliseconds(200))
+            let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
+            if agents.count == 2 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        let agents = await catalog.networkObjects().filter { $0.objectType == GnosticObjectType.agent }
+        #expect(Set(agents.map(\.objectID)) == Set([firstAscendantID, secondAscendantID]))
+        #expect(Set(agents.map(\.providerID)).count == 1)
+    }
+
     @Test("startup actively discovers an already-online lazy Workspace") @MainActor
     func existingNetworkWorkspaceResolvesOnStartup() async throws {
         let namespace = "node-runtime-existing-workspace"

@@ -5,6 +5,32 @@ import Foundation
 import PKShared
 import PositronicKit
 
+private func backendManifestValue(_ value: AnyCodable) -> ManifestJSONValue {
+    if let value = value.value as? String { return .string(value) }
+    if let value = value.value as? Bool { return .bool(value) }
+    if let value = value.value as? Int { return .number(Double(value)) }
+    if let value = value.value as? Int64 { return .number(Double(value)) }
+    if let value = value.value as? Double { return .number(value) }
+    if let value = value.value as? Float { return .number(Double(value)) }
+    if let value = value.value as? [String: AnyCodable] {
+        return .object(value.mapValues(backendManifestValue))
+    }
+    if let value = value.value as? [AnyCodable] {
+        return .array(value.map(backendManifestValue))
+    }
+    if let value = value.value as? [String: Any] {
+        return .object(value.mapValues { backendManifestValue(AnyCodable($0)) })
+    }
+    if let value = value.value as? [Any] {
+        return .array(value.map { backendManifestValue(AnyCodable($0)) })
+    }
+    if let data = try? JSONEncoder().encode(value),
+       let decoded = try? JSONDecoder().decode(ManifestJSONValue.self, from: data) {
+        return decoded
+    }
+    return .null
+}
+
 extension BackendWorkspaceReference {
     init(reference: WorkspaceReference, status: BackendWorkspaceStatus = .available) {
         self.init(
@@ -17,13 +43,7 @@ extension BackendWorkspaceReference {
                     id: definition.id,
                     name: definition.name,
                     description: definition.description,
-                    parametersSchema: .object(definition.parametersSchema.mapValues { value in
-                        if let string = value.value as? String { return .string(string) }
-                        if let bool = value.value as? Bool { return .bool(bool) }
-                        if let number = value.value as? Int { return .number(Double(number)) }
-                        if let number = value.value as? Double { return .number(number) }
-                        return .null
-                    }),
+                    parametersSchema: .object(definition.parametersSchema.mapValues(backendManifestValue)),
                     requiresPermission: definition.requiresPermission
                 )
             }
@@ -111,7 +131,9 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
             )
             toolResult = try await proxy.executeTool(id: invocation.toolID, parameters: parameters)
         }
-        return BackendWorkspaceResult(message: String(describing: toolResult))
+        return BackendWorkspaceResult(
+            message: toolResult.success ? toolResult.output : (toolResult.error ?? "Workspace tool failed.")
+        )
     }
 
     func readFile(workspaceID: UUID, path: String) async throws -> String {
@@ -164,18 +186,18 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
         )
     }
 
+    private static func backendTool(_ definition: GnosticWorkspaceTool) -> BackendWorkspaceTool {
+        BackendWorkspaceTool(
+            id: definition.id,
+            name: definition.name,
+            description: definition.toolDescription,
+            parametersSchema: .object(definition.parametersSchema.mapValues { manifestValue($0) }),
+            requiresPermission: definition.requiresPermission
+        )
+    }
+
     private static func manifestValue(_ value: AnyCodable) -> ManifestJSONValue {
-        if let value = value.value as? String { return .string(value) }
-        if let value = value.value as? Bool { return .bool(value) }
-        if let value = value.value as? Int { return .number(Double(value)) }
-        if let value = value.value as? Double { return .number(value) }
-        if let value = value.value as? [String: AnyCodable] {
-            return .object(value.mapValues(manifestValue))
-        }
-        if let value = value.value as? [AnyCodable] {
-            return .array(value.map(manifestValue))
-        }
-        return .null
+        backendManifestValue(value)
     }
 
     private static func anyValue(_ value: ManifestJSONValue) -> Any {
@@ -197,16 +219,19 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
             id: reference.id,
             uri: uri,
             location: .runtime,
-            tools: reference.tools.map {
-                .custom(WorkspaceToolDefinition(
-                    id: $0.id,
-                    name: $0.name,
-                    description: $0.description,
-                    parametersSchema: {
-                        guard let schema = $0.parametersSchema, case let .object(values) = schema else { return [:] }
-                        return values.mapValues { AnyCodable(anyValue($0)) }
-                    }(),
-                    requiresPermission: $0.requiresPermission
+            tools: reference.tools.map { tool in
+                let parametersSchema: [String: AnyCodable]
+                if let schema = tool.parametersSchema, case let .object(values) = schema {
+                    parametersSchema = values.mapValues { AnyCodable(anyValue($0)) }
+                } else {
+                    parametersSchema = [:]
+                }
+                return .custom(WorkspaceToolDefinition(
+                    id: tool.id,
+                    name: tool.name,
+                    description: tool.description,
+                    parametersSchema: parametersSchema,
+                    requiresPermission: tool.requiresPermission
                 ))
             }
         )

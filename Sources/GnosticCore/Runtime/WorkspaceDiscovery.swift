@@ -14,6 +14,17 @@ protocol WorkspaceDiscovery: Sendable {
     func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus
 }
 
+/// Gnostic-owned optional host capability for backends that expose network
+/// Workspace tools. It keeps catalog and broker implementations in the host
+/// composition layer while allowing a backend to opt into discovery.
+final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapability, @unchecked Sendable {
+    let discovery: any WorkspaceDiscovery
+
+    init(discovery: any WorkspaceDiscovery) {
+        self.discovery = discovery
+    }
+}
+
 @MainActor
 final class AxolotyWorkspaceDiscovery: WorkspaceDiscovery {
     private let catalog: NetworkCatalog

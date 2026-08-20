@@ -25,6 +25,7 @@ public final class NodeRuntime {
     public let namespace: String
     public var isRunning: Bool { lifecycleState == .running }
     private var ascendantAdapters: [UUID: any AscendantBackend]
+    private let backendIdentities: [AscendantBackendIdentity]
     /// Canonical domain state. Adapter persistence and network objects are
     /// projections of the records accepted by this actor.
     private let registry: NodeRegistry
@@ -81,7 +82,7 @@ public final class NodeRuntime {
         communication: communication,
         lifecycle: lifecycle,
         registry: registry,
-        ascendantIdentities: { [weak self] in self?.ascendantAdapters.values.map(\.identity) ?? [] },
+        ascendantIdentities: { [weak self] in self?.backendIdentities ?? [] },
         workspaceReferences: { [initialWorkspaceReferences, plan] in
             initialWorkspaceReferences.values.filter { reference in
                 plan.workspaces.contains { $0.id == reference.id }
@@ -218,29 +219,22 @@ public final class NodeRuntime {
 
         do {
             var operatedTimelines: [AscendantRuntimeTimeline] = []
-            let networkWorkspaceIDs = Set(plan.timelines
-                .flatMap(\.attachments)
-                .filter { $0.scope == .network }
-                .map(\.workspaceID))
-            let backendReferences = references.reduce(into: [UUID: BackendWorkspaceReference]()) { result, pair in
-                result[pair.key] = BackendWorkspaceReference(
-                    reference: pair.value,
-                    status: networkWorkspaceIDs.contains(pair.key) ? .unavailable : .available
-                )
-            }
+            var identities: [AscendantBackendIdentity] = []
+            let backendDiscovery = AxolotyWorkspaceDiscovery(
+                catalog: objectCatalog,
+                subscription: subscription,
+                communication: communicationManager
+            )
+            let workspaceCapability = BackendWorkspaceDiscoveryCapability(discovery: backendDiscovery)
             for ascendant in plan.ascendants {
                 guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
-                var optionalCapabilities: [any AscendantBackendOptionalCapability] = []
-                if backend.kind == "positronic" {
-                    optionalCapabilities.append(PositronicBackendHostServices(catalog: objectCatalog, communication: communicationManager))
-                }
                 let backendServices = AscendantBackendServices(
                     workspace: backendWorkspaceService,
                     permission: permissionCoordinator,
-                    optionalCapabilities: optionalCapabilities
+                    optionalCapabilities: [workspaceCapability]
                 )
-                let backendInstance = try await adapters.ascendants.makeBackend(for: ascendant, backend: backend, services: backendServices, timelines: timelineConfigurations, references: backendReferences)
+                let backendInstance = try await adapters.ascendants.makeBackend(for: ascendant, backend: backend, services: backendServices, timelines: timelineConfigurations)
                 do {
                     try backendInstance.validateConfiguration()
                 } catch {
@@ -248,12 +242,14 @@ public final class NodeRuntime {
                     throw error
                 }
                 ascendantAdapters[ascendant.id] = backendInstance
+                identities.append(backendInstance.identity)
                 operatedTimelines += try await backendInstance.operatedTimelines()
             }
             registry = try NodeRegistry(
                 plan: plan,
                 operatedTimelines: operatedTimelines
             )
+            backendIdentities = identities
         } catch {
             for adapter in ascendantAdapters.values {
                 await adapter.shutdown()
@@ -394,9 +390,10 @@ public final class NodeRuntime {
     /// Returns the tool identifiers currently available to an operated Timeline.
     public func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
         guard let ascendantID = await ascendantID(forTimeline: timelineID),
-              let adapter = ascendantAdapters[ascendantID] else {
+              let backend = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(timelineID)
         }
+        guard let adapter = backend as? any AscendantBackendWorkspaceCapability else { return [] }
         return await adapter.enabledToolIDs(for: timelineID)
     }
 
