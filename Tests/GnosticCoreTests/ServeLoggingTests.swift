@@ -85,7 +85,7 @@ struct ServeLoggingTests {
         let timeline = UUID()
         ServeTrace.operationSucceeded(
             logger: logger,
-            operation: "me.atkn.gnostic.agent.chat",
+            operation: "me.atkn.gnostic.ascendant.turn",
             timelineID: timeline,
             workspaceID: nil,
             clientTurnID: "pi:entry-1",
@@ -93,7 +93,7 @@ struct ServeLoggingTests {
         )
         ServeTrace.operationFailed(
             logger: logger,
-            operation: "me.atkn.gnostic.agent.chat",
+            operation: "me.atkn.gnostic.ascendant.turn",
             timelineID: timeline,
             workspaceID: nil,
             error: "conflict",
@@ -116,7 +116,7 @@ struct ServeLoggingTests {
             timelineID: timeline, workspaceID: nil, reason: "approvalRequired"
         )
         ServeTrace.operationFailed(
-            logger: logger, operation: "me.atkn.gnostic.agent.chat",
+            logger: logger, operation: "me.atkn.gnostic.ascendant.turn",
             timelineID: timeline, workspaceID: nil, error: "llmServiceNotConfigured"
         )
         try! #require(handler.records.count == 2)

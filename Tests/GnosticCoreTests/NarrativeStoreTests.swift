@@ -43,7 +43,7 @@ struct NarrativeStoreTests {
             conversation: conversationRange,
             toolIDs: ["tool-search"],
             correlationIDs: ["corr-7"],
-            agentID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000001"),
+            ascendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000001"),
             timelineID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000002"),
             workspaceIDs: [UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!],
             taskID: "task-9",

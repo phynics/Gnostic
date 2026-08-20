@@ -19,19 +19,19 @@ private final class ActiveTimelineBox: @unchecked Sendable {
     }
 }
 
-/// The remote (Axoloty) chat session used by `gnostic chat` against `gnostic
-/// serve`. Satisfies `ChatTurnRunning` so the REPL is transport-agnostic.
+/// The remote (Axoloty) chat session used by `gnostic turn` against `gnostic
+/// serve`. Satisfies `TurnRunning` so the REPL is transport-agnostic.
 ///
-/// The active timeline is owned by the chat session and can be switched via
+/// The active timeline is owned by the Turn session and can be switched via
 /// `switchTimeline(to:)`, so turns and workspace operations target whichever
 /// timeline the user has selected.
-public final class RemoteChatSession: Sendable, ChatTurnRunning {
-    private let client: RemoteChatClient
+public final class RemoteTurnSession: Sendable, TurnRunning {
+    private let client: RemoteTurnClient
     private let activeTimeline: ActiveTimelineBox
     private let ascendantID: UUID?
     private let providerID: String?
 
-    public init(client: RemoteChatClient, timelineID: UUID, ascendantID: UUID? = nil, providerID: String? = nil) {
+    public init(client: RemoteTurnClient, timelineID: UUID, ascendantID: UUID? = nil, providerID: String? = nil) {
         self.client = client
         self.activeTimeline = ActiveTimelineBox(timelineID)
         self.ascendantID = ascendantID
@@ -69,12 +69,12 @@ public final class RemoteChatSession: Sendable, ChatTurnRunning {
         try await client.listTimelines(providerID: try await selectedProviderID())
     }
 
-    /// One turn over the `agent.chat` unary. The serve may fail the turn (e.g.
+    /// One turn over the `ascendant.turn` unary. The serve may fail the turn (e.g.
     /// unconfigured LLM); that surfaces as a `.failed` result so the REPL stays
     /// alive.
-    public func run(line: String) async throws -> ChatTurnResult {
+    public func run(line: String) async throws -> TurnResult {
         do {
-            let text = try await client.chat(message: line, timelineID: timelineID, clientTurnID: nil, providerID: try await selectedProviderID())
+            let text = try await client.turn(message: line, timelineID: timelineID, clientTurnID: nil, providerID: try await selectedProviderID())
             return .text(text.text)
         } catch {
             return .failed(String(describing: error))

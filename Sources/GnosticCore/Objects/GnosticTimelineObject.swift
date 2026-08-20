@@ -5,6 +5,9 @@ import Foundation
 
 /// A safe network projection of a Gnostic Timeline.
 public final class GnosticTimelineObject: CoatyObject {
+    /// The protocol major carried by this advertisement.
+    public let protocolMajor: Int
+
     /// The timeline title.
     public var title: String
 
@@ -14,8 +17,8 @@ public final class GnosticTimelineObject: CoatyObject {
     /// Whether the timeline is private.
     public var isPrivate: Bool
 
-    /// The attached agent relationship, when present.
-    public var attachedAgentID: UUID?
+    /// The attached Ascendant relationship, when present.
+    public var attachedAscendantID: UUID?
 
     /// The attached workspace relationships.
     public var attachedWorkspaceIDs: [UUID]
@@ -32,11 +35,12 @@ public final class GnosticTimelineObject: CoatyObject {
     }
 
     /// Creates a network projection without exposing a provider's Timeline type.
-    public init(timeline: AscendantRuntimeTimeline) {
+    public init(timeline: AscendantRuntimeTimeline, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         title = timeline.title
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
-        attachedAgentID = timeline.attachedAgentInstanceID
+        attachedAscendantID = timeline.attachedAscendantID
         attachedWorkspaceIDs = timeline.attachedWorkspaceIDs
         createdAt = timeline.createdAt
         updatedAt = timeline.updatedAt
@@ -50,9 +54,10 @@ public final class GnosticTimelineObject: CoatyObject {
 
     private enum CodingKeys: String, CodingKey {
         case title
+        case protocolMajor
         case isArchived
         case isPrivate
-        case attachedAgentID
+        case attachedAscendantID
         case attachedWorkspaceIDs
         case createdAt
         case updatedAt
@@ -63,10 +68,11 @@ public final class GnosticTimelineObject: CoatyObject {
     /// - Parameter decoder: The source decoder.
     public required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         title = try container.decode(String.self, forKey: .title)
         isArchived = try container.decode(Bool.self, forKey: .isArchived)
         isPrivate = try container.decode(Bool.self, forKey: .isPrivate)
-        attachedAgentID = try container.decodeIfPresent(UUID.self, forKey: .attachedAgentID)
+        attachedAscendantID = try container.decodeIfPresent(UUID.self, forKey: .attachedAscendantID)
         attachedWorkspaceIDs = try container.decode([UUID].self, forKey: .attachedWorkspaceIDs)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -79,10 +85,11 @@ public final class GnosticTimelineObject: CoatyObject {
     public override func encode(to encoder: Encoder) throws {
         try super.encode(to: encoder)
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(title, forKey: .title)
         try container.encode(isArchived, forKey: .isArchived)
         try container.encode(isPrivate, forKey: .isPrivate)
-        try container.encodeIfPresent(attachedAgentID, forKey: .attachedAgentID)
+        try container.encodeIfPresent(attachedAscendantID, forKey: .attachedAscendantID)
         try container.encode(attachedWorkspaceIDs, forKey: .attachedWorkspaceIDs)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)

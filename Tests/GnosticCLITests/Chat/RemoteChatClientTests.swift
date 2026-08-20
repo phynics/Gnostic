@@ -9,7 +9,7 @@ import Testing
 @testable import GnosticCLI
 
 @Suite("Remote chat client over the broker")
-struct RemoteChatClientTests {
+struct RemoteTurnClientTests {
     @Test("chat, timeline status, and workspace ops resolve against a live serve") @MainActor
     func roundTripWithLiveServe() async throws {
         let namespace = "remote-chat-tests"
@@ -17,7 +17,7 @@ struct RemoteChatClientTests {
         defer { Task { await node.runtime.shutdown() } }
         try await node.runtime.start()
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {
@@ -29,11 +29,11 @@ struct RemoteChatClientTests {
         let timelineID = try await client.discoverServedTimeline()
         #expect(timelineID == node.timelineID)
 
-        // Chat turn over agent.chat. The serve runs with an unconfigured LLM, so
+        // Chat turn over ascendant.turn. The serve runs with an unconfigured LLM, so
         // the round-trip returns the serve's structured failure — proving the
         // Axoloty Call/Return path reached the served handler.
         await #expect(throws: RemoteCallFailure.self) {
-            _ = try await client.chat(message: "hello", timelineID: timelineID, clientTurnID: nil, providerID: providerID)
+            _ = try await client.turn(message: "hello", timelineID: timelineID, clientTurnID: nil, providerID: providerID)
         }
 
         // Timeline status.
@@ -53,7 +53,7 @@ struct RemoteChatClientTests {
         defer { Task { await node.runtime.shutdown() } }
         try await node.runtime.start()
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {
@@ -92,7 +92,7 @@ struct RemoteChatClientTests {
         defer { Task { await node.runtime.shutdown() } }
         try await node.runtime.start()
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {
@@ -105,7 +105,7 @@ struct RemoteChatClientTests {
         #expect(initial.contains { $0.timelineID == node.timelineID })
 
         // Create + activate a second timeline via the session.
-        let session = RemoteChatSession(
+        let session = RemoteTurnSession(
             client: client,
             timelineID: node.timelineID,
             ascendantID: node.ascendantID,
@@ -172,7 +172,7 @@ struct RemoteChatClientTests {
             }
         }
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {

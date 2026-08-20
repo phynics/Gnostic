@@ -3,19 +3,33 @@
 import Axoloty
 import Foundation
 
-public struct AgentPermissionResponse: Codable, Sendable {
+public struct AscendantPermissionResponse: Codable, Sendable {
+    public let protocolMajor: Int
     public let correlationID: String
     public let timelineID: UUID
     public let clientTurnID: String
     public let approved: Bool
     public let targetProviderID: String?
 
-    public init(correlationID: String, timelineID: UUID, clientTurnID: String, approved: Bool, targetProviderID: String? = nil) {
+    public init(correlationID: String, timelineID: UUID, clientTurnID: String, approved: Bool, targetProviderID: String? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.correlationID = correlationID
         self.timelineID = timelineID
         self.clientTurnID = clientTurnID
         self.approved = approved
         self.targetProviderID = targetProviderID
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, correlationID, timelineID, clientTurnID, approved, targetProviderID }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        correlationID = try container.decode(String.self, forKey: .correlationID)
+        timelineID = try container.decode(UUID.self, forKey: .timelineID)
+        clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
+        approved = try container.decode(Bool.self, forKey: .approved)
+        targetProviderID = try container.decodeIfPresent(String.self, forKey: .targetProviderID)
     }
 
     public func targeted(to providerID: String?) -> Self {
@@ -24,14 +38,15 @@ public struct AgentPermissionResponse: Codable, Sendable {
             timelineID: timelineID,
             clientTurnID: clientTurnID,
             approved: approved,
-            targetProviderID: providerID
+            targetProviderID: providerID,
+            protocolMajor: protocolMajor
         )
     }
 }
 
-public struct AgentPermissionProvider: Sendable {
-    public static let responseOperation = "me.atkn.gnostic.agent.permission.respond"
-    public static let responseChannel = "me.atkn.gnostic.agent.permission.response"
+public struct AscendantPermissionProvider: Sendable {
+    public static let responseOperation = "me.atkn.gnostic.ascendant.permission.respond"
+    public static let responseChannel = "me.atkn.gnostic.ascendant.permission.response"
 
     private let coordinator: AscendantPermissionCoordinator
 
@@ -40,14 +55,19 @@ public struct AgentPermissionProvider: Sendable {
     }
 
     public func handle(parameters: String?) async throws -> CallHandlerResult {
-        guard let parameters,
-              let response = try? JSONDecoder().decode(
-                  AgentPermissionResponse.self,
-                  from: Data(parameters.utf8)
-              ),
-              !response.correlationID.isEmpty,
-              !response.clientTurnID.isEmpty else {
-            return .failure(code: 400, message: "Invalid agent permission response")
+        guard let parameters else {
+            return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
+        }
+        let response: AscendantPermissionResponse
+        do {
+            response = try JSONDecoder().decode(AscendantPermissionResponse.self, from: Data(parameters.utf8))
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch {
+            return .failure(code: 400, message: "Invalid Ascendant permission response")
+        }
+        guard !response.correlationID.isEmpty, !response.clientTurnID.isEmpty else {
+            return .failure(code: 400, message: "Invalid Ascendant permission response")
         }
         let accepted = await coordinator.respond(
             correlationID: response.correlationID,
@@ -58,7 +78,7 @@ public struct AgentPermissionProvider: Sendable {
         guard accepted else {
             return .failure(code: 409, message: "Permission correlation is stale or mismatched")
         }
-        return .success(result: #"{"accepted":true}"#)
+        return .success(result: #"{"protocolMajor":2,"accepted":true}"#)
     }
 
     @MainActor
@@ -69,7 +89,7 @@ public struct AgentPermissionProvider: Sendable {
     }
 
     /// Observes one-way permission responses without competing with an active
-    /// `agent.chat` Call/Return handler on the same communication manager.
+    /// `ascendant.turn` Call/Return handler on the same communication manager.
     @MainActor
     public func observeResponses(on communication: CommunicationManager, providerID: String? = nil) async throws -> Task<Void, Never> {
         let stream = try await communication.observeChannelStream(channelId: Self.responseChannel)
@@ -77,7 +97,7 @@ public struct AgentPermissionProvider: Sendable {
             for await snapshot in stream {
                 guard let raw = snapshot.privateData,
                       let response = try? JSONDecoder().decode(
-                          AgentPermissionResponse.self,
+                          AscendantPermissionResponse.self,
                           from: Data(raw.utf8)
                       ) else { continue }
                 if let target = response.targetProviderID,
@@ -94,7 +114,7 @@ public struct AgentPermissionProvider: Sendable {
     }
 
     /// Creates a generic Axoloty Channel event carrying one permission decision.
-    public static func responseEvent(_ response: AgentPermissionResponse) throws -> ChannelEvent {
+    public static func responseEvent(_ response: AscendantPermissionResponse) throws -> ChannelEvent {
         let data = try JSONEncoder().encode(response)
         guard let privateData = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
@@ -103,7 +123,7 @@ public struct AgentPermissionProvider: Sendable {
             coreType: .CoatyObject,
             objectType: CoatyObject.objectType,
             objectId: CoatyUUID(),
-            name: "Gnostic agent permission response"
+            name: "Gnostic ascendant permission response"
         )
         return try ChannelEvent.with(
             object: marker,

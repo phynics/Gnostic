@@ -9,7 +9,7 @@ import PositronicKit
 /// registry, adapter, or PositronicKit object directly.
 @MainActor
 public final class NodeTransport {
-    typealias Chat = @MainActor (AgentChatRequest) async throws -> AgentChatResult
+    typealias Turn = @MainActor (AscendantTurnRequest) async throws -> AscendantTurnResult
     typealias TimelineStatusLookup = @MainActor (UUID) async throws -> TimelineStatus
     typealias AscendantSelection = @MainActor (UUID?) throws -> UUID
     typealias TimelineCreation = @MainActor (String, UUID) async throws -> TimelineStatus
@@ -19,7 +19,7 @@ public final class NodeTransport {
     typealias WorkspaceMutation = @MainActor (WorkspaceOpsRequest) async throws -> Bool
 
     private let isAvailable: @MainActor () -> Bool
-    private let chatOperation: Chat
+    private let turnOperation: Turn
     private let timelineStatusOperation: TimelineStatusLookup
     private let selectAscendantOperation: AscendantSelection
     private let createTimelineOperation: TimelineCreation
@@ -47,7 +47,7 @@ public final class NodeTransport {
         workspaceReferences: @escaping @MainActor () async -> [WorkspaceReference] = { [] },
         localWorkspaces: [UUID: any Workspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
-        chat: @escaping Chat,
+        turn: @escaping Turn,
         timelineStatus: @escaping TimelineStatusLookup,
         selectAscendant: @escaping AscendantSelection,
         createTimeline: @escaping TimelineCreation,
@@ -66,7 +66,7 @@ public final class NodeTransport {
             await isAvailable()
         }
         self.isAvailable = isAvailable
-        chatOperation = chat
+        turnOperation = turn
         timelineStatusOperation = timelineStatus
         selectAscendantOperation = selectAscendant
         createTimelineOperation = createTimeline
@@ -77,8 +77,8 @@ public final class NodeTransport {
         detachWorkspaceOperation = detachWorkspace
     }
 
-    public func chat(_ request: AgentChatRequest) async throws -> AgentChatResult {
-        try await chatOperation(request)
+    public func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+        try await turnOperation(request)
     }
 
     func registerOperations(
@@ -89,18 +89,18 @@ public final class NodeTransport {
         if let workspaceProvider {
             registrations.append(try await workspaceProvider.register(on: communication))
         }
-        let agentChat = AgentChatProvider(
+        let turnProvider = AscendantTurnProvider(
             execute: { [weak self] request in
                 guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                return try await self.chat(request)
+                return try await self.turn(request)
             },
             replayStore: turnUpdates,
             isAvailable: { [weak self] in await self?.isAvailable() == true }
         )
-        registrations.append(try await agentChat.register(on: communication, context: communication.identity))
-        registrations.append(try await agentChat.registerReplay(on: communication, context: communication.identity))
+        registrations.append(try await turnProvider.register(on: communication, context: communication.identity))
+        registrations.append(try await turnProvider.registerReplay(on: communication, context: communication.identity))
 
-        let permission = AgentPermissionProvider(coordinator: permissionCoordinator)
+        let permission = AscendantPermissionProvider(coordinator: permissionCoordinator)
         registrations.append(try await permission.register(on: communication, context: communication.identity))
         permissionResponses = try await permission.observeResponses(on: communication, providerID: communication.identity.objectId.string)
 
@@ -173,11 +173,11 @@ public final class NodeTransport {
     }
 
     private func discoverableObjects() async -> [CoatyObject] {
-        var objects: [CoatyObject] = ascendantIdentities().map { GnosticAgentObject(identity: $0) }
+        var objects: [CoatyObject] = ascendantIdentities().map { GnosticAscendantObject(identity: $0) }
         if let registry {
-            objects += await registry.listTimelines().map(GnosticTimelineObject.init)
+            objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0) }
         }
-        objects += await workspaceReferences().map(GnosticWorkspaceObject.init)
+        objects += await workspaceReferences().map { GnosticWorkspaceObject(workspace: $0) }
         return objects
     }
 

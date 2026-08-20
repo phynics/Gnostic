@@ -25,6 +25,11 @@ public actor MultiplexedWorkspaceProvider {
 
     public func handle(parameters: String?, expectedProviderID: String? = nil) async throws -> CallHandlerResult {
         guard await isAvailable() else { throw NodeRuntimeError.notRunning }
+        do {
+            try GnosticProtocol.validatePayload(parameters)
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        }
         guard let parameters else { throw WorkspaceError.toolExecutionNotSupported }
         let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
         if let expectedProviderID, let providerID = invocation.providerID,
@@ -35,7 +40,12 @@ public actor MultiplexedWorkspaceProvider {
             throw WorkspaceError.workspaceNotFound
         }
         let result = try await workspace.executeTool(id: invocation.toolID, parameters: invocation.arguments)
-        return .success(result: String(decoding: try JSONEncoder().encode(result), as: UTF8.self))
+        let data = try JSONEncoder().encode(result)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        object["protocolMajor"] = GnosticProtocol.currentMajor
+        return .success(result: String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
     }
 
     @MainActor

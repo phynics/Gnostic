@@ -4,7 +4,7 @@ import ArgumentParser
 import Foundation
 import GnosticCore
 
-/// `gnostic acp` — an ACP v1 agent projection of one Gnostic Ascendant.
+/// `gnostic acp` — an ACP v1 Ascendant projection of one Gnostic Ascendant.
 struct ACPCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "acp",
@@ -91,7 +91,7 @@ struct ACPCommand: AsyncParsableCommand {
         )
         defer { client.stop() }
         try await client.connect()
-        let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.agent }
+        let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
         let counts = Dictionary(grouping: entries, by: \.objectID).mapValues(\.count)
         let profiles = entries.map { entry in
             let baseID = "gnostic-\(entry.objectID.uuidString.lowercased())"

@@ -12,7 +12,7 @@ final class RunnerRuntime {
 
     init(configuration: RunnerConfiguration) throws {
         container = try Container.resolve(
-            components: Components(controllers: ["ObjectLifecycleController": ObjectLifecycleController.self], objectTypes: [GnosticAgentObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self]),
+            components: Components(controllers: ["ObjectLifecycleController": ObjectLifecycleController.self], objectTypes: [GnosticAscendantObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self]),
             configuration: Configuration(
                 common: CommonOptions(agentIdentity: ["name": "gnostic-runner"]),
                 communication: CommunicationOptions(namespace: configuration.namespace, shouldEnableCrossNamespacing: false, mqttClientOptions: MQTTClientOptions(host: configuration.host, port: UInt16(configuration.port), shouldTryMDNSDiscovery: false, autoReconnect: false), shouldAutoStart: false)
@@ -25,4 +25,3 @@ final class RunnerRuntime {
     func start() async throws { try await container.startAndWaitUntilReady() }
     func shutdown() { container.shutdown() }
 }
-

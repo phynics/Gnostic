@@ -87,6 +87,12 @@ public struct NetworkCatalogEntry: Sendable {
     /// The canonical Gnostic object type.
     public let objectType: String
 
+    /// The advertised protocol major, if the payload contains one.
+    public let protocolMajor: Int?
+
+    /// Whether this object is eligible for normal discovery and direct calls.
+    public let isProtocolCompatible: Bool
+
     /// The provider that advertised this object.
     public let providerID: String
 
@@ -107,6 +113,8 @@ public struct NetworkCatalogEntry: Sendable {
     public init(
         objectID: UUID,
         objectType: String,
+        protocolMajor: Int? = nil,
+        isProtocolCompatible: Bool? = nil,
         providerID: String,
         name: String,
         knownProperties: [String: NetworkDynamicValue],
@@ -115,6 +123,8 @@ public struct NetworkCatalogEntry: Sendable {
     ) {
         self.objectID = objectID
         self.objectType = objectType
+        self.protocolMajor = protocolMajor
+        self.isProtocolCompatible = isProtocolCompatible ?? GnosticProtocol.isCompatible(protocolMajor)
         self.providerID = providerID
         self.name = name
         self.knownProperties = knownProperties

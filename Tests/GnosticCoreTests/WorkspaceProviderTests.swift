@@ -81,7 +81,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000003")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
+        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
@@ -154,7 +154,7 @@ struct WorkspaceProviderTests {
         let id = UUID(uuidString: "B31D0000-0000-4000-8000-000000000004")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+        {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let called = InvocationRecorder()
@@ -259,8 +259,7 @@ struct WorkspaceProviderTests {
             context: target.identity
         ) { _ in
             try await Task.sleep(for: .milliseconds(100))
-            let result = try JSONEncoder().encode(ToolResult.success("target"))
-            return .success(result: String(decoding: result, as: UTF8.self))
+            return .success(result: try encodeProtocolToolResult("target"))
         }
         defer { targetRegistration.cancel() }
         let competingRegistration = try await competing.registerCallHandler(
@@ -283,8 +282,7 @@ struct WorkspaceProviderTests {
             operation: WorkspaceProvider.invocationOperation,
             context: target.identity
         ) { _ in
-            let result = try JSONEncoder().encode(ToolResult.success("forged"))
-            return .success(result: String(decoding: result, as: UTF8.self))
+            return .success(result: try encodeProtocolToolResult("forged"))
         }
         defer { forgedRegistration.cancel() }
 
@@ -304,6 +302,14 @@ private func schemaObject(_ schema: [String: AnyCodable]) throws -> [String: Any
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
+private func encodeProtocolToolResult(_ output: String) throws -> String {
+    let data = try JSONEncoder().encode(ToolResult.success(output))
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["protocolMajor"] = GnosticProtocol.currentMajor
+    let encoded = try JSONSerialization.data(withJSONObject: object)
+    return try #require(String(data: encoded, encoding: .utf8))
+}
+
 private final class TimelineRecorder: @unchecked Sendable {
     private(set) var ids: [UUID] = []
     func record(_ timeline: Thread) { ids.append(timeline.id) }
@@ -317,7 +323,7 @@ private actor InvocationRecorder {
 private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: String = "remote") async throws -> WorkspaceReference {
     let id = UUID()
     let payload = """
-    {"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+    {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
     """
     await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
     return WorkspaceReference(

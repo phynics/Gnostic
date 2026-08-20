@@ -119,18 +119,18 @@ final class StubLanguageModel: LanguageModel, @unchecked Sendable {
 }
 
 @Suite("Chat REPL")
-struct ChatREPLTests {
+struct TurnREPLTests {
     private func makeSessionAndREPL(
         shouldFail: Bool = false,
         lines: [String],
         approval: (@Sendable () -> Bool)? = nil
-    ) async throws -> (ChatSession, ChatREPL) {
+    ) async throws -> (TurnSession, TurnREPL) {
         let kit = PositronicKit(languageModel: StubLanguageModel(shouldFail: shouldFail))
         let timeline = try await kit.threadManager.createThread()
-        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let session = TurnSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: lines)
         let sink = OutputSink()
-        let repl = ChatREPL(
+        let repl = TurnREPL(
             session: session,
             timelineID: timeline.id,
             approval: StubApprovalPolicy(decision: approval ?? { true }),
@@ -145,10 +145,10 @@ struct ChatREPLTests {
         let kit = PositronicKit(languageModel: StubLanguageModel())
         let timeline = try await kit.threadManager.createThread()
         let echo = EchoTool()
-        let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
+        let session = TurnSession(kit: kit, tools: [echo], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["hello", "/quit"])
         let sink = OutputSink()
-        let repl = ChatREPL(
+        let repl = TurnREPL(
             session: session,
             timelineID: timeline.id,
             approval: StubApprovalPolicy(decision: { true }),
@@ -168,10 +168,10 @@ struct ChatREPLTests {
     func failedTurnKeepsLoopAlive() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel(shouldFail: true))
         let timeline = try await kit.threadManager.createThread()
-        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let session = TurnSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["hello", "hello again", "/quit"])
         let sink = OutputSink()
-        let repl = ChatREPL(
+        let repl = TurnREPL(
             session: session,
             timelineID: timeline.id,
             approval: StubApprovalPolicy(decision: { true }),
@@ -190,10 +190,10 @@ struct ChatREPLTests {
     func slashCommands() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
         let timeline = try await kit.threadManager.createThread()
-        let session = ChatSession(kit: kit, tools: [], timelineID: timeline.id)
+        let session = TurnSession(kit: kit, tools: [], timelineID: timeline.id)
         let iterator = LineIterator(lines: ["/timeline", "/quit"])
         let sink = OutputSink()
-        let repl = ChatREPL(
+        let repl = TurnREPL(
             session: session,
             timelineID: timeline.id,
             approval: StubApprovalPolicy(decision: { true }),
@@ -206,13 +206,13 @@ struct ChatREPLTests {
         #expect(output.last == "bye.")
     }
 
-    @Test("ChatSession drives a tool call then the final text through PositronicKit") @MainActor
+    @Test("TurnSession drives a tool call then the final text through PositronicKit") @MainActor
     func sessionDrivesToolCallThenFinalText() async throws {
         let kit = PositronicKit(languageModel: StubLanguageModel())
         let timeline = try await kit.threadManager.createThread()
         // A fixture workspace_echo tool, mirroring the runner fixture route.
         let echo = EchoTool()
-        let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
+        let session = TurnSession(kit: kit, tools: [echo], timelineID: timeline.id)
 
         let result = try await session.run(line: "echo network")
 
@@ -230,7 +230,7 @@ struct ChatREPLTests {
         let kit = PositronicKit(languageModel: StubLanguageModel())
         let timeline = try await kit.threadManager.createThread()
         let echo = EchoTool()
-        let session = ChatSession(kit: kit, tools: [echo], timelineID: timeline.id)
+        let session = TurnSession(kit: kit, tools: [echo], timelineID: timeline.id)
 
         let result = try await session.run(line: "echo network")
 

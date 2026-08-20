@@ -23,28 +23,28 @@ struct ServeOperationContractTests {
         return text
     }
 
-    @Test("agent.chat decodes the request, runs the closure, and encodes the result")
-    func agentChatContract() async throws {
-        let provider = AgentChatProvider { request in
-            AgentChatResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
+    @Test("ascendant.turn decodes the request, runs the closure, and encodes the result")
+    func turnContract() async throws {
+        let provider = AscendantTurnProvider { request in
+            AscendantTurnResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
         }
-        let request = AgentChatRequest(message: "hello over mqtt", timelineID: UUID(), clientTurnID: "pi:entry-1")
+        let request = AscendantTurnRequest(message: "hello over mqtt", timelineID: UUID(), clientTurnID: "pi:entry-1")
         let response = try await provider.handle(parameters: payload(request))
-        let result = try JSONDecoder().decode(AgentChatResult.self, from: Data(try resultText(response).utf8))
+        let result = try JSONDecoder().decode(AscendantTurnResult.self, from: Data(try resultText(response).utf8))
         #expect(result.text == "echo: hello over mqtt")
         #expect(result.clientTurnID == request.clientTurnID)
         #expect(!result.replayed)
     }
 
-    @Test("agent.chat conflict is a structured failure")
-    func agentChatConflictContract() async throws {
+    @Test("ascendant.turn conflict is a structured failure")
+    func turnConflictContract() async throws {
         let coordinator = AscendantTurnCoordinator()
-        let provider = AgentChatProvider { request in
+        let provider = AscendantTurnProvider { request in
             try await coordinator.execute(request) { "echo: \(request.message)" }
         }
         let timelineID = UUID()
-        let first = AgentChatRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
-        let conflict = AgentChatRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-1")
+        let first = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
+        let conflict = AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-1")
 
         _ = try await provider.handle(parameters: payload(first))
         let response = try await provider.handle(parameters: payload(conflict))
@@ -56,20 +56,20 @@ struct ServeOperationContractTests {
         #expect(message.contains("clientTurnID turn-1"))
     }
 
-    @Test("agent.chat.replay returns bounded identified-turn updates")
-    func agentChatReplayContract() async throws {
+    @Test("ascendant.turn.replay returns bounded identified-turn updates")
+    func turnReplayContract() async throws {
         let timelineID = UUID()
         let store = AscendantTurnUpdateStore()
-        let provider = AgentChatProvider(
+        let provider = AscendantTurnProvider(
             execute: { request in
-                AgentChatResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
+                AscendantTurnResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
             },
             replayStore: store
         )
-        let request = AgentChatRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-replay")
+        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-replay")
         _ = try await provider.handle(parameters: payload(request))
 
-        let replayRequest = AgentChatReplayRequest(timelineID: timelineID, clientTurnID: "turn-replay")
+        let replayRequest = AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: "turn-replay")
         let response = try await provider.handleReplay(parameters: payload(replayRequest))
         let replay = try JSONDecoder().decode(
             AscendantTurnReplay.self,
@@ -80,11 +80,11 @@ struct ServeOperationContractTests {
         #expect(replay.updates.last?.text == "echo: hello")
     }
 
-    @Test("agent.chat keeps streamed text without appending a duplicate final message")
-    func agentChatStreamReplayContract() async throws {
+    @Test("ascendant.turn keeps streamed text without appending a duplicate final message")
+    func turnStreamReplayContract() async throws {
         let timelineID = UUID()
         let store = AscendantTurnUpdateStore()
-        let provider = AgentChatProvider(
+        let provider = AscendantTurnProvider(
             execute: { request in
                 _ = await store.append(
                     timelineID: request.timelineID,
@@ -98,12 +98,12 @@ struct ServeOperationContractTests {
                     kind: "assistant_text",
                     text: "lo"
                 )
-                return AgentChatResult(clientTurnID: request.clientTurnID, text: "hello")
+                return AscendantTurnResult(clientTurnID: request.clientTurnID, text: "hello")
             },
             replayStore: store
         )
         _ = try await provider.handle(parameters: payload(
-            AgentChatRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
+            AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
         ))
 
         let replay = await store.replay(timelineID: timelineID, clientTurnID: "turn-stream")
@@ -111,20 +111,16 @@ struct ServeOperationContractTests {
         #expect(replay.updates.compactMap(\.text) == ["hel", "lo", "hello"])
     }
 
-    @Test("agent.chat result decoder accepts the legacy text-only response")
-    func agentChatLegacyResultDecodes() throws {
-        let result = try JSONDecoder().decode(
-            AgentChatResult.self,
-            from: Data(#"{"text":"legacy"}"#.utf8)
-        )
-        #expect(result.text == "legacy")
-        #expect(result.clientTurnID == nil)
-        #expect(!result.replayed)
+    @Test("ascendant.turn result decoder rejects a missing protocol major")
+    func turnResultRejectsMissingProtocolMajor() {
+        #expect(throws: GnosticProtocolError.self) {
+            _ = try JSONDecoder().decode(AscendantTurnResult.self, from: Data(#"{"text":"legacy"}"#.utf8))
+        }
     }
 
-    @Test("agent.chat rejects a malformed payload")
-    func agentChatRejectsMalformed() async throws {
-        let provider = AgentChatProvider { _ in AgentChatResult(text: "unused") }
+    @Test("ascendant.turn rejects a malformed payload")
+    func turnRejectsMalformed() async throws {
+        let provider = AscendantTurnProvider { _ in AscendantTurnResult(text: "unused") }
         let response = try await provider.handle(parameters: "not-json")
         guard case .failure(let code, _, _) = response else {
             Issue.record("expected failure for malformed payload")
@@ -133,10 +129,10 @@ struct ServeOperationContractTests {
         #expect(code == 400)
     }
 
-    @Test("agent.chat rejects a blank client turn id")
-    func agentChatRejectsBlankTurnID() async throws {
-        let provider = AgentChatProvider { _ in AgentChatResult(text: "unused") }
-        let request = AgentChatRequest(message: "hello", timelineID: UUID(), clientTurnID: "  ")
+    @Test("ascendant.turn rejects a blank client turn id")
+    func turnRejectsBlankTurnID() async throws {
+        let provider = AscendantTurnProvider { _ in AscendantTurnResult(text: "unused") }
+        let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "  ")
         let response = try await provider.handle(parameters: payload(request))
         guard case let .failure(code, _, _) = response else {
             Issue.record("expected failure for a blank client turn id")
@@ -145,11 +141,11 @@ struct ServeOperationContractTests {
         #expect(code == 400)
     }
 
-    @Test("agent permission responses reject stale or mismatched correlations")
+    @Test("ascendant permission responses reject stale or mismatched correlations")
     func permissionResponseContract() async throws {
         let updates = AscendantTurnUpdateStore()
         let coordinator = AscendantPermissionCoordinator(updates: updates)
-        let provider = AgentPermissionProvider(coordinator: coordinator)
+        let provider = AscendantPermissionProvider(coordinator: coordinator)
         let timelineID = UUID()
         let request = AscendantPermissionRequest(
             correlationID: "permission-contract",
@@ -164,7 +160,7 @@ struct ServeOperationContractTests {
             try await Task.sleep(for: .milliseconds(5))
         }
 
-        let accepted = try await provider.handle(parameters: payload(AgentPermissionResponse(
+        let accepted = try await provider.handle(parameters: payload(AscendantPermissionResponse(
             correlationID: request.correlationID,
             timelineID: timelineID,
             clientTurnID: request.clientTurnID,
@@ -176,7 +172,7 @@ struct ServeOperationContractTests {
         }
         #expect(await decision.value)
 
-        let duplicate = try await provider.handle(parameters: payload(AgentPermissionResponse(
+        let duplicate = try await provider.handle(parameters: payload(AscendantPermissionResponse(
             correlationID: request.correlationID,
             timelineID: timelineID,
             clientTurnID: request.clientTurnID,
@@ -211,17 +207,17 @@ struct ServeOperationContractTests {
             detach: { request in await recorder.remove(request.workspaceID); return true }
         )
 
-        let listResponse = try await provider.handle(operation: WorkspaceOpsProvider.listOperation, parameters: nil)
+        let listResponse = try await provider.handle(operation: WorkspaceOpsProvider.listOperation, parameters: payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID())))
         let list = try JSONDecoder().decode(WorkspaceListResult.self, from: Data(try resultText(listResponse).utf8))
         #expect(list.workspaces.first?.name == "Atlas")
 
         let attachRequest = WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: UUID())
         let attachResponse = try await provider.handle(operation: WorkspaceOpsProvider.attachOperation, parameters: payload(attachRequest))
-        #expect(try resultText(attachResponse) == "true")
+        #expect(try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(try resultText(attachResponse).utf8)).accepted)
         #expect(await recorder.attached == [workspaceID])
 
         let detachResponse = try await provider.handle(operation: WorkspaceOpsProvider.detachOperation, parameters: payload(attachRequest))
-        #expect(try resultText(detachResponse) == "true")
+        #expect(try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(try resultText(detachResponse).utf8)).accepted)
         #expect(await recorder.attached.isEmpty)
     }
 
@@ -237,7 +233,7 @@ struct ServeOperationContractTests {
 
         guard case let .failure(listCode, listMessage, _) = try await provider.handle(
             operation: WorkspaceOpsProvider.listOperation,
-            parameters: nil
+            parameters: payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
         ) else {
             Issue.record("expected structured list failure")
             return
@@ -284,7 +280,7 @@ struct ServeOperationContractTests {
         #expect(created.timelineID == createdID)
 
         // list
-        let listResponse = try await provider.handle(operation: TimelineManagementProvider.listOperation, parameters: nil)
+        let listResponse = try await provider.handle(operation: TimelineManagementProvider.listOperation, parameters: payload(TimelineListRequest()))
         let list = try JSONDecoder().decode(TimelineListResult.self, from: Data(try resultText(listResponse).utf8))
         #expect(list.timelines.count == 1)
         #expect(list.timelines.first?.title == "Existing")

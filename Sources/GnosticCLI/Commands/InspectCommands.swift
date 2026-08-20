@@ -47,7 +47,7 @@ struct InspectCommand: AsyncParsableCommand {
 
         @OptionGroup var connection: ConnectionOptions
 
-        @Option(name: .long, help: "Filter by object type: agent, timeline, or workspace.")
+        @Option(name: .long, help: "Filter by object type: ascendant, timeline, or workspace.")
         var type: String?
 
         @MainActor
@@ -62,7 +62,7 @@ struct InspectCommand: AsyncParsableCommand {
 
         static func canonicalType(for alias: String) -> String {
             switch alias.lowercased() {
-            case "agent": GnosticObjectType.agent
+            case "ascendant": GnosticObjectType.ascendant
             case "timeline": GnosticObjectType.timeline
             case "workspace": GnosticObjectType.workspace
             default: alias
@@ -107,4 +107,3 @@ struct InspectCommand: AsyncParsableCommand {
         }
     }
 }
-

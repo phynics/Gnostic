@@ -138,5 +138,6 @@ private func invokeWorkspace(
     guard response.sourceId?.lowercased() == providerID.lowercased() else {
         throw WorkspaceError.connectionFailed
     }
+    try GnosticProtocol.validatePayload(response.result)
     return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
 }

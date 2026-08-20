@@ -12,7 +12,7 @@ import PositronicKit
 /// Axoloty stack (`communication.call(operation:...)`) — no raw MQTT, no local
 /// PositronicKit runtime.
 @MainActor
-public final class RemoteChatClient: Sendable {
+public final class RemoteTurnClient: Sendable {
     public struct DiscoveredAscendant: Sendable, Equatable {
         public let id: UUID
         public let name: String
@@ -51,7 +51,7 @@ public final class RemoteChatClient: Sendable {
         self.timeout = timeout
         self.promptTimeout = promptTimeout ?? timeout
         manager = try CommunicationManager(
-            identity: Identity(name: "gnostic-chat-client"),
+            identity: Identity(name: "gnostic-turn-client"),
             communicationOptions: CommunicationOptions(
                 namespace: namespace,
                 shouldEnableCrossNamespacing: false,
@@ -89,7 +89,7 @@ public final class RemoteChatClient: Sendable {
                 return
             }
         }
-        throw RemoteChatClientError.brokerUnreachable("timed out connecting")
+        throw RemoteTurnClientError.brokerUnreachable("timed out connecting")
     }
 
     /// Stops the client's manager and subscriptions.
@@ -117,7 +117,7 @@ public final class RemoteChatClient: Sendable {
     public func discoverAscendants() async -> [DiscoveredAscendant] {
         await refreshCatalog()
         return await catalog.networkObjects()
-            .filter { $0.objectType == GnosticObjectType.agent }
+            .filter { $0.objectType == GnosticObjectType.ascendant }
             .compactMap { entry in
                 guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
                       let timelineID = UUID(uuidString: raw) else { return nil }
@@ -138,28 +138,28 @@ public final class RemoteChatClient: Sendable {
         await refreshCatalog()
         guard let entry = await catalog.object(id: workspaceID, providerID: providerID),
               let descriptor = entry.workspace else {
-            throw RemoteChatClientError.workspaceUnavailable
+            throw RemoteTurnClientError.workspaceUnavailable
         }
         guard case let .available(currentProvider, _) = await catalog.workspaceAttachmentStatus(id: workspaceID) else {
             let status = await catalog.workspaceAttachmentStatus(id: workspaceID)
-            if case .ambiguous = status { throw RemoteChatClientError.workspaceAmbiguous }
-            throw RemoteChatClientError.workspaceUnavailable
+            if case .ambiguous = status { throw RemoteTurnClientError.workspaceAmbiguous }
+            throw RemoteTurnClientError.workspaceUnavailable
         }
         guard currentProvider == providerID, descriptor.isAvailable else {
-            throw RemoteChatClientError.workspaceUnavailable
+            throw RemoteTurnClientError.workspaceUnavailable
         }
         let timeline = try await timelineStatus(timelineID: timelineID, providerID: providerID)
         guard timeline.attachedWorkspaceIDs.contains(workspaceID) else {
-            throw RemoteChatClientError.timelineNotAttached
+            throw RemoteTurnClientError.timelineNotAttached
         }
         guard let tool = descriptor.tools.first(where: { $0.id == toolID }) else {
-            throw RemoteChatClientError.toolNotAdvertised
+            throw RemoteTurnClientError.toolNotAdvertised
         }
         guard !tool.requiresPermission || approved else {
-            throw RemoteChatClientError.approvalRequired
+            throw RemoteTurnClientError.approvalRequired
         }
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
-            throw RemoteChatClientError.invalidWorkspaceURI
+            throw RemoteTurnClientError.invalidWorkspaceURI
         }
         let workspace = AxolotyWorkspace(
             reference: reference,
@@ -170,30 +170,30 @@ public final class RemoteChatClient: Sendable {
         return try await workspace.executeTool(id: toolID, parameters: parameters)
     }
 
-    /// Runs one chat turn over `agent.chat`.
-    public func chat(message: String, timelineID: UUID) async throws -> String {
-        try await chat(message: message, timelineID: timelineID, clientTurnID: nil).text
+    /// Runs one Turn over `ascendant.turn`.
+    public func turn(message: String, timelineID: UUID) async throws -> String {
+        try await turn(message: message, timelineID: timelineID, clientTurnID: nil).text
     }
 
-    /// Runs an identified chat turn and returns replay metadata. Supplying a
+    /// Runs an identified Turn and returns replay metadata. Supplying a
     /// stable id enables serve-lifetime deduplication; `nil` preserves the
     /// legacy non-idempotent request shape.
-    public func chat(
+    public func turn(
         message: String,
         timelineID: UUID,
         clientTurnID: String?,
         providerID: String? = nil
-    ) async throws -> AgentChatResult {
+    ) async throws -> AscendantTurnResult {
         let payload = try JSONEncoder().encode(
-            AgentChatRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
+            AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
         )
         let response = try await call(
-            operation: AgentChatProvider.chatOperation,
+            operation: AscendantTurnProvider.turnOperation,
             parameters: String(decoding: payload, as: UTF8.self),
             providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: promptTimeout
         )
-        return try JSONDecoder().decode(AgentChatResult.self, from: Data(response.result.utf8))
+        return try JSONDecoder().decode(AscendantTurnResult.self, from: Data(response.result.utf8))
     }
 
     /// Reads bounded identified-turn updates retained by the serve runtime.
@@ -207,10 +207,10 @@ public final class RemoteChatClient: Sendable {
         providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
         let payload = try JSONEncoder().encode(
-            AgentChatReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
+            AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
         )
         let response = try await call(
-            operation: AgentChatProvider.replayOperation,
+            operation: AscendantTurnProvider.replayOperation,
             parameters: String(decoding: payload, as: UTF8.self),
             providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: timeout
@@ -219,7 +219,7 @@ public final class RemoteChatClient: Sendable {
     }
 
     public func observeTurnUpdates(providerID: String? = nil) async throws -> AsyncStream<AscendantTurnUpdateStore.Event> {
-        let snapshots = try await manager.observeChannelStream(channelId: AgentChatProvider.updateChannel)
+        let snapshots = try await manager.observeChannelStream(channelId: AscendantTurnProvider.updateChannel)
         return AsyncStream { continuation in
             let task = Task {
                 for await snapshot in snapshots {
@@ -238,8 +238,8 @@ public final class RemoteChatClient: Sendable {
         }
     }
 
-    public func respondToPermission(_ permission: AgentPermissionResponse, providerID: String? = nil) async throws {
-        manager.publishChannel(try AgentPermissionProvider.responseEvent(permission.targeted(to: providerID)))
+    public func respondToPermission(_ permission: AscendantPermissionResponse, providerID: String? = nil) async throws {
+        manager.publishChannel(try AscendantPermissionProvider.responseEvent(permission.targeted(to: providerID)))
     }
 
     /// Reads the served timeline's attachment state.
@@ -280,6 +280,7 @@ public final class RemoteChatClient: Sendable {
         if let providerID { targetProvider = providerID } else { targetProvider = try await singleProviderID() }
         let response = try await call(
             operation: TimelineManagementProvider.listOperation,
+            parameters: String(decoding: try JSONEncoder().encode(TimelineListRequest()), as: UTF8.self),
             providerID: targetProvider,
             timeout: timeout
         )
@@ -304,6 +305,7 @@ public final class RemoteChatClient: Sendable {
         if let providerID { targetProvider = providerID } else { targetProvider = try await singleProviderID() }
         let response = try await call(
             operation: WorkspaceOpsProvider.listOperation,
+            parameters: String(decoding: try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID())), as: UTF8.self),
             providerID: targetProvider,
             timeout: timeout
         )
@@ -328,7 +330,7 @@ public final class RemoteChatClient: Sendable {
             providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
             timeout: timeout
         )
-        return response.result == "true"
+        return try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(response.result.utf8)).accepted
     }
 
     public func discoverServedTimeline(ascendantID: UUID? = nil) async throws -> UUID {
@@ -343,15 +345,15 @@ public final class RemoteChatClient: Sendable {
                     && (providerID == nil || $0.providerID.lowercased() == providerID?.lowercased())
             }
             guard let candidate = matches.first else {
-                if let ascendantID { throw RemoteChatClientError.ascendantUnavailable(ascendantID) }
-                throw RemoteChatClientError.providerUnavailable(providerID ?? "")
+                if let ascendantID { throw RemoteTurnClientError.ascendantUnavailable(ascendantID) }
+                throw RemoteTurnClientError.providerUnavailable(providerID ?? "")
             }
-            guard matches.count == 1 else { throw RemoteChatClientError.ambiguousAscendant }
+            guard matches.count == 1 else { throw RemoteTurnClientError.ambiguousAscendant }
             return candidate
         }
         guard candidates.count == 1 else {
-            if candidates.isEmpty { throw RemoteChatClientError.noServedAgent }
-            throw RemoteChatClientError.ambiguousAscendant
+            if candidates.isEmpty { throw RemoteTurnClientError.noServedAscendant }
+            throw RemoteTurnClientError.ambiguousAscendant
         }
         return candidates[0]
     }
@@ -361,8 +363,8 @@ public final class RemoteChatClient: Sendable {
         let providers = Set(await catalog.networkObjects().compactMap {
             $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID ? $0.providerID : nil
         })
-        guard let provider = providers.first else { throw RemoteChatClientError.timelineUnavailable(timelineID) }
-        guard providers.count == 1 else { throw RemoteChatClientError.timelineAmbiguous(timelineID) }
+        guard let provider = providers.first else { throw RemoteTurnClientError.timelineUnavailable(timelineID) }
+        guard providers.count == 1 else { throw RemoteTurnClientError.timelineAmbiguous(timelineID) }
         return provider
     }
 
@@ -375,10 +377,10 @@ public final class RemoteChatClient: Sendable {
         await refreshCatalog()
         let entries = await catalog.networkObjects()
         let providers = Set(entries.compactMap {
-            $0.objectType == GnosticObjectType.agent || $0.objectType == GnosticObjectType.timeline ? $0.providerID : nil
+            $0.objectType == GnosticObjectType.ascendant || $0.objectType == GnosticObjectType.timeline ? $0.providerID : nil
         })
-        guard let provider = providers.first else { throw RemoteChatClientError.noServedAgent }
-        guard providers.count == 1 else { throw RemoteChatClientError.ambiguousAscendant }
+        guard let provider = providers.first else { throw RemoteTurnClientError.noServedAscendant }
+        guard providers.count == 1 else { throw RemoteTurnClientError.ambiguousAscendant }
         return provider
     }
 
@@ -390,7 +392,7 @@ public final class RemoteChatClient: Sendable {
             timeout: timeout
         )
         if let providerID, response.sourceId?.lowercased() != providerID.lowercased() {
-            throw RemoteChatClientError.providerMismatch
+            throw RemoteTurnClientError.providerMismatch
         }
         return response
     }
@@ -403,6 +405,6 @@ public final class RemoteChatClient: Sendable {
     }
 }
 
-/// The long-lived bridge client name. The chat client remains source-compatible
+/// The long-lived bridge client name. The Turn client remains source-compatible
 /// for the interactive command while both surfaces share one Axoloty connection.
-public typealias GnosticRemoteClient = RemoteChatClient
+public typealias GnosticRemoteClient = RemoteTurnClient

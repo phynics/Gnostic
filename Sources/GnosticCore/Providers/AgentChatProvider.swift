@@ -4,32 +4,47 @@ import Axoloty
 import Foundation
 import PKShared
 
-/// The wire payload for a remote `agent.chat` turn.
-public struct AgentChatRequest: Codable, Sendable {
+/// The wire payload for a remote Ascendant Turn.
+public struct AscendantTurnRequest: Codable, Sendable {
+    public let protocolMajor: Int
     public let message: String
     public let timelineID: UUID
     public let clientTurnID: String?
 
-    public init(message: String, timelineID: UUID, clientTurnID: String? = nil) {
+    public init(message: String, timelineID: UUID, clientTurnID: String? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.message = message
         self.timelineID = timelineID
         self.clientTurnID = clientTurnID
     }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, message, timelineID, clientTurnID }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        message = try container.decode(String.self, forKey: .message)
+        timelineID = try container.decode(UUID.self, forKey: .timelineID)
+        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID)
+    }
 }
 
-/// The wire result of a remote `agent.chat` turn.
-public struct AgentChatResult: Codable, Sendable {
+/// The wire result of a remote Ascendant Turn.
+public struct AscendantTurnResult: Codable, Sendable {
+    public let protocolMajor: Int
     public let clientTurnID: String?
     public let text: String
     public let replayed: Bool
 
-    public init(clientTurnID: String? = nil, text: String, replayed: Bool = false) {
+    public init(clientTurnID: String? = nil, text: String, replayed: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.clientTurnID = clientTurnID
         self.text = text
         self.replayed = replayed
     }
 
     private enum CodingKeys: String, CodingKey {
+        case protocolMajor
         case clientTurnID
         case text
         case replayed
@@ -37,25 +52,24 @@ public struct AgentChatResult: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID)
         text = try container.decode(String.self, forKey: .text)
-        // Older serves returned only `{text}`. Keep that response readable while
-        // new callers receive the explicit replay marker.
         replayed = try container.decodeIfPresent(Bool.self, forKey: .replayed) ?? false
     }
 }
 
-/// Hosts the `me.atkn.gnostic.agent.chat` unary Call/Return operation.
+/// Hosts the `me.atkn.gnostic.ascendant.turn` unary Call/Return operation.
 ///
-/// A thin wire adapter: decodes an `AgentChatRequest`, invokes the injected
+/// A thin wire adapter: decodes an `AscendantTurnRequest`, invokes the injected
 /// turn closure (owned by the serve runtime), and encodes the result —
 /// mirroring `WorkspaceProvider`'s contract.
-public struct AgentChatProvider: Sendable {
-    public static let chatOperation = "me.atkn.gnostic.agent.chat"
-    public static let replayOperation = "me.atkn.gnostic.agent.chat.replay"
-    public static let updateChannel = "me.atkn.gnostic.agent.chat.update"
+public struct AscendantTurnProvider: Sendable {
+    public static let turnOperation = "me.atkn.gnostic.ascendant.turn"
+    public static let replayOperation = "me.atkn.gnostic.ascendant.turn.replay"
+    public static let updateChannel = "me.atkn.gnostic.ascendant.turn.update"
 
-    public typealias TurnExecutor = @Sendable (AgentChatRequest) async throws -> AgentChatResult
+    public typealias TurnExecutor = @Sendable (AscendantTurnRequest) async throws -> AscendantTurnResult
 
     private let executor: TurnExecutor
     private let replayStore: AscendantTurnUpdateStore?
@@ -75,9 +89,16 @@ public struct AgentChatProvider: Sendable {
         guard await isAvailable() else {
             return .failure(code: 503, message: "notRunning: The node runtime is not running.")
         }
-        guard let parameters,
-              let request = try? JSONDecoder().decode(AgentChatRequest.self, from: Data(parameters.utf8)) else {
-            return .failure(code: 400, message: "Invalid agent.chat payload")
+        guard let parameters else {
+            return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
+        }
+        let request: AscendantTurnRequest
+        do {
+            request = try JSONDecoder().decode(AscendantTurnRequest.self, from: Data(parameters.utf8))
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch {
+            return .failure(code: 400, message: "Invalid ascendant.turn payload")
         }
         if let clientTurnID = request.clientTurnID,
            clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -88,6 +109,11 @@ public struct AgentChatProvider: Sendable {
                 await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID, message: request.message)
             }
             let result = try await executor(request)
+            do {
+                try GnosticProtocol.validate(result.protocolMajor)
+            } catch let error as GnosticProtocolError {
+                return .failure(code: error.statusCode, message: error.failureMessage)
+            }
             if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
                 let replay = await replayStore.replay(
                     timelineID: request.timelineID,
@@ -131,6 +157,8 @@ public struct AgentChatProvider: Sendable {
                 )
             }
             return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
@@ -150,11 +178,22 @@ public struct AgentChatProvider: Sendable {
         guard await isAvailable() else {
             return .failure(code: 503, message: "notRunning: The node runtime is not running.")
         }
-        guard let replayStore,
-              let parameters,
-              let request = try? JSONDecoder().decode(AgentChatReplayRequest.self, from: Data(parameters.utf8)),
-              !request.clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .failure(code: 400, message: "Invalid agent.chat.replay payload")
+        guard let replayStore else {
+            return .failure(code: 400, message: "Invalid ascendant.turn.replay payload")
+        }
+        guard let parameters else {
+            return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
+        }
+        let request: AscendantTurnReplayRequest
+        do {
+            request = try JSONDecoder().decode(AscendantTurnReplayRequest.self, from: Data(parameters.utf8))
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch {
+            return .failure(code: 400, message: "Invalid ascendant.turn.replay payload")
+        }
+        guard !request.clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(code: 400, message: "Invalid ascendant.turn.replay payload")
         }
         let replay = await replayStore.replay(
             timelineID: request.timelineID,
@@ -165,13 +204,18 @@ public struct AgentChatProvider: Sendable {
         if replay.conflict {
             return .failure(code: 409, message: "clientTurnID was already used with different content")
         }
+        do {
+            try GnosticProtocol.validate(replay.protocolMajor)
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        }
         let encoded = try JSONEncoder().encode(replay)
         return .success(result: String(decoding: encoded, as: UTF8.self))
     }
 
     @MainActor
     public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.chatOperation, context: context) { [self] request in
+        try await communication.registerCallHandler(operation: Self.turnOperation, context: context) { [self] request in
             try await handle(parameters: request.parameters)
         }
     }
@@ -201,16 +245,29 @@ public struct AgentChatProvider: Sendable {
     }
 }
 
-public struct AgentChatReplayRequest: Codable, Sendable {
+public struct AscendantTurnReplayRequest: Codable, Sendable {
+    public let protocolMajor: Int
     public let timelineID: UUID
     public let clientTurnID: String
     public let message: String?
     public let afterSequence: Int
 
-    public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) {
+    public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.timelineID = timelineID
         self.clientTurnID = clientTurnID
         self.message = message
         self.afterSequence = afterSequence
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID, message, afterSequence }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        timelineID = try container.decode(UUID.self, forKey: .timelineID)
+        clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        afterSequence = try container.decodeIfPresent(Int.self, forKey: .afterSequence) ?? 0
     }
 }

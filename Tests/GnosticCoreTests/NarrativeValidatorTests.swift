@@ -6,7 +6,7 @@ import Testing
 
 @Suite("Narrative proposal validation and admission")
 struct NarrativeValidatorTests {
-    private let agentID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
+    private let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000001")!
     private let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000002")!
     private let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!
 
@@ -18,7 +18,7 @@ struct NarrativeValidatorTests {
             source: NarrativeSourceReference(
                 conversation: NarrativeConversationRange(firstMessageID: "msg-1", lastMessageID: "msg-3"),
                 toolIDs: ["tool-search"],
-                agentID: agentID,
+                ascendantID: ascendantID,
                 timelineID: timelineID,
                 workspaceIDs: [workspaceID]
             ),
@@ -35,7 +35,7 @@ struct NarrativeValidatorTests {
 
     private func makeState(existing: [NarrativeEntry] = []) -> NarrativeAuthoritativeState {
         NarrativeAuthoritativeState(
-            agentID: agentID,
+            ascendantID: ascendantID,
             timelineIDs: [timelineID],
             workspaceIDs: [workspaceID],
             filePaths: ["/src/main.swift"],

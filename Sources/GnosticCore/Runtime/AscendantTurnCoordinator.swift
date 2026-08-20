@@ -24,7 +24,7 @@ public actor AscendantTurnCoordinator {
     }
 
     private enum CachedOutcome: Sendable {
-        case succeeded(AgentChatResult)
+        case succeeded(AscendantTurnResult)
         case failed(AscendantTurnError)
     }
 
@@ -58,14 +58,15 @@ public actor AscendantTurnCoordinator {
     /// and are intentionally not deduplicated, while identified requests share
     /// one task per `(timelineID, clientTurnID)` key.
     public func execute(
-        _ request: AgentChatRequest,
+        _ request: AscendantTurnRequest,
         operation: @escaping TurnOperation
-    ) async throws -> AgentChatResult {
+    ) async throws -> AscendantTurnResult {
+        try GnosticProtocol.validate(request.protocolMajor)
         guard let clientTurnID = request.clientTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !clientTurnID.isEmpty else {
             let task = enqueue(timelineID: request.timelineID, operation: operation)
             let text = try await task.value
-            return AgentChatResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
+            return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
         }
 
         let key = Key(timelineID: request.timelineID, clientTurnID: clientTurnID)
@@ -83,7 +84,7 @@ public actor AscendantTurnCoordinator {
             }
             switch cached.outcome {
             case let .succeeded(result):
-                return AgentChatResult(clientTurnID: result.clientTurnID, text: result.text, replayed: true)
+                return AscendantTurnResult(clientTurnID: result.clientTurnID, text: result.text, replayed: true)
             case let .failed(error):
                 throw error
             }
@@ -134,7 +135,7 @@ public actor AscendantTurnCoordinator {
                 request: request,
                 result: .success(text)
             )
-            return AgentChatResult(clientTurnID: clientTurnID, text: text, replayed: false)
+            return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: false)
         } catch {
             recordCompletion(
                 key: key,
@@ -147,11 +148,11 @@ public actor AscendantTurnCoordinator {
 
     private func replay(
         _ task: Task<String, Error>,
-        request: AgentChatRequest
-    ) async throws -> AgentChatResult {
+        request: AscendantTurnRequest
+    ) async throws -> AscendantTurnResult {
         do {
             let text = try await task.value
-            return AgentChatResult(clientTurnID: request.clientTurnID, text: text, replayed: true)
+            return AscendantTurnResult(clientTurnID: request.clientTurnID, text: text, replayed: true)
         } catch {
             throw error
         }
@@ -159,7 +160,7 @@ public actor AscendantTurnCoordinator {
 
     private func recordCompletion(
         key: Key,
-        request: AgentChatRequest,
+        request: AscendantTurnRequest,
         result: Result<String, Error>
     ) {
         guard inFlight[key] != nil else { return }
@@ -169,7 +170,7 @@ public actor AscendantTurnCoordinator {
         let outcome: CachedOutcome
         switch result {
         case let .success(text):
-            outcome = .succeeded(AgentChatResult(
+            outcome = .succeeded(AscendantTurnResult(
                 clientTurnID: request.clientTurnID,
                 text: text,
                 replayed: false

@@ -46,7 +46,7 @@ struct ACPProviderAcceptanceTests {
         try await first.start()
         try await second.start()
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         try await poll(timeout: .seconds(8)) {
@@ -59,7 +59,7 @@ struct ACPProviderAcceptanceTests {
         for ascendant in ascendants {
             #expect(try await client.selectAscendant(id: ascendant.id, providerID: ascendant.providerID) == ascendant)
         }
-        await #expect(throws: RemoteChatClientError.self) {
+        await #expect(throws: RemoteTurnClientError.self) {
             _ = try await client.selectAscendant(id: sharedAscendantID)
         }
 
@@ -130,7 +130,7 @@ struct ACPProviderAcceptanceTests {
         try await first.start()
         try await second.start()
 
-        let discoveryClient = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let discoveryClient = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { discoveryClient.stop() }
         try await discoveryClient.connect()
         let selected = try await waitForAscendant(secondAscendantID, using: discoveryClient)
@@ -316,7 +316,7 @@ struct ACPProviderAcceptanceTests {
         }
         try await runtime.start()
 
-        let client = try RemoteChatClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
         let ascendant = try await waitForOnlyAscendant(using: client)
@@ -344,7 +344,7 @@ struct ACPProviderAcceptanceTests {
             providerID: ascendant.providerID
         ))
 
-        let result = try await client.chat(
+        let result = try await client.turn(
             message: "echo network",
             timelineID: created.timelineID,
             clientTurnID: "legacy-smoke:turn-1",
@@ -382,8 +382,8 @@ private func acceptanceManifest(
 
 private func waitForAscendant(
     _ id: UUID,
-    using client: RemoteChatClient
-) async throws -> RemoteChatClient.DiscoveredAscendant {
+    using client: RemoteTurnClient
+) async throws -> RemoteTurnClient.DiscoveredAscendant {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {
@@ -394,8 +394,8 @@ private func waitForAscendant(
 }
 
 private func waitForOnlyAscendant(
-    using client: RemoteChatClient
-) async throws -> RemoteChatClient.DiscoveredAscendant {
+    using client: RemoteTurnClient
+) async throws -> RemoteTurnClient.DiscoveredAscendant {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {

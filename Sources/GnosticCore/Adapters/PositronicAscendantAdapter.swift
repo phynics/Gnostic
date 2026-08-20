@@ -16,7 +16,7 @@ import struct PositronicKit.Thread
     public init(ascendant: NodeManifest.Ascendant, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference], languageModel: any LanguageModel) async throws {
         guard timelines.contains(where: { $0.id == ascendant.defaultTimelineID }) else { throw NodeRuntimeError.missingTimeline(ascendant.defaultTimelineID) }
         let agent = AgentInstance(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateThreadID: ascendant.defaultTimelineID, metadata: ascendant.metadata.mapValues { AnyCodable($0) })
-        identity = .init(id: agent.id, name: agent.name, description: agent.description, privateTimelineID: agent.privateThreadID, primaryWorkspaceID: agent.primaryWorkspaceID, lastActiveAt: agent.lastActiveAt, createdAt: agent.createdAt, updatedAt: agent.updatedAt)
+        identity = .init(id: agent.id, name: agent.name, description: agent.description, privateTimelineID: agent.privateThreadID, primaryWorkspaceID: agent.primaryWorkspaceID, lastActiveAt: agent.lastActiveAt, createdAt: agent.createdAt, updatedAt: agent.updatedAt, capabilities: GnosticCapability.stable.sorted())
         let stores = (InMemoryAgentInstanceStore(), InMemoryThreadPersistence(), InMemoryMessageStore(), InMemoryWorkspacePersistence(), InMemoryToolPersistence())
         try await stores.0.saveAgentInstance(agent)
         for configuration in timelines {
@@ -63,7 +63,7 @@ import struct PositronicKit.Thread
     }
     public func shutdown() async { await cancelAll() }
 
-    public func runTurn(_ request: AgentChatRequest, updates: AscendantTurnUpdateStore) async throws -> String {
+    public func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String {
         let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map { .init(timelineID: request.timelineID, clientTurnID: $0) }) {
             let tools = await kit.threadManager.enabledTools(for: request.timelineID) + networkTools
             return try await kit.run(ChatRunRequest(threadID: request.timelineID, message: request.message, tools: tools, maxTurns: 5))
@@ -87,7 +87,7 @@ import struct PositronicKit.Thread
         return finalText.isEmpty ? "(empty reply)" : finalText
     }
 
-    private static func projection(_ thread: Thread) -> AscendantRuntimeTimeline { .init(id: thread.id, title: thread.title, attachedWorkspaceIDs: thread.attachedWorkspaceIDs, attachedAgentInstanceID: thread.attachedAgentInstanceID, isArchived: thread.isArchived, isPrivate: thread.isPrivate, createdAt: thread.createdAt, updatedAt: thread.updatedAt) }
-    private func append(_ updates: AscendantTurnUpdateStore, _ request: AgentChatRequest, kind: String, text: String? = nil, toolState: AscendantToolState? = nil, terminal: Bool = false) async { guard let id = request.clientTurnID else { return }; _ = await updates.append(timelineID: request.timelineID, clientTurnID: id, kind: kind, text: text, toolState: toolState, terminal: terminal) }
+    private static func projection(_ thread: Thread) -> AscendantRuntimeTimeline { .init(id: thread.id, title: thread.title, attachedWorkspaceIDs: thread.attachedWorkspaceIDs, attachedAscendantID: thread.attachedAgentInstanceID, isArchived: thread.isArchived, isPrivate: thread.isPrivate, createdAt: thread.createdAt, updatedAt: thread.updatedAt) }
+    private func append(_ updates: AscendantTurnUpdateStore, _ request: AscendantTurnRequest, kind: String, text: String? = nil, toolState: AscendantToolState? = nil, terminal: Bool = false) async { guard let id = request.clientTurnID else { return }; _ = await updates.append(timelineID: request.timelineID, clientTurnID: id, kind: kind, text: text, toolState: toolState, terminal: terminal) }
     private func state(_ id: String, _ status: ToolExecutionStatus) -> AscendantToolState { switch status { case .attempting(let name, _): .init(toolCallID: id, title: name, status: "in_progress"); case .success(let result): .init(toolCallID: id, status: "completed", content: String(describing: result)); case .failed(_, let error), .persistenceFailed(_, let error), .executionError(let error): .init(toolCallID: id, status: "failed", content: error) } }
 }

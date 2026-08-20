@@ -7,6 +7,7 @@ import PositronicKit
 
 /// The wire payload for Gnostic's generic remote workspace invocation.
 public struct WorkspaceInvocation: Codable, Sendable {
+    public let protocolMajor: Int
     /// The stable identifier of the advertised workspace.
     public let workspaceID: UUID
 
@@ -20,11 +21,23 @@ public struct WorkspaceInvocation: Codable, Sendable {
     public let arguments: [String: AnyCodable]
 
     /// Creates an invocation payload.
-    public init(workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: AnyCodable]) {
+    public init(workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: AnyCodable], protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.workspaceID = workspaceID
         self.providerID = providerID
         self.toolID = toolID
         self.arguments = arguments
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaceID, providerID, toolID, arguments }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
+        providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
+        toolID = try container.decode(String.self, forKey: .toolID)
+        arguments = try container.decode([String: AnyCodable].self, forKey: .arguments)
     }
 }
 
@@ -61,11 +74,24 @@ public actor WorkspaceProvider {
 
     /// Decodes a generic Call payload and returns the serialized PositronicKit tool result.
     public func handle(parameters: String?) async throws -> CallHandlerResult {
+        do {
+            try GnosticProtocol.validatePayload(parameters)
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        }
         guard let parameters else { throw WorkspaceError.toolExecutionNotSupported }
         let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
         let result = try await invoke(invocation)
-        let encoded = try JSONEncoder().encode(result)
-        return .success(result: String(decoding: encoded, as: UTF8.self))
+        return .success(result: try Self.encodeResult(result))
+    }
+
+    private static func encodeResult(_ result: ToolResult) throws -> String {
+        let data = try JSONEncoder().encode(result)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        object["protocolMajor"] = GnosticProtocol.currentMajor
+        return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     }
 
     /// Registers this provider with Axoloty's released unary Call handler.

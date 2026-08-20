@@ -6,34 +6,86 @@ import PKShared
 
 /// The wire payload for a workspace attach/detach request.
 public struct WorkspaceOpsRequest: Codable, Sendable {
+    public let protocolMajor: Int
     public let workspaceID: UUID
     public let timelineID: UUID
 
-    public init(workspaceID: UUID, timelineID: UUID) {
+    public init(workspaceID: UUID, timelineID: UUID, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.workspaceID = workspaceID
         self.timelineID = timelineID
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaceID, timelineID }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
+        timelineID = try container.decode(UUID.self, forKey: .timelineID)
     }
 }
 
 /// A workspace the serve side can attach.
 public struct WorkspaceListing: Codable, Sendable {
+    public let protocolMajor: Int
     public let id: UUID
     public let name: String
     public let isAvailable: Bool
 
-    public init(id: UUID, name: String, isAvailable: Bool = true) {
+    public init(id: UUID, name: String, isAvailable: Bool = true, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.id = id
         self.name = name
         self.isAvailable = isAvailable
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, id, name, isAvailable }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
     }
 }
 
 /// The wire result of `workspace.list`.
 public struct WorkspaceListResult: Codable, Sendable {
+    public let protocolMajor: Int
     public let workspaces: [WorkspaceListing]
 
-    public init(workspaces: [WorkspaceListing]) {
+    public init(workspaces: [WorkspaceListing], protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.workspaces = workspaces
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        workspaces = try container.decode([WorkspaceListing].self, forKey: .workspaces)
+    }
+}
+
+/// The protocol-bearing result of a workspace mutation.
+public struct WorkspaceMutationResult: Codable, Sendable {
+    public let protocolMajor: Int
+    public let accepted: Bool
+
+    public init(accepted: Bool, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
+        self.accepted = accepted
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, accepted }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        accepted = try container.decode(Bool.self, forKey: .accepted)
     }
 }
 
@@ -63,30 +115,34 @@ public struct WorkspaceOpsProvider: Sendable {
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
         switch operation {
         case Self.listOperation:
+            if let error = protocolError(parameters) { return error }
             do {
                 let listings = try await list()
+                try listings.forEach { try GnosticProtocol.validate($0.protocolMajor) }
                 let encoded = try JSONEncoder().encode(WorkspaceListResult(workspaces: listings))
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch {
                 return failure(for: error)
             }
         case Self.attachOperation:
+            if let error = protocolError(parameters) { return error }
             guard let request = decode(parameters) else {
                 return .failure(code: 400, message: "Invalid workspace.attach payload")
             }
             do {
                 let ok = try await attach(request)
-                return .success(result: ok ? "true" : "false")
+                return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
             } catch {
                 return failure(for: error)
             }
         case Self.detachOperation:
+            if let error = protocolError(parameters) { return error }
             guard let request = decode(parameters) else {
                 return .failure(code: 400, message: "Invalid workspace.detach payload")
             }
             do {
                 let ok = try await detach(request)
-                return .success(result: ok ? "true" : "false")
+                return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
             } catch {
                 return failure(for: error)
             }
@@ -102,7 +158,21 @@ public struct WorkspaceOpsProvider: Sendable {
         return request
     }
 
+    private func protocolError(_ parameters: String?) -> CallHandlerResult? {
+        do {
+            try GnosticProtocol.validatePayload(parameters)
+            return nil
+        } catch let error as GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch {
+            return .failure(code: 400, message: "Invalid workspace payload")
+        }
+    }
+
     private func failure(for error: Error) -> CallHandlerResult {
+        if let error = error as? GnosticProtocolError {
+            return .failure(code: error.statusCode, message: error.failureMessage)
+        }
         if let error = error as? NodeRuntimeError {
             return .failure(code: error.statusCode, message: error.reasonCode + ": " + error.localizedDescription)
         }

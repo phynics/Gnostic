@@ -33,6 +33,7 @@ public struct AscendantPermissionState: Codable, Sendable, Equatable {
 /// A replayable, transport-neutral update emitted for an identified Ascendant
 /// turn. The ACP adapter maps these values to `session/update` notifications.
 public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
+    public let protocolMajor: Int
     public let sequence: Int
     public let kind: String
     public let text: String?
@@ -50,8 +51,10 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         toolStates: [AscendantToolState] = [],
         permissionState: AscendantPermissionState? = nil,
         permissionStates: [AscendantPermissionState] = [],
-        terminal: Bool = false
+        terminal: Bool = false,
+        protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
+        self.protocolMajor = protocolMajor
         self.sequence = sequence
         self.kind = kind
         self.text = text
@@ -63,11 +66,12 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sequence, kind, text, toolState, toolStates, permissionState, permissionStates, terminal
+        case protocolMajor, sequence, kind, text, toolState, toolStates, permissionState, permissionStates, terminal
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         sequence = try container.decode(Int.self, forKey: .sequence)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decodeIfPresent(String.self, forKey: .text)
@@ -80,12 +84,14 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
 }
 
 public struct AscendantTurnReplay: Codable, Sendable, Equatable {
+    public let protocolMajor: Int
     public let updates: [AscendantTurnUpdate]
     public let compacted: Bool
     public let terminal: Bool
     public let conflict: Bool
 
-    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false) {
+    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
         self.updates = updates
         self.compacted = compacted
         self.terminal = terminal
@@ -93,11 +99,12 @@ public struct AscendantTurnReplay: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case updates, compacted, terminal, conflict
+        case protocolMajor, updates, compacted, terminal, conflict
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         updates = try container.decode([AscendantTurnUpdate].self, forKey: .updates)
         compacted = try container.decode(Bool.self, forKey: .compacted)
         terminal = try container.decode(Bool.self, forKey: .terminal)

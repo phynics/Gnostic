@@ -69,15 +69,13 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
 public struct NodeRuntimeSnapshot: Sendable, Equatable {
     public let nodeID: UUID
     public let ascendantIDs: [UUID]
-    public let agentIDs: [UUID]
     public let timelineIDs: [UUID]
     public let operatedTimelineIDs: [UUID]
     public let workspaceIDs: [UUID]
 
-    public init(nodeID: UUID, ascendantIDs: [UUID], agentIDs: [UUID], timelineIDs: [UUID], operatedTimelineIDs: [UUID], workspaceIDs: [UUID]) {
+    public init(nodeID: UUID, ascendantIDs: [UUID], timelineIDs: [UUID], operatedTimelineIDs: [UUID], workspaceIDs: [UUID]) {
         self.nodeID = nodeID
         self.ascendantIDs = ascendantIDs
-        self.agentIDs = agentIDs
         self.timelineIDs = timelineIDs
         self.operatedTimelineIDs = operatedTimelineIDs
         self.workspaceIDs = workspaceIDs
@@ -95,7 +93,7 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
     func attachWorkspace(_ reference: WorkspaceReference, to timelineID: UUID) async throws
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
     func enabledToolIDs(for timelineID: UUID) async -> [String]
-    func runTurn(_ request: AgentChatRequest, updates: AscendantTurnUpdateStore) async throws -> String
+    func runTurn(_ request: AscendantTurnRequest, updates: AscendantTurnUpdateStore) async throws -> String
     func cancelAll() async
     func shutdown() async
 }
@@ -110,6 +108,7 @@ public struct AscendantRuntimeIdentity: Sendable, Equatable {
     public let lastActiveAt: Date
     public let createdAt: Date
     public let updatedAt: Date
+    public let capabilities: [String]
 
     public init(
         id: UUID,
@@ -119,7 +118,8 @@ public struct AscendantRuntimeIdentity: Sendable, Equatable {
         primaryWorkspaceID: UUID?,
         lastActiveAt: Date,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        capabilities: [String] = Array(GnosticCapability.stable).sorted()
     ) {
         self.id = id
         self.name = name
@@ -129,6 +129,7 @@ public struct AscendantRuntimeIdentity: Sendable, Equatable {
         self.lastActiveAt = lastActiveAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.capabilities = capabilities
     }
 }
 
@@ -137,7 +138,7 @@ public struct AscendantRuntimeTimeline: Sendable, Equatable {
     public let id: UUID
     public let title: String
     public let attachedWorkspaceIDs: [UUID]
-    public let attachedAgentInstanceID: UUID?
+    public let attachedAscendantID: UUID?
     public let isArchived: Bool
     public let isPrivate: Bool
     public let createdAt: Date
@@ -147,7 +148,7 @@ public struct AscendantRuntimeTimeline: Sendable, Equatable {
         id: UUID,
         title: String,
         attachedWorkspaceIDs: [UUID],
-        attachedAgentInstanceID: UUID?,
+        attachedAscendantID: UUID?,
         isArchived: Bool,
         isPrivate: Bool,
         createdAt: Date,
@@ -156,7 +157,7 @@ public struct AscendantRuntimeTimeline: Sendable, Equatable {
         self.id = id
         self.title = title
         self.attachedWorkspaceIDs = attachedWorkspaceIDs
-        self.attachedAgentInstanceID = attachedAgentInstanceID
+        self.attachedAscendantID = attachedAscendantID
         self.isArchived = isArchived
         self.isPrivate = isPrivate
         self.createdAt = createdAt

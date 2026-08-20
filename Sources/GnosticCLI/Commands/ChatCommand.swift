@@ -4,14 +4,14 @@ import ArgumentParser
 import Foundation
 import GnosticCore
 
-/// `gnostic chat` — a pure Axoloty client for `gnostic serve`.
+/// `gnostic turn` — a pure Axoloty client for `gnostic serve`.
 ///
 /// Contains no PositronicKit runtime and no local-chat fallback; every turn and
 /// workspace operation is a unary Call/Return over the Axoloty stack.
-struct ChatCommand: AsyncParsableCommand {
+struct TurnCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "chat",
-        abstract: "Chat with a serve agent over the Axoloty stack."
+        commandName: "turn",
+        abstract: "Run a Turn with a serve Ascendant over the Axoloty stack."
     )
 
     @Option(name: .long, help: "MQTT broker host (overrides config).")
@@ -23,7 +23,7 @@ struct ChatCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT namespace (overrides config).")
     var namespace: String?
 
-    @Option(name: .long, help: "Ascendant UUID to pin for this chat process.")
+    @Option(name: .long, help: "Ascendant UUID to pin for this Turn process.")
     var ascendant: String?
 
     @MainActor
@@ -34,11 +34,11 @@ struct ChatCommand: AsyncParsableCommand {
         let port = self.port ?? stored.mqttPort
         let namespace = self.namespace ?? stored.mqttNamespace
 
-        let client = try RemoteChatClient(host: host, port: port, namespace: namespace)
+        let client = try RemoteTurnClient(host: host, port: port, namespace: namespace)
         defer { client.stop() }
         try await client.connect()
 
-        // Discover the served agent's canonical timeline, then list the serve's
+        // Discover the served Ascendant's canonical timeline, then list the serve's
         // timelines and select one as active. With multi-timeline ownership, the
         // enumeration source is timeline.list; default to the first timeline (or
         // the advertised default when none is listed yet).
@@ -49,14 +49,14 @@ struct ChatCommand: AsyncParsableCommand {
         let selectedAscendant = try await client.selectAscendant(id: ascendantID)
         let timelineID = selectedAscendant.timelineID
 
-        let session = RemoteChatSession(client: client, timelineID: timelineID, ascendantID: selectedAscendant.id, providerID: selectedAscendant.providerID)
-        let repl = ChatREPL(
+        let session = RemoteTurnSession(client: client, timelineID: timelineID, ascendantID: selectedAscendant.id, providerID: selectedAscendant.providerID)
+        let repl = TurnREPL(
             session: session,
             timelineID: timelineID,
             approval: StdinApprovalPolicy(),
             readLine: { readLine(strippingNewline: true) }
         )
-        print("gnostic chat — timeline \(timelineID.uuidString.lowercased())")
+        print("gnostic turn — timeline \(timelineID.uuidString.lowercased())")
         print("Type a message, /quit to exit, or /timeline, /timelines, /new, /use <id>, /rename <title>, /workspaces, /attach <id>, /detach <id>.")
         await repl.run()
     }

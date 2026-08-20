@@ -2,10 +2,10 @@
 
 import Foundation
 
-/// Failures produced by the remote chat client.
-public enum RemoteChatClientError: Error, Sendable, LocalizedError {
+/// Failures produced by the remote Turn client.
+public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case brokerUnreachable(String)
-    case noServedAgent
+    case noServedAscendant
     case workspaceUnavailable
     case workspaceAmbiguous
     case timelineNotAttached
@@ -22,7 +22,7 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .brokerUnreachable(detail): "Could not reach the MQTT broker: \(detail)"
-        case .noServedAgent: "No served agent was discovered. Start `gnostic serve` first."
+        case .noServedAscendant: "No served Ascendant was discovered. Start `gnostic serve` first."
         case .workspaceUnavailable: "The workspace is not currently available."
         case .workspaceAmbiguous: "The workspace is advertised by more than one provider."
         case .timelineNotAttached: "The workspace is not attached to the requested timeline."
@@ -42,7 +42,7 @@ public enum RemoteChatClientError: Error, Sendable, LocalizedError {
     public var gnosticCode: String {
         switch self {
         case .brokerUnreachable: "brokerUnreachable"
-        case .noServedAgent: "noServedAgent"
+        case .noServedAscendant: "noServedAscendant"
         case .workspaceUnavailable: "workspaceUnavailable"
         case .workspaceAmbiguous: "workspaceAmbiguous"
         case .timelineNotAttached: "timelineNotAttached"

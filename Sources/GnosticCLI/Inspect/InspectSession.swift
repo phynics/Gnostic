@@ -45,7 +45,7 @@ final class InspectSession {
             try await start(manager)
             try await subscription.start()
             await subscription.discover(using: manager, timeout: .seconds(values.observeSeconds))
-            let entries = await catalog.networkObjects()
+            let entries = await catalog.networkObjects(includeIncompatible: true)
             subscription.stop()
             manager.stop()
             return entries

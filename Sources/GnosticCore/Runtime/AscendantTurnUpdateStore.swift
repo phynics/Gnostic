@@ -6,9 +6,27 @@ import Foundation
 /// stores prompt text or tool arguments beyond the bounded update payload.
 public actor AscendantTurnUpdateStore {
     public struct Event: Codable, Sendable, Equatable {
+        public let protocolMajor: Int
         public let timelineID: UUID
         public let clientTurnID: String
         public let update: AscendantTurnUpdate
+
+        public init(protocolMajor: Int = GnosticProtocol.currentMajor, timelineID: UUID, clientTurnID: String, update: AscendantTurnUpdate) {
+            self.protocolMajor = protocolMajor
+            self.timelineID = timelineID
+            self.clientTurnID = clientTurnID
+            self.update = update
+        }
+
+        private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID, update }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+            timelineID = try container.decode(UUID.self, forKey: .timelineID)
+            clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
+            update = try container.decode(AscendantTurnUpdate.self, forKey: .update)
+        }
     }
 
     private struct Key: Hashable, Sendable {
@@ -58,7 +76,8 @@ public actor AscendantTurnUpdateStore {
         text: String? = nil,
         toolState: AscendantToolState? = nil,
         permissionState: AscendantPermissionState? = nil,
-        terminal: Bool = false
+        terminal: Bool = false,
+        protocolMajor: Int = GnosticProtocol.currentMajor
     ) -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
@@ -69,7 +88,8 @@ public actor AscendantTurnUpdateStore {
                 text: text,
                 toolState: toolState,
                 permissionState: permissionState,
-                terminal: terminal
+                terminal: terminal,
+                protocolMajor: protocolMajor
             ),
             maxBytes: maxBytes / 2
         )
@@ -119,7 +139,7 @@ public actor AscendantTurnUpdateStore {
             }
         }
         entries[key] = entry
-        eventContinuation.yield(Event(timelineID: timelineID, clientTurnID: clientTurnID, update: update))
+        eventContinuation.yield(Event(protocolMajor: protocolMajor, timelineID: timelineID, clientTurnID: clientTurnID, update: update))
         return update
     }
 
