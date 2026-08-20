@@ -35,6 +35,25 @@ struct NodeManifestTests {
         #expect(!manifest.redactedDescription().contains("apiKey"))
     }
 
+    @Test("schema v2 requires an explicit backend envelope")
+    func schemaV2RequiresBackendEnvelope() throws {
+        let node = "A21D0000-0000-4000-8000-000000000191"
+        let ascendant = "A21D0000-0000-4000-8000-000000000192"
+        let timeline = "A21D0000-0000-4000-8000-000000000193"
+        let source = "{\"schemaVersion\":2,\"broker\":{\"host\":\"localhost\",\"port\":1883,\"namespace\":\"gnostic\"},\"node\":{\"id\":\"\(node)\",\"kind\":\"node\",\"approvalMode\":\"auto\",\"logLevel\":\"info\"},\"ascendants\":[{\"id\":\"\(ascendant)\",\"kind\":\"positronic\",\"name\":\"A\",\"defaultTimelineID\":\"\(timeline)\"}],\"timelines\":[{\"id\":\"\(timeline)\",\"kind\":\"timeline\",\"title\":\"T\",\"operatingAscendantID\":\"\(ascendant)\"}]}"
+        #expect(throws: DecodingError.self) { _ = try JSONDecoder().decode(NodeManifest.self, from: Data(source.utf8)) }
+    }
+
+    @Test("invalid legacy profile does not rewrite its source")
+    func invalidLegacyProfileIsNotRewritten() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        let source = Data("{\"schemaVersion\":1,\"broker\":{\"host\":\"localhost\",\"port\":1883,\"namespace\":\"gnostic\"},\"node\":{\"id\":\"A21D0000-0000-4000-8000-000000000194\",\"kind\":\"node\",\"approvalMode\":\"auto\",\"logLevel\":\"info\"},\"llmProfiles\":[{\"id\":\"A21D0000-0000-4000-8000-000000000195\",\"name\":\"\",\"provider\":\"stub\"}],\"ascendants\":[],\"timelines\":[],\"workspaces\":[]}".utf8)
+        try source.write(to: path)
+        #expect(throws: CLIConfigurationError.self) { _ = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest() }
+        #expect(try Data(contentsOf: path) == source)
+    }
+
     @Test("schema v1 migration preserves graph identities and inlines profiles")
     func schemaV1MigrationPreservesIdentities() throws {
         let folder = try TemporaryFolder()
@@ -135,7 +154,7 @@ struct NodeManifestTests {
             ascendants: [], timelines: [], workspaces: []
         )
 
-        #expect(throws: NodeManifestError.self) { try manifest.validate() }
+        #expect(throws: Never.self) { try manifest.validate() }
 
         var changed = manifest
         changed.node.kind = "other-node"

@@ -211,13 +211,13 @@ public final class NodeRuntime {
         do {
             var operatedTimelines: [AscendantRuntimeTimeline] = []
             for ascendant in plan.ascendants {
-                let profile = plan.profile(for: ascendant.id)
-                let backendKind = plan.backend(for: ascendant.id)?.kind ?? ascendant.kind
+                guard let backend = plan.backend(for: ascendant.id) else { throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind) }
+                let backendKind = backend.kind
                 var configuredAscendant = ascendant
                 configuredAscendant.kind = backendKind
                 let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
                 let dependencies = AscendantRuntimeDependencies(workspaces: workspaces, catalog: catalog, communication: communication, permissionCoordinator: permissionCoordinator)
-                let adapter = try await adapters.ascendants.makeAdapter(for: configuredAscendant, profile: profile, dependencies: dependencies, timelines: timelineConfigurations, references: references)
+                let adapter = try await adapters.ascendants.makeAdapter(for: configuredAscendant, backend: backend, dependencies: dependencies, timelines: timelineConfigurations, references: references)
                 ascendantAdapters[ascendant.id] = adapter
                 operatedTimelines += try await adapter.timelines()
             }
@@ -460,7 +460,7 @@ public final class NodeRuntime {
     }
 
     private static func validate(plan: NodeLaunchPlan) throws {
-        let manifest = NodeManifest(schemaVersion: NodeManifest.currentSchemaVersion, broker: plan.broker, node: plan.node, llmProfiles: plan.llmProfiles, ascendants: plan.ascendants, timelines: plan.timelines, workspaces: plan.workspaces)
+        let manifest = NodeManifest(schemaVersion: NodeManifest.currentSchemaVersion, broker: plan.broker, node: plan.node, ascendants: plan.ascendants, timelines: plan.timelines, workspaces: plan.workspaces)
         try manifest.validate()
     }
 

@@ -278,8 +278,8 @@ struct NodeRuntimeTests {
         let firstModel = ProviderIsolationLanguageModel(response: "first-model-response")
         let secondModel = ProviderIsolationLanguageModel(response: "second-model-response")
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, profile in
-            switch profile?.model {
+        adapters.ascendants.register(kind: "positronic") { _, backend in
+            switch backend.settings["model"]?.stringValue {
             case "first-model": return firstModel
             case "second-model": return secondModel
             default: return UnconfiguredLLMService()
@@ -1043,12 +1043,11 @@ struct NodeRuntimeTests {
     ) throws -> NodeManifest {
         let node = try #require(UUID(uuidString: nodeID))
         let ascendant = try #require(UUID(uuidString: ascendantID))
-        let profile = try #require(UUID(uuidString: profileID))
+        _ = try #require(UUID(uuidString: profileID))
         return NodeManifest(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
             node: .init(id: node),
-            llmProfiles: [.init(id: profile, provider: "stub", model: profileModel)],
-            ascendants: [.init(id: ascendant, name: profileModel, defaultTimelineID: timelineID, llmProfileID: profile)],
+            ascendants: [.init(id: ascendant, name: profileModel, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["model": .string(profileModel), "provider": .string("stub")]))],
             timelines: [.init(id: timelineID, title: "\(profileModel) timeline", operatingAscendantID: ascendant)]
         )
     }

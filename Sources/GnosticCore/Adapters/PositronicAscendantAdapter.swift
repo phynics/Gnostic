@@ -13,7 +13,7 @@ import struct PositronicKit.Thread
     private let threadStore: InMemoryThreadPersistence
     private let networkTools: [AnyTool]
 
-    public init(ascendant: NodeManifest.Ascendant, profile _: NodeManifest.LLMProfile?, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference], languageModel: any LanguageModel) async throws {
+    public init(ascendant: NodeManifest.Ascendant, dependencies: AscendantRuntimeDependencies, timelines: [NodeManifest.Timeline], references: [UUID: WorkspaceReference], languageModel: any LanguageModel) async throws {
         guard timelines.contains(where: { $0.id == ascendant.defaultTimelineID }) else { throw NodeRuntimeError.missingTimeline(ascendant.defaultTimelineID) }
         let agent = AgentInstance(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateThreadID: ascendant.defaultTimelineID, metadata: ascendant.metadata.mapValues { AnyCodable($0) })
         identity = .init(id: agent.id, name: agent.name, description: agent.description, privateTimelineID: agent.privateThreadID, primaryWorkspaceID: agent.primaryWorkspaceID, lastActiveAt: agent.lastActiveAt, createdAt: agent.createdAt, updatedAt: agent.updatedAt)
