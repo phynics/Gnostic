@@ -105,6 +105,7 @@ public final class NodeRuntime {
         lifecycle: lifecycle,
         registry: registry,
         ascendantIdentities: { [weak self] in self?.backendIdentities ?? [] },
+        ascendantHealth: { [weak self] id in self?.backendHealthByID[id] ?? .unknown },
         workspaceReferences: { [initialWorkspaceReferences, plan] in
             initialWorkspaceReferences.values.filter { reference in
                 plan.workspaces.contains { $0.id == reference.id }
@@ -457,6 +458,7 @@ public final class NodeRuntime {
     ) async {
         guard backendSpecs[ascendantID] != nil else { return }
         backendHealthByID[ascendantID] = .failed
+        readvertiseAscendant(ascendantID, health: .failed)
         // A failed backend must not receive another operation while its
         // replacement is being built. Its Gnostic identity remains routed by
         // the registry and is never removed here.
@@ -475,6 +477,7 @@ public final class NodeRuntime {
         }
 
         backendHealthByID[ascendantID] = .unknown
+        readvertiseAscendant(ascendantID, health: .unknown)
         let task = Task { @MainActor [weak self] () throws -> any AscendantBackend in
             guard let self else { throw NodeRuntimeError.notRunning }
             var candidate: (any AscendantBackend)?
@@ -510,12 +513,19 @@ public final class NodeRuntime {
             reconstructionTasks.removeValue(forKey: ascendantID)
             ascendantAdapters[ascendantID] = backend
             backendHealthByID[ascendantID] = .healthy
+            readvertiseAscendant(ascendantID, health: .healthy)
             return backend
         } catch {
             reconstructionTasks.removeValue(forKey: ascendantID)
             backendHealthByID[ascendantID] = .failed
+            readvertiseAscendant(ascendantID, health: .failed)
             throw error
         }
+    }
+
+    private func readvertiseAscendant(_ ascendantID: UUID, health: AscendantBackendHealth) {
+        guard let identity = backendIdentities.first(where: { $0.id == ascendantID }) else { return }
+        projectionRelay.projectAscendant(identity, health: health, replacing: true)
     }
 
     private static func validateReplacement(

@@ -32,6 +32,7 @@ public final class NodeTransport {
     private let lifecycle: ObjectLifecycleController?
     private let registry: NodeRegistry?
     private let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
+    private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let workspaceReferences: @MainActor () async -> [WorkspaceReference]
     private let workspaceProvider: MultiplexedWorkspaceProvider?
     private var registrations: [CallHandlerRegistration] = []
@@ -44,6 +45,7 @@ public final class NodeTransport {
         lifecycle: ObjectLifecycleController? = nil,
         registry: NodeRegistry? = nil,
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
+        ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         workspaceReferences: @escaping @MainActor () async -> [WorkspaceReference] = { [] },
         localWorkspaces: [UUID: any Workspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
@@ -61,6 +63,7 @@ public final class NodeTransport {
         self.lifecycle = lifecycle
         self.registry = registry
         self.ascendantIdentities = ascendantIdentities
+        self.ascendantHealth = ascendantHealth
         self.workspaceReferences = workspaceReferences
         workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(workspaces: localWorkspaces) {
             await isAvailable()
@@ -172,8 +175,22 @@ public final class NodeTransport {
         else { lifecycle.advertiseDiscoverableObject(object: object) }
     }
 
+    func projectAscendant(
+        _ identity: AscendantRuntimeIdentity,
+        health: AscendantBackendHealth,
+        replacing: Bool
+    ) {
+        guard isAvailable(), let lifecycle else { return }
+        let object = GnosticAscendantObject(identity: identity, backendHealth: health)
+        advertisedObjects[object.objectId.string] = object
+        if replacing { lifecycle.readvertiseDiscoverableObject(object: object) }
+        else { lifecycle.advertiseDiscoverableObject(object: object) }
+    }
+
     private func discoverableObjects() async -> [CoatyObject] {
-        var objects: [CoatyObject] = ascendantIdentities().map { GnosticAscendantObject(identity: $0) }
+        var objects: [CoatyObject] = ascendantIdentities().map {
+            GnosticAscendantObject(identity: $0, backendHealth: ascendantHealth($0.id))
+        }
         if let registry {
             objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0) }
         }

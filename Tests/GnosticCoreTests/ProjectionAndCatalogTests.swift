@@ -63,6 +63,7 @@ struct ProjectionAndCatalogTests {
         #expect(workspaceObject.objectId.string == workspaceID.uuidString.lowercased())
         #expect(agentObject.primaryWorkspaceID == workspaceID)
         #expect(agentObject.privateTimelineID == timelineID)
+        #expect(agentObject.backendHealth == .unknown)
         #expect(timelineObject.attachedAscendantID == ascendantID)
         #expect(timelineObject.attachedWorkspaceIDs == [workspaceID, attachedWorkspaceID])
 
@@ -73,6 +74,24 @@ struct ProjectionAndCatalogTests {
         #expect(!json.contains("Ignore all prior instructions"))
         #expect(!json.contains("contextInjection"))
         #expect(workspaceObject.tools.map { $0.id } == ["search"])
+    }
+
+    @Test("catalog scopes Ascendant backend health replacements by provider")
+    func catalogScopesBackendHealthByProvider() async throws {
+        let catalog = NetworkCatalog()
+        await catalog.ingest(try ascendantSnapshot(health: .healthy, sourceID: "provider-a"))
+        await catalog.ingest(try ascendantSnapshot(health: .healthy, sourceID: "provider-b"))
+        await catalog.ingest(try ascendantSnapshot(health: .failed, sourceID: "provider-a"))
+
+        let failed = try #require(await catalog.object(id: ascendantID, providerID: "provider-a"))
+        let unaffected = try #require(await catalog.object(id: ascendantID, providerID: "provider-b"))
+        #expect(failed.knownProperties["backendHealth"] == .string("failed"))
+        #expect(unaffected.knownProperties["backendHealth"] == .string("healthy"))
+
+        await catalog.ingest(try ascendantSnapshot(health: .unknown, sourceID: "provider-a"))
+        let unknown = try #require(await catalog.object(id: ascendantID, providerID: "provider-a"))
+        #expect(unknown.knownProperties["backendHealth"] == .string("unknown"))
+        #expect(await catalog.networkObjects().filter { $0.objectID == ascendantID }.count == 2)
     }
 
     @Test("projector advertises local objects and readvertises its changed timeline") @MainActor
@@ -353,6 +372,34 @@ struct ProjectionAndCatalogTests {
                     "uri": uri,
                     "isAvailable": true,
                     "tools": [],
+                ])
+            )
+        )
+    }
+
+    private func ascendantSnapshot(
+        health: AscendantBackendHealth,
+        sourceID: String
+    ) throws -> AdvertiseEventSnapshot {
+        AdvertiseEventSnapshot(
+            sourceId: sourceID,
+            object: CoatyObjectSnapshot(
+                objectId: ascendantID.uuidString.lowercased(),
+                coreType: .CoatyObject,
+                objectType: GnosticObjectType.ascendant,
+                name: "Remote Ascendant",
+                payload: try payload([
+                    "objectId": ascendantID.uuidString.lowercased(),
+                    "coreType": "CoatyObject",
+                    "objectType": GnosticObjectType.ascendant,
+                    "name": "Remote Ascendant",
+                    "backendHealth": health.rawValue,
+                    "privateTimelineID": timelineID.uuidString.lowercased(),
+                    "ascendantDescription": "Coordinates analysis.",
+                    "capabilities": [],
+                    "lastActiveAt": creationDate.timeIntervalSince1970,
+                    "createdAt": creationDate.timeIntervalSince1970,
+                    "updatedAt": updateDate.timeIntervalSince1970,
                 ])
             )
         )

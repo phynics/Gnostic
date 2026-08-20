@@ -36,6 +36,10 @@ public final class GnosticAscendantObject: CoatyObject {
     /// Stable and namespaced experimental capabilities of this Ascendant.
     public let capabilities: [String]
 
+    /// Current health of the bound backend. This is independent of whether
+    /// the Ascendant and its Timelines remain routable.
+    public let backendHealth: AscendantBackendHealth
+
     /// Diagnostic backend metadata; clients must not use it for selection.
     public var backendKind: String?
     public var backendVersion: String?
@@ -64,9 +68,14 @@ public final class GnosticAscendantObject: CoatyObject {
     }
 
     /// Creates a network projection without exposing a provider's agent type.
-    public init(identity: AscendantRuntimeIdentity, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(
+        identity: AscendantRuntimeIdentity,
+        backendHealth: AscendantBackendHealth = .unknown,
+        protocolMajor: Int = GnosticProtocol.currentMajor
+    ) {
         self.protocolMajor = protocolMajor
         capabilities = identity.capabilities.interoperability.sorted()
+        self.backendHealth = backendHealth
         backendKind = identity.capabilities.backendKind
         backendVersion = identity.capabilities.backendVersion
         ascendantDescription = identity.description
@@ -86,6 +95,7 @@ public final class GnosticAscendantObject: CoatyObject {
     private enum CodingKeys: String, CodingKey {
         case protocolMajor
         case capabilities
+        case backendHealth
         case backendKind
         case backendVersion
         case ascendantDescription
@@ -103,6 +113,7 @@ public final class GnosticAscendantObject: CoatyObject {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        backendHealth = try container.decodeIfPresent(AscendantBackendHealth.self, forKey: .backendHealth) ?? .unknown
         backendKind = try container.decodeIfPresent(String.self, forKey: .backendKind)
         backendVersion = try container.decodeIfPresent(String.self, forKey: .backendVersion)
         ascendantDescription = try container.decode(String.self, forKey: .ascendantDescription)
@@ -122,6 +133,7 @@ public final class GnosticAscendantObject: CoatyObject {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(capabilities, forKey: .capabilities)
+        try container.encode(backendHealth, forKey: .backendHealth)
         try container.encodeIfPresent(backendKind, forKey: .backendKind)
         try container.encodeIfPresent(backendVersion, forKey: .backendVersion)
         try container.encode(ascendantDescription, forKey: .ascendantDescription)
