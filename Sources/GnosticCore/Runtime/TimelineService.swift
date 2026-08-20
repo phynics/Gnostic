@@ -11,6 +11,8 @@ public final class TimelineService {
     private let registry: NodeRegistry
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isClosed: @MainActor () -> Bool
+    private let lifecycleGeneration: @MainActor () -> UInt64
+    private let isCurrentBackend: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
     private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
     private var quarantinedAscendantIDs: Set<UUID> = []
@@ -19,6 +21,8 @@ public final class TimelineService {
         ascendantIDs: Set<UUID>,
         registry: NodeRegistry,
         isClosed: @escaping @MainActor () -> Bool,
+        lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
+        isCurrentBackend: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool = { _, _, _ in true },
         adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
         lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
         advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
@@ -26,6 +30,8 @@ public final class TimelineService {
         self.ascendantIDs = ascendantIDs
         self.registry = registry
         self.isClosed = isClosed
+        self.lifecycleGeneration = lifecycleGeneration
+        self.isCurrentBackend = isCurrentBackend
         self.adapter = adapter
         self.lifecycleFailure = lifecycleFailure
         self.advertise = advertise
@@ -49,24 +55,35 @@ public final class TimelineService {
         guard !isClosed() else { throw NodeRuntimeError.notRunning }
         guard !quarantinedAscendantIDs.contains(ascendantID),
               let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        let reservation = try await registry.registerRuntimeTimeline(title: title, ascendantID: ascendantID)
-        var projectedID = reservation.id
+        let generation = lifecycleGeneration()
+        guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+        let requestedID = UUID.makeVersion4()
+        var projectedID = requestedID
         do {
-            let timeline = try await adapter.createTimeline(id: reservation.id, title: title)
+            let timeline = try await adapter.createTimeline(id: requestedID, title: title)
+            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
             projectedID = timeline.id
-            _ = try await registry.replaceTimeline(timeline)
+            guard timeline.id == requestedID else { throw NodeRuntimeError.missingTimeline(timeline.id) }
+            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            _ = try await registry.registerRuntimeTimeline(timeline, ascendantID: ascendantID)
+            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, false)
             return Self.status(timeline)
         } catch {
             if let backendError = error as? AscendantBackendError,
                case let .lifecycleUnusable(failure) = backendError {
+                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
                 quarantinedAscendantIDs.insert(ascendantID)
                 await lifecycleFailure(ascendantID, adapter, failure)
             } else {
-                if projectedID != reservation.id { await adapter.removeTimeline(id: projectedID) }
-                await adapter.removeTimeline(id: reservation.id)
+                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                if projectedID != requestedID {
+                    await adapter.removeTimeline(id: projectedID)
+                    guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                }
+                await adapter.removeTimeline(id: requestedID)
+                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
             }
-            await registry.removeRuntimeTimeline(id: reservation.id)
             throw error
         }
     }
@@ -78,24 +95,38 @@ public final class TimelineService {
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
         guard !quarantinedAscendantIDs.contains(ascendantID),
               let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        let generation = lifecycleGeneration()
+        guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
         let previous = await registry.timeline(id: request.timelineID)?.timeline
+        guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
         let timeline: AscendantRuntimeTimeline
         do {
             timeline = try await adapter.renameTimeline(id: request.timelineID, title: request.title)
+            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
         } catch let error as AscendantBackendError {
             if case let .lifecycleUnusable(failure) = error {
+                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
                 quarantinedAscendantIDs.insert(ascendantID)
                 await lifecycleFailure(ascendantID, adapter, failure)
             }
             throw error
         }
-        do { _ = try await registry.replaceTimeline(timeline); advertise(timeline, true); return Self.status(timeline) }
+        do {
+            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            _ = try await registry.replaceTimeline(timeline)
+            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            advertise(timeline, true)
+            return Self.status(timeline)
+        }
         catch {
             if let previous {
                 do {
+                    guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
                     _ = try await adapter.renameTimeline(id: previous.id, title: previous.title)
+                    guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
                 } catch let rollbackError as AscendantBackendError {
                     if case let .lifecycleUnusable(failure) = rollbackError {
+                        guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
                         quarantinedAscendantIDs.insert(ascendantID)
                         await lifecycleFailure(ascendantID, adapter, failure)
                     }

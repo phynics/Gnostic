@@ -392,6 +392,98 @@ struct BackendLifecycleTests {
         #expect(try await runtime.turn(.init(message: "still healthy", timelineID: recoveryTimelineID, clientTurnID: "still-healthy")).text == "ok: still healthy")
     }
 
+    @Test("late Timeline rename and create completions cannot project after shutdown")
+    @MainActor
+    func lateTimelineCompletionsAreFencedAfterShutdown() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000332")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000333")!
+        let renameProbe = LifecycleBackendProbe(blockedOperation: "rename")
+        let renameRuntime = try await NodeRuntime(
+            plan: makeManifest(
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+                timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: renameProbe, outcomes: [ascendantID: [.success]])
+        )
+        try await renameRuntime.start()
+        let rename = Task { @MainActor in
+            try? await renameRuntime.renameTimeline(.init(timelineID: timelineID, title: "Late rename"))
+        }
+        await renameProbe.waitUntilBlockedOperationStarted("rename")
+        await renameRuntime.shutdown()
+        await renameProbe.releaseBlockedOperation()
+        #expect(await rename.value == nil)
+        #expect(await renameRuntime.timeline(id: timelineID)?.title == "Before")
+
+        let createTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000334")!
+        let createProbe = LifecycleBackendProbe(blockedOperation: "create")
+        let createRuntime = try await NodeRuntime(
+            plan: makeManifest(
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: createTimelineID, kind: "lifecycle-fixture")],
+                timelines: [.init(id: createTimelineID, title: "Before", operatingAscendantID: ascendantID)]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: createProbe, outcomes: [ascendantID: [.success]])
+        )
+        try await createRuntime.start()
+        let create = Task { @MainActor in
+            try? await createRuntime.createTimeline(title: "Late create", ascendantID: ascendantID)
+        }
+        await createProbe.waitUntilBlockedOperationStarted("create")
+        await createRuntime.shutdown()
+        await createProbe.releaseBlockedOperation()
+        #expect(await create.value == nil)
+        #expect(await createRuntime.snapshot().timelineIDs == [createTimelineID])
+    }
+
+    @Test("late Workspace attach and detach completions cannot project after shutdown")
+    @MainActor
+    func lateWorkspaceCompletionsAreFencedAfterShutdown() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000335")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000336")!
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000337")!
+        let attachProbe = LifecycleBackendProbe(blockedOperation: "attach")
+        let attachRuntime = try await NodeRuntime(
+            plan: NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "late-workspace-attach-(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+                timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)],
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: attachProbe, outcomes: [ascendantID: [.success]])
+        )
+        try await attachRuntime.start()
+        let attach = Task { @MainActor in
+            try? await attachRuntime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: timelineID))
+        }
+        await attachProbe.waitUntilBlockedOperationStarted("attach")
+        await attachRuntime.shutdown()
+        await attachProbe.releaseBlockedOperation()
+        #expect(await attach.value == nil)
+        #expect(await attachRuntime.timeline(id: timelineID)?.attachedWorkspaceIDs.isEmpty == true)
+
+        let detachProbe = LifecycleBackendProbe(blockedOperation: "detach")
+        let detachRuntime = try await NodeRuntime(
+            plan: NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "late-workspace-detach-(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+                timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID, attachments: [.local(workspaceID)])],
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: detachProbe, outcomes: [ascendantID: [.success]])
+        )
+        try await detachRuntime.start()
+        let detach = Task { @MainActor in
+            try? await detachRuntime.detachWorkspace(.init(workspaceID: workspaceID, timelineID: timelineID))
+        }
+        await detachProbe.waitUntilBlockedOperationStarted("detach")
+        await detachRuntime.shutdown()
+        await detachProbe.releaseBlockedOperation()
+        #expect(await detach.value == nil)
+        #expect(await detachRuntime.timeline(id: timelineID)?.attachedWorkspaceIDs == [workspaceID])
+    }
+
     private func makeAdapters(probe: LifecycleBackendProbe, outcomes: [UUID: [LifecycleFixtureBackend.Outcome]]) -> NodeRuntimeAdapters {
         var adapters = NodeRuntimeAdapters.default
         adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
@@ -449,6 +541,9 @@ private actor LifecycleBackendProbe {
     let shouldBlockFirstShutdown: Bool
     let shouldBlockSecondLifecycle: Bool
     let shouldUseSuccessfulRecovery: Bool
+    private var blockedOperation: String?
+    private var blockedOperationStarted = false
+    private var blockedOperationReleased = false
     private var secondFactoryReleased = false
     private var secondLifecycleReleased = false
     private var firstShutdownReleased = false
@@ -464,6 +559,8 @@ private actor LifecycleBackendProbe {
     private var runCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var secondLifecycleWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstShutdownWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blockedOperationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blockedOperationReleaseWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         blockSecondFactory: Bool = false,
@@ -473,7 +570,8 @@ private actor LifecycleBackendProbe {
         blockRun: Bool = false,
         blockFirstShutdown: Bool = false,
         blockSecondLifecycle: Bool = false,
-        successfulRecovery: Bool = false
+        successfulRecovery: Bool = false,
+        blockedOperation: String? = nil
     ) {
         shouldBlockSecondFactory = blockSecondFactory
         shouldFailReconstruction = reconstructionFails
@@ -483,6 +581,7 @@ private actor LifecycleBackendProbe {
         shouldBlockFirstShutdown = blockFirstShutdown
         shouldBlockSecondLifecycle = blockSecondLifecycle
         shouldUseSuccessfulRecovery = successfulRecovery
+        self.blockedOperation = blockedOperation
     }
 
     func recordFactory(timelines: [NodeManifest.Timeline] = []) -> Int {
@@ -528,6 +627,33 @@ private actor LifecycleBackendProbe {
         await withCheckedContinuation { continuation in
             runCountWaiters.append((count, continuation))
         }
+    }
+
+    func beginBlockedOperation(_ operation: String) {
+        guard blockedOperation == operation else { return }
+        blockedOperationStarted = true
+        blockedOperationWaiters.forEach { $0.resume() }
+        blockedOperationWaiters.removeAll()
+    }
+
+    func waitUntilBlockedOperationStarted(_ operation: String) async {
+        guard blockedOperation == operation, !blockedOperationStarted else { return }
+        await withCheckedContinuation { continuation in
+            blockedOperationWaiters.append(continuation)
+        }
+    }
+
+    func waitForBlockedOperationRelease(_ operation: String) async {
+        guard blockedOperation == operation, !blockedOperationReleased else { return }
+        await withCheckedContinuation { continuation in
+            blockedOperationReleaseWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedOperation() {
+        blockedOperationReleased = true
+        blockedOperationReleaseWaiters.forEach { $0.resume() }
+        blockedOperationReleaseWaiters.removeAll()
     }
 
     func waitForSecondFactoryRelease() async {
@@ -651,6 +777,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     func validateConfiguration() throws {}
     func operatedTimelines() async throws -> [AscendantBackendTimeline] { timelines }
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        await probe.beginBlockedOperation("create")
+        await probe.waitForBlockedOperationRelease("create")
         let now = Date()
         let timeline = AscendantBackendTimeline(
             id: id,
@@ -668,6 +796,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
     func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         await probe.recordRename()
+        await probe.beginBlockedOperation("rename")
+        await probe.waitForBlockedOperationRelease("rename")
         if probe.shouldFailRename {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "timelineLifecycle", message: "timeline backend failed"))
         }
@@ -689,6 +819,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
 
     func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         await probe.recordWorkspaceAttach()
+        await probe.beginBlockedOperation("attach")
+        await probe.waitForBlockedOperationRelease("attach")
         if probe.shouldFailWorkspaceAttach {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "workspaceLifecycle", message: "workspace backend failed"))
         }
@@ -712,6 +844,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     }
 
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
+        await probe.beginBlockedOperation("detach")
+        await probe.waitForBlockedOperationRelease("detach")
         guard let index = timelines.firstIndex(where: { $0.id == timelineID }) else {
             throw NodeRuntimeError.missingTimeline(timelineID)
         }

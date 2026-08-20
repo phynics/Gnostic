@@ -75,6 +75,10 @@ public final class NodeRuntime {
         references: initialWorkspaceReferences,
         backendWorkspaceService: backendWorkspaceService,
         isRunning: { [weak self] in self?.isRunning == true },
+        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        isCurrentBackend: { [weak self] ascendantID, backend, generation in
+            self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
+        },
         adapter: { [weak self] ascendantID in
             guard let self, self.backendHealthByID[ascendantID] == .healthy else { return nil }
             return self.ascendantAdapters[ascendantID]
@@ -104,6 +108,10 @@ public final class NodeRuntime {
         ascendantIDs: Set(plan.ascendants.map(\.id)),
         registry: registry,
         isClosed: { [weak self] in self?.lifecycleState == .closed },
+        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        isCurrentBackend: { [weak self] ascendantID, backend, generation in
+            self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
+        },
         adapter: { [weak self] ascendantID in
             guard let self, self.backendHealthByID[ascendantID] == .healthy else { return nil }
             return self.ascendantAdapters[ascendantID]
@@ -468,6 +476,17 @@ public final class NodeRuntime {
             return backend
         }
         return try await reconstructBackend(for: ascendantID)
+    }
+
+    private func isCurrentBackend(
+        _ ascendantID: UUID,
+        backend: any AscendantBackend,
+        generation: UInt64
+    ) -> Bool {
+        guard lifecycleState != .closed,
+              lifecycleGeneration == generation,
+              let currentBackend = ascendantAdapters[ascendantID] else { return false }
+        return (currentBackend as AnyObject) === (backend as AnyObject)
     }
 
     private func markBackendLifecycleFailure(
