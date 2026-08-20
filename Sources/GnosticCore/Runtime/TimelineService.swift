@@ -11,7 +11,7 @@ public final class TimelineService {
     private let registry: NodeRegistry
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isClosed: @MainActor () -> Bool
-    private let lifecycleFailure: @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void
+    private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
     private var quarantinedAscendantIDs: Set<UUID> = []
 
@@ -20,7 +20,7 @@ public final class TimelineService {
         registry: NodeRegistry,
         isClosed: @escaping @MainActor () -> Bool,
         adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
-        lifecycleFailure: @escaping @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void = { _, _ in },
+        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
         advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
     ) {
         self.ascendantIDs = ascendantIDs
@@ -61,7 +61,7 @@ public final class TimelineService {
             if let backendError = error as? AscendantBackendError,
                case let .lifecycleUnusable(failure) = backendError {
                 quarantinedAscendantIDs.insert(ascendantID)
-                await lifecycleFailure(ascendantID, failure)
+                await lifecycleFailure(ascendantID, adapter, failure)
             } else {
                 if projectedID != reservation.id { await adapter.removeTimeline(id: projectedID) }
                 await adapter.removeTimeline(id: reservation.id)
@@ -85,7 +85,7 @@ public final class TimelineService {
         } catch let error as AscendantBackendError {
             if case let .lifecycleUnusable(failure) = error {
                 quarantinedAscendantIDs.insert(ascendantID)
-                await lifecycleFailure(ascendantID, failure)
+                await lifecycleFailure(ascendantID, adapter, failure)
             }
             throw error
         }
@@ -97,7 +97,7 @@ public final class TimelineService {
                 } catch let rollbackError as AscendantBackendError {
                     if case let .lifecycleUnusable(failure) = rollbackError {
                         quarantinedAscendantIDs.insert(ascendantID)
-                        await lifecycleFailure(ascendantID, failure)
+                        await lifecycleFailure(ascendantID, adapter, failure)
                     }
                 } catch {}
             }

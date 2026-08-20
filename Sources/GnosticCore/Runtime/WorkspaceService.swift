@@ -14,7 +14,7 @@ public final class WorkspaceService {
     private let backendWorkspaceService: GnosticWorkspaceBackendService?
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isRunning: @MainActor () -> Bool
-    private let lifecycleFailure: @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void
+    private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
     private let readvertiseTimeline: @MainActor (AscendantRuntimeTimeline) -> Void
     private var references: [UUID: WorkspaceReference]
     private var quarantinedAscendantIDs: Set<UUID> = []
@@ -28,7 +28,7 @@ public final class WorkspaceService {
         backendWorkspaceService: GnosticWorkspaceBackendService? = nil,
         isRunning: @escaping @MainActor () -> Bool,
         adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
-        lifecycleFailure: @escaping @MainActor (UUID, AscendantBackendLifecycleFailure) async -> Void = { _, _ in },
+        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
         readvertiseTimeline: @escaping @MainActor (AscendantRuntimeTimeline) -> Void
     ) {
         self.plan = plan; self.registry = registry; self.discovery = discovery
@@ -79,10 +79,10 @@ public final class WorkspaceService {
         } else {
             reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID)
         }
-        try await runBackendOperation(ascendantID) {
+        try await runBackendOperation(ascendantID, backend: backend) {
             try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: request.timelineID)
         }
-        if let timeline = try await runBackendOperation(ascendantID, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
+        if let timeline = try await runBackendOperation(ascendantID, backend: backend, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
             do {
                 _ = try await registry.replaceTimeline(timeline, projecting: { [readvertiseTimeline] record in
                     readvertiseTimeline(record.timeline)
@@ -93,7 +93,7 @@ public final class WorkspaceService {
                 )
             }
             catch {
-                _ = try? await runBackendOperation(ascendantID) {
+                _ = try? await runBackendOperation(ascendantID, backend: backend) {
                     try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
                 }
                 throw error
@@ -108,10 +108,10 @@ public final class WorkspaceService {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
         }
         let prior = references[request.workspaceID]
-        try await runBackendOperation(ascendantID) {
+        try await runBackendOperation(ascendantID, backend: backend) {
             try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
         }
-        if let timeline = try await runBackendOperation(ascendantID, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
+        if let timeline = try await runBackendOperation(ascendantID, backend: backend, { try await backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
             do {
                 _ = try await registry.replaceTimeline(timeline, projecting: { [readvertiseTimeline] record in
                     readvertiseTimeline(record.timeline)
@@ -120,7 +120,7 @@ public final class WorkspaceService {
             }
             catch {
                 if let prior {
-                    _ = try? await runBackendOperation(ascendantID) {
+                    _ = try? await runBackendOperation(ascendantID, backend: backend) {
                         try await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID)
                     }
                 }
@@ -194,6 +194,7 @@ public final class WorkspaceService {
 
     private func runBackendOperation<T>(
         _ ascendantID: UUID,
+        backend: any AscendantBackend,
         _ operation: () async throws -> T
     ) async throws -> T {
         do {
@@ -201,7 +202,7 @@ public final class WorkspaceService {
         } catch let error as AscendantBackendError {
             if case let .lifecycleUnusable(failure) = error {
                 quarantinedAscendantIDs.insert(ascendantID)
-                await lifecycleFailure(ascendantID, failure)
+                await lifecycleFailure(ascendantID, backend, failure)
             }
             throw error
         }
@@ -213,7 +214,7 @@ public final class WorkspaceService {
             guard !quarantinedAscendantIDs.contains(target.ascendantID),
                   let backend = adapter(target.ascendantID),
                   let runtime = backend as? any AscendantBackendWorkspaceCapability else { continue }
-            try await runBackendOperation(target.ascendantID) {
+            try await runBackendOperation(target.ascendantID, backend: backend) {
                 try await runtime.attachWorkspace(backendReference, to: target.timelineID)
             }
         }
