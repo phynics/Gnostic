@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKShared
+import PKContracts
 
 /// The small stable ACP v1 surface implemented by `gnostic acp`.
 ///

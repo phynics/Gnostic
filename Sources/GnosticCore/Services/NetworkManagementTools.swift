@@ -3,7 +3,7 @@
 import Foundation
 import JSONSchema
 import JSONSchemaBuilder
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// The `list_network_objects` PositronicKit tool.

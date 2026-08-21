@@ -4,7 +4,7 @@ import ArgumentParser
 import Foundation
 import GnosticCore
 import Logging
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// `gnostic serve` — a persistent process that advertises Gnostic objects and

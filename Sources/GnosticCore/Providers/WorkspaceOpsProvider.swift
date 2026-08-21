@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// The wire payload for a workspace attach/detach request.
 public struct WorkspaceOpsRequest: Codable, Sendable {

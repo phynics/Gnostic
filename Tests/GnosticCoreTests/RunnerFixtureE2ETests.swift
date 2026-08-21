@@ -3,7 +3,7 @@
 import Axoloty
 import Foundation
 @testable import GnosticCore
-import PKShared
+import PKContracts
 import PositronicKit
 import struct PositronicKit.Thread
 import Testing
@@ -55,17 +55,17 @@ struct RunnerFixtureE2ETests {
             let response = try await consumer.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
-        let manager = ThreadManager(
-            stores: .init(threadStore: InMemoryThreadPersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
-            workspaceProfile: .noWorkspace,
-            workspaceCreator: factory
-        )
-        let timeline = try await manager.createThread()
+        let kit = PositronicKit(configuration: .init(
+            provider: .init(languageModel: UnconfiguredLLMService()),
+            persistence: .init(workspacePersistence: store),
+            runtime: .init(workspaceCreator: factory)
+        ))
+        let timeline = try await kit.threads.create()
         let readvertised = TimelineRecorder()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager) { readvertised.record($0) }
+        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces, readvertiseTimeline: { readvertised.record($0) })
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
-        let reference = try #require(try await manager.getWorkspaces(for: timeline.id).primary)
+        let reference = try #require(try await kit.workspaces.get(workspaceID))
         let echoTool = try #require(reference.tools.first { $0.toolID == "workspace_echo" })
         guard case let .custom(echoDefinition) = echoTool else {
             Issue.record("workspace_echo must remain a custom tool after broker discovery")

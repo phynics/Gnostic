@@ -3,7 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticCore
-import PKShared
+import PKContracts
 import PositronicKit
 
 @MainActor
@@ -48,20 +48,20 @@ struct FixtureScenario {
             )
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
-        let manager = ThreadManager(
-            stores: .init(threadStore: InMemoryThreadPersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
-            workspaceProfile: .noWorkspace,
-            workspaceCreator: factory
-        )
-        let timeline = try await manager.createThread()
+        let kit = PositronicKit(configuration: .init(
+            provider: .init(languageModel: UnconfiguredLLMService()),
+            persistence: .init(workspacePersistence: store),
+            runtime: .init(workspaceCreator: factory)
+        ))
+        let timeline = try await kit.threads.create()
         let readvertised = TimelineReadvertisement()
         guard let descriptor = await catalog.networkObjects().first(where: { $0.objectID == workspaceID })?.workspace,
               let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
             throw RunnerError.missingRuntimeComponent
         }
-        try await manager.importWorkspace(reference)
-        try await manager.attachWorkspace(reference.id, to: timeline.id)
-        if let changed = try await manager.listThreads().first(where: { $0.id == timeline.id }) {
+        try await kit.workspaces.update(reference)
+        try await kit.threads.attachWorkspace(reference.id, to: timeline.id)
+        if let changed = try await kit.threads.get(timeline.id) {
             readvertised.record(changed)
         }
         let remote = AxolotyWorkspace(reference: reference, catalog: catalog, communication: consumer.communication, timeout: .seconds(3))

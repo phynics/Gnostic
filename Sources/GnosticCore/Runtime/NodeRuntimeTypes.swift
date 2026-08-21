@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// Failures raised while materializing or running a validated node plan.

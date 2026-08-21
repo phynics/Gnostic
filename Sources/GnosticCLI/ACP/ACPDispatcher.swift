@@ -2,7 +2,7 @@
 
 import Foundation
 import GnosticCore
-import PKShared
+import PKContracts
 
 /// Translates stable ACP v1 requests into Gnostic's existing remote object and
 /// Timeline operations. ACP remains an adapter: no ACP identifiers are stored

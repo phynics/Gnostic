@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import GnosticCore
-import PKShared
+import PKContracts
 
 struct ACPRenderedNotification: Sendable {
     let method: String

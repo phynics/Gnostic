@@ -2,7 +2,7 @@
 
 import Foundation
 import GnosticCore
-import PKShared
+import PKContracts
 import PositronicKit
 import Testing
 

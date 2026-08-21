@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// The wire payload to create a new timeline.
 public struct TimelineCreateRequest: Codable, Sendable {

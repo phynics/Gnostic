@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKShared
+import PKContracts
 
 enum ACPClientRequestError: Error, Equatable, Sendable {
     case connectionClosed

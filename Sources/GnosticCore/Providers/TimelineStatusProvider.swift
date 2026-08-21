@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// The wire payload requesting timeline state.
 public struct TimelineStatusRequest: Codable, Sendable {

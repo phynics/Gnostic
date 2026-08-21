@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// Projects local PositronicKit models into Gnostic network objects.
 @MainActor

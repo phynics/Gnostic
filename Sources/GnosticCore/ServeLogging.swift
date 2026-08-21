@@ -2,7 +2,6 @@
 
 import Foundation
 import Logging
-import PKUtilities
 
 /// Stable logging subsystem for the Gnostic serve process.
 ///

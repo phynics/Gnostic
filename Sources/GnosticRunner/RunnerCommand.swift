@@ -4,7 +4,7 @@ import ArgumentParser
 import Foundation
 import Axoloty
 import GnosticCore
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// The `gnostic-runner` executable.

@@ -3,7 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticCore
-import PKShared
+import PKContracts
 import Testing
 
 @testable import GnosticRunner
