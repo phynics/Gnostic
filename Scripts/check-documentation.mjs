@@ -236,10 +236,26 @@ function validateCLI(root, cliPath, failures, cliArgs = [], cliRunner = null) {
     failures.push("README.md: CLI help checks require --cli pointing to the built gnostic executable");
     return;
   }
+  const runHelp = (chain) => cliRunner
+    ? cliRunner({ cliPath, cliArgs, chain })
+    : spawnSync(cliPath, [...cliArgs, ...chain, "--help"], { encoding: "utf8" });
+  const rootHelp = runHelp([]);
+  if (rootHelp.error || rootHelp.status !== 0) {
+    const detail = rootHelp.error?.message ?? (rootHelp.stderr || rootHelp.stdout || `exit ${rootHelp.status}`).trim();
+    failures.push(`gnostic --help failed (${detail})`);
+  } else {
+    const output = `${rootHelp.stdout ?? ""}\n${rootHelp.stderr ?? ""}`;
+    if (!/(?:^|\n)\s*acp(?:\s|$)/i.test(output)) failures.push("gnostic --help must advertise 'acp' as the interaction layer");
+    if (/(?:^|\n)\s*turn(?:\s|$)/i.test(output)) failures.push("gnostic --help must not advertise removed 'turn' command");
+  }
+  const removedTurn = cliRunner
+    ? cliRunner({ cliPath, cliArgs, chain: ["turn"] })
+    : spawnSync(cliPath, [...cliArgs, "turn"], { encoding: "utf8" });
+  if (!removedTurn.error && removedTurn.status === 0) {
+    failures.push("gnostic turn must fail because the direct Turn CLI is removed");
+  }
   for (const chain of documentedCLIChains(readText(root, "README.md"))) {
-    const result = cliRunner
-      ? cliRunner({ cliPath, cliArgs, chain })
-      : spawnSync(cliPath, [...cliArgs, ...chain, "--help"], { encoding: "utf8" });
+    const result = runHelp(chain);
     if (result.error || result.status !== 0) {
       const command = ["gnostic", ...chain].join(" ");
       const detail = result.error?.message ?? (result.stderr || result.stdout || `exit ${result.status}`).trim();
@@ -395,7 +411,11 @@ function selfTest() {
     writeFixture(root);
     const options = {
       cliPath: "fixture-gnostic",
-      cliRunner: ({ chain }) => ({ status: chain.includes("does-not-exist") ? 1 : 0, stderr: "unknown command" }),
+      cliRunner: ({ chain }) => {
+        if (chain.length === 0) return { status: 0, stdout: "SUBCOMMANDS:\n  acp  Run ACP\n" };
+        if (chain.includes("turn") || chain.includes("does-not-exist")) return { status: 1, stderr: "unknown command" };
+        return { status: 0, stdout: "help" };
+      },
     };
     assert.deepEqual(checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
     expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Compatibility/0.3.0.md"), "# Compatibility\n"), "must mention '0.3.0'");
@@ -415,6 +435,28 @@ function selfTest() {
     expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), ".package(path: \"../local\")"), "local-path dependencies");
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "gnostic does-not-exist\n"), "documented CLI command 'gnostic does-not-exist'");
+    writeFixture(root);
+    assert.throws(
+      () => checkRepository({
+        root,
+        ...options,
+        cliRunner: ({ chain }) => chain.length === 0
+          ? { status: 0, stdout: "SUBCOMMANDS:\n" }
+          : { status: 1, stderr: "unknown command" },
+      }),
+      (error) => error.message.includes("must advertise 'acp'")
+    );
+    writeFixture(root);
+    assert.throws(
+      () => checkRepository({
+        root,
+        ...options,
+        cliRunner: ({ chain }) => chain.length === 0
+          ? { status: 0, stdout: "SUBCOMMANDS:\n  acp  Run ACP\n  turn  Run Turn\n" }
+          : { status: chain.includes("turn") ? 0 : 1 },
+      }),
+      (error) => error.message.includes("must not advertise removed 'turn'")
+    );
     console.log("Documentation checker self-tests passed");
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -46,21 +46,21 @@ struct ACPProviderAcceptanceTests {
         try await first.start()
         try await second.start()
 
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { client.stop() }
-        try await client.connect()
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
         try await poll(timeout: .seconds(8)) {
-            await client.discoverAscendants().count == 2
+            await probe.discoverAscendants().count == 2
         }
 
-        let ascendants = await client.discoverAscendants()
+        let ascendants = await probe.discoverAscendants()
         #expect(Set(ascendants.map(\.name)) == ["First Ascendant", "Second Ascendant"])
         #expect(Set(ascendants.map(\.providerID)).count == 2)
         for ascendant in ascendants {
-            #expect(try await client.selectAscendant(id: ascendant.id, providerID: ascendant.providerID) == ascendant)
+            #expect(try await probe.selectAscendant(id: ascendant.id, providerID: ascendant.providerID) == ascendant)
         }
-        await #expect(throws: RemoteTurnClientError.self) {
-            _ = try await client.selectAscendant(id: sharedAscendantID)
+        await #expect(throws: ACPBrokerProbe.Error.self) {
+            _ = try await probe.selectAscendant(id: sharedAscendantID)
         }
 
         if let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] {
@@ -130,11 +130,11 @@ struct ACPProviderAcceptanceTests {
         try await first.start()
         try await second.start()
 
-        let discoveryClient = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { discoveryClient.stop() }
-        try await discoveryClient.connect()
-        let selected = try await waitForAscendant(secondAscendantID, using: discoveryClient)
-        let other = try await discoveryClient.selectAscendant(id: firstAscendantID)
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
+        let selected = try await waitForAscendant(secondAscendantID, using: probe)
+        let other = try await probe.selectAscendant(id: firstAscendantID)
 
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-acp-provider-state-\(UUID().uuidString)")
@@ -195,8 +195,8 @@ struct ACPProviderAcceptanceTests {
             return
         }
         #expect(ascendantRaw == selected.id.uuidString.lowercased())
-        let selectedTimelines = try await discoveryClient.listTimelines(providerID: selected.providerID)
-        let otherTimelines = try await discoveryClient.listTimelines(providerID: other.providerID)
+        let selectedTimelines = try await probe.listTimelines(providerID: selected.providerID)
+        let otherTimelines = try await probe.listTimelines(providerID: other.providerID)
         #expect(selectedTimelines.contains { $0.timelineID == timelineID })
         #expect(!otherTimelines.contains { $0.timelineID == timelineID })
 
@@ -281,7 +281,7 @@ struct ACPProviderAcceptanceTests {
     }
 
     @Test(
-        "legacy flat config migrates to schema v2 and drives a configured NodeRuntime chat tool turn",
+        "legacy flat config migrates to schema v2 and completes an ACP workspace prompt",
         .timeLimit(.minutes(1))
     )
     @MainActor
@@ -309,49 +309,188 @@ struct ACPProviderAcceptanceTests {
         #expect(plan.timelines.first?.attachments == [.local(workspaceID)])
 
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, _ in StubLanguageModel() }
+        adapters.ascendants.register(kind: "positronic") { _, _ in LegacyMigrationToolLanguageModel() }
+        adapters.workspaces.register(kind: "echo") { configuration, _ in
+            let tool = WorkspaceToolDefinition(
+                id: NodeRuntime.echoToolID,
+                name: "Workspace echo",
+                description: "Echoes fixture input.",
+                requiresPermission: true
+            )
+            let reference = WorkspaceReference(
+                id: configuration.id,
+                uri: WorkspaceURI(parsing: configuration.uri)!,
+                location: .runtime,
+                tools: [.custom(tool)]
+            )
+            return EchoWorkspace(reference: reference)
+        }
         let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
         defer {
             Task { @MainActor in await runtime.shutdown() }
         }
         try await runtime.start()
 
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { client.stop() }
-        try await client.connect()
-        let ascendant = try await waitForOnlyAscendant(using: client)
+        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+        let stateHome = folder.url.appendingPathComponent("state")
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
+        let ascendant = try await waitForOnlyAscendant(using: probe)
         let profiles = try await runACPProfilesIfAvailable(
             host: "127.0.0.1",
             port: 1883,
             namespace: namespace,
             configURL: configURL,
-            stateHome: folder.url.appendingPathComponent("state")
+            stateHome: stateHome
         )
         if let profiles {
             #expect(profiles.profiles.map(\.id) == ["gnostic-\(ascendant.id.uuidString.lowercased())"])
         }
 
-        let created = try await client.createTimeline(
-            title: "Migrated smoke timeline",
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_CONFIG"] = configURL.path
+        environment["GNOSTIC_STATE_HOME"] = stateHome.path
+        let session = try launchACP(
+            binary: binary,
             ascendantID: ascendant.id,
-            providerID: ascendant.providerID
+            providerID: ascendant.providerID,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
         )
-        let workspace = try #require(try await client.listWorkspaces(providerID: ascendant.providerID).first { $0.id == workspaceID })
+        defer {
+            if session.process.isRunning { session.process.terminate() }
+        }
+
+        try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("legacy-migration"), "version": .string("1")]),
+        ])))
+        var output = session.lines.stream.makeAsyncIterator()
+        #expect(try await readResponse(from: &output).error == nil)
+
+        try session.send(JSONRPCRequest(id: .number(2), method: "session/new", params: .dictionary([
+            "cwd": .string("/tmp/legacy-migration-acp"),
+            "mcpServers": .array([]),
+        ])))
+        let created = try await readResponse(from: &output)
+        #expect(created.error == nil)
+        let createdResult = try #require(created.result)
+        guard case let .dictionary(createdValues) = createdResult,
+              case let .string(sessionID) = createdValues["sessionId"],
+              case let .dictionary(metadata) = createdValues["_meta"],
+              case let .string(timelineRaw) = metadata["gnosticTimelineID"],
+              let timelineID = UUID(uuidString: timelineRaw) else {
+            Issue.record("session/new did not return ACP migration metadata")
+            return
+        }
+        #expect(metadata["gnosticAscendantID"] == .string(ascendant.id.uuidString.lowercased()))
+
+        let workspace = try #require(try await probe.listWorkspaces(providerID: ascendant.providerID).first { $0.id == workspaceID })
         #expect(workspace.isAvailable)
-        #expect(try await client.attach(
+        #expect(try await probe.attach(
             workspaceID: workspaceID,
-            timelineID: created.timelineID,
+            timelineID: timelineID,
             providerID: ascendant.providerID
         ))
 
-        let result = try await client.turn(
-            message: "echo network",
-            timelineID: created.timelineID,
-            clientTurnID: "legacy-smoke:turn-1",
-            providerID: ascendant.providerID
-        )
-        #expect(result.text == "Echo received: network")
-        #expect(!result.replayed)
+        try session.send(JSONRPCRequest(id: .number(3), method: "session/list", params: .dictionary([
+            "cwd": .string("/tmp/legacy-migration-acp")
+        ])))
+        let listed = try await readResponse(from: &output)
+        #expect(listed.error == nil)
+        guard case let .dictionary(listedValues) = listed.result,
+              case let .array(listedSessions) = listedValues["sessions"],
+              case let .dictionary(listedSession) = listedSessions.first,
+              case let .dictionary(listedMetadata) = listedSession["_meta"] else {
+            Issue.record("session/list did not return migrated ACP metadata")
+            return
+        }
+        #expect(listedMetadata["gnosticWorkspaceAttachmentState"] == .string("attached"))
+        #expect(listedMetadata["gnosticAttachedWorkspaceIDs"] == .array([
+            .string(workspaceID.uuidString.lowercased())
+        ]))
+
+        let promptText = "echo network"
+        let turnID = "legacy-smoke:turn-1"
+        try session.send(JSONRPCRequest(id: .number(4), method: "session/prompt", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "prompt": .array([.dictionary(["type": .string("text"), "text": .string(promptText)])]),
+            "mcpServers": .array([]),
+            "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string(turnID)]),
+        ])))
+
+        var permissionRequested = false
+        var promptCompleted = false
+        var updates: [AnyCodable] = []
+        while !promptCompleted {
+            switch try await readEnvelope(from: &output) {
+            case .request(let request) where request.method == "session/request_permission":
+                permissionRequested = true
+                let response = JSONRPCResponse(id: request.id, result: .dictionary([
+                    "outcome": .dictionary([
+                        "outcome": .string("selected"),
+                        "optionId": .string("allow_once"),
+                    ]),
+                ]))
+                session.input.fileHandleForWriting.write(try JSONEncoder().encode(response) + Data([0x0A]))
+            case .request(let request) where request.method == "session/update":
+                if let params = request.params { updates.append(params) }
+            case .response(let response) where response.id == .number(4):
+                #expect(response.error == nil)
+                #expect(response.result == .dictionary(["stopReason": .string("end_turn")]))
+                promptCompleted = true
+            default:
+                continue
+            }
+        }
+        #expect(permissionRequested)
+        let updateText = String(decoding: try JSONEncoder().encode(updates), as: UTF8.self)
+        #expect(updateText.contains("workspace_echo"))
+        #expect(updateText.contains("Echo received: network"))
+
+        try session.send(JSONRPCRequest(id: .number(5), method: "session/prompt", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "prompt": .array([.dictionary(["type": .string("text"), "text": .string(promptText)])]),
+            "mcpServers": .array([]),
+            "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string(turnID)]),
+        ])))
+        var replayed = false
+        var replayCompleted = false
+        while !replayCompleted {
+            switch try await readEnvelope(from: &output) {
+            case .request(let request) where request.method == "session/update":
+                if let params = request.params {
+                    let text = String(decoding: try JSONEncoder().encode(params), as: UTF8.self)
+                    replayed = replayed || text.contains("\"replayed\":true")
+                }
+            case .request(let request) where request.method == "session/request_permission":
+                Issue.record("replayed ACP turn unexpectedly requested permission")
+                let response = JSONRPCResponse(id: request.id, result: .dictionary([
+                    "outcome": .dictionary(["outcome": .string("selected"), "optionId": .string("allow_once")]),
+                ]))
+                session.input.fileHandleForWriting.write(try JSONEncoder().encode(response) + Data([0x0A]))
+            case .response(let response) where response.id == .number(5):
+                #expect(response.error == nil)
+                #expect(response.result == .dictionary(["stopReason": .string("end_turn")]))
+                replayCompleted = true
+            default:
+                continue
+            }
+        }
+        #expect(replayed)
+
+        try session.send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
+            "sessionId": .string(sessionID)
+        ])))
+        #expect(try await readResponse(from: &output).error == nil)
+        try session.send(JSONRPCRequest(id: .number(7), method: "shutdown"))
+        #expect(try await readResponse(from: &output).error == nil)
+        session.input.fileHandleForWriting.closeFile()
+        session.process.waitUntilExit()
     }
 }
 
@@ -382,24 +521,24 @@ private func acceptanceManifest(
 
 private func waitForAscendant(
     _ id: UUID,
-    using client: RemoteTurnClient
-) async throws -> RemoteTurnClient.DiscoveredAscendant {
+    using probe: ACPBrokerProbe
+) async throws -> ACPBrokerProbe.DiscoveredAscendant {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {
-        if let result = try? await client.selectAscendant(id: id) { return result }
+        if let result = try? await probe.selectAscendant(id: id) { return result }
         try await Task.sleep(for: .milliseconds(100))
     }
     throw ACPSubprocessError.timeout
 }
 
 private func waitForOnlyAscendant(
-    using client: RemoteTurnClient
-) async throws -> RemoteTurnClient.DiscoveredAscendant {
+    using probe: ACPBrokerProbe
+) async throws -> ACPBrokerProbe.DiscoveredAscendant {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {
-        let ascendants = await client.discoverAscendants()
+        let ascendants = await probe.discoverAscendants()
         if ascendants.count == 1 { return ascendants[0] }
         try await Task.sleep(for: .milliseconds(100))
     }
@@ -515,6 +654,96 @@ private final class AcceptanceFinalLanguageModel: LanguageModel, @unchecked Send
         }
     }
 
+    func loadConfiguration() async {}
+    func updateConfiguration(_: LLMConfiguration) async throws {}
+    func clearConfiguration() async {}
+    func restoreFromBackup() async throws {}
+    func exportConfiguration() async throws -> Data { Data() }
+    func importConfiguration(from _: Data) async throws {}
+    func sendMessage(_ content: String) async throws -> String { content }
+    func sendMessage(
+        _: String,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        useUtilityModel _: Bool
+    ) async throws -> String { "ok" }
+    func generateTags(for _: String) async throws -> [String] { [] }
+    func generateTitle(for _: [Message]) async throws -> String { "acceptance" }
+    func evaluateRecallPerformance(
+        transcript _: String,
+        recalledMemories _: [Memory]
+    ) async throws -> [String: Double] { [:] }
+    func fetchAvailableModels() async throws -> [String]? { nil }
+}
+
+/// Deterministic two-step model for the migrated-config ACP acceptance path.
+private final class LegacyMigrationToolLanguageModel: LanguageModel, @unchecked Sendable {
+    private actor Counter {
+        private var value = 0
+        func next() -> Int {
+            value += 1
+            return value
+        }
+    }
+
+    private let counter = Counter()
+    var isConfigured: Bool { get async { true } }
+    var configuration: LLMConfiguration { get async { .init(activeProvider: .openAI, providers: [:]) } }
+
+    func chatStream(
+        messages: [LLMMessage],
+        tools _: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        if await counter.next() == 1 {
+            let chunk = LLMStreamChunk(
+                id: "legacy-tool",
+                model: "acceptance",
+                choices: [LLMStreamChoice(
+                    index: 0,
+                    delta: LLMStreamDelta(
+                        role: .assistant,
+                        toolCalls: [LLMToolCallDelta(
+                            index: 0,
+                            id: "call_1",
+                            function: LLMToolCallDeltaFunction(
+                                name: "workspace_echo",
+                                arguments: #"{"value":"network"}"#
+                            )
+                        )]
+                    ),
+                    finishReason: "tool_calls"
+                )]
+            )
+            return AsyncThrowingStream { continuation in
+                continuation.yield(chunk)
+                continuation.finish()
+            }
+        }
+        guard messages.contains(where: {
+            $0.role == .tool && $0.toolCallID == "call_1" && $0.content == "network"
+        }) else {
+            return AsyncThrowingStream { $0.finish(throwing: ModelError.missingToolResult) }
+        }
+        let chunk = LLMStreamChunk(
+            id: "legacy-final",
+            model: "acceptance",
+            choices: [LLMStreamChoice(
+                index: 0,
+                delta: LLMStreamDelta(content: "Echo received: network"),
+                finishReason: "stop"
+            )]
+        )
+        return AsyncThrowingStream { continuation in
+            continuation.yield(chunk)
+            continuation.finish()
+        }
+    }
+
+    private enum ModelError: Error { case missingToolResult }
     func loadConfiguration() async {}
     func updateConfiguration(_: LLMConfiguration) async throws {}
     func clearConfiguration() async {}

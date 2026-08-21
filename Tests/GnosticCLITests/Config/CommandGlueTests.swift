@@ -16,6 +16,16 @@ struct CommandGlueTests {
         }
     }
 
+    @Test("turn is no longer a root command")
+    func turnCommandIsRemoved() {
+        let help = GnosticCLI.helpMessage().lowercased()
+        #expect(help.contains("acp"))
+        #expect(!help.contains("turn"))
+        #expect(throws: (any Error).self) {
+            _ = try GnosticCLI.parseAsRoot(["turn"])
+        }
+    }
+
     private func tempFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-glue-\(UUID().uuidString)")

@@ -3,14 +3,11 @@
 import Axoloty
 import Foundation
 import GnosticCore
-import PKShared
-import PositronicKit
 
-/// A pure-Axoloty client for `gnostic serve`'s network operations.
+/// A pure-Axoloty transport for ACP's network operations.
 ///
-/// Mirrors `AxolotyWorkspace`: every interaction is a unary Call/Return over the
-/// Axoloty stack (`communication.call(operation:...)`) — no raw MQTT, no local
-/// PositronicKit runtime.
+/// Every interaction is a unary Call/Return over the Axoloty stack
+/// (`communication.call(operation:...)`) — no raw MQTT or local runtime.
 @MainActor
 public final class RemoteTurnClient: Sendable {
     public struct DiscoveredAscendant: Sendable, Equatable {
@@ -106,7 +103,7 @@ public final class RemoteTurnClient: Sendable {
     public var hasLostConnection: Bool { connectionLost }
 
     /// Refreshes the catalog using Axoloty's active discover request.
-    public func refreshCatalog() async {
+    private func refreshCatalog() async {
         await subscription.discover(using: manager, timeout: timeout)
     }
 
@@ -116,7 +113,7 @@ public final class RemoteTurnClient: Sendable {
         return await catalog.networkObjects()
     }
 
-    public func discoverAscendants() async -> [DiscoveredAscendant] {
+    private func discoverAscendants() async -> [DiscoveredAscendant] {
         await refreshCatalog()
         return discoveredAscendants(from: await catalog.networkObjects())
     }
@@ -145,55 +142,6 @@ public final class RemoteTurnClient: Sendable {
                 )
             }
             .sorted { ($0.id.uuidString, $0.providerID) < ($1.id.uuidString, $1.providerID) }
-    }
-
-    /// Invokes an advertised workspace tool through the existing Axoloty connection.
-    public func invokeWorkspace(
-        workspaceID: UUID,
-        providerID: String,
-        timelineID: UUID,
-        toolID: String,
-        parameters: [String: AnyCodable],
-        approved: Bool
-    ) async throws -> ToolResult {
-        await refreshCatalog()
-        guard let entry = await catalog.object(id: workspaceID, providerID: providerID),
-              let descriptor = entry.workspace else {
-            throw RemoteTurnClientError.workspaceUnavailable
-        }
-        guard case let .available(currentProvider, _) = await catalog.workspaceAttachmentStatus(id: workspaceID) else {
-            let status = await catalog.workspaceAttachmentStatus(id: workspaceID)
-            if case .ambiguous = status { throw RemoteTurnClientError.workspaceAmbiguous }
-            throw RemoteTurnClientError.workspaceUnavailable
-        }
-        guard currentProvider == providerID, descriptor.isAvailable else {
-            throw RemoteTurnClientError.workspaceUnavailable
-        }
-        let timeline = try await timelineStatus(timelineID: timelineID, providerID: providerID)
-        guard timeline.attachedWorkspaceIDs.contains(workspaceID) else {
-            throw RemoteTurnClientError.timelineNotAttached
-        }
-        guard let tool = descriptor.tools.first(where: { $0.id == toolID }) else {
-            throw RemoteTurnClientError.toolNotAdvertised
-        }
-        guard !tool.requiresPermission || approved else {
-            throw RemoteTurnClientError.approvalRequired
-        }
-        guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
-            throw RemoteTurnClientError.invalidWorkspaceURI
-        }
-        let workspace = AxolotyWorkspace(
-            reference: reference,
-            catalog: catalog,
-            communication: manager,
-            timeout: timeout
-        )
-        return try await workspace.executeTool(id: toolID, parameters: parameters)
-    }
-
-    /// Runs one Turn over `ascendant.turn`.
-    public func turn(message: String, timelineID: UUID) async throws -> String {
-        try await turn(message: message, timelineID: timelineID, clientTurnID: nil).text
     }
 
     /// Runs an identified Turn and returns replay metadata. Supplying a
@@ -297,69 +245,6 @@ public final class RemoteTurnClient: Sendable {
         return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
-    /// Lists every timeline the serve manages.
-    public func listTimelines(providerID: String? = nil) async throws -> [TimelineStatus] {
-        let targetProvider: String?
-        if let providerID { targetProvider = providerID } else { targetProvider = try await singleProviderID() }
-        let response = try await call(
-            operation: TimelineManagementProvider.listOperation,
-            parameters: String(decoding: try JSONEncoder().encode(TimelineListRequest()), as: UTF8.self),
-            providerID: targetProvider,
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(TimelineListResult.self, from: Data(response.result.utf8)).timelines
-    }
-
-    /// Renames a timeline and returns its updated status.
-    public func updateTimeline(timelineID: UUID, title: String, providerID: String? = nil) async throws -> TimelineStatus {
-        let payload = try JSONEncoder().encode(TimelineUpdateRequest(timelineID: timelineID, title: title))
-        let response = try await call(
-            operation: TimelineManagementProvider.updateOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
-    }
-
-    /// Lists attachable workspaces.
-    public func listWorkspaces(providerID: String? = nil) async throws -> [WorkspaceListing] {
-        let targetProvider: String?
-        if let providerID { targetProvider = providerID } else { targetProvider = try await singleProviderID() }
-        let response = try await call(
-            operation: WorkspaceOpsProvider.listOperation,
-            parameters: String(decoding: try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID())), as: UTF8.self),
-            providerID: targetProvider,
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(WorkspaceListResult.self, from: Data(response.result.utf8)).workspaces
-    }
-
-    /// Attaches a workspace to a timeline.
-    public func attach(workspaceID: UUID, timelineID: UUID, providerID: String? = nil) async throws -> Bool {
-        try await mutate(operation: WorkspaceOpsProvider.attachOperation, workspaceID: workspaceID, timelineID: timelineID, providerID: providerID)
-    }
-
-    /// Detaches a workspace from a timeline.
-    public func detach(workspaceID: UUID, timelineID: UUID, providerID: String? = nil) async throws -> Bool {
-        try await mutate(operation: WorkspaceOpsProvider.detachOperation, workspaceID: workspaceID, timelineID: timelineID, providerID: providerID)
-    }
-
-    private func mutate(operation: String, workspaceID: UUID, timelineID: UUID, providerID: String? = nil) async throws -> Bool {
-        let payload = try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID))
-        let response = try await call(
-            operation: operation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(response.result.utf8)).accepted
-    }
-
-    public func discoverServedTimeline(ascendantID: UUID? = nil) async throws -> UUID {
-        try await selectAscendant(id: ascendantID).timelineID
-    }
-
     public func selectAscendant(id ascendantID: UUID? = nil, providerID: String? = nil) async throws -> DiscoveredAscendant {
         try Self.selectCandidate(from: await discoverAscendants(), id: ascendantID, providerID: providerID)
     }
@@ -437,17 +322,6 @@ public final class RemoteTurnClient: Sendable {
             throw RemoteTurnClientError.missingCapability(GnosticCapability.textTurnInput)
         }
         return (providerID, ascendantID)
-    }
-
-    private func singleProviderID() async throws -> String {
-        await refreshCatalog()
-        let entries = await catalog.networkObjects()
-        let providers = Set(entries.compactMap {
-            $0.objectType == GnosticObjectType.ascendant || $0.objectType == GnosticObjectType.timeline ? $0.providerID : nil
-        })
-        guard let provider = providers.first else { throw RemoteTurnClientError.noServedAscendant }
-        guard providers.count == 1 else { throw RemoteTurnClientError.ambiguousAscendant }
-        return provider
     }
 
     private func call(operation: String, parameters: String? = nil, providerID: String?, timeout: Duration) async throws -> UnaryCallResult {

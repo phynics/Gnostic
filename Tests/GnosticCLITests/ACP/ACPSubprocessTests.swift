@@ -59,17 +59,17 @@ struct ACPSubprocessTests {
         process.standardError = error
         try process.run()
         let attachTask = Task { @MainActor in
-            let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-            defer { client.stop() }
-            try await client.connect()
-            let providerID = try await client.selectAscendant(id: agentID).providerID
+            let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+            defer { probe.stop() }
+            try await probe.connect()
+            let providerID = try await probe.selectAscendant(id: agentID).providerID
             try await poll(timeout: .seconds(30)) {
                 guard FileManager.default.fileExists(atPath: timelineFile.path) else { return false }
-                return try await client.listWorkspaces(providerID: providerID).contains { $0.id == workspaceID }
+                return try await probe.listWorkspaces(providerID: providerID).contains { $0.id == workspaceID }
             }
             let timelineText = try String(contentsOf: timelineFile, encoding: .utf8)
             let timelineID = try #require(UUID(uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)))
-            #expect(try await client.attach(
+            #expect(try await probe.attach(
                 workspaceID: workspaceID,
                 timelineID: timelineID,
                 providerID: providerID
@@ -200,9 +200,9 @@ struct ACPSubprocessTests {
         process.standardError = error
         try process.run()
         let attachTask = Task { @MainActor in
-            let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-            defer { client.stop() }
-            try await client.connect()
+            let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+            defer { probe.stop() }
+            try await probe.connect()
             try await poll(timeout: .seconds(30)) {
                 guard let timelineText = try? String(contentsOf: timelineFile, encoding: .utf8) else {
                     return false
@@ -213,7 +213,7 @@ struct ACPSubprocessTests {
             let timelineID = try #require(UUID(
                 uuidString: timelineText.trimmingCharacters(in: .whitespacesAndNewlines)
             ))
-            #expect(try await client.attach(
+            #expect(try await probe.attach(
                 workspaceID: workspaceID,
                 timelineID: timelineID,
                 providerID: providerID
@@ -316,13 +316,13 @@ struct ACPSubprocessTests {
         #expect(metadata["gnosticWorkspaceAttachmentState"] == .string("none"))
         #expect(metadata["gnosticAttachedWorkspaceIDs"] == .array([]))
 
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { client.stop() }
-        try await client.connect()
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
         try await poll(timeout: .seconds(8)) {
-            try await client.listWorkspaces(providerID: providerID).contains { $0.id == workspaceID }
+            try await probe.listWorkspaces(providerID: providerID).contains { $0.id == workspaceID }
         }
-        #expect(try await client.attach(
+        #expect(try await probe.attach(
             workspaceID: workspaceID,
             timelineID: timelineID,
             providerID: providerID
@@ -516,13 +516,13 @@ private func makeACPNode(
 
 @MainActor
 private func discoverProviderID(namespace: String, ascendantID: UUID) async throws -> String {
-    let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-    defer { client.stop() }
-    try await client.connect()
+    let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+    defer { probe.stop() }
+    try await probe.connect()
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {
-        if let selected = try? await client.selectAscendant(id: ascendantID) {
+        if let selected = try? await probe.selectAscendant(id: ascendantID) {
             return selected.providerID
         }
         try await Task.sleep(for: .milliseconds(100))
