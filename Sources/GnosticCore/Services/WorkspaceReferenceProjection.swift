@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// Converts a safe network descriptor into the runtime reference used by the

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKShared
+import PKContracts
 
 /// A JSON-RPC 2.0 request identifier.
 public enum JSONRPCIdentifier: Codable, Equatable, Hashable, Sendable {

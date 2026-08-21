@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import GnosticCore
-import PKShared
+import PKContracts
 
 enum ACPPermissionBridge {
     static func parameters(sessionID: String, state: AscendantPermissionState) -> AnyCodable {

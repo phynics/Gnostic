@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKShared
+import PKContracts
 
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
 /// cancellation; the injected handler owns domain semantics.

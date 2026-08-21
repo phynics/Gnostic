@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 import struct PositronicKit.Thread
 
@@ -22,7 +22,8 @@ public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
 @MainActor
 final class DiscoveredWorkspaceAttachmentService {
     private let discovery: any WorkspaceDiscovery
-    private let threadManager: ThreadManager
+    private let threadCapability: ThreadCapability
+    private let workspaceCapability: WorkspaceCapability?
     private let hostAttachment: BackendWorkspaceAttachmentCapability?
     private let allowedTimelineIDs: Set<UUID>?
     private let readvertiseTimeline: ((Thread) -> Void)?
@@ -30,17 +31,19 @@ final class DiscoveredWorkspaceAttachmentService {
     /// Creates the attachment bridge using the runtime's discovery boundary.
     /// Backend construction supplies `hostAttachment` so Gnostic can commit
     /// the attachment intent and effective state after the backend accepts the
-    /// private projection. The ThreadManager path remains for direct legacy
-    /// service callers and focused provider tests.
+    /// private projection. The capability path keeps PositronicKit's
+    /// coordinators behind its public v4 facade.
     init(
         discovery: any WorkspaceDiscovery,
-        threadManager: ThreadManager,
+        threadCapability: ThreadCapability,
+        workspaceCapability: WorkspaceCapability? = nil,
         hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
         allowedTimelineIDs: Set<UUID>? = nil,
         readvertiseTimeline: ((Thread) -> Void)? = nil
     ) {
         self.discovery = discovery
-        self.threadManager = threadManager
+        self.threadCapability = threadCapability
+        self.workspaceCapability = workspaceCapability
         self.hostAttachment = hostAttachment
         self.allowedTimelineIDs = allowedTimelineIDs
         self.readvertiseTimeline = readvertiseTimeline
@@ -51,14 +54,16 @@ final class DiscoveredWorkspaceAttachmentService {
     /// above so raw host values do not cross into adapter services.
     convenience init(
         catalog: NetworkCatalog,
-        threadManager: ThreadManager,
+        threadCapability: ThreadCapability,
+        workspaceCapability: WorkspaceCapability? = nil,
         hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
         allowedTimelineIDs: Set<UUID>? = nil,
         readvertiseTimeline: ((Thread) -> Void)? = nil
     ) {
         self.init(
             discovery: CatalogWorkspaceDiscovery(catalog: catalog),
-            threadManager: threadManager,
+            threadCapability: threadCapability,
+            workspaceCapability: workspaceCapability,
             hostAttachment: hostAttachment,
             allowedTimelineIDs: allowedTimelineIDs,
             readvertiseTimeline: readvertiseTimeline
@@ -100,9 +105,12 @@ final class DiscoveredWorkspaceAttachmentService {
         if let hostAttachment {
             try await hostAttachment.attach(workspaceID: reference.id, timelineID: timelineID)
         } else {
-            try await threadManager.importWorkspace(reference)
-            try await threadManager.attachWorkspace(reference.id, to: timelineID)
-            if let thread = try await threadManager.listThreads().first(where: { $0.id == timelineID }) {
+            guard let workspaceCapability else {
+                throw DiscoveredWorkspaceAttachmentError.invalidURI
+            }
+            try await workspaceCapability.update(reference)
+            try await threadCapability.attachWorkspace(reference.id, to: timelineID)
+            if let thread = try await threadCapability.get(timelineID) {
                 readvertiseTimeline?(thread)
             }
         }

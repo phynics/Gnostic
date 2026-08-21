@@ -6,7 +6,7 @@ import PKAnthropicProvider
 import PKOllamaProvider
 import PKOpenAIProvider
 import PKOpenRouterProvider
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// Builds a configured `LanguageModel` from a CLI/PositronicKit `LLMConfiguration`.

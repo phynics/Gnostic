@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// Broker-facing forwarding boundary. It is intentionally unable to access a

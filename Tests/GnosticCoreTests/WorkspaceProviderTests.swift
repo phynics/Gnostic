@@ -4,7 +4,7 @@ import Foundation
 import Axoloty
 @testable import GnosticCore
 import JSONSchema
-import PKShared
+import PKContracts
 import PositronicKit
 import struct PositronicKit.Thread
 import Testing
@@ -21,18 +21,13 @@ struct WorkspaceProviderTests {
     @MainActor
     func attachmentRequiresApproval() async throws {
         let catalog = NetworkCatalog()
-        let store = InMemoryWorkspacePersistence()
-        let manager = ThreadManager(
-            stores: .init(
-                threadStore: InMemoryThreadPersistence(),
-                messageStore: InMemoryMessageStore(),
-                workspaceStore: store,
-                toolPersistence: InMemoryToolPersistence()
-            ),
-            workspaceProfile: .noWorkspace
+        let kit = PositronicKit()
+        let timeline = try await kit.threads.create()
+        let service = DiscoveredWorkspaceAttachmentService(
+            catalog: catalog,
+            threadCapability: kit.threads,
+            workspaceCapability: kit.workspaces
         )
-        let timeline = try await manager.createThread()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager)
 
         await #expect(throws: DiscoveredWorkspaceAttachmentError.self) {
             try await service.attach(workspaceID: UUID(), to: timeline.id, approved: false)
@@ -42,8 +37,8 @@ struct WorkspaceProviderTests {
     @Test("network management API lists and inspects without attaching") @MainActor
     func networkManagementInspection() async throws {
         let catalog = NetworkCatalog()
-        let manager = ThreadManager(workspaceProfile: .noWorkspace)
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager)
+        let kit = PositronicKit()
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces)
         #expect(await service.listNetworkObjects().isEmpty)
         #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
     }
@@ -52,7 +47,8 @@ struct WorkspaceProviderTests {
     func publicNetworkToolsMetadataAndInvalidInput() async throws {
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: NetworkCatalog(),
-            threadManager: ThreadManager(workspaceProfile: .noWorkspace)
+            threadCapability: PositronicKit().threads,
+            workspaceCapability: PositronicKit().workspaces
         )
         let list = ListNetworkObjectsTool(service: service).toAnyTool()
         let inspect = InspectNetworkObjectTool(service: service).toAnyTool()
@@ -85,14 +81,14 @@ struct WorkspaceProviderTests {
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
-        let manager = ThreadManager(
-            stores: .init(threadStore: InMemoryThreadPersistence(), messageStore: InMemoryMessageStore(), workspaceStore: store, toolPersistence: InMemoryToolPersistence()),
-            workspaceProfile: .noWorkspace,
-            workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") }
-        )
-        let timeline = try await manager.createThread()
+        let kit = PositronicKit(configuration: .init(
+            provider: .init(languageModel: UnconfiguredLLMService()),
+            persistence: .init(workspacePersistence: store),
+            runtime: .init(workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
+        ))
+        let timeline = try await kit.threads.create()
         let recorder = TimelineRecorder()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadManager: manager) { recorder.record($0) }
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces, readvertiseTimeline: { recorder.record($0) })
 
         let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
         #expect(reference.location == .runtime)
@@ -107,7 +103,7 @@ struct WorkspaceProviderTests {
         #expect(projectedSchema["required"] as? [String] == ["query"])
         let properties = try #require(projectedSchema["properties"] as? [String: Any])
         #expect((properties["query"] as? [String: Any])?["type"] as? String == "string")
-        #expect(try await manager.getWorkspaces(for: timeline.id).primary?.id == workspaceID)
+        #expect(try await kit.threads.get(timeline.id)?.attachedWorkspaceIDs == [workspaceID])
         #expect(recorder.ids == [timeline.id])
     }
 
@@ -120,15 +116,16 @@ struct WorkspaceProviderTests {
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
 
-        let manager = ThreadManager(workspaceProfile: .noWorkspace)
-        let timeline = try await manager.createThread(title: "Timeline")
+        let kit = PositronicKit()
+        let timeline = try await kit.threads.create(title: "Timeline")
         let recorder = BackendAttachmentRecorder()
         let host = BackendWorkspaceAttachmentCapability { workspace, timeline in
             await recorder.record(workspaceID: workspace, timelineID: timeline)
         }
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: catalog,
-            threadManager: manager,
+            threadCapability: kit.threads,
+            workspaceCapability: kit.workspaces,
             hostAttachment: host
         )
         let tool = AttachWorkspaceTool(service: service)
@@ -141,7 +138,7 @@ struct WorkspaceProviderTests {
         #expect(result.success)
         #expect(await recorder.workspaceID == workspaceID)
         #expect(await recorder.timelineID == timeline.id)
-        #expect(try await manager.getWorkspaces(for: timeline.id).primary == nil)
+        #expect(try await kit.threads.get(timeline.id)?.attachedWorkspaceIDs.isEmpty == true)
     }
 
     @Test("provider preserves advertised custom definitions and dispatches the addressed tool")

@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// The wire payload for a remote Ascendant Turn.
 public struct AscendantTurnRequest: Codable, Sendable {

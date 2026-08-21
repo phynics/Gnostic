@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 extension CLIConfiguration {
     /// Maps the CLI's MQTT details onto Axoloty's connection options.

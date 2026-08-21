@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 
 public struct AscendantAdapterRegistry: Sendable {
@@ -143,7 +143,7 @@ public struct EchoWorkspace: Workspace, Sendable {
 
     public func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     public func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    public func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    public func listFiles(path _: String) async throws -> [String] { [] }
     public func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     public func healthCheck() async -> Bool { true }
 }

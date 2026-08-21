@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// Materializes a validated node manifest into one transport connection,

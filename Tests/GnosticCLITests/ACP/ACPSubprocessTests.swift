@@ -3,7 +3,7 @@
 import Foundation
 import Axoloty
 import GnosticCore
-import PKShared
+import PKContracts
 import PositronicKit
 import Testing
 
@@ -543,7 +543,7 @@ private struct PermissionedEchoWorkspace: Workspace, Sendable {
 
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { [] }
     func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func healthCheck() async -> Bool { true }
 }
@@ -594,6 +594,17 @@ private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendab
             )]
         )
         return AsyncThrowingStream { $0.yield(chunk); $0.finish() }
+    }
+
+    func generationStream(
+        messages: [LLMMessage],
+        tools: [LLMToolDefinition]?,
+        toolChoice: LLMToolChoice?,
+        responseFormat: LLMResponseFormat?,
+        generationParameters: GenerationParameters?,
+        modelTier: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        await chatStream(messages: messages, tools: tools, toolChoice: toolChoice, responseFormat: responseFormat, generationParameters: generationParameters, modelTier: modelTier)
     }
 
     func loadConfiguration() async {}

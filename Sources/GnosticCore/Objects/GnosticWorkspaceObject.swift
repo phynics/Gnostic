@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// The safe subset of a PositronicKit workspace tool definition advertised by Gnostic.
 public struct GnosticWorkspaceTool: Codable, Sendable {
@@ -16,7 +16,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
     public let toolDescription: String
 
     /// The tool's parameter schema.
-    public let parametersSchema: [String: PKShared.AnyCodable]
+    public let parametersSchema: [String: AnyCodable]
 
     /// An optional usage example.
     public let usageExample: String?

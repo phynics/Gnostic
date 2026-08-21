@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 
 /// Canonical Gnostic object type identifiers advertised through Axoloty.
 public enum GnosticObjectType {

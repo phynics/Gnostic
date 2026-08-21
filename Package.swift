@@ -16,7 +16,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.5.1"),
-        .package(url: "https://github.com/phynics/PositronicKit.git", branch: "main"),
+        // Temporary v4 pin until PositronicKit publishes the migrated API in a semantic release.
+        .package(url: "https://github.com/phynics/PositronicKit.git", revision: "a213244655b7389df135107fcb2c0ea78db42104"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
     targets: [
@@ -26,8 +28,8 @@ let package = Package(
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKPrompt", package: "PositronicKit"),
-                .product(name: "PKShared", package: "PositronicKit"),
-                .product(name: "PKUtilities", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .target(
@@ -44,7 +46,7 @@ let package = Package(
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKPrompt", package: "PositronicKit"),
-                .product(name: "PKShared", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .executableTarget(
@@ -54,7 +56,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKShared", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .testTarget(
@@ -63,6 +65,7 @@ let package = Package(
                 "GnosticRunner",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .executableTarget(
@@ -72,7 +75,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKShared", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "PKOpenAIProvider", package: "PositronicKit"),
                 .product(name: "PKOpenRouterProvider", package: "PositronicKit"),
                 .product(name: "PKOllamaProvider", package: "PositronicKit"),
@@ -86,7 +89,7 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "PKShared", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
     ],

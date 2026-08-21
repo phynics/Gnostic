@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 
 /// A PositronicKit workspace proxy backed by a catalogued Gnostic advertisement.

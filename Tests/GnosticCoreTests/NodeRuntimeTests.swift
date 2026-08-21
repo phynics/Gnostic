@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import PKShared
+import PKContracts
 import PositronicKit
 import Testing
 
@@ -1234,6 +1234,24 @@ private final class NodeToolCaptureLanguageModel: LanguageModel, @unchecked Send
         }
     }
 
+    func generationStream(
+        messages: [LLMMessage],
+        tools: [LLMToolDefinition]?,
+        toolChoice: LLMToolChoice?,
+        responseFormat: LLMResponseFormat?,
+        generationParameters: GenerationParameters?,
+        modelTier: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        await chatStream(
+            messages: messages,
+            tools: tools,
+            toolChoice: toolChoice,
+            responseFormat: responseFormat,
+            generationParameters: generationParameters,
+            modelTier: modelTier
+        )
+    }
+
     func loadConfiguration() async {}
     func updateConfiguration(_: LLMConfiguration) async throws {}
     func clearConfiguration() async {}
@@ -1348,6 +1366,24 @@ private final class ProviderIsolationLanguageModel: LanguageModel, @unchecked Se
             ))
             continuation.finish()
         }
+    }
+
+    func generationStream(
+        messages: [LLMMessage],
+        tools: [LLMToolDefinition]?,
+        toolChoice: LLMToolChoice?,
+        responseFormat: LLMResponseFormat?,
+        generationParameters: GenerationParameters?,
+        modelTier: ModelTier
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        await chatStream(
+            messages: messages,
+            tools: tools,
+            toolChoice: toolChoice,
+            responseFormat: responseFormat,
+            generationParameters: generationParameters,
+            modelTier: modelTier
+        )
     }
 
     func loadConfiguration() async {}

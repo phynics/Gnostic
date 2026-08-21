@@ -1,5 +1,5 @@
 {
-  "originHash" : "69c7b8404c3ed169e613f5352854c252a38141975d2dbdb83ff8363ca947ea40",
+  "originHash" : "b5250cd7147abfe7ce65a34804ba67c6e39c8d459a740153ef82c248a2b9b2e3",
   "pins" : [
     {
       "identity" : "axoloty",
@@ -61,7 +61,7 @@
       "location" : "https://github.com/phynics/PositronicKit.git",
       "state" : {
         "branch" : "main",
-        "revision" : "2485b6985e97600050bec2764a01a24e3922e76e"
+        "revision" : "a213244655b7389df135107fcb2c0ea78db42104"
       }
     },
     {
