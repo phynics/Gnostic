@@ -46,21 +46,21 @@ struct ACPProviderAcceptanceTests {
         try await first.start()
         try await second.start()
 
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { client.stop() }
-        try await client.connect()
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
         try await poll(timeout: .seconds(8)) {
-            await client.discoverAscendants().count == 2
+            await probe.discoverAscendants().count == 2
         }
 
-        let ascendants = await client.discoverAscendants()
+        let ascendants = await probe.discoverAscendants()
         #expect(Set(ascendants.map(\.name)) == ["First Ascendant", "Second Ascendant"])
         #expect(Set(ascendants.map(\.providerID)).count == 2)
         for ascendant in ascendants {
-            #expect(try await client.selectAscendant(id: ascendant.id, providerID: ascendant.providerID) == ascendant)
+            #expect(try await probe.selectAscendant(id: ascendant.id, providerID: ascendant.providerID) == ascendant)
         }
-        await #expect(throws: RemoteTurnClientError.self) {
-            _ = try await client.selectAscendant(id: sharedAscendantID)
+        await #expect(throws: ACPBrokerProbe.Error.self) {
+            _ = try await probe.selectAscendant(id: sharedAscendantID)
         }
 
         if let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] {
@@ -130,11 +130,11 @@ struct ACPProviderAcceptanceTests {
         try await first.start()
         try await second.start()
 
-        let discoveryClient = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { discoveryClient.stop() }
-        try await discoveryClient.connect()
-        let selected = try await waitForAscendant(secondAscendantID, using: discoveryClient)
-        let other = try await discoveryClient.selectAscendant(id: firstAscendantID)
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
+        let selected = try await waitForAscendant(secondAscendantID, using: probe)
+        let other = try await probe.selectAscendant(id: firstAscendantID)
 
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-acp-provider-state-\(UUID().uuidString)")
@@ -195,8 +195,8 @@ struct ACPProviderAcceptanceTests {
             return
         }
         #expect(ascendantRaw == selected.id.uuidString.lowercased())
-        let selectedTimelines = try await discoveryClient.listTimelines(providerID: selected.providerID)
-        let otherTimelines = try await discoveryClient.listTimelines(providerID: other.providerID)
+        let selectedTimelines = try await probe.listTimelines(providerID: selected.providerID)
+        let otherTimelines = try await probe.listTimelines(providerID: other.providerID)
         #expect(selectedTimelines.contains { $0.timelineID == timelineID })
         #expect(!otherTimelines.contains { $0.timelineID == timelineID })
 
@@ -281,7 +281,7 @@ struct ACPProviderAcceptanceTests {
     }
 
     @Test(
-        "legacy flat config migrates to schema v2 and drives a configured NodeRuntime chat tool turn",
+        "legacy flat config migrates to schema v2 and prepares an ACP workspace fixture",
         .timeLimit(.minutes(1))
     )
     @MainActor
@@ -316,10 +316,10 @@ struct ACPProviderAcceptanceTests {
         }
         try await runtime.start()
 
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
-        defer { client.stop() }
-        try await client.connect()
-        let ascendant = try await waitForOnlyAscendant(using: client)
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
+        let ascendant = try await waitForOnlyAscendant(using: probe)
         let profiles = try await runACPProfilesIfAvailable(
             host: "127.0.0.1",
             port: 1883,
@@ -331,27 +331,21 @@ struct ACPProviderAcceptanceTests {
             #expect(profiles.profiles.map(\.id) == ["gnostic-\(ascendant.id.uuidString.lowercased())"])
         }
 
-        let created = try await client.createTimeline(
+        let created = try await probe.createTimeline(
             title: "Migrated smoke timeline",
             ascendantID: ascendant.id,
             providerID: ascendant.providerID
         )
-        let workspace = try #require(try await client.listWorkspaces(providerID: ascendant.providerID).first { $0.id == workspaceID })
+        let workspace = try #require(try await probe.listWorkspaces(providerID: ascendant.providerID).first { $0.id == workspaceID })
         #expect(workspace.isAvailable)
-        #expect(try await client.attach(
+        #expect(try await probe.attach(
             workspaceID: workspaceID,
             timelineID: created.timelineID,
             providerID: ascendant.providerID
         ))
 
-        let result = try await client.turn(
-            message: "echo network",
-            timelineID: created.timelineID,
-            clientTurnID: "legacy-smoke:turn-1",
-            providerID: ascendant.providerID
-        )
-        #expect(result.text == "Echo received: network")
-        #expect(!result.replayed)
+        // User interaction is covered through the ACP JSON-RPC acceptance
+        // suites; this migration smoke intentionally stops at attachment.
     }
 }
 
@@ -382,24 +376,24 @@ private func acceptanceManifest(
 
 private func waitForAscendant(
     _ id: UUID,
-    using client: RemoteTurnClient
-) async throws -> RemoteTurnClient.DiscoveredAscendant {
+    using probe: ACPBrokerProbe
+) async throws -> ACPBrokerProbe.DiscoveredAscendant {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {
-        if let result = try? await client.selectAscendant(id: id) { return result }
+        if let result = try? await probe.selectAscendant(id: id) { return result }
         try await Task.sleep(for: .milliseconds(100))
     }
     throw ACPSubprocessError.timeout
 }
 
 private func waitForOnlyAscendant(
-    using client: RemoteTurnClient
-) async throws -> RemoteTurnClient.DiscoveredAscendant {
+    using probe: ACPBrokerProbe
+) async throws -> ACPBrokerProbe.DiscoveredAscendant {
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(8)
     while clock.now < deadline {
-        let ascendants = await client.discoverAscendants()
+        let ascendants = await probe.discoverAscendants()
         if ascendants.count == 1 { return ascendants[0] }
         try await Task.sleep(for: .milliseconds(100))
     }

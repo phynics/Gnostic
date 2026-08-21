@@ -107,6 +107,30 @@ struct BackendArchitectureFitnessTests {
             }
         }
 
+        let acpTransport = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCLI/ACP/RemoteTurnClient.swift"),
+            encoding: .utf8
+        )
+        for removedMethod in [
+            "func invokeWorkspace(",
+            "func listTimelines(",
+            "func updateTimeline(",
+            "func listWorkspaces(",
+            "func attach(",
+            "func detach(",
+            "func discoverServedTimeline(",
+        ] {
+            #expect(!acpTransport.contains(removedMethod), "Direct-client method '\(removedMethod)' remains in the ACP transport.")
+        }
+
+        for relativePath in [
+            "Tests/GnosticCLITests/ACP/ACPProviderAcceptanceTests.swift",
+            "Tests/GnosticCLITests/ACP/ACPSubprocessTests.swift",
+        ] {
+            let source = try String(contentsOf: rootURL.appendingPathComponent(relativePath), encoding: .utf8)
+            #expect(!source.contains("RemoteTurnClient"), "ACP acceptance test still depends on production broker transport: \(relativePath)")
+        }
+
         let sourceRoot = rootURL.appendingPathComponent("Sources")
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
             where relativePath.hasSuffix(".swift") && relativePath != "GnosticCore/Adapters/PositronicAscendantAdapter.swift" {
