@@ -9,16 +9,10 @@ import PositronicKit
 public final class TimelineService {
     private let ascendantIDs: Set<UUID>
     private let registry: NodeRegistry
-    private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
-    private let isClosed: @MainActor () -> Bool
-    private let lifecycleGeneration: @MainActor () -> UInt64
-    private let isCurrentBackend: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
-    private let backendLease: @MainActor (UUID, any AscendantBackend) -> UUID?
-    private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
+    private let backendProvider: any BackendSessionProviding
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
-    private var quarantinedAscendantIDs: Set<UUID> = []
 
-    init(
+    convenience init(
         ascendantIDs: Set<UUID>,
         registry: NodeRegistry,
         isClosed: @escaping @MainActor () -> Bool,
@@ -29,14 +23,31 @@ public final class TimelineService {
         lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
         advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
     ) {
+        self.init(
+            ascendantIDs: ascendantIDs,
+            registry: registry,
+            backendProvider: ClosureBackendSessionProvider(
+                isRunning: { !isClosed() },
+                lifecycleGeneration: lifecycleGeneration,
+                adapter: adapter,
+                current: isCurrentBackend,
+                backendLease: backendLease,
+                failure: lifecycleFailure,
+                backend: { _ in throw NodeRuntimeError.notRunning }
+            ),
+            advertise: advertise
+        )
+    }
+
+    init(
+        ascendantIDs: Set<UUID>,
+        registry: NodeRegistry,
+        backendProvider: any BackendSessionProviding,
+        advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
+    ) {
         self.ascendantIDs = ascendantIDs
         self.registry = registry
-        self.isClosed = isClosed
-        self.lifecycleGeneration = lifecycleGeneration
-        self.isCurrentBackend = isCurrentBackend
-        self.backendLease = backendLease
-        self.adapter = adapter
-        self.lifecycleFailure = lifecycleFailure
+        self.backendProvider = backendProvider
         self.advertise = advertise
     }
 
@@ -55,95 +66,92 @@ public final class TimelineService {
         return Self.status(record.timeline)
     }
     func create(title: String, ascendantID: UUID) async throws -> TimelineStatus {
-        guard !isClosed() else { throw NodeRuntimeError.notRunning }
-        guard !quarantinedAscendantIDs.contains(ascendantID),
-              let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        let generation = lifecycleGeneration()
-        guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
-        let lease = backendLease(ascendantID, adapter)
+        guard !backendProvider.isClosed else { throw NodeRuntimeError.notRunning }
+        guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        let adapter = session.backend
+        let generation = session.generation
+        let lease = backendProvider.lease(for: ascendantID, backend: adapter)
+        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
         let requestedID = UUID.makeVersion4()
         var projectedID = requestedID
         do {
             let timeline = try await adapter.createTimeline(id: requestedID, title: title)
-            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
             projectedID = timeline.id
             guard timeline.id == requestedID else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
             _ = try await registry.registerRuntimeTimeline(
                 timeline,
                 ascendantID: ascendantID,
                 backendLease: lease,
                 generation: generation
             )
-            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, false)
             return Self.status(timeline)
         } catch {
             if let backendError = error as? AscendantBackendError,
                case let .lifecycleUnusable(failure) = backendError {
-                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
-                quarantinedAscendantIDs.insert(ascendantID)
-                await lifecycleFailure(ascendantID, adapter, failure)
+                guard backendProvider.isCurrentSession(session) else { throw error }
+                await backendProvider.markLifecycleFailure(session, failure: failure)
             } else {
-                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                guard backendProvider.isCurrentSession(session) else { throw error }
                 if projectedID != requestedID {
                     await adapter.removeTimeline(id: projectedID)
-                    guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                    guard backendProvider.isCurrentSession(session) else { throw error }
                 }
                 await adapter.removeTimeline(id: requestedID)
-                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                guard backendProvider.isCurrentSession(session) else { throw error }
             }
             throw error
         }
     }
     func list() async throws -> [TimelineStatus] {
-        guard !isClosed() else { throw NodeRuntimeError.notRunning }
+        guard !backendProvider.isClosed else { throw NodeRuntimeError.notRunning }
         return await registry.listTimelines().map(Self.status)
     }
     func rename(_ request: TimelineUpdateRequest) async throws -> TimelineStatus {
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
-        guard !quarantinedAscendantIDs.contains(ascendantID),
-              let adapter = adapter(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        let generation = lifecycleGeneration()
-        guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
-        let lease = backendLease(ascendantID, adapter)
+        guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        let adapter = session.backend
+        let generation = session.generation
+        let lease = backendProvider.lease(for: ascendantID, backend: adapter)
+        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
         let previous = await registry.timeline(id: request.timelineID)?.timeline
-        guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
         let timeline: AscendantRuntimeTimeline
         do {
             timeline = try await adapter.renameTimeline(id: request.timelineID, title: request.title)
-            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
         } catch let error as AscendantBackendError {
             if case let .lifecycleUnusable(failure) = error {
-                guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
-                quarantinedAscendantIDs.insert(ascendantID)
-                await lifecycleFailure(ascendantID, adapter, failure)
+                guard backendProvider.isCurrentSession(session) else { throw error }
+                await backendProvider.markLifecycleFailure(session, failure: failure)
             }
             throw error
         }
         do {
-            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
             _ = try await registry.commitBackendTimeline(
                 timeline,
                 ascendantID: ascendantID,
                 backendLease: lease,
                 generation: generation
             )
-            guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, true)
             return Self.status(timeline)
         }
         catch {
             if let previous {
                 do {
-                    guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                    guard backendProvider.isCurrentSession(session) else { throw error }
                     _ = try await adapter.renameTimeline(id: previous.id, title: previous.title)
-                    guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
+                    guard backendProvider.isCurrentSession(session) else { throw error }
                 } catch let rollbackError as AscendantBackendError {
                     if case let .lifecycleUnusable(failure) = rollbackError {
-                        guard isCurrentBackend(ascendantID, adapter, generation) else { throw error }
-                        quarantinedAscendantIDs.insert(ascendantID)
-                        await lifecycleFailure(ascendantID, adapter, failure)
+                        guard backendProvider.isCurrentSession(session) else { throw error }
+                        await backendProvider.markLifecycleFailure(session, failure: failure)
                     }
                 } catch {}
             }
@@ -152,7 +160,4 @@ public final class TimelineService {
     }
     static func status(_ timeline: AscendantRuntimeTimeline) -> TimelineStatus { .init(timelineID: timeline.id, title: timeline.title, attachedWorkspaceIDs: timeline.attachedWorkspaceIDs, isArchived: timeline.isArchived, isPrivate: timeline.isPrivate) }
 
-    func restoreBackend(_ ascendantID: UUID) {
-        quarantinedAscendantIDs.remove(ascendantID)
-    }
 }

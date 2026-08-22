@@ -56,24 +56,76 @@ public struct AscendantAdapterRegistry: Sendable {
 /// A registry of local Workspace adapters keyed by the manifest's `kind` field.
 public struct WorkspaceAdapterRegistry: Sendable {
     public typealias Factory = @Sendable (_ configuration: NodeManifest.Workspace, _ reference: WorkspaceReference) throws -> any Workspace
+    /// Preferred factory seam. The adapter owns its final reference and tool
+    /// projection instead of receiving a runtime-owned provisional reference.
+    public typealias ProductFactory = @Sendable (_ configuration: NodeManifest.Workspace) throws -> any Workspace
 
     private var factories: [String: Factory]
+    private var productFactories: [String: ProductFactory]
 
     public init() {
-        factories = ["echo": { _, reference in EchoWorkspace(reference: reference) }]
+        factories = [:]
+        productFactories = ["echo": { configuration in
+            guard let uri = WorkspaceURI(parsing: configuration.uri) else {
+                throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
+            }
+            let reference = WorkspaceReference(
+                id: configuration.id,
+                uri: uri,
+                location: .runtime,
+                tools: EchoWorkspace.toolDefinitions
+            )
+            return EchoWorkspace(reference: reference)
+        }]
     }
 
+    /// Registers a legacy factory that accepts a compatibility reference.
+    /// New adapters should use `registerProduct(kind:factory:)` so that the
+    /// adapter, rather than NodeRuntime, owns its identity and tools.
+    @available(*, deprecated, message: "Use registerProduct(kind:factory:) so the adapter owns its final WorkspaceReference.")
     public mutating func register(kind: String, factory: @escaping Factory) {
         factories[kind] = factory
+        productFactories.removeValue(forKey: kind)
+    }
+
+    public mutating func registerProduct(kind: String, factory: @escaping ProductFactory) {
+        productFactories[kind] = factory
+        factories.removeValue(forKey: kind)
+    }
+
+    @MainActor
+    func makeWorkspace(for configuration: NodeManifest.Workspace) throws -> any Workspace {
+        if let factory = productFactories[configuration.kind] {
+            return try factory(configuration)
+        }
+        guard let factory = factories[configuration.kind] else {
+            throw NodeRuntimeError.unsupportedWorkspaceKind(configuration.kind)
+        }
+        guard let uri = WorkspaceURI(parsing: configuration.uri) else {
+            throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
+        }
+        return try factory(configuration, WorkspaceReference(
+            id: configuration.id,
+            uri: uri,
+            location: .runtime,
+            tools: EchoWorkspace.toolDefinitions
+        ))
+    }
+
+    func usesProductFactory(kind: String) -> Bool {
+        productFactories[kind] != nil
     }
 
     func makeWorkspace(for configuration: NodeManifest.Workspace, reference: WorkspaceReference) throws -> any Workspace {
+        if let factory = productFactories[configuration.kind] {
+            return try factory(configuration)
+        }
         guard let factory = factories[configuration.kind] else { throw NodeRuntimeError.unsupportedWorkspaceKind(configuration.kind) }
         return try factory(configuration, reference)
     }
 
     func validate(kinds: some Sequence<String>) throws {
-        for kind in kinds where factories[kind] == nil {
+        for kind in kinds where factories[kind] == nil && productFactories[kind] == nil {
             throw NodeRuntimeError.unsupportedWorkspaceKind(kind)
         }
     }
@@ -129,6 +181,19 @@ public struct NodeRuntimeAdapters: Sendable {
 /// A local echo Workspace implementation. All configured echo Workspaces use
 /// the same multiplexed provider route while retaining their own stable IDs.
 public struct EchoWorkspace: Workspace, Sendable {
+    public static let toolID = "workspace_echo"
+    public static let toolDefinitions: [ToolReference] = [.custom(.init(
+        id: toolID,
+        name: "Workspace echo",
+        description: "Echoes a value from the workspace.",
+        parametersSchema: [
+            "type": AnyCodable("object"),
+            "properties": AnyCodable(["value": AnyCodable(["type": AnyCodable("string")])]),
+            "required": AnyCodable(["value"]),
+            "additionalProperties": AnyCodable(false)
+        ]
+    ))]
+
     public let reference: WorkspaceReference
     public var id: UUID { reference.id }
 
@@ -137,7 +202,7 @@ public struct EchoWorkspace: Workspace, Sendable {
     public func listTools() async throws -> [ToolReference] { reference.tools }
 
     public func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
-        guard id == NodeRuntime.echoToolID else { throw WorkspaceError.toolExecutionNotSupported }
+        guard id == Self.toolID else { throw WorkspaceError.toolExecutionNotSupported }
         return .success(parameters["value"]?.value as? String ?? "")
     }
 

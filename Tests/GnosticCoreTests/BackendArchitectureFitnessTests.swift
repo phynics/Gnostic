@@ -45,7 +45,26 @@ struct BackendArchitectureFitnessTests {
         )
         #expect(!nodeRuntime.contains("if backend.kind == \"positronic\""))
         #expect(!nodeRuntime.contains("PositronicBackendHostServices"))
-        #expect(nodeRuntime.contains("BackendWorkspaceDiscoveryCapability"))
+        let assembly = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/NodeAssembly.swift"),
+            encoding: .utf8
+        )
+        #expect(assembly.contains("BackendWorkspaceDiscoveryCapability"))
+        #expect(!nodeRuntime.contains("Container.resolve"))
+        #expect(!nodeRuntime.contains("NodeTransport("))
+        #expect(nodeRuntime.contains("NodeRuntimeHost"))
+        #expect(!nodeRuntime.contains("reconstructBackend"))
+        #expect(!nodeRuntime.contains("backendHealthByID"))
+        for relativePath in [
+            "Sources/GnosticCore/Runtime/TimelineService.swift",
+            "Sources/GnosticCore/Runtime/WorkspaceService.swift",
+            "Sources/GnosticCore/Runtime/ChatTurnService.swift",
+        ] {
+            let service = try String(contentsOf: rootURL.appendingPathComponent(relativePath), encoding: .utf8)
+            #expect(!service.contains("quarantinedAscendantIDs"))
+            #expect(!service.contains("private let isCurrentBackend"))
+            #expect(service.contains("BackendSessionProviding"))
+        }
     }
 
     @Test("pre-reset Agent and Chat compatibility does not remain in Gnostic seams")

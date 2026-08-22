@@ -8,15 +8,12 @@ import PositronicKit
 /// Serializes turns independently of the node's transport/lifecycle shell.
 @MainActor
 public final class TurnService {
-    private let backend: @MainActor (UUID) async throws -> any AscendantBackend
     private let registry: NodeRegistry
     private let coordinator: AscendantTurnCoordinator
     private let updates: AscendantTurnUpdateStore
-    private let isRunning: @MainActor () -> Bool
-    private let lifecycleGeneration: @MainActor () -> UInt64
-    private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
+    private let backendProvider: any BackendSessionProviding
 
-    init(
+    convenience init(
         registry: NodeRegistry,
         coordinator: AscendantTurnCoordinator,
         updates: AscendantTurnUpdateStore,
@@ -25,25 +22,44 @@ public final class TurnService {
         lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
         lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in }
     ) {
+        self.init(
+            registry: registry,
+            coordinator: coordinator,
+            updates: updates,
+            backendProvider: ClosureBackendSessionProvider(
+                isRunning: isRunning,
+                lifecycleGeneration: lifecycleGeneration,
+                adapter: { _ in nil as (any AscendantBackend)? },
+                current: { _, _, _ in true },
+                backendLease: { _, _ in nil as UUID? },
+                failure: lifecycleFailure,
+                backend: backend
+            )
+        )
+    }
+
+    init(
+        registry: NodeRegistry,
+        coordinator: AscendantTurnCoordinator,
+        updates: AscendantTurnUpdateStore,
+        backendProvider: any BackendSessionProviding
+    ) {
         self.registry = registry
         self.coordinator = coordinator
         self.updates = updates
-        self.isRunning = isRunning
-        self.lifecycleGeneration = lifecycleGeneration
-        self.backend = backend
-        self.lifecycleFailure = lifecycleFailure
+        self.backendProvider = backendProvider
     }
 
     func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
-        guard isRunning() else { throw NodeRuntimeError.notRunning }
-        let generation = lifecycleGeneration()
+        guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
+        let generation = backendProvider.lifecycleGeneration
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
-            let adapter: any AscendantBackend
+            let session: AscendantBackendSession
             do {
-                adapter = try await self.backend(ascendantID)
+                session = try await self.backendProvider.sessionForTurn(ascendantID)
             } catch let error as AscendantTurnError {
                 throw error
             } catch {
@@ -54,18 +70,19 @@ public final class TurnService {
                 )
             }
             do {
-                let result = try await adapter.runTurn(
+                let result = try await session.backend.runTurn(
                     AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
                     updates: sink
                 )
-                guard await self.isRunning(),
-                      await self.lifecycleGeneration() == generation else {
+                guard await self.backendProvider.isCurrentSession(session),
+                      await self.backendProvider.isRunning,
+                      await self.backendProvider.lifecycleGeneration == generation else {
                     throw CancellationError()
                 }
                 return result
             } catch let error as AscendantBackendError {
                 if case let .lifecycleUnusable(failure) = error {
-                    await self.lifecycleFailure(ascendantID, adapter, failure)
+                    await self.backendProvider.markLifecycleFailure(session, failure: failure)
                 }
                 throw error
             }

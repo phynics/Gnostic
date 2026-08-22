@@ -135,10 +135,10 @@ struct NodeRuntimeTests {
             id: workspaceID,
             uri: WorkspaceURI(parsing: "echo://provider-check")!,
             location: .runtime,
-            tools: [.custom(.init(id: NodeRuntime.echoToolID, name: "Echo", description: "Echoes."))]
+            tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
         )
         let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: EchoWorkspace(reference: reference)])
-        let invocation = WorkspaceInvocation(workspaceID: workspaceID, providerID: "other-node", toolID: NodeRuntime.echoToolID, arguments: [:])
+        let invocation = WorkspaceInvocation(workspaceID: workspaceID, providerID: "other-node", toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
         let response = try await provider.handle(parameters: payload, expectedProviderID: "this-node")
@@ -158,12 +158,12 @@ struct NodeRuntimeTests {
             id: workspaceID,
             uri: WorkspaceURI(parsing: "echo://provider-cancellation")!,
             location: .runtime,
-            tools: [.custom(.init(id: NodeRuntime.echoToolID, name: "Echo", description: "Echoes."))]
+            tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
         )
         let provider = MultiplexedWorkspaceProvider(
             workspaces: [workspaceID: CancellationWorkspace(reference: reference)]
         )
-        let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: NodeRuntime.echoToolID, arguments: [:])
+        let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
         await #expect(throws: CancellationError.self) {
@@ -636,6 +636,29 @@ struct NodeRuntimeTests {
         }
     }
 
+    @Test("startup is fenced when shutdown wins while preparation is suspended")
+    @MainActor
+    func startupDoesNotResumeAfterConcurrentShutdown() async throws {
+        let coordinator = RuntimeLifecycleCoordinator()
+        let gate = LifecycleGate()
+        var operationRan = false
+        let startup = Task { @MainActor in
+            try await coordinator.start(
+                prepare: { _ in await gate.hold() },
+                operation: { operationRan = true }
+            )
+        }
+
+        await gate.waitUntilOpened()
+        await coordinator.shutdown { _ in }
+        await gate.release()
+
+        await #expect(throws: NodeRuntimeError.notRunning) {
+            try await startup.value
+        }
+        #expect(operationRan == false)
+    }
+
     @Test("advertised workspaces are callable before startup returns") @MainActor
     func advertisedWorkspaceIsAvailableBeforeStartReturns() async throws {
         let gate = LifecycleGate()
@@ -659,7 +682,7 @@ struct NodeRuntimeTests {
 
         let payload = try JSONEncoder().encode(WorkspaceInvocation(
             workspaceID: workspaceID,
-            toolID: NodeRuntime.echoToolID,
+            toolID: EchoWorkspace.toolID,
             arguments: ["value": AnyCodable("during-advertisement")]
         ))
         let response = try? await consumer.call(
@@ -829,7 +852,7 @@ struct NodeRuntimeTests {
             workspaces: [.init(id: workspaceID, name: "Permissioned", uri: "echo://permissioned", kind: "permissioned-echo")]
         )
         var adapters = NodeRuntimeAdapters.default
-        adapters.workspaces.register(kind: "permissioned-echo") { configuration, _ in
+        adapters.workspaces.registerProduct(kind: "permissioned-echo") { configuration in
             ProjectedToolWorkspace(configuration: configuration)
         }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
@@ -850,6 +873,51 @@ struct NodeRuntimeTests {
         }?.workspace)
         #expect(workspace.tools.map(\.id) == ["permissioned_echo"])
         #expect(workspace.tools.allSatisfy { $0.requiresPermission })
+    }
+
+    @Test("legacy Workspace factories retain compatibility tool metadata")
+    @available(*, deprecated, message: "This test intentionally exercises the legacy factory seam.")
+    @MainActor
+    func legacyWorkspaceFactoryRetainsCompatibilityTools() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000203")!
+        let manifest = try makeManifest(
+            namespace: "node-runtime-legacy-workspace",
+            ascendantID: "A21D0000-0000-4000-8000-000000000204",
+            timelineID: "A21D0000-0000-4000-8000-000000000205",
+            workspaceIDs: [workspaceID.uuidString],
+            workspaceKind: "legacy-echo"
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.register(kind: "legacy-echo") { _, reference in
+            EchoWorkspace(reference: reference)
+        }
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+        #expect(reference.tools.map(\.toolID) == [EchoWorkspace.toolID])
+    }
+
+    @Test("product Workspace adapters own their reference and tool projection")
+    @MainActor
+    func productWorkspaceAdapterOwnsReference() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000199")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000200")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-product-workspace"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000201")!),
+            ascendants: [.init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000202")!, name: "Atlas", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000202")!)],
+            workspaces: [.init(id: workspaceID, name: "Product", uri: "echo://product", kind: "product-workspace")]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.registerProduct(kind: "product-workspace") { configuration in
+            ProjectedToolWorkspace(configuration: configuration, location: .attached)
+        }
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+        #expect(reference.tools.map(\.toolID) == ["permissioned_echo"])
+        #expect(reference.location == .attached)
     }
 
     @Test("runtime advertises complete objects over the broker") @MainActor
@@ -1082,13 +1150,14 @@ struct NodeRuntimeTests {
         namespace: String = "node-runtime-tests",
         ascendantID: String,
         timelineID: String,
-        workspaceIDs: [String]
+        workspaceIDs: [String],
+        workspaceKind: String = "echo"
     ) throws -> NodeManifest {
         let ascendant = try #require(UUID(uuidString: ascendantID))
         let timeline = try #require(UUID(uuidString: timelineID))
         let workspaces = try workspaceIDs.map { value in
             let id = try #require(UUID(uuidString: value))
-            return NodeManifest.Workspace(id: id, name: "Echo \(value.suffix(4))", uri: "echo://\(value.suffix(4))")
+            return NodeManifest.Workspace(id: id, name: "Echo \(value.suffix(4))", uri: "echo://\(value.suffix(4))", kind: workspaceKind)
         }
         return NodeManifest(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
@@ -1286,11 +1355,11 @@ private struct ProjectedToolWorkspace: Workspace, Sendable {
     let reference: WorkspaceReference
     var id: UUID { reference.id }
 
-    init(configuration: NodeManifest.Workspace) {
+    init(configuration: NodeManifest.Workspace, location: WorkspaceReference.WorkspaceLocation = .runtime) {
         reference = WorkspaceReference(
             id: configuration.id,
             uri: WorkspaceURI(parsing: configuration.uri)!,
-            location: .runtime,
+            location: location,
             tools: [.custom(.init(
                 id: "permissioned_echo",
                 name: "Permissioned echo",
