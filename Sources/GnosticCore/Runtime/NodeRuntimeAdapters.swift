@@ -82,6 +82,7 @@ public struct WorkspaceAdapterRegistry: Sendable {
     /// Registers a legacy factory that accepts a compatibility reference.
     /// New adapters should use `registerProduct(kind:factory:)` so that the
     /// adapter, rather than NodeRuntime, owns its identity and tools.
+    @available(*, deprecated, message: "Use registerProduct(kind:factory:) so the adapter owns its final WorkspaceReference.")
     public mutating func register(kind: String, factory: @escaping Factory) {
         factories[kind] = factory
         productFactories.removeValue(forKey: kind)
@@ -107,11 +108,14 @@ public struct WorkspaceAdapterRegistry: Sendable {
             id: configuration.id,
             uri: uri,
             location: .runtime,
-            tools: []
+            tools: EchoWorkspace.toolDefinitions
         ))
     }
 
-    @available(*, deprecated, message: "Use makeWorkspace(for:) or registerProduct(kind:factory:)")
+    func usesProductFactory(kind: String) -> Bool {
+        productFactories[kind] != nil
+    }
+
     func makeWorkspace(for configuration: NodeManifest.Workspace, reference: WorkspaceReference) throws -> any Workspace {
         if let factory = productFactories[configuration.kind] {
             return try factory(configuration)

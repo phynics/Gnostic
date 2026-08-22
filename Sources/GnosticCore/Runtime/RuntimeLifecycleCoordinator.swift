@@ -11,6 +11,11 @@ final class RuntimeLifecycleCoordinator {
         guard try lifetime.beginStart() else { return }
         let generation = lifetime.generation
         await prepare(generation)
+        guard lifetime.state == .starting,
+              lifetime.generation == generation,
+              !Task.isCancelled else {
+            throw NodeRuntimeError.notRunning
+        }
         let startup = Task { @MainActor in
             try await operation()
         }

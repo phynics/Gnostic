@@ -55,12 +55,23 @@ struct NodeAssembly {
                 throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
             }
             let workspace = try adapters.workspaces.makeWorkspace(for: configuration)
-            references[configuration.id] = WorkspaceReference(
-                id: configuration.id,
-                uri: uri,
-                location: .runtime,
-                tools: try await workspace.listTools()
-            )
+            let reference: WorkspaceReference
+            if adapters.workspaces.usesProductFactory(kind: configuration.kind) {
+                let ownedReference = workspace.reference
+                guard ownedReference.id == configuration.id,
+                      ownedReference.uri.description == uri.description else {
+                    throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
+                }
+                reference = ownedReference
+            } else {
+                reference = WorkspaceReference(
+                    id: configuration.id,
+                    uri: uri,
+                    location: .runtime,
+                    tools: try await workspace.listTools()
+                )
+            }
+            references[configuration.id] = reference
             workspaces[configuration.id] = workspace
         }
         for timeline in plan.timelines {
@@ -165,16 +176,8 @@ struct NodeAssembly {
                     services: services,
                     timelines: timelineConfigurations
                 )
-                do {
-                    try instance.validateConfiguration()
-                } catch {
-                    await retirementSupervisor.retire(
-                        [(id: instance.identity.id, backend: instance)],
-                        stage: .initializationRollback
-                    )
-                    throw error
-                }
                 instances[ascendant.id] = instance
+                try instance.validateConfiguration()
                 health[ascendant.id] = .healthy
                 identities.append(instance.identity)
                 operatedTimelines += try await instance.operatedTimelines()

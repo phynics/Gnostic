@@ -310,9 +310,9 @@ struct ACPProviderAcceptanceTests {
 
         var adapters = NodeRuntimeAdapters.default
         adapters.ascendants.register(kind: "positronic") { _, _ in LegacyMigrationToolLanguageModel() }
-        adapters.workspaces.register(kind: "echo") { configuration, _ in
+        adapters.workspaces.registerProduct(kind: "echo") { configuration in
             let tool = WorkspaceToolDefinition(
-                id: NodeRuntime.echoToolID,
+                id: EchoWorkspace.toolID,
                 name: "Workspace echo",
                 description: "Echoes fixture input.",
                 requiresPermission: true

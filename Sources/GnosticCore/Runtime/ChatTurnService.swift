@@ -8,11 +8,10 @@ import PositronicKit
 /// Serializes turns independently of the node's transport/lifecycle shell.
 @MainActor
 public final class TurnService {
-    private let backend: @MainActor (UUID) async throws -> any AscendantBackend
     private let registry: NodeRegistry
     private let coordinator: AscendantTurnCoordinator
     private let updates: AscendantTurnUpdateStore
-    private let access: BackendSessionAccess
+    private let backendProvider: any BackendSessionProviding
 
     convenience init(
         registry: NodeRegistry,
@@ -27,16 +26,15 @@ public final class TurnService {
             registry: registry,
             coordinator: coordinator,
             updates: updates,
-            access: BackendSessionAccess(
+            backendProvider: ClosureBackendSessionProvider(
                 isRunning: isRunning,
-                isClosed: { !isRunning() },
                 lifecycleGeneration: lifecycleGeneration,
-                session: { _ in nil },
-                isCurrent: { _, _, _ in true },
-                lease: { _, _ in nil },
-                lifecycleFailure: lifecycleFailure
-            ),
-            backend: backend
+                adapter: { _ in nil as (any AscendantBackend)? },
+                current: { _, _, _ in true },
+                backendLease: { _, _ in nil as UUID? },
+                failure: lifecycleFailure,
+                backend: backend
+            )
         )
     }
 
@@ -44,26 +42,24 @@ public final class TurnService {
         registry: NodeRegistry,
         coordinator: AscendantTurnCoordinator,
         updates: AscendantTurnUpdateStore,
-        access: BackendSessionAccess,
-        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend
+        backendProvider: any BackendSessionProviding
     ) {
         self.registry = registry
         self.coordinator = coordinator
         self.updates = updates
-        self.access = access
-        self.backend = backend
+        self.backendProvider = backendProvider
     }
 
     func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
-        guard access.isRunning() else { throw NodeRuntimeError.notRunning }
-        let generation = access.lifecycleGeneration()
+        guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
+        let generation = backendProvider.lifecycleGeneration
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
             let adapter: any AscendantBackend
             do {
-                adapter = try await self.backend(ascendantID)
+                adapter = try await self.backendProvider.backendForTurn(ascendantID)
             } catch let error as AscendantTurnError {
                 throw error
             } catch {
@@ -78,14 +74,14 @@ public final class TurnService {
                     AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
                     updates: sink
                 )
-                guard await self.access.isRunning(),
-                      await self.access.lifecycleGeneration() == generation else {
+                guard await self.backendProvider.isRunning,
+                      await self.backendProvider.lifecycleGeneration == generation else {
                     throw CancellationError()
                 }
                 return result
             } catch let error as AscendantBackendError {
                 if case let .lifecycleUnusable(failure) = error {
-                    await self.access.lifecycleFailure(ascendantID, adapter, failure)
+                    await self.backendProvider.markLifecycleFailure(ascendantID, backend: adapter, failure: failure)
                 }
                 throw error
             }

@@ -10,6 +10,7 @@ import PositronicKit
 @MainActor
 public final class NodeRuntime {
     /// Compatibility alias for the echo adapter's public tool identifier.
+    @available(*, deprecated, message: "Use EchoWorkspace.toolID instead.")
     public nonisolated static let echoToolID = EchoWorkspace.toolID
 
     public let plan: NodeLaunchPlan
@@ -17,46 +18,24 @@ public final class NodeRuntime {
     public let host: String
     public let port: Int
     public let namespace: String
-    private let lifecycleCoordinator: RuntimeLifecycleCoordinator
-    private let lifetime: NodeRuntimeLifetime
-    public var isRunning: Bool { lifetime.isRunning }
+    private let runtimeHost: NodeRuntimeHost
+    public var isRunning: Bool { runtimeHost.isRunning }
     /// Canonical domain state. Adapter persistence and network objects are
     /// projections of the records accepted by this actor.
     private let registry: NodeRegistry
 
-    private let container: Container
-    private let communication: CommunicationManager
-    private let lifecycle: ObjectLifecycleController
-    private let catalog: NetworkCatalog
-    private let subscription: GnosticSubscription
     private let adapters: NodeRuntimeAdapters
     private let initialWorkspaceReferences: [UUID: WorkspaceReference]
     private let localWorkspaces: [UUID: any Workspace]
-    private let backendWorkspaceService: GnosticWorkspaceBackendService
     private let backendSupervisor: AscendantBackendSupervisor
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
     private let permissionCoordinator: AscendantPermissionCoordinator
     private let projectionRelay = NodeProjectionRelay()
-    private lazy var backendAccess = BackendSessionAccess(
-        isRunning: { [weak self] in self?.isRunning == true },
-        isClosed: { [weak self] in self?.lifetime.state == .closed },
-        lifecycleGeneration: { [weak self] in self?.lifetime.generation ?? 0 },
-        session: { [weak self] ascendantID in self?.backendSupervisor.session(for: ascendantID) },
-        isCurrent: { [weak self] ascendantID, backend, generation in
-            self?.backendSupervisor.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
-        },
-        lease: { [weak self] ascendantID, backend in
-            self?.backendSupervisor.lease(for: ascendantID, backend: backend)
-        },
-        lifecycleFailure: { [weak self] ascendantID, backend, failure in
-            await self?.backendSupervisor.markLifecycleFailure(ascendantID, backend: backend, failure: failure)
-        }
-    )
     private lazy var workspaceDiscovery = AxolotyWorkspaceDiscovery(
-        catalog: catalog,
-        subscription: subscription,
-        communication: communication
+        catalog: runtimeHost.resources.catalog,
+        subscription: runtimeHost.resources.subscription,
+        communication: runtimeHost.resources.communication
     )
     private lazy var workspaceService = WorkspaceService(
         plan: plan,
@@ -64,8 +43,8 @@ public final class NodeRuntime {
         discovery: workspaceDiscovery,
         localWorkspaces: localWorkspaces,
         references: initialWorkspaceReferences,
-        backendWorkspaceService: backendWorkspaceService,
-        access: backendAccess,
+        backendWorkspaceService: runtimeHost.resources.backendWorkspaceService,
+        backendProvider: backendSupervisor,
         readvertiseTimeline: { [projectionRelay] timeline in
             projectionRelay.projectTimeline(timeline, replacing: true)
         }
@@ -74,65 +53,14 @@ public final class NodeRuntime {
         registry: registry,
         coordinator: turnCoordinator,
         updates: turnUpdates,
-        access: backendAccess,
-        backend: { [weak self] ascendantID in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.backendSupervisor.backendForTurn(ascendantID)
-        }
+        backendProvider: backendSupervisor
     )
     private lazy var timelineService = TimelineService(
         ascendantIDs: Set(plan.ascendants.map(\.id)),
         registry: registry,
-        access: backendAccess,
+        backendProvider: backendSupervisor,
         advertise: { [projectionRelay] timeline, replacing in
             projectionRelay.projectTimeline(timeline, replacing: replacing)
-        }
-    )
-    private lazy var transport = NodeTransport(
-        communication: communication,
-        lifecycle: lifecycle,
-        registry: registry,
-        ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
-        ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
-        workspaceReferences: { [initialWorkspaceReferences, plan] in
-            initialWorkspaceReferences.values.filter { reference in
-                plan.workspaces.contains { $0.id == reference.id }
-            }
-        },
-        localWorkspaces: localWorkspaces,
-        isAvailable: { [weak self] in self?.isRunning == true },
-        turn: { [weak self] request in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.turnService.turn(request)
-        },
-        timelineStatus: { [weak self] id in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.timelineService.status(for: id)
-        },
-        selectAscendant: { [weak self] id in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try self.timelineService.selectAscendant(requested: id)
-        },
-        createTimeline: { [weak self] title, ascendantID in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.timelineService.create(title: title, ascendantID: ascendantID)
-        },
-        listTimelines: { [weak self] in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.timelineService.list()
-        },
-        renameTimeline: { [weak self] request in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.timelineService.rename(request)
-        },
-        listWorkspaces: { [weak self] in await self?.workspaceService.listAttachable() ?? [] },
-        attachWorkspace: { [weak self] request in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.workspaceService.attach(request)
-        },
-        detachWorkspace: { [weak self] request in
-            guard let self else { throw NodeRuntimeError.notRunning }
-            return try await self.workspaceService.detach(request)
         }
     )
     public convenience init(plan: NodeLaunchPlan, adapters: NodeRuntimeAdapters = .default) async throws {
@@ -151,8 +79,6 @@ public final class NodeRuntime {
         namespace = plan.broker.namespace
         self.adapters = adapters
         let coordinator = RuntimeLifecycleCoordinator()
-        lifecycleCoordinator = coordinator
-        lifetime = coordinator.lifetime
         let retirementSupervisor = BackendRetirementSupervisor(policy: retirementPolicy)
         let updates = AscendantTurnUpdateStore()
         turnUpdates = updates
@@ -163,12 +89,16 @@ public final class NodeRuntime {
         initialWorkspaceReferences = products.references
         localWorkspaces = products.workspaces
         let infrastructure = try NodeAssembly.resolveInfrastructure(for: plan, products: products)
-        container = infrastructure.container
-        communication = infrastructure.communication
-        lifecycle = infrastructure.lifecycle
-        catalog = infrastructure.catalog
-        subscription = infrastructure.subscription
-        backendWorkspaceService = infrastructure.backendWorkspaceService
+        let runtimeHost = NodeRuntimeHost(
+            lifecycleCoordinator: coordinator,
+            resources: infrastructure,
+            adapters: adapters,
+            turnUpdates: updates,
+            permissionCoordinator: permissionCoordinator,
+            turnCoordinator: turnCoordinator,
+            projectionRelay: projectionRelay
+        )
+        self.runtimeHost = runtimeHost
 
         do {
             let products = try await NodeAssembly.buildBackends(
@@ -176,7 +106,7 @@ public final class NodeRuntime {
                 adapters: adapters,
                 infrastructure: infrastructure,
                 permissionCoordinator: permissionCoordinator,
-                lifetime: lifetime,
+                lifetime: runtimeHost.lifetime,
                 projectionRelay: projectionRelay,
                 retirementSupervisor: retirementSupervisor
             )
@@ -205,9 +135,60 @@ public final class NodeRuntime {
                 }
             )
         } catch {
-            container.shutdown()
+            infrastructure.container.shutdown()
             throw error
         }
+
+        let wiring = NodeRuntimeHost.TransportWiring(
+            ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
+            ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
+            workspaceReferences: { [initialWorkspaceReferences, plan] in
+                initialWorkspaceReferences.values.filter { reference in
+                    plan.workspaces.contains { $0.id == reference.id }
+                }
+            },
+            localWorkspaces: localWorkspaces,
+            isAvailable: { [weak self] in self?.isRunning == true },
+            turn: { [weak self] request in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.turnService.turn(request)
+            },
+            timelineStatus: { [weak self] id in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.timelineService.status(for: id)
+            },
+            selectAscendant: { [weak self] id in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try self.timelineService.selectAscendant(requested: id)
+            },
+            createTimeline: { [weak self] title, ascendantID in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.timelineService.create(title: title, ascendantID: ascendantID)
+            },
+            listTimelines: { [weak self] in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.timelineService.list()
+            },
+            renameTimeline: { [weak self] request in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.timelineService.rename(request)
+            },
+            listWorkspaces: { [weak self] in await self?.workspaceService.listAttachable() ?? [] },
+            attachWorkspace: { [weak self] request in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.workspaceService.attach(request)
+            },
+            detachWorkspace: { [weak self] request in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.workspaceService.detach(request)
+            }
+        )
+        runtimeHost.configure(
+            registry: registry,
+            backendSupervisor: backendSupervisor,
+            wiring: wiring,
+            refreshUnresolved: { [weak self] in await self?.workspaceService.refreshUnresolved() }
+        )
     }
 
     public convenience init(launchPlan: NodeLaunchPlan, adapters: NodeRuntimeAdapters = .default) async throws {
@@ -215,62 +196,11 @@ public final class NodeRuntime {
     }
 
     public func start() async throws {
-        try await lifecycleCoordinator.start(
-            prepare: { [registry] generation in
-                await registry.setLifecycleGeneration(generation)
-            },
-            operation: { [weak self] in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                try await self.performStart()
-            }
-        )
-    }
-
-    private func performStart() async throws {
-        do {
-            projectionRelay.bind(transport)
-            try await container.startAndWaitUntilReady()
-            try requireActiveStart()
-            try adapters.lifecycle.afterConnection()
-            try await subscription.start()
-            try requireActiveStart()
-            startNetworkResolution()
-            try await transport.registerOperations(
-                turnUpdates: turnUpdates,
-                permissionCoordinator: permissionCoordinator
-            )
-
-            let events = await turnUpdates.events()
-            lifetime.turnUpdatePublishTask = Task { [communication] in
-                for await event in events {
-                    guard let channel = try? AscendantTurnProvider.updateEvent(event) else { continue }
-                    communication.publishChannel(channel)
-                }
-            }
-
-            try requireActiveStart()
-            try adapters.lifecycle.afterRegistration()
-            try await adapters.lifecycle.beforeDiscoverResponder()
-            await transport.registerDiscoverResponder()
-            try await adapters.lifecycle.afterDiscoverResponder()
-            try requireActiveStart()
-            try adapters.lifecycle.beforeAdvertisement()
-            lifetime.markRunning()
-            await transport.advertiseAll()
-            try await adapters.lifecycle.afterAdvertisement()
-            try requireActiveRunningStart()
-        } catch {
-            await lifecycleCoordinator.rollback(close: true) { [weak self] cleanup in
-                await self?.performCleanup(cleanup)
-            }
-            throw error
-        }
+        try await runtimeHost.start()
     }
 
     public func shutdown() async {
-        await lifecycleCoordinator.shutdown { [weak self] cleanup in
-            await self?.performCleanup(cleanup)
-        }
+        await runtimeHost.shutdown()
     }
 
     /// Returns the current health slot for an Ascendant's backend. Health is
@@ -363,40 +293,6 @@ public final class NodeRuntime {
 
     public func networkAttachmentStatus(workspaceID: UUID) async -> WorkspaceAttachmentStatus {
         await workspaceService.networkAttachmentStatus(workspaceID: workspaceID)
-    }
-
-    private func startNetworkResolution() {
-        lifetime.networkResolutionTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self, self.lifetime.state != .closed else { return }
-                await self.workspaceService.refreshUnresolved()
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-        }
-    }
-
-    private func requireActiveStart() throws {
-        try lifecycleCoordinator.requireActiveStart()
-    }
-
-    private func requireActiveRunningStart() throws {
-        try lifecycleCoordinator.requireActiveRunningStart()
-    }
-
-    private func performCleanup(_ cleanup: NodeRuntimeLifetime.CleanupTasks) async {
-        await registry.fenceBackendLeases(at: lifetime.generation)
-        await permissionCoordinator.denyAll(reason: "connection_lost")
-        transport.cancel()
-        backendSupervisor.cancelReconstructions()
-        await turnCoordinator.cancelAll(waitForCompletion: false)
-        await turnUpdates.finish()
-        await backendSupervisor.retireAll(stage: .runtimeShutdown)
-        cleanup.publishTask?.cancel()
-        await cleanup.publishTask?.value
-        cleanup.resolutionTask?.cancel()
-        await cleanup.resolutionTask?.value
-        subscription.stop()
-        container.shutdown()
     }
 
 }

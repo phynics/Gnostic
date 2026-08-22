@@ -14,27 +14,86 @@ struct AscendantBackendSession {
     let generation: UInt64
 }
 
-/// Small read/lease seam shared by domain services. It keeps backend policy
-/// callbacks in one typed boundary rather than repeating a bundle at every
-/// service construction site.
+/// Typed admission boundary shared by domain services. The supervisor owns
+/// the lifecycle and lease policy; services never receive callback bundles.
 @MainActor
-struct BackendSessionAccess {
-    let isRunning: @MainActor () -> Bool
-    let isClosed: @MainActor () -> Bool
-    let lifecycleGeneration: @MainActor () -> UInt64
-    let session: @MainActor (UUID) -> AscendantBackendSession?
-    let isCurrent: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
-    let lease: @MainActor (UUID, any AscendantBackend) -> UUID?
-    let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
+protocol BackendSessionProviding: AnyObject, Sendable {
+    var isRunning: Bool { get }
+    var isClosed: Bool { get }
+    var lifecycleGeneration: UInt64 { get }
+    func session(for ascendantID: UUID) -> AscendantBackendSession?
+    func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend
+    func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool
+    func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID?
+    func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async
+}
 
-    func adapter(_ ascendantID: UUID) -> (any AscendantBackend)? { session(ascendantID)?.backend }
+/// Compatibility bridge for tests and older internal composition points that
+/// still provide the pre-supervisor callback shape.
+@MainActor
+final class ClosureBackendSessionProvider: BackendSessionProviding {
+    private let running: @MainActor () -> Bool
+    private let generation: @MainActor () -> UInt64
+    private let backend: @MainActor (UUID) async throws -> any AscendantBackend
+    private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
+    private let current: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
+    private let backendLease: @MainActor (UUID, any AscendantBackend) -> UUID?
+    private let failure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
+
+    init(
+        isRunning: @escaping @MainActor () -> Bool,
+        lifecycleGeneration: @escaping @MainActor () -> UInt64,
+        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
+        current: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool,
+        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID?,
+        failure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void,
+        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend
+    ) {
+        self.running = isRunning
+        self.generation = lifecycleGeneration
+        self.adapter = adapter
+        self.current = current
+        self.backendLease = backendLease
+        self.failure = failure
+        self.backend = backend
+    }
+
+    var isRunning: Bool { running() }
+    var isClosed: Bool { !running() }
+    var lifecycleGeneration: UInt64 { generation() }
+
+    func session(for ascendantID: UUID) -> AscendantBackendSession? {
+        guard let backend = adapter(ascendantID) else { return nil }
+        return AscendantBackendSession(
+            ascendantID: ascendantID,
+            backend: backend,
+            lease: backendLease(ascendantID, backend) ?? UUID(),
+            generation: lifecycleGeneration
+        )
+    }
+
+    func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend {
+        try await backend(ascendantID)
+    }
+
+    func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool {
+        current(ascendantID, backend, generation)
+    }
+
+    func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID? {
+        backendLease(ascendantID, backend)
+    }
+
+    func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async {
+        await self.failure(ascendantID, backend, failure)
+    }
 }
 
 /// Owns backend instances, health, leases, reconstruction single-flight, and
 /// bounded retirement. NodeRuntime only composes this module and delegates to
 /// it; Timeline, Workspace, and Turn operations never inspect backend slots.
 @MainActor
-final class AscendantBackendSupervisor {
+final class AscendantBackendSupervisor: BackendSessionProviding {
     struct BackendSpec {
         let ascendant: NodeManifest.Ascendant
         let configuration: AscendantBackendConfiguration
@@ -98,6 +157,10 @@ final class AscendantBackendSupervisor {
 
     var identities: [AscendantBackendIdentity] { backendIdentities }
 
+    var isRunning: Bool { lifetime.isRunning }
+    var isClosed: Bool { lifetime.state == .closed }
+    var lifecycleGeneration: UInt64 { lifetime.generation }
+
     func bind(attachWorkspace: @escaping (UUID, UUID, UUID, UUID) async throws -> Void) {
         backendWorkspaceAttachment = attachWorkspace
     }
@@ -129,6 +192,10 @@ final class AscendantBackendSupervisor {
             lease: lease,
             generation: currentGeneration
         )
+    }
+
+    func session(for ascendantID: UUID) -> AscendantBackendSession? {
+        session(for: ascendantID, generation: nil)
     }
 
     func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend {

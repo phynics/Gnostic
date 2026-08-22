@@ -38,6 +38,34 @@ struct BackendLifecycleTests {
         #expect(await probe.shutdownCount == 1)
     }
 
+    @Test("operated timeline projection failure retires the created backend")
+    @MainActor
+    func operatedTimelineProjectionFailureRollsBackCreatedBackend() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000343")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000344")!
+        let probe = LifecycleBackendProbe()
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "timeline-projection-failure") { ascendant, _, _, timelines in
+            _ = await probe.recordFactory(timelines: timelines)
+            return LifecycleFixtureBackend(
+                ascendant: ascendant,
+                timelines: timelines,
+                probe: probe,
+                outcome: .success,
+                throwsFromOperatedTimelines: true
+            )
+        }
+        let manifest = makeManifest(
+            ascendants: [.init(id: ascendantID, name: "Projection failure", defaultTimelineID: timelineID, kind: "timeline-projection-failure")],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
+        )
+
+        await #expect(throws: InjectedLifecycleFailure.self) {
+            _ = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        }
+        #expect(await probe.shutdownCount == 1)
+    }
+
     @Test("one lifecycle failure is isolated and the next new Turn reconstructs only that Ascendant")
     @MainActor
     func lifecycleFailureIsolatedAndReconstructed() async throws {
@@ -1052,6 +1080,7 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     private let probe: LifecycleBackendProbe
     private var outcomes: [Outcome]
     private let factoryNumber: Int
+    private let throwsFromOperatedTimelines: Bool
 
     init(
         ascendant: NodeManifest.Ascendant,
@@ -1059,7 +1088,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         probe: LifecycleBackendProbe,
         outcome: Outcome,
         outcomes: [Outcome] = [],
-        factoryNumber: Int = 1
+        factoryNumber: Int = 1,
+        throwsFromOperatedTimelines: Bool = false
     ) {
         let now = Date()
         identity = .init(
@@ -1079,10 +1109,14 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         self.probe = probe
         self.outcomes = outcomes.isEmpty ? [outcome] : outcomes
         self.factoryNumber = factoryNumber
+        self.throwsFromOperatedTimelines = throwsFromOperatedTimelines
     }
 
     func validateConfiguration() throws {}
-    func operatedTimelines() async throws -> [AscendantBackendTimeline] { timelines }
+    func operatedTimelines() async throws -> [AscendantBackendTimeline] {
+        if throwsFromOperatedTimelines { throw InjectedLifecycleFailure() }
+        return timelines
+    }
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         await probe.beginBlockedOperation("create")
         await probe.waitForBlockedOperationRelease("create")

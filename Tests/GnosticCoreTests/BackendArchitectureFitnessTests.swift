@@ -51,6 +51,8 @@ struct BackendArchitectureFitnessTests {
         )
         #expect(assembly.contains("BackendWorkspaceDiscoveryCapability"))
         #expect(!nodeRuntime.contains("Container.resolve"))
+        #expect(!nodeRuntime.contains("NodeTransport("))
+        #expect(nodeRuntime.contains("NodeRuntimeHost"))
         #expect(!nodeRuntime.contains("reconstructBackend"))
         #expect(!nodeRuntime.contains("backendHealthByID"))
         for relativePath in [
@@ -61,7 +63,7 @@ struct BackendArchitectureFitnessTests {
             let service = try String(contentsOf: rootURL.appendingPathComponent(relativePath), encoding: .utf8)
             #expect(!service.contains("quarantinedAscendantIDs"))
             #expect(!service.contains("private let isCurrentBackend"))
-            #expect(service.contains("BackendSessionAccess"))
+            #expect(service.contains("BackendSessionProviding"))
         }
     }
 
