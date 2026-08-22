@@ -372,7 +372,7 @@ struct BackendLifecycleTests {
         await deadline.release()
         try await withTestTimeout { await backendProbe.waitUntilShutdownFinished() }
 
-        #expect(await backendProbe.shutdownCount == 0)
+        #expect(await backendProbe.shutdownCount == 1)
         await backendProbe.releaseFirstCancel()
         await shutdown.value
         try await withTestTimeout { await backendProbe.waitUntilShutdownCount(1) }
@@ -415,7 +415,7 @@ struct BackendLifecycleTests {
         await deadline.release()
         try await withTestTimeout { await backendProbe.waitUntilShutdownFinished() }
         #expect(await construction.value)
-        #expect(await backendProbe.shutdownCount == 0)
+        #expect(await backendProbe.shutdownCount == 1)
 
         await backendProbe.releaseFirstCancel()
         try await withTestTimeout { await backendProbe.waitUntilShutdownCount(1) }

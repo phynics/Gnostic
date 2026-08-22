@@ -802,8 +802,8 @@ public final class NodeRuntime {
     private func performCleanup(_ cleanup: NodeRuntimeLifetime.CleanupTasks) async {
         await registry.fenceBackendLeases(at: lifetime.generation)
         backendLeases.removeAll()
-        transport.cancel()
         await permissionCoordinator.denyAll(reason: "connection_lost")
+        transport.cancel()
         cleanup.reconstructions.forEach { $0.cancel() }
         await turnCoordinator.cancelAll(waitForCompletion: false)
         await turnUpdates.finish()
@@ -816,6 +816,7 @@ public final class NodeRuntime {
         cleanup.publishTask?.cancel()
         await cleanup.publishTask?.value
         cleanup.resolutionTask?.cancel()
+        await cleanup.resolutionTask?.value
         subscription.stop()
         container.shutdown()
     }

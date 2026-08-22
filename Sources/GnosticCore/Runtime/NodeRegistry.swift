@@ -183,6 +183,15 @@ public actor NodeRegistry {
         lifecycleGeneration = max(lifecycleGeneration, generation)
     }
 
+    /// Replaces the lease accepted by canonical mutation methods.
+    ///
+    /// This overload preserves the public registry seam. Runtime lifecycle
+    /// code uses the generation-aware overload below when publishing a
+    /// reconstructed backend.
+    public func activateBackendLease(_ lease: UUID, for ascendantID: UUID) {
+        backendLeases[ascendantID] = lease
+    }
+
     func fenceBackendLeases(at generation: UInt64) {
         lifecycleGeneration = max(lifecycleGeneration, generation)
         backendLeases.removeAll()

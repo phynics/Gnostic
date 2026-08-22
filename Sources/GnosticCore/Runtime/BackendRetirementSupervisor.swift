@@ -40,15 +40,27 @@ private actor BackendRetirementLatch {
         resolve(.completed)
     }
 
-    func timedOut() {
-        guard outcome == nil else { return }
-        resolve(.timedOut(pending))
+    func timedOutIDs() -> Set<UUID> {
+        guard outcome == nil else { return [] }
+        let timedOutIDs = pending
+        resolve(.timedOut(timedOutIDs))
+        return timedOutIDs
     }
 
     private func resolve(_ outcome: Outcome) {
         self.outcome = outcome
         waiter?.resume(returning: outcome)
         waiter = nil
+    }
+}
+
+private actor BackendRetirementGate {
+    private var shutdownStarted = false
+
+    func beginShutdown() -> Bool {
+        guard !shutdownStarted else { return false }
+        shutdownStarted = true
+        return true
     }
 }
 
@@ -80,23 +92,39 @@ final class BackendRetirementSupervisor {
 
         let ids = Set(backends.map(\.id))
         let latch = BackendRetirementLatch(ids: ids)
-        let retirementTasks = backends.map { entry in
-            Task { @MainActor in
+        let gates = Dictionary(uniqueKeysWithValues: backends.map { ($0.id, BackendRetirementGate()) })
+        let retirementTasks = Dictionary(uniqueKeysWithValues: backends.map { entry in
+            let gate = gates[entry.id]!
+            return (entry.id, Task { @MainActor in
                 await entry.backend.cancel()
-                await entry.backend.shutdown()
+                if await gate.beginShutdown() {
+                    await entry.backend.shutdown()
+                }
                 await latch.completed(entry.id)
-            }
-        }
-        let deadlineTask = Task {
+            })
+        })
+        let deadlineTask = Task { @MainActor in
             await policy.waitForBudget()
-            await latch.timedOut()
+            let timedOutIDs = await latch.timedOutIDs()
+            for entry in backends where timedOutIDs.contains(entry.id) {
+                retirementTasks[entry.id]?.cancel()
+                let gate = gates[entry.id]!
+                // This is intentionally unstructured. A backend may ignore
+                // cancellation, so a structured child would keep shutdown
+                // alive until the backend eventually returns.
+                Task { @MainActor in
+                    guard await gate.beginShutdown() else { return }
+                    await entry.backend.shutdown()
+                    await latch.completed(entry.id)
+                }
+            }
         }
 
         let outcome = await latch.wait()
         deadlineTask.cancel()
 
         guard case let .timedOut(timedOutIDs) = outcome else { return }
-        retirementTasks.forEach { $0.cancel() }
+        retirementTasks.values.forEach { $0.cancel() }
         for id in timedOutIDs {
             logger.warning("backend retirement exceeded deadline", metadata: [
                 "backend": .string(id.uuidString.lowercased()),
