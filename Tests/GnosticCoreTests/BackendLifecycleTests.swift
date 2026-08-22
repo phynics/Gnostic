@@ -525,7 +525,11 @@ struct BackendLifecycleTests {
         let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000349")!
         let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000350")!
         let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000351")!
-        let probe = LifecycleBackendProbe(blockFirstRun: true, successfulRecovery: true)
+        let probe = LifecycleBackendProbe(
+            blockFirstRun: true,
+            successfulRecovery: true,
+            reuseBackendOnReconstruction: true
+        )
         let runtime = try await NodeRuntime(
             plan: makeManifest(
                 ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: firstTimelineID, kind: "lifecycle-fixture")],
@@ -552,6 +556,8 @@ struct BackendLifecycleTests {
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
 
         #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        #expect(await probe.factoryCount == 2)
+        #expect(await probe.reusedBackendCount == 1)
         await probe.releaseRun()
         #expect(await blocked.value == nil)
     }
@@ -711,10 +717,15 @@ struct BackendLifecycleTests {
             if number == 2, probe.shouldBlockSecondFactory {
                 await probe.waitForSecondFactoryRelease()
             }
+            if number == 2, probe.shouldReuseBackendOnReconstruction,
+               let backend = await probe.reusableBackend() {
+                await probe.recordReusedBackend()
+                return backend
+            }
             let sequence = number == 1
                 ? (outcomes[ascendant.id] ?? [])
                 : (probe.shouldUseSuccessfulRecovery ? [.success] : Array((outcomes[ascendant.id] ?? []).dropFirst()))
-            return LifecycleFixtureBackend(
+            let backend = LifecycleFixtureBackend(
                 ascendant: ascendant,
                 timelines: timelines,
                 probe: probe,
@@ -722,6 +733,10 @@ struct BackendLifecycleTests {
                 outcomes: sequence,
                 factoryNumber: number
             )
+            if number == 1, probe.shouldReuseBackendOnReconstruction {
+                await probe.retainReusableBackend(backend)
+            }
+            return backend
         }
         return adapters
     }
@@ -814,6 +829,7 @@ private actor LifecycleBackendProbe {
     private(set) var runCount = 0
     private(set) var renameCount = 0
     private(set) var workspaceAttachCount = 0
+    private(set) var reusedBackendCount = 0
     private(set) var factoryTimelineIDs: [[UUID]] = []
     private(set) var factoryAttachmentIDs: [[[UUID]]] = []
     private(set) var shutdownFinished = false
@@ -829,6 +845,8 @@ private actor LifecycleBackendProbe {
     let shouldFailSecondFactory: Bool
     let shouldBlockSecondLifecycle: Bool
     let shouldUseSuccessfulRecovery: Bool
+    let shouldReuseBackendOnReconstruction: Bool
+    private var retainedBackend: LifecycleFixtureBackend?
     private var blockedOperation: String?
     private var blockedOperationStarted = false
     private var blockedOperationReleased = false
@@ -872,6 +890,7 @@ private actor LifecycleBackendProbe {
         failSecondFactory: Bool = false,
         blockSecondLifecycle: Bool = false,
         successfulRecovery: Bool = false,
+        reuseBackendOnReconstruction: Bool = false,
         blockedOperation: String? = nil
     ) {
         shouldBlockSecondFactory = blockSecondFactory
@@ -886,7 +905,20 @@ private actor LifecycleBackendProbe {
         shouldFailSecondFactory = failSecondFactory
         shouldBlockSecondLifecycle = blockSecondLifecycle
         shouldUseSuccessfulRecovery = successfulRecovery
+        shouldReuseBackendOnReconstruction = reuseBackendOnReconstruction
         self.blockedOperation = blockedOperation
+    }
+
+    func retainReusableBackend(_ backend: LifecycleFixtureBackend) {
+        retainedBackend = backend
+    }
+
+    func reusableBackend() -> LifecycleFixtureBackend? {
+        retainedBackend
+    }
+
+    func recordReusedBackend() {
+        reusedBackendCount += 1
     }
 
     func recordFactory(timelines: [NodeManifest.Timeline] = []) -> Int {
@@ -905,11 +937,6 @@ private actor LifecycleBackendProbe {
         let ready = runCountWaiters.filter { $0.0 <= runCount }
         runCountWaiters.removeAll { $0.0 <= runCount }
         ready.forEach { $0.1.resume() }
-        if shouldBlockRun || (shouldBlockFirstRun && runCount == 1) {
-            runStarted = true
-            runWaiters.forEach { $0.resume() }
-            runWaiters.removeAll()
-        }
     }
     func recordRename() { renameCount += 1 }
     func recordWorkspaceAttach() { workspaceAttachCount += 1 }
@@ -982,6 +1009,9 @@ private actor LifecycleBackendProbe {
 
     func waitForRunReleaseIfNeeded() async {
         guard (shouldBlockRun || (shouldBlockFirstRun && runCount == 1)), !runReleased else { return }
+        runStarted = true
+        runWaiters.forEach { $0.resume() }
+        runWaiters.removeAll()
         await withCheckedContinuation { continuation in
             runReleaseWaiters.append(continuation)
         }
@@ -995,9 +1025,12 @@ private actor LifecycleBackendProbe {
     }
 
     func waitUntilRunStarted() async {
-        guard !shouldBlockRun || runStarted else { return }
-        await withCheckedContinuation { continuation in
-            runWaiters.append(continuation)
+        guard shouldBlockRun || shouldBlockFirstRun else { return }
+        guard runStarted else {
+            await withCheckedContinuation { continuation in
+                runWaiters.append(continuation)
+            }
+            return
         }
     }
 

@@ -57,9 +57,9 @@ public final class TurnService {
         let generation = backendProvider.lifecycleGeneration
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
-            let adapter: any AscendantBackend
+            let session: AscendantBackendSession
             do {
-                adapter = try await self.backendProvider.backendForTurn(ascendantID)
+                session = try await self.backendProvider.sessionForTurn(ascendantID)
             } catch let error as AscendantTurnError {
                 throw error
             } catch {
@@ -70,15 +70,11 @@ public final class TurnService {
                 )
             }
             do {
-                let result = try await adapter.runTurn(
+                let result = try await session.backend.runTurn(
                     AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
                     updates: sink
                 )
-                guard await self.backendProvider.isCurrentBackend(
-                    ascendantID,
-                    backend: adapter,
-                    generation: generation
-                ),
+                guard await self.backendProvider.isCurrentSession(session),
                       await self.backendProvider.isRunning,
                       await self.backendProvider.lifecycleGeneration == generation else {
                     throw CancellationError()
@@ -86,7 +82,7 @@ public final class TurnService {
                 return result
             } catch let error as AscendantBackendError {
                 if case let .lifecycleUnusable(failure) = error {
-                    await self.backendProvider.markLifecycleFailure(ascendantID, backend: adapter, failure: failure)
+                    await self.backendProvider.markLifecycleFailure(session, failure: failure)
                 }
                 throw error
             }

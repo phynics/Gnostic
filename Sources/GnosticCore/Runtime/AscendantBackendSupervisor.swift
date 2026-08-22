@@ -22,9 +22,11 @@ protocol BackendSessionProviding: AnyObject, Sendable {
     var isClosed: Bool { get }
     var lifecycleGeneration: UInt64 { get }
     func session(for ascendantID: UUID) -> AscendantBackendSession?
-    func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend
+    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession
     func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool
+    func isCurrentSession(_ session: AscendantBackendSession) -> Bool
     func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID?
+    func markLifecycleFailure(_ session: AscendantBackendSession, failure: AscendantBackendLifecycleFailure) async
     func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async
 }
 
@@ -72,16 +74,33 @@ final class ClosureBackendSessionProvider: BackendSessionProviding {
         )
     }
 
-    func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend {
-        try await backend(ascendantID)
+    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession {
+        let backend = try await self.backend(ascendantID)
+        return AscendantBackendSession(
+            ascendantID: ascendantID,
+            backend: backend,
+            lease: backendLease(ascendantID, backend) ?? UUID(),
+            generation: lifecycleGeneration
+        )
     }
 
     func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool {
         current(ascendantID, backend, generation)
     }
 
+    func isCurrentSession(_ session: AscendantBackendSession) -> Bool {
+        guard current(session.ascendantID, session.backend, session.generation) else { return false }
+        guard let lease = backendLease(session.ascendantID, session.backend) else { return true }
+        return lease == session.lease
+    }
+
     func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID? {
         backendLease(ascendantID, backend)
+    }
+
+    func markLifecycleFailure(_ session: AscendantBackendSession, failure: AscendantBackendLifecycleFailure) async {
+        guard isCurrentSession(session) else { return }
+        await self.failure(session.ascendantID, session.backend, failure)
     }
 
     func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async {
@@ -198,15 +217,17 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         session(for: ascendantID, generation: nil)
     }
 
-    func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend {
+    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession {
         guard lifetime.state == .running else { throw NodeRuntimeError.notRunning }
         guard backendSpecs[ascendantID] != nil else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
-        if let backend = session(for: ascendantID)?.backend {
-            return backend
+        if let session = session(for: ascendantID) {
+            return session
         }
-        return try await reconstructBackend(for: ascendantID)
+        _ = try await reconstructBackend(for: ascendantID)
+        guard let session = session(for: ascendantID) else { throw NodeRuntimeError.notRunning }
+        return session
     }
 
     func isCurrentBackend(
@@ -218,6 +239,12 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         return (session.backend as AnyObject) === (backend as AnyObject)
     }
 
+    func isCurrentSession(_ session: AscendantBackendSession) -> Bool {
+        guard let current = self.session(for: session.ascendantID, generation: session.generation) else { return false }
+        return current.lease == session.lease
+            && (current.backend as AnyObject) === (session.backend as AnyObject)
+    }
+
     func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID? {
         guard let session = session(for: ascendantID),
               (session.backend as AnyObject) === (backend as AnyObject) else { return nil }
@@ -225,23 +252,37 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     }
 
     func markLifecycleFailure(
+        _ session: AscendantBackendSession,
+        failure: AscendantBackendLifecycleFailure
+    ) async {
+        guard let current = self.session(for: session.ascendantID, generation: session.generation),
+              current.lease == session.lease,
+              (current.backend as AnyObject) === (session.backend as AnyObject) else { return }
+        await quarantineBackend(session.ascendantID, failure: failure)
+    }
+
+    func markLifecycleFailure(
         _ ascendantID: UUID,
         backend failedBackend: any AscendantBackend,
-        failure _: AscendantBackendLifecycleFailure
+        failure: AscendantBackendLifecycleFailure
     ) async {
         guard backendSpecs[ascendantID] != nil,
               let currentBackend = ascendantAdapters[ascendantID],
               (currentBackend as AnyObject) === (failedBackend as AnyObject) else { return }
+        await quarantineBackend(ascendantID, failure: failure)
+    }
+
+    private func quarantineBackend(_ ascendantID: UUID, failure _: AscendantBackendLifecycleFailure) async {
+        guard backendSpecs[ascendantID] != nil,
+              let backend = ascendantAdapters.removeValue(forKey: ascendantID) else { return }
         backendHealthByID[ascendantID] = .failed
         readvertiseAscendant(ascendantID, health: .failed)
         backendLeases.removeValue(forKey: ascendantID)
         await registry.invalidateBackendLease(for: ascendantID)
-        if let backend = ascendantAdapters.removeValue(forKey: ascendantID) {
-            await backendRetirementSupervisor.retire(
-                [(id: ascendantID, backend: backend)],
-                stage: .quarantine
-            )
-        }
+        await backendRetirementSupervisor.retire(
+            [(id: ascendantID, backend: backend)],
+            stage: .quarantine
+        )
     }
 
     func cancelReconstructions() {
