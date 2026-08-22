@@ -140,6 +140,8 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private let backendSpecs: [UUID: BackendSpec]
     private var backendHealthByID: [UUID: AscendantBackendHealth]
     private var backendLeases: [UUID: UUID]
+    /// Retained so a factory cannot reissue an instance with late calls from a prior lease.
+    private var retiredBackends: [any AscendantBackend] = []
     private var reconstructionTasks: [UUID: Task<any AscendantBackend, Error>] = [:]
 
     init(
@@ -279,6 +281,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         readvertiseAscendant(ascendantID, health: .failed)
         backendLeases.removeValue(forKey: ascendantID)
         await registry.invalidateBackendLease(for: ascendantID)
+        retiredBackends.append(backend)
         await backendRetirementSupervisor.retire(
             [(id: ascendantID, backend: backend)],
             stage: .quarantine
@@ -295,6 +298,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         ascendantAdapters.removeAll()
         backendLeases.removeAll()
         for backend in backends { backendHealthByID[backend.id] = .unknown }
+        retiredBackends.append(contentsOf: backends.map(\.backend))
         await backendRetirementSupervisor.retire(backends, stage: stage)
     }
 
@@ -338,6 +342,9 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
                     timelines: state.timelines
                 )
                 candidate = created
+                guard !self.isRetiredBackend(created) else {
+                    throw ReconstructionFailure(detail: "backend factory returned a retired instance")
+                }
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     candidate = nil
                     await self.retireCandidate(ascendantID, backend: created)
@@ -403,6 +410,12 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
             [(id: ascendantID, backend: backend)],
             stage: .reconstructionCandidate
         )
+    }
+
+    private func isRetiredBackend(_ candidate: any AscendantBackend) -> Bool {
+        retiredBackends.contains { retired in
+            (retired as AnyObject) === (candidate as AnyObject)
+        }
     }
 
     private func readvertiseAscendant(_ ascendantID: UUID, health: AscendantBackendHealth) {

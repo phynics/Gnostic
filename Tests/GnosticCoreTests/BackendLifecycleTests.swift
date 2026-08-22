@@ -299,11 +299,19 @@ struct BackendLifecycleTests {
             Issue.record("The lifecycle failure unexpectedly succeeded.")
         } catch {}
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
-        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        do {
+            _ = try await runtime.turn(.init(message: "recovery-reused", timelineID: recoveryTimelineID, clientTurnID: "recovery-reused"))
+            Issue.record("A retired backend instance was accepted as a replacement.")
+        } catch {}
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.factoryCount == 2)
         #expect(await probe.reusedBackendCount == 1)
+        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        #expect(await probe.factoryCount == 3)
         await probe.releaseBlockedOperation()
         #expect(await blocked.value == nil)
+        let blockedTimelineID = try #require(await probe.createdTimelineIDs.first)
+        #expect(await probe.latestBackendContainsTimeline(blockedTimelineID) == false)
     }
 
     @Test("an in-flight Workspace mutation is fenced by a same-instance backend replacement")
@@ -347,11 +355,18 @@ struct BackendLifecycleTests {
             Issue.record("The lifecycle failure unexpectedly succeeded.")
         } catch {}
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
-        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        do {
+            _ = try await runtime.turn(.init(message: "recovery-reused", timelineID: recoveryTimelineID, clientTurnID: "recovery-reused"))
+            Issue.record("A retired backend instance was accepted as a replacement.")
+        } catch {}
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.factoryCount == 2)
         #expect(await probe.reusedBackendCount == 1)
+        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        #expect(await probe.factoryCount == 3)
         await probe.releaseBlockedOperation()
         #expect(await blocked.value == nil)
+        #expect(await probe.latestBackendContainsWorkspace(workspaceID, on: firstTimelineID))
     }
 
     @Test("reconstruction rehydrates current registry Timelines and attachment intent")
@@ -647,9 +662,15 @@ struct BackendLifecycleTests {
         } catch {}
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
 
-        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        do {
+            _ = try await runtime.turn(.init(message: "recovery-reused", timelineID: recoveryTimelineID, clientTurnID: "recovery-reused"))
+            Issue.record("A retired backend instance was accepted as a replacement.")
+        } catch {}
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.factoryCount == 2)
         #expect(await probe.reusedBackendCount == 1)
+        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        #expect(await probe.factoryCount == 3)
         await probe.releaseRun()
         #expect(await blocked.value == nil)
     }
@@ -812,6 +833,7 @@ struct BackendLifecycleTests {
             if number == 2, probe.shouldReuseBackendOnReconstruction,
                let backend = await probe.reusableBackend() {
                 await probe.recordReusedBackend()
+                await probe.recordCreatedBackend(backend)
                 return backend
             }
             let sequence = number == 1
@@ -828,6 +850,7 @@ struct BackendLifecycleTests {
             if number == 1, probe.shouldReuseBackendOnReconstruction {
                 await probe.retainReusableBackend(backend)
             }
+            await probe.recordCreatedBackend(backend)
             return backend
         }
         return adapters
@@ -922,6 +945,7 @@ private actor LifecycleBackendProbe {
     private(set) var renameCount = 0
     private(set) var workspaceAttachCount = 0
     private(set) var reusedBackendCount = 0
+    private(set) var createdTimelineIDs: [UUID] = []
     private(set) var factoryTimelineIDs: [[UUID]] = []
     private(set) var factoryAttachmentIDs: [[[UUID]]] = []
     private(set) var shutdownFinished = false
@@ -939,6 +963,7 @@ private actor LifecycleBackendProbe {
     let shouldUseSuccessfulRecovery: Bool
     let shouldReuseBackendOnReconstruction: Bool
     private var retainedBackend: LifecycleFixtureBackend?
+    private var latestBackend: LifecycleFixtureBackend?
     private var blockedOperation: String?
     private var blockedOperationStarted = false
     private var blockedOperationReleased = false
@@ -1011,6 +1036,27 @@ private actor LifecycleBackendProbe {
 
     func recordReusedBackend() {
         reusedBackendCount += 1
+    }
+
+    func recordCreatedBackend(_ backend: LifecycleFixtureBackend) {
+        latestBackend = backend
+    }
+
+    func recordCreatedTimeline(_ id: UUID) {
+        createdTimelineIDs.append(id)
+    }
+
+    func latestBackendContainsTimeline(_ id: UUID) async -> Bool {
+        guard let latestBackend,
+              let timelines = try? await latestBackend.operatedTimelines() else { return false }
+        return timelines.contains { $0.id == id }
+    }
+
+    func latestBackendContainsWorkspace(_ workspaceID: UUID, on timelineID: UUID) async -> Bool {
+        guard let latestBackend,
+              let timelines = try? await latestBackend.operatedTimelines(),
+              let timeline = timelines.first(where: { $0.id == timelineID }) else { return false }
+        return timeline.attachedWorkspaceIDs.contains(workspaceID)
     }
 
     func recordFactory(timelines: [NodeManifest.Timeline] = []) -> Int {
@@ -1284,6 +1330,7 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         return timelines
     }
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        await probe.recordCreatedTimeline(id)
         await probe.beginBlockedOperation("create")
         await probe.waitForBlockedOperationRelease("create")
         let now = Date()
