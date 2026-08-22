@@ -262,6 +262,98 @@ struct BackendLifecycleTests {
         #expect(await probe.workspaceAttachCount == 1)
     }
 
+    @Test("an in-flight Timeline mutation is fenced by a same-instance backend replacement")
+    @MainActor
+    func inFlightTimelineMutationIsFencedByBackendReplacement() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000352")!
+        let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000353")!
+        let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000354")!
+        let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000355")!
+        let probe = LifecycleBackendProbe(
+            failRename: true,
+            successfulRecovery: true,
+            reuseBackendOnReconstruction: true,
+            blockedOperation: "create"
+        )
+        let runtime = try await NodeRuntime(
+            plan: makeManifest(
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: firstTimelineID, kind: "lifecycle-fixture")],
+                timelines: [
+                    .init(id: firstTimelineID, title: "First", operatingAscendantID: ascendantID),
+                    .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
+                    .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
+                ]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: probe, outcomes: [ascendantID: []])
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let blocked = Task { @MainActor in
+            try? await runtime.createTimeline(title: "blocked", ascendantID: ascendantID)
+        }
+        try await withTestTimeout { await probe.waitUntilBlockedOperationStarted("create") }
+
+        do {
+            _ = try await runtime.renameTimeline(.init(timelineID: secondTimelineID, title: "quarantine"))
+            Issue.record("The lifecycle failure unexpectedly succeeded.")
+        } catch {}
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        #expect(await probe.factoryCount == 2)
+        #expect(await probe.reusedBackendCount == 1)
+        await probe.releaseBlockedOperation()
+        #expect(await blocked.value == nil)
+    }
+
+    @Test("an in-flight Workspace mutation is fenced by a same-instance backend replacement")
+    @MainActor
+    func inFlightWorkspaceMutationIsFencedByBackendReplacement() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000356")!
+        let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000357")!
+        let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000358")!
+        let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000359")!
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000360")!
+        let probe = LifecycleBackendProbe(
+            failWorkspaceAttach: true,
+            successfulRecovery: true,
+            reuseBackendOnReconstruction: true,
+            blockedOperation: "detach"
+        )
+        let runtime = try await NodeRuntime(
+            plan: NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "backend-workspace-replacement-\(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: firstTimelineID, kind: "lifecycle-fixture")],
+                timelines: [
+                    .init(id: firstTimelineID, title: "First", operatingAscendantID: ascendantID, attachments: [.local(workspaceID)]),
+                    .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
+                    .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
+                ],
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: probe, outcomes: [ascendantID: []])
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let blocked = Task { @MainActor in
+            try? await runtime.detachWorkspace(.init(workspaceID: workspaceID, timelineID: firstTimelineID))
+        }
+        try await withTestTimeout { await probe.waitUntilBlockedOperationStarted("detach") }
+
+        do {
+            _ = try await runtime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: secondTimelineID))
+            Issue.record("The lifecycle failure unexpectedly succeeded.")
+        } catch {}
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        #expect(await probe.factoryCount == 2)
+        #expect(await probe.reusedBackendCount == 1)
+        await probe.releaseBlockedOperation()
+        #expect(await blocked.value == nil)
+    }
+
     @Test("reconstruction rehydrates current registry Timelines and attachment intent")
     @MainActor
     func reconstructionUsesCurrentRegistryState() async throws {
