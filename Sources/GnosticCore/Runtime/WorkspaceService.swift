@@ -152,6 +152,7 @@ public final class WorkspaceService {
                     timeline,
                     ascendantID: ascendantID,
                     backendLease: lease,
+                    generation: generation,
                     upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
                 )
                 guard isCurrentBackend(ascendantID, backend, generation) else { throw NodeRuntimeError.notRunning }
@@ -182,6 +183,7 @@ public final class WorkspaceService {
                     timeline,
                     ascendantID: ascendantID,
                     backendLease: lease,
+                    generation: generation,
                     removingWorkspaceID: request.workspaceID
                 )
                 guard isCurrentBackend(ascendantID, backend, generation) else { throw NodeRuntimeError.notRunning }
@@ -201,22 +203,36 @@ public final class WorkspaceService {
 
     func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> WorkspaceReference {
         guard isRunning() else { throw NodeRuntimeError.notRunning }
+        let generation = lifecycleGeneration()
         await discovery.discover(timeout: timeout)
+        guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
         let status = await discovery.attachmentStatus(id: workspaceID)
-        await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status))
+        guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+        guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
+            throw NodeRuntimeError.notRunning
+        }
         guard case let .available(_, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
         guard let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
-            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                throw NodeRuntimeError.notRunning
+            }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
-            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                throw NodeRuntimeError.notRunning
+            }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         if let configured = await registry.workspace(id: workspaceID), configured.uri != uri {
-            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                throw NodeRuntimeError.notRunning
+            }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         try await installResolved(reference, workspaceID: workspaceID)
@@ -231,23 +247,38 @@ public final class WorkspaceService {
         let unresolved = await registry.unresolvedWorkspaceIDs()
         guard !unresolved.isEmpty else { return }
         await discovery.discover(timeout: .milliseconds(250))
+        guard !Task.isCancelled, isRunning() else { return }
         for workspaceID in unresolved {
+            guard !Task.isCancelled, isRunning() else { return }
             _ = try? await resolveAvailableNetworkWorkspace(workspaceID)
         }
     }
 
     @discardableResult
     func resolveAvailableNetworkWorkspace(_ workspaceID: UUID) async throws -> WorkspaceReference? {
+        guard isRunning() else { throw NodeRuntimeError.notRunning }
+        let generation = lifecycleGeneration()
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let status = await discovery.attachmentStatus(id: workspaceID)
-        await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status))
+        guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+        guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
+            throw NodeRuntimeError.notRunning
+        }
         guard case let .available(_, uri) = status, uri == expectedURI,
               let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
-            if case .available = status { await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported) }
+            guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+            if case .available = status {
+                guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                    throw NodeRuntimeError.notRunning
+                }
+            }
             return nil
         }
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
-            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+            guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                throw NodeRuntimeError.notRunning
+            }
             return nil
         }
         try await installResolved(reference, workspaceID: workspaceID)
@@ -301,13 +332,24 @@ public final class WorkspaceService {
         if let (ascendantID, backend, generation) = operationContext {
             guard isCurrentBackend(ascendantID, backend, generation) else { throw NodeRuntimeError.notRunning }
         }
-        guard try await registry.resolveLazyWorkspace(id: workspaceID, uri: reference.uri.description, toolIDs: reference.tools.map(\.toolID)) else {
-            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+        guard isRunning() else { throw NodeRuntimeError.notRunning }
+        let generation = lifecycleGeneration()
+        guard try await registry.resolveLazyWorkspace(
+            id: workspaceID,
+            uri: reference.uri.description,
+            toolIDs: reference.tools.map(\.toolID),
+            generation: generation
+        ) else {
+            guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
+            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                throw NodeRuntimeError.notRunning
+            }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         if let (ascendantID, backend, generation) = operationContext {
             guard isCurrentBackend(ascendantID, backend, generation) else { throw NodeRuntimeError.notRunning }
         }
+        guard isRunning(), lifecycleGeneration() == generation else { throw NodeRuntimeError.notRunning }
         references[workspaceID] = reference
         backendWorkspaceService?.update(reference: reference)
     }

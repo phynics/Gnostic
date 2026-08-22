@@ -198,7 +198,7 @@ public final class NodeTransport {
         return objects
     }
 
-    func cancel() async {
+    func cancel() {
         discoverResponder?.cancel()
         discoverResponder = nil
         registrations.forEach { $0.cancel() }
@@ -206,7 +206,6 @@ public final class NodeTransport {
         let responses = permissionResponses
         permissionResponses = nil
         responses?.cancel()
-        await responses?.value
         if let lifecycle {
             advertisedObjects.values.forEach { lifecycle.deadvertiseDiscoverableObject(object: $0) }
         }

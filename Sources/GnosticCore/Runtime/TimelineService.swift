@@ -72,7 +72,8 @@ public final class TimelineService {
             _ = try await registry.registerRuntimeTimeline(
                 timeline,
                 ascendantID: ascendantID,
-                backendLease: lease
+                backendLease: lease,
+                generation: generation
             )
             guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, false)
@@ -125,7 +126,8 @@ public final class TimelineService {
             _ = try await registry.commitBackendTimeline(
                 timeline,
                 ascendantID: ascendantID,
-                backendLease: lease
+                backendLease: lease,
+                generation: generation
             )
             guard isCurrentBackend(ascendantID, adapter, generation) else { throw NodeRuntimeError.notRunning }
             advertise(timeline, true)
