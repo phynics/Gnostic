@@ -20,13 +20,6 @@ public final class NodeRuntime {
         var errorDescription: String? { "Backend reconstruction failed: \(detail)" }
     }
 
-    private enum LifecycleState {
-        case stopped
-        case starting
-        case running
-        case closed
-    }
-
     public nonisolated static let echoToolID = "workspace_echo"
 
     public let plan: NodeLaunchPlan
@@ -34,16 +27,13 @@ public final class NodeRuntime {
     public let host: String
     public let port: Int
     public let namespace: String
-    public var isRunning: Bool { lifecycleState == .running }
+    public var isRunning: Bool { lifetime.isRunning }
+    private let lifetime = NodeRuntimeLifetime()
     private var ascendantAdapters: [UUID: any AscendantBackend]
     private let backendIdentities: [AscendantBackendIdentity]
     private var backendSpecs: [UUID: BackendSpec] = [:]
     private var backendHealthByID: [UUID: AscendantBackendHealth] = [:]
     private var backendLeases: [UUID: UUID] = [:]
-    private var reconstructionTasks: [UUID: Task<any AscendantBackend, Error>] = [:]
-    /// Changes whenever the serve generation changes. A reconstruction may
-    /// finish after shutdown, but it can never install into a newer generation.
-    private var lifecycleGeneration: UInt64 = 0
     /// Canonical domain state. Adapter persistence and network objects are
     /// projections of the records accepted by this actor.
     private let registry: NodeRegistry
@@ -57,8 +47,8 @@ public final class NodeRuntime {
     private let initialWorkspaceReferences: [UUID: WorkspaceReference]
     private let localWorkspaces: [UUID: any Workspace]
     private let backendWorkspaceService: GnosticWorkspaceBackendService
+    private let backendRetirementSupervisor: BackendRetirementSupervisor
     private var backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?
-    private var lifecycleState: LifecycleState = .stopped
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
     private let permissionCoordinator: AscendantPermissionCoordinator
@@ -76,7 +66,7 @@ public final class NodeRuntime {
         references: initialWorkspaceReferences,
         backendWorkspaceService: backendWorkspaceService,
         isRunning: { [weak self] in self?.isRunning == true },
-        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        lifecycleGeneration: { [weak self] in self?.lifetime.generation ?? 0 },
         isCurrentBackend: { [weak self] ascendantID, backend, generation in
             self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
         },
@@ -103,7 +93,7 @@ public final class NodeRuntime {
             guard let self else { throw NodeRuntimeError.notRunning }
             return try await self.backendForTurn(ascendantID)
         },
-        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        lifecycleGeneration: { [weak self] in self?.lifetime.generation ?? 0 },
         lifecycleFailure: { [weak self] ascendantID, backend, failure in
             await self?.markBackendLifecycleFailure(ascendantID, backend: backend, failure: failure)
         }
@@ -111,8 +101,8 @@ public final class NodeRuntime {
     private lazy var timelineService = TimelineService(
         ascendantIDs: Set(plan.ascendants.map(\.id)),
         registry: registry,
-        isClosed: { [weak self] in self?.lifecycleState == .closed },
-        lifecycleGeneration: { [weak self] in self?.lifecycleGeneration ?? 0 },
+        isClosed: { [weak self] in self?.lifetime.state == .closed },
+        lifecycleGeneration: { [weak self] in self?.lifetime.generation ?? 0 },
         isCurrentBackend: { [weak self] ascendantID, backend, generation in
             self?.isCurrentBackend(ascendantID, backend: backend, generation: generation) == true
         },
@@ -177,18 +167,22 @@ public final class NodeRuntime {
             return try await self.workspaceService.detach(request)
         }
     )
-    private var turnUpdatePublishTask: Task<Void, Never>?
-    private var networkResolutionTask: Task<Void, Never>?
-    private var startupTask: Task<Void, Error>?
-    private var shutdownTask: Task<Void, Never>?
+    public convenience init(plan: NodeLaunchPlan, adapters: NodeRuntimeAdapters = .default) async throws {
+        try await self.init(plan: plan, adapters: adapters, retirementPolicy: .live)
+    }
 
-    public init(plan: NodeLaunchPlan, adapters: NodeRuntimeAdapters = .default) async throws {
+    init(
+        plan: NodeLaunchPlan,
+        adapters: NodeRuntimeAdapters = .default,
+        retirementPolicy: BackendRetirementPolicy
+    ) async throws {
         try NodeRuntime.validate(plan: plan)
         self.plan = plan
         host = plan.broker.host
         port = plan.broker.port
         namespace = plan.broker.namespace
         self.adapters = adapters
+        backendRetirementSupervisor = BackendRetirementSupervisor(policy: retirementPolicy)
         ascendantAdapters = [:]
         let updates = AscendantTurnUpdateStore()
         turnUpdates = updates
@@ -303,7 +297,10 @@ public final class NodeRuntime {
                 do {
                     try backendInstance.validateConfiguration()
                 } catch {
-                    await backendInstance.shutdown()
+                    await backendRetirementSupervisor.retire(
+                        [(id: backendInstance.identity.id, backend: backendInstance)],
+                        stage: .initializationRollback
+                    )
                     throw error
                 }
                 ascendantAdapters[ascendant.id] = backendInstance
@@ -331,10 +328,9 @@ public final class NodeRuntime {
                 }
             }
         } catch {
-            for adapter in ascendantAdapters.values {
-                await adapter.shutdown()
-            }
+            let adapters = ascendantAdapters.map { (id: $0.key, backend: $0.value) }
             ascendantAdapters.removeAll()
+            await backendRetirementSupervisor.retire(adapters, stage: .initializationRollback)
             container.shutdown()
             throw error
         }
@@ -345,28 +341,23 @@ public final class NodeRuntime {
     }
 
     public func start() async throws {
-        switch lifecycleState {
-        case .running:
-            return
-        case .starting:
-            throw NodeRuntimeError.startInProgress
-        case .closed:
+        guard try lifetime.beginStart() else { return }
+        let generation = lifetime.generation
+        await registry.setLifecycleGeneration(generation)
+        guard lifetime.state == .starting, lifetime.generation == generation else {
             throw NodeRuntimeError.notRunning
-        case .stopped:
-            lifecycleGeneration &+= 1
-            lifecycleState = .starting
         }
 
         let startup = Task { @MainActor [weak self] in
             guard let self else { throw NodeRuntimeError.notRunning }
             try await self.performStart()
         }
-        startupTask = startup
+        lifetime.startupTask = startup
         do {
             try await startup.value
-            startupTask = nil
+            lifetime.startupTask = nil
         } catch {
-            startupTask = nil
+            lifetime.startupTask = nil
             throw error
         }
     }
@@ -386,7 +377,7 @@ public final class NodeRuntime {
             )
 
             let events = await turnUpdates.events()
-            turnUpdatePublishTask = Task { [communication] in
+            lifetime.turnUpdatePublishTask = Task { [communication] in
                 for await event in events {
                     guard let channel = try? AscendantTurnProvider.updateEvent(event) else { continue }
                     communication.publishChannel(channel)
@@ -400,7 +391,7 @@ public final class NodeRuntime {
             try await adapters.lifecycle.afterDiscoverResponder()
             try requireActiveStart()
             try adapters.lifecycle.beforeAdvertisement()
-            lifecycleState = .running
+            lifetime.markRunning()
             await transport.advertiseAll()
             try await adapters.lifecycle.afterAdvertisement()
             try requireActiveRunningStart()
@@ -411,15 +402,17 @@ public final class NodeRuntime {
     }
 
     public func shutdown() async {
-        if let shutdownTask {
+        if let shutdownTask = lifetime.shutdownTask {
             await shutdownTask.value
             return
         }
-        guard lifecycleState != .closed else { return }
-        lifecycleGeneration &+= 1
-        lifecycleState = .closed
-
-        let startup = startupTask
+        guard let shutdownState = lifetime.beginShutdown() else {
+            if let cleanupTask = lifetime.cleanupTask {
+                await cleanupTask.value
+            }
+            return
+        }
+        let startup = shutdownState.startupTask
         let cleanup = Task { @MainActor [weak self, startup] in
             startup?.cancel()
             guard let self else { return }
@@ -432,9 +425,9 @@ public final class NodeRuntime {
                 await self.rollbackStart(close: true)
             }
         }
-        shutdownTask = cleanup
+        lifetime.shutdownTask = cleanup
         await cleanup.value
-        shutdownTask = nil
+        lifetime.shutdownTask = nil
     }
 
     /// Returns the current health slot for an Ascendant's backend. Health is
@@ -494,7 +487,7 @@ public final class NodeRuntime {
     }
 
     private func backendForTurn(_ ascendantID: UUID) async throws -> any AscendantBackend {
-        guard lifecycleState == .running else { throw NodeRuntimeError.notRunning }
+        guard lifetime.state == .running else { throw NodeRuntimeError.notRunning }
         guard backendSpecs[ascendantID] != nil else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
@@ -509,8 +502,8 @@ public final class NodeRuntime {
         backend: any AscendantBackend,
         generation: UInt64
     ) -> Bool {
-        guard lifecycleState != .closed,
-              lifecycleGeneration == generation,
+        guard lifetime.state != .closed,
+              lifetime.generation == generation,
               let currentBackend = ascendantAdapters[ascendantID] else { return false }
         return (currentBackend as AnyObject) === (backend as AnyObject)
     }
@@ -540,20 +533,23 @@ public final class NodeRuntime {
         backendLeases.removeValue(forKey: ascendantID)
         await registry.invalidateBackendLease(for: ascendantID)
         if let backend = ascendantAdapters.removeValue(forKey: ascendantID) {
-            await backend.shutdown()
+            await backendRetirementSupervisor.retire(
+                [(id: ascendantID, backend: backend)],
+                stage: .quarantine
+            )
         }
         _ = failure
     }
 
     private func reconstructBackend(for ascendantID: UUID) async throws -> any AscendantBackend {
-        if let task = reconstructionTasks[ascendantID] {
+        if let task = lifetime.reconstructionTasks[ascendantID] {
             return try await task.value
         }
         guard let spec = backendSpecs[ascendantID] else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
 
-        let generation = lifecycleGeneration
+        let generation = lifetime.generation
         backendHealthByID[ascendantID] = .unknown
         readvertiseAscendant(ascendantID, health: .unknown)
         let task = Task { @MainActor [weak self] () throws -> any AscendantBackend in
@@ -592,7 +588,10 @@ public final class NodeRuntime {
                 candidate = created
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     candidate = nil
-                    await created.shutdown()
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: created)],
+                        stage: .reconstructionCandidate
+                    )
                     throw NodeRuntimeError.notRunning
                 }
                 try created.validateConfiguration()
@@ -605,29 +604,48 @@ public final class NodeRuntime {
                 )
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     candidate = nil
-                    await created.shutdown()
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: created)],
+                        stage: .reconstructionCandidate
+                    )
                     throw NodeRuntimeError.notRunning
                 }
                 let currentRevision = await self.registry.backendRevision(for: ascendantID)
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     candidate = nil
-                    await created.shutdown()
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: created)],
+                        stage: .reconstructionCandidate
+                    )
                     throw NodeRuntimeError.notRunning
                 }
                 guard currentRevision == state.revision else {
                     candidate = nil
-                    await created.shutdown()
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: created)],
+                        stage: .reconstructionCandidate
+                    )
                     throw BackendReconstructionFailure(detail: "registry changed during reconstruction")
                 }
 
                 // Publication is part of the shared reconstruction task. Every
                 // waiter receives this installed instance only after the
                 // generation and the exact captured revision have been fenced.
-                await self.registry.activateBackendLease(lease, for: ascendantID)
+                guard await self.registry.activateBackendLease(lease, for: ascendantID, generation: generation) else {
+                    candidate = nil
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: created)],
+                        stage: .reconstructionCandidate
+                    )
+                    throw NodeRuntimeError.notRunning
+                }
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     await self.registry.invalidateBackendLease(for: ascendantID)
                     candidate = nil
-                    await created.shutdown()
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: created)],
+                        stage: .reconstructionCandidate
+                    )
                     throw NodeRuntimeError.notRunning
                 }
                 self.backendLeases[ascendantID] = lease
@@ -639,8 +657,13 @@ public final class NodeRuntime {
                 candidate = nil
                 return created
             } catch {
-                if let candidate { await candidate.shutdown() }
-                guard generation == self.lifecycleGeneration, self.lifecycleState == .running else {
+                if let candidate {
+                    await self.backendRetirementSupervisor.retire(
+                        [(id: ascendantID, backend: candidate)],
+                        stage: .reconstructionCandidate
+                    )
+                }
+                guard generation == self.lifetime.generation, self.lifetime.state == .running else {
                     throw error
                 }
                 self.backendHealthByID[ascendantID] = .failed
@@ -651,13 +674,13 @@ public final class NodeRuntime {
                 throw BackendReconstructionFailure(detail: error.localizedDescription)
             }
         }
-        reconstructionTasks[ascendantID] = task
+        lifetime.reconstructionTasks[ascendantID] = task
         do {
             let backend = try await task.value
-            reconstructionTasks.removeValue(forKey: ascendantID)
+            lifetime.reconstructionTasks.removeValue(forKey: ascendantID)
             return backend
         } catch {
-            reconstructionTasks.removeValue(forKey: ascendantID)
+            lifetime.reconstructionTasks.removeValue(forKey: ascendantID)
             throw error
         }
     }
@@ -668,7 +691,7 @@ public final class NodeRuntime {
     }
 
     private func isCurrentReconstructionGeneration(_ generation: UInt64) -> Bool {
-        generation == lifecycleGeneration && lifecycleState == .running && !Task.isCancelled
+        generation == lifetime.generation && lifetime.state == .running && !Task.isCancelled
     }
 
     private static func validateReplacement(
@@ -737,9 +760,9 @@ public final class NodeRuntime {
     }
 
     private func startNetworkResolution() {
-        networkResolutionTask = Task { @MainActor [weak self] in
+        lifetime.networkResolutionTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                guard let self, self.lifecycleState != .closed else { return }
+                guard let self, self.lifetime.state != .closed else { return }
                 await self.workspaceService.refreshUnresolved()
                 try? await Task.sleep(for: .milliseconds(250))
             }
@@ -747,41 +770,55 @@ public final class NodeRuntime {
     }
 
     private func requireActiveStart() throws {
-        guard lifecycleState == .starting, !Task.isCancelled else {
+        guard lifetime.state == .starting, !Task.isCancelled else {
             throw CancellationError()
         }
     }
 
     private func requireActiveRunningStart() throws {
-        guard lifecycleState == .running, !Task.isCancelled else {
+        guard lifetime.state == .running, !Task.isCancelled else {
             throw CancellationError()
         }
     }
 
     private func rollbackStart(close: Bool) async {
-        lifecycleGeneration &+= 1
-        let leasedAscendantIDs = backendLeases.keys
-        backendLeases.removeAll()
-        for ascendantID in leasedAscendantIDs {
-            await registry.invalidateBackendLease(for: ascendantID)
+        if let cleanupTask = lifetime.cleanupTask {
+            await cleanupTask.value
+            return
         }
-        await transport.cancel()
-        let reconstructions = reconstructionTasks.values
-        reconstructionTasks.removeAll()
-        reconstructions.forEach { $0.cancel() }
-        let publishTask = turnUpdatePublishTask
-        let resolutionTask = networkResolutionTask
-        publishTask?.cancel(); turnUpdatePublishTask = nil
-        resolutionTask?.cancel(); networkResolutionTask = nil
-        for adapter in ascendantAdapters.values { await adapter.cancel() }
-        await turnCoordinator.cancelAll(waitForCompletion: false)
-        for adapter in ascendantAdapters.values { await adapter.shutdown() }
+        guard let cleanup = lifetime.beginCleanup(close: close) else {
+            return
+        }
+        let cleanupTask = Task { @MainActor [weak self, cleanup] in
+            guard let self else { return }
+            await self.performCleanup(cleanup)
+        }
+        lifetime.cleanupTask = cleanupTask
+        await cleanupTask.value
+        lifetime.cleanupTask = nil
+        lifetime.markCleanupCompleted()
+    }
+
+    private func performCleanup(_ cleanup: NodeRuntimeLifetime.CleanupTasks) async {
+        await registry.fenceBackendLeases(at: lifetime.generation)
+        backendLeases.removeAll()
         await permissionCoordinator.denyAll(reason: "connection_lost")
-        await publishTask?.value
-        await resolutionTask?.value
+        transport.cancel()
+        cleanup.reconstructions.forEach { $0.cancel() }
+        await turnCoordinator.cancelAll(waitForCompletion: false)
+        await turnUpdates.finish()
+        let adapters = ascendantAdapters.map { (id: $0.key, backend: $0.value) }
+        for adapter in adapters {
+            backendHealthByID[adapter.id] = .unknown
+        }
+        ascendantAdapters.removeAll()
+        await backendRetirementSupervisor.retire(adapters, stage: .runtimeShutdown)
+        cleanup.publishTask?.cancel()
+        await cleanup.publishTask?.value
+        cleanup.resolutionTask?.cancel()
+        await cleanup.resolutionTask?.value
         subscription.stop()
         container.shutdown()
-        lifecycleState = close ? .closed : .stopped
     }
 
     private static func validate(plan: NodeLaunchPlan) throws {

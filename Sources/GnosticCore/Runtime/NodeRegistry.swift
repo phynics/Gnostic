@@ -84,6 +84,7 @@ public actor NodeRegistry {
     private var timelineMetadata: [UUID: (kind: String, flags: Set<String>)]
     private var backendRevisions: [UUID: UInt64]
     private var backendLeases: [UUID: UUID]
+    private var lifecycleGeneration: UInt64 = 0
 
     public init(
         plan: NodeLaunchPlan,
@@ -178,8 +179,40 @@ public actor NodeRegistry {
     /// Replaces the lease accepted by canonical mutation methods. Updating the
     /// lease and checking it both happen on this actor, closing the suspension
     /// window between a service-side backend check and a registry write.
+    func setLifecycleGeneration(_ generation: UInt64) {
+        lifecycleGeneration = max(lifecycleGeneration, generation)
+    }
+
+    /// Replaces the lease accepted by canonical mutation methods.
+    ///
+    /// This overload preserves the public registry seam. Runtime lifecycle
+    /// code uses the generation-aware overload below when publishing a
+    /// reconstructed backend.
     public func activateBackendLease(_ lease: UUID, for ascendantID: UUID) {
         backendLeases[ascendantID] = lease
+    }
+
+    func fenceBackendLeases(at generation: UInt64) {
+        lifecycleGeneration = max(lifecycleGeneration, generation)
+        backendLeases.removeAll()
+    }
+
+    @discardableResult
+    func activateBackendLease(_ lease: UUID, for ascendantID: UUID, generation: UInt64) -> Bool {
+        guard lifecycleGeneration == generation else { return false }
+        backendLeases[ascendantID] = lease
+        return true
+    }
+
+    @discardableResult
+    func resolveLazyWorkspace(
+        id: UUID,
+        uri: String,
+        toolIDs: [String],
+        generation: UInt64
+    ) throws -> Bool {
+        guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        return try resolveLazyWorkspace(id: id, uri: uri, toolIDs: toolIDs)
     }
 
     public func invalidateBackendLease(for ascendantID: UUID) {
@@ -224,6 +257,16 @@ public actor NodeRegistry {
         return record
     }
 
+    func registerRuntimeTimeline(
+        _ timeline: AscendantRuntimeTimeline,
+        ascendantID: UUID,
+        backendLease: UUID?,
+        generation: UInt64
+    ) throws -> TimelineRecord {
+        guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        return try registerRuntimeTimeline(timeline, ascendantID: ascendantID, backendLease: backendLease)
+    }
+
     /// Replaces only an existing timeline's projection after the adapter has accepted a mutation.
     public func replaceTimeline(_ timeline: AscendantRuntimeTimeline) throws -> TimelineRecord {
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
@@ -263,6 +306,24 @@ public actor NodeRegistry {
         }
         bumpRevision(for: ascendantID)
         return record
+    }
+
+    func commitBackendTimeline(
+        _ timeline: AscendantRuntimeTimeline,
+        ascendantID: UUID,
+        backendLease: UUID?,
+        generation: UInt64,
+        upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
+        removingWorkspaceID: UUID? = nil
+    ) throws -> TimelineRecord {
+        guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        return try commitBackendTimeline(
+            timeline,
+            ascendantID: ascendantID,
+            backendLease: backendLease,
+            upserting: attachment,
+            removingWorkspaceID: removingWorkspaceID
+        )
     }
 
     /// Commits a Timeline replacement and emits its required projection as one
@@ -383,6 +444,17 @@ public actor NodeRegistry {
     public func setWorkspaceStatus(id: UUID, status: WorkspaceEffectiveStatus) -> Bool {
         guard let current = workspaces[id] else { return false }
         workspaces[id] = .init(id: id, uri: current.uri, status: status, toolIDs: current.toolIDs)
+        return true
+    }
+
+    @discardableResult
+    func setWorkspaceStatus(
+        id: UUID,
+        status: WorkspaceEffectiveStatus,
+        generation: UInt64
+    ) -> Bool {
+        guard lifecycleGeneration == generation else { return false }
+        _ = setWorkspaceStatus(id: id, status: status)
         return true
     }
 

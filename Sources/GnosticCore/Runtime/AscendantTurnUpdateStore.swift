@@ -59,6 +59,10 @@ public actor AscendantTurnUpdateStore {
 
     func events() -> AsyncStream<Event> { eventStream }
 
+    func finish() {
+        eventContinuation.finish()
+    }
+
     public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         guard entries[key] == nil else { return }

@@ -28,6 +28,13 @@ Backend. A Workspace is a capability resource and is not inherently a
 filesystem. Effective status is `available`, `unavailable`, or `unsupported`,
 separate from the durable attachment intent.
 
+Runtime lifecycle fencing is also Gnostic-owned. Shutdown advances the runtime
+generation and invalidates backend leases before retiring backend-owned
+resources. Backend cancellation and shutdown are best-effort within a bounded
+host policy; a noncooperative backend cannot indefinitely hold Gnostic process
+shutdown hostage, and any late completion is rejected by the generation and
+lease checks.
+
 ## Rejected alternatives
 
 - Making a backend transcript the Timeline would couple Gnostic relationships
@@ -44,8 +51,8 @@ separate from the durable attachment intent.
 Gnostic can preserve routing and relationships while backend health changes.
 Backends may choose their own transcript and checkpoint representation. The
 identity projection, lifecycle rules, and attachment state must be tested at
-the Gnostic boundary; this ADR records the target ownership split before those
-changes are implemented.
+the Gnostic boundary; lifecycle tests must also prove that late backend
+completion cannot restore a fenced identity or lease.
 
 ## Reconsideration triggers
 
