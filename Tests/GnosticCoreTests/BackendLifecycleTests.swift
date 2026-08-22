@@ -518,6 +518,44 @@ struct BackendLifecycleTests {
         await shutdown.value
     }
 
+    @Test("an in-flight Turn is fenced when its backend is replaced")
+    @MainActor
+    func inFlightTurnIsFencedByBackendReplacement() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000348")!
+        let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000349")!
+        let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000350")!
+        let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000351")!
+        let probe = LifecycleBackendProbe(blockFirstRun: true, successfulRecovery: true)
+        let runtime = try await NodeRuntime(
+            plan: makeManifest(
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: firstTimelineID, kind: "lifecycle-fixture")],
+                timelines: [
+                    .init(id: firstTimelineID, title: "First", operatingAscendantID: ascendantID),
+                    .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
+                    .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
+                ]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: probe, outcomes: [ascendantID: [.success, .lifecycle]])
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let blocked = Task { @MainActor in
+            try? await runtime.turn(.init(message: "blocked", timelineID: firstTimelineID, clientTurnID: "blocked"))
+        }
+        try await withTestTimeout { await probe.waitUntilRunStarted() }
+
+        do {
+            _ = try await runtime.turn(.init(message: "quarantine", timelineID: secondTimelineID, clientTurnID: "quarantine"))
+            Issue.record("The lifecycle failure unexpectedly succeeded.")
+        } catch {}
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+
+        #expect(try await runtime.turn(.init(message: "recovery", timelineID: recoveryTimelineID, clientTurnID: "recovery")).text == "ok: recovery")
+        await probe.releaseRun()
+        #expect(await blocked.value == nil)
+    }
+
     @Test("a late lifecycle failure from an old backend cannot quarantine its replacement")
     @MainActor
     func lateFailureFromOldBackendCannotQuarantineReplacement() async throws {
@@ -784,6 +822,7 @@ private actor LifecycleBackendProbe {
     let shouldFailWorkspaceAttach: Bool
     let shouldFailRename: Bool
     let shouldBlockRun: Bool
+    let shouldBlockFirstRun: Bool
     let shouldBlockFirstShutdown: Bool
     let shouldBlockSecondShutdown: Bool
     let shouldBlockFirstCancel: Bool
@@ -826,6 +865,7 @@ private actor LifecycleBackendProbe {
         failWorkspaceAttach: Bool = false,
         failRename: Bool = false,
         blockRun: Bool = false,
+        blockFirstRun: Bool = false,
         blockFirstShutdown: Bool = false,
         blockSecondShutdown: Bool = false,
         blockFirstCancel: Bool = false,
@@ -839,6 +879,7 @@ private actor LifecycleBackendProbe {
         shouldFailWorkspaceAttach = failWorkspaceAttach
         shouldFailRename = failRename
         shouldBlockRun = blockRun
+        shouldBlockFirstRun = blockFirstRun
         shouldBlockFirstShutdown = blockFirstShutdown
         shouldBlockSecondShutdown = blockSecondShutdown
         shouldBlockFirstCancel = blockFirstCancel
@@ -864,7 +905,7 @@ private actor LifecycleBackendProbe {
         let ready = runCountWaiters.filter { $0.0 <= runCount }
         runCountWaiters.removeAll { $0.0 <= runCount }
         ready.forEach { $0.1.resume() }
-        if shouldBlockRun {
+        if shouldBlockRun || (shouldBlockFirstRun && runCount == 1) {
             runStarted = true
             runWaiters.forEach { $0.resume() }
             runWaiters.removeAll()
@@ -940,7 +981,7 @@ private actor LifecycleBackendProbe {
     }
 
     func waitForRunReleaseIfNeeded() async {
-        guard shouldBlockRun, !runReleased else { return }
+        guard (shouldBlockRun || (shouldBlockFirstRun && runCount == 1)), !runReleased else { return }
         await withCheckedContinuation { continuation in
             runReleaseWaiters.append(continuation)
         }
@@ -1207,8 +1248,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
 
     func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
         await probe.recordRun()
-        await probe.waitForRunReleaseIfNeeded()
         let outcome = outcomes.isEmpty ? .success : outcomes.removeFirst()
+        await probe.waitForRunReleaseIfNeeded()
         await probe.waitForLifecycleReleaseIfNeeded(outcome == .lifecycle)
         switch outcome {
         case .success: return "ok: \(request.message)"

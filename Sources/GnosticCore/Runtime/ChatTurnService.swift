@@ -74,7 +74,12 @@ public final class TurnService {
                     AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
                     updates: sink
                 )
-                guard await self.backendProvider.isRunning,
+                guard await self.backendProvider.isCurrentBackend(
+                    ascendantID,
+                    backend: adapter,
+                    generation: generation
+                ),
+                      await self.backendProvider.isRunning,
                       await self.backendProvider.lifecycleGeneration == generation else {
                     throw CancellationError()
                 }
