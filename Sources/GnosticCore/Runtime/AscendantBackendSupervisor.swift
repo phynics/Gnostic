@@ -343,6 +343,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
                 )
                 candidate = created
                 guard !self.isRetiredBackend(created) else {
+                    candidate = nil
                     throw ReconstructionFailure(detail: "backend factory returned a retired instance")
                 }
                 guard self.isCurrentReconstructionGeneration(generation) else {
