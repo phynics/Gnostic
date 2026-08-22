@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/phynics/PositronicKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "a213244655b7389df135107fcb2c0ea78db42104"
+        "revision" : "50fc19dae8ee90c741eebd7095c02f75a2ea3ec7",
+        "version" : "4.0.0"
       }
     },
     {
