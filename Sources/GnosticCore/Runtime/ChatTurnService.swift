@@ -12,11 +12,9 @@ public final class TurnService {
     private let registry: NodeRegistry
     private let coordinator: AscendantTurnCoordinator
     private let updates: AscendantTurnUpdateStore
-    private let isRunning: @MainActor () -> Bool
-    private let lifecycleGeneration: @MainActor () -> UInt64
-    private let lifecycleFailure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
+    private let access: BackendSessionAccess
 
-    init(
+    convenience init(
         registry: NodeRegistry,
         coordinator: AscendantTurnCoordinator,
         updates: AscendantTurnUpdateStore,
@@ -25,20 +23,42 @@ public final class TurnService {
         lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
         lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in }
     ) {
+        self.init(
+            registry: registry,
+            coordinator: coordinator,
+            updates: updates,
+            access: BackendSessionAccess(
+                isRunning: isRunning,
+                isClosed: { !isRunning() },
+                lifecycleGeneration: lifecycleGeneration,
+                session: { _ in nil },
+                isCurrent: { _, _, _ in true },
+                lease: { _, _ in nil },
+                lifecycleFailure: lifecycleFailure
+            ),
+            backend: backend
+        )
+    }
+
+    init(
+        registry: NodeRegistry,
+        coordinator: AscendantTurnCoordinator,
+        updates: AscendantTurnUpdateStore,
+        access: BackendSessionAccess,
+        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend
+    ) {
         self.registry = registry
         self.coordinator = coordinator
         self.updates = updates
-        self.isRunning = isRunning
-        self.lifecycleGeneration = lifecycleGeneration
+        self.access = access
         self.backend = backend
-        self.lifecycleFailure = lifecycleFailure
     }
 
     func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
-        guard isRunning() else { throw NodeRuntimeError.notRunning }
-        let generation = lifecycleGeneration()
+        guard access.isRunning() else { throw NodeRuntimeError.notRunning }
+        let generation = access.lifecycleGeneration()
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
             let adapter: any AscendantBackend
@@ -58,14 +78,14 @@ public final class TurnService {
                     AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
                     updates: sink
                 )
-                guard await self.isRunning(),
-                      await self.lifecycleGeneration() == generation else {
+                guard await self.access.isRunning(),
+                      await self.access.lifecycleGeneration() == generation else {
                     throw CancellationError()
                 }
                 return result
             } catch let error as AscendantBackendError {
                 if case let .lifecycleUnusable(failure) = error {
-                    await self.lifecycleFailure(ascendantID, adapter, failure)
+                    await self.access.lifecycleFailure(ascendantID, adapter, failure)
                 }
                 throw error
             }

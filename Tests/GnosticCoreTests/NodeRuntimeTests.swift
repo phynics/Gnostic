@@ -852,6 +852,28 @@ struct NodeRuntimeTests {
         #expect(workspace.tools.allSatisfy { $0.requiresPermission })
     }
 
+    @Test("product Workspace adapters own their reference and tool projection")
+    @MainActor
+    func productWorkspaceAdapterOwnsReference() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000199")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000200")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-product-workspace"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000201")!),
+            ascendants: [.init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000202")!, name: "Atlas", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000202")!)],
+            workspaces: [.init(id: workspaceID, name: "Product", uri: "echo://product", kind: "product-workspace")]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.registerProduct(kind: "product-workspace") { configuration in
+            ProjectedToolWorkspace(configuration: configuration)
+        }
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+        #expect(reference.tools.map(\.toolID) == ["permissioned_echo"])
+    }
+
     @Test("runtime advertises complete objects over the broker") @MainActor
     func runtimeAdvertisesCompleteObjects() async throws {
         let namespace = "node-runtime-broker-tests"

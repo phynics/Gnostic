@@ -12,7 +12,6 @@ final class NodeRuntimeLifetime {
     }
 
     struct CleanupTasks {
-        let reconstructions: [Task<any AscendantBackend, Error>]
         let publishTask: Task<Void, Never>?
         let resolutionTask: Task<Void, Never>?
     }
@@ -27,7 +26,6 @@ final class NodeRuntimeLifetime {
     var startupTask: Task<Void, Error>?
     var shutdownTask: Task<Void, Never>?
     var cleanupTask: Task<Void, Never>?
-    var reconstructionTasks: [UUID: Task<any AscendantBackend, Error>] = [:]
     var turnUpdatePublishTask: Task<Void, Never>?
     var networkResolutionTask: Task<Void, Never>?
 
@@ -68,11 +66,9 @@ final class NodeRuntimeLifetime {
         guard !cleanupCompleted else { return nil }
         generation &+= 1
         let tasks = CleanupTasks(
-            reconstructions: Array(reconstructionTasks.values),
             publishTask: turnUpdatePublishTask,
             resolutionTask: networkResolutionTask
         )
-        reconstructionTasks.removeAll()
         turnUpdatePublishTask = nil
         networkResolutionTask = nil
         state = close ? .closed : .stopped
