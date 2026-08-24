@@ -1184,7 +1184,7 @@ struct NodeRuntimeTests {
         return NodeManifest(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
             node: .init(id: node),
-            ascendants: [.init(id: ascendant, name: profileModel, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["model": .string(profileModel), "provider": .string("stub")]))],
+            ascendants: [.init(id: ascendant, name: profileModel, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["model": .string(profileModel), "provider": .string("Ollama")]))],
             timelines: [.init(id: timelineID, title: "\(profileModel) timeline", operatingAscendantID: ascendant)]
         )
     }
