@@ -132,8 +132,16 @@ public struct CLIConfigurationStore: Sendable {
         return configuration
     }
 
-    /// Sets a compatibility key in the manifest, preserving all unrelated graph data.
+    /// Sets a broker compatibility key in the manifest, preserving all unrelated graph data.
+    /// Positronic fields require an explicitly selected Ascendant through
+    /// `config positronic` and cannot be mutated through this compatibility API.
     public func setValue(_ value: String, for key: ConfigurationKey) throws {
+        switch key {
+        case .llmProvider, .llmEndpoint, .llmModel, .llmUtilityModel, .llmFastModel, .llmAPIKey:
+            throw CLIConfigurationError.invalidArgument("Use `gnostic config positronic` with an explicit Ascendant ID.")
+        default:
+            break
+        }
         let validated = try key.validatedValue(value)
         try ManifestStoreLock.withLock(at: path()) {
             var manifest = try existingManifestOrEmptyUnlocked()
@@ -221,7 +229,7 @@ public struct CLIConfigurationStore: Sendable {
     /// the pre-164 CLI projection without changing opaque backend settings.
     private func canonicalV2Manifest(_ manifest: NodeManifest) -> NodeManifest {
         var result = manifest
-        for index in result.ascendants.indices {
+        for index in result.ascendants.indices where result.ascendants[index].backend.kind == "positronic" {
             result.ascendants[index].backend.settings.removeValue(forKey: "_legacyID")
         }
         return result
@@ -300,35 +308,6 @@ public struct CLIConfigurationStore: Sendable {
     private func manifestApplying(_ configuration: CLIConfiguration, to manifest: NodeManifest) throws -> NodeManifest {
         var result = manifest
         result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword)
-        let hasBackendValues = configuration.llmProvider != nil
-            || configuration.llmEndpoint != nil
-            || configuration.llmModel != nil
-            || configuration.llmUtilityModel != nil
-            || configuration.llmFastModel != nil
-            || configuration.llmAPIKey != nil
-        if hasBackendValues && result.ascendants.isEmpty {
-            let ascendantID = UUID.makeVersion4()
-            let timelineID = UUID.makeVersion4()
-            let backend = PositronicBackendConfiguration(
-                provider: configuration.llmProvider ?? "positronic",
-                endpoint: configuration.llmEndpoint, model: configuration.llmModel,
-                utilityModel: configuration.llmUtilityModel, fastModel: configuration.llmFastModel,
-                apiKey: configuration.llmAPIKey
-            ).applying()
-            result.ascendants = [.init(id: ascendantID, name: "Default Ascendant", defaultTimelineID: timelineID, backend: backend)]
-            result.timelines = [.init(id: timelineID, title: "Default Timeline", operatingAscendantID: ascendantID)]
-            return result
-        }
-        guard let index = result.ascendants.firstIndex(where: { $0.backend.kind == "positronic" }) else { return result }
-        let backend = PositronicBackendConfiguration(
-            provider: configuration.llmProvider,
-            endpoint: configuration.llmEndpoint,
-            model: configuration.llmModel,
-            utilityModel: configuration.llmUtilityModel,
-            fastModel: configuration.llmFastModel,
-            apiKey: configuration.llmAPIKey
-        ).applying(to: result.ascendants[index].backend)
-        result.ascendants[index].backend = backend
         return result
     }
 

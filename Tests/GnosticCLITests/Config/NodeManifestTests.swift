@@ -57,6 +57,23 @@ struct NodeManifestTests {
         #expect(String(data: try Data(contentsOf: path), encoding: .utf8)?.contains("_legacyID") == false)
     }
 
+    @Test("v2 load preserves opaque settings owned by other backends")
+    func v2LoadPreservesNonPositronicLegacyIDSetting() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        var manifest = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
+        manifest.ascendants[0].kind = "custom"
+        manifest.ascendants[0].backend = .init(
+            kind: "custom",
+            settings: ["_legacyID": .string("backend-owned"), "mode": .string("deterministic")]
+        )
+        try JSONEncoder().encode(manifest).write(to: path)
+
+        let loaded = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(loaded.ascendants[0].backend.settings["_legacyID"] == .string("backend-owned"))
+        #expect(loaded.ascendants[0].backend.settings["mode"] == .string("deterministic"))
+    }
+
     @Test("invalid legacy profile does not rewrite its source")
     func invalidLegacyProfileIsNotRewritten() throws {
         let folder = try TemporaryFolder()

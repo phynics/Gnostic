@@ -30,20 +30,33 @@ struct CLIConfigurationTests {
         #expect(config.llmAPIKey == nil)
     }
 
-    @Test("set then show round-trips every non-secret key")
+    @Test("generic compatibility keys cannot create an implicit Positronic target")
+    func genericLLMSettingRequiresExplicitAscendantSelection() throws {
+        let folder = try TemporaryFolder()
+        let store = self.store(folder: folder)
+
+        #expect(throws: CLIConfigurationError.self) {
+            try store.setValue("anthropic", for: .llmProvider)
+        }
+        #expect(!FileManager.default.fileExists(atPath: store.path().path))
+    }
+
+    @Test("broker compatibility and selected Positronic settings round-trip")
     func setThenShowRoundTripsNonSecretKeys() throws {
         let folder = try TemporaryFolder()
         let store = self.store(folder: folder)
+
+        try ConfigCommandLogic.initialize(store: store)
+        let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
 
         try store.setValue("mqtt.example.com", for: .mqttHost)
         try store.setValue("1884", for: .mqttPort)
         try store.setValue("my-namespace", for: .mqttNamespace)
         try store.setValue("alice", for: .mqttUsername)
-        try store.setValue("anthropic", for: .llmProvider)
-        try store.setValue("https://api.anthropic.com", for: .llmEndpoint)
-        try store.setValue("claude-sonnet", for: .llmModel)
-        try store.setValue("claude-haiku", for: .llmUtilityModel)
-        try store.setValue("claude-haiku", for: .llmFastModel)
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: ascendantID, provider: "anthropic", endpoint: "https://api.anthropic.com",
+            model: "claude-sonnet", utilityModel: "claude-haiku", fastModel: "claude-haiku", store: store
+        )
 
         let config = try store.load()
 
@@ -63,8 +76,11 @@ struct CLIConfigurationTests {
         let folder = try TemporaryFolder()
         let store = self.store(folder: folder)
 
+        try ConfigCommandLogic.initialize(store: store)
+        let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
+
         try store.setValue("s3cr3t", for: .mqttPassword)
-        try store.setValue("sk-ant-123", for: .llmAPIKey)
+        try ConfigCommandLogic.setPositronicAPIKey(id: ascendantID, value: "sk-ant-123", store: store)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: store.path().path)
         let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue
@@ -152,12 +168,16 @@ struct CLIConfigurationTests {
     func mapsOntoDownstreamTypes() throws {
         let folder = try TemporaryFolder()
         let store = self.store(folder: folder)
+
+        try ConfigCommandLogic.initialize(store: store)
+        let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
         try store.setValue("broker.example.com", for: .mqttHost)
         try store.setValue("1884", for: .mqttPort)
         try store.setValue("alice", for: .mqttUsername)
-        try store.setValue("anthropic", for: .llmProvider)
-        try store.setValue("https://api.anthropic.com", for: .llmEndpoint)
-        try store.setValue("claude-sonnet", for: .llmModel)
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: ascendantID, provider: "anthropic", endpoint: "https://api.anthropic.com",
+            model: "claude-sonnet", utilityModel: nil, fastModel: nil, store: store
+        )
 
         let config = try store.load()
 
@@ -177,10 +197,16 @@ struct CLIConfigurationTests {
         let folder = try TemporaryFolder()
         let store = self.store(folder: folder)
 
+        try ConfigCommandLogic.initialize(store: store)
+        let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
+
         let unset = try store.load()
         #expect(unset.llmConfiguration() == nil)
 
-        try store.setValue("nonexistent", for: .llmProvider)
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: ascendantID, provider: "nonexistent", endpoint: nil,
+            model: nil, utilityModel: nil, fastModel: nil, store: store
+        )
         let unknown = try store.load()
         #expect(unknown.llmConfiguration() == nil)
     }
