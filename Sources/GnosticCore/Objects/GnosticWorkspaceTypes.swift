@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKContracts
 
 /// The trust boundary advertised for a Gnostic Workspace.
 public enum GnosticWorkspaceTrustLevel: String, Codable, Sendable, Equatable {
@@ -45,7 +44,7 @@ public struct GnosticWorkspaceToolDefinition: Codable, Sendable, Equatable {
     public let description: String
 
     /// The tool's parameter schema.
-    public let parametersSchema: [String: AnyCodable]
+    public let parametersSchema: [String: ManifestJSONValue]
 
     /// An optional usage example.
     public let usageExample: String?
@@ -60,7 +59,7 @@ public struct GnosticWorkspaceToolDefinition: Codable, Sendable, Equatable {
         id: String,
         name: String,
         description: String,
-        parametersSchema: [String: AnyCodable] = [:],
+        parametersSchema: [String: ManifestJSONValue] = [:],
         usageExample: String? = nil,
         requiresPermission: Bool = false
     ) {

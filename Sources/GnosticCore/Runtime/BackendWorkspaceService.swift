@@ -191,7 +191,7 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
             id: definition.id,
             name: definition.name,
             description: definition.toolDescription,
-            parametersSchema: .object(definition.parametersSchema.mapValues { manifestValue($0) }),
+            parametersSchema: .object(definition.parametersSchema),
             requiresPermission: definition.requiresPermission
         )
     }

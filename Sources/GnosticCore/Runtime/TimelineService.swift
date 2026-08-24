@@ -2,8 +2,6 @@
 
 import Axoloty
 import Foundation
-import PKContracts
-import PositronicKit
 
 @MainActor
 public final class TimelineService {

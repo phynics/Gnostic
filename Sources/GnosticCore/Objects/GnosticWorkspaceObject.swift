@@ -2,7 +2,6 @@
 
 import Axoloty
 import Foundation
-import PKContracts
 
 /// The safe subset of a Workspace tool definition advertised by Gnostic.
 public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
@@ -16,7 +15,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
     public let toolDescription: String
 
     /// The tool's parameter schema.
-    public let parametersSchema: [String: AnyCodable]
+    public let parametersSchema: [String: ManifestJSONValue]
 
     /// An optional usage example.
     public let usageExample: String?

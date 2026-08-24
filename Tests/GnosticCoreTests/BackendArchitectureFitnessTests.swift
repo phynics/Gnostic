@@ -85,6 +85,9 @@ struct BackendArchitectureFitnessTests {
                 encoding: .utf8
             )
             for forbidden in [
+                "import PKContracts",
+                "import PositronicKit",
+                "AnyCodable",
                 ": WorkspaceReference",
                 " WorkspaceReference(",
                 ": WorkspaceTrustLevel",
@@ -95,6 +98,86 @@ struct BackendArchitectureFitnessTests {
                 #expect(!source.contains(forbidden), "The generic Workspace projection mentions PositronicKit type '\(forbidden)' in \(relativePath).")
             }
         }
+    }
+
+    @Test("Core PositronicKit imports stay in explicit backend and host bridges")
+    func corePositronicDependencyBoundaryIsExplicit() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let expectedImports: Set<String> = [
+            "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
+            "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
+            "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
+            "Sources/GnosticCore/Runtime/BackendWorkspaceService.swift",
+            "Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift",
+            "Sources/GnosticCore/Runtime/NodeAssembly.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntime.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntimeHost.swift",
+            "Sources/GnosticCore/Runtime/NodeTransport.swift",
+            "Sources/GnosticCore/Runtime/WorkspaceService.swift",
+            "Sources/GnosticCore/Services/DiscoveredWorkspaceAttachmentService.swift",
+            "Sources/GnosticCore/Services/NetworkManagementTools.swift",
+            "Sources/GnosticCore/Services/WorkspaceReferenceProjection.swift",
+        ]
+        let sourceRoot = rootURL.appendingPathComponent("Sources/GnosticCore")
+        let actualImports = Set(try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            .filter { $0.hasSuffix(".swift") }
+            .compactMap { relativePath -> String? in
+                let source = try? String(
+                    contentsOf: sourceRoot.appendingPathComponent(relativePath),
+                    encoding: .utf8
+                )
+                guard source?.contains("import PositronicKit") == true else { return nil }
+                return "Sources/GnosticCore/\(relativePath)"
+            })
+        #expect(actualImports == expectedImports)
+
+        let package = try String(contentsOf: rootURL.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
+        #expect(!coreTarget.contains("PKPrompt"))
+        let boundaryADR = try String(
+            contentsOf: rootURL.appendingPathComponent("Documentation/Architecture/ADRs/0005-core-positronic-dependency-boundary.md"),
+            encoding: .utf8
+        )
+        for relativePath in expectedImports {
+            #expect(boundaryADR.contains(relativePath.replacingOccurrences(of: "Sources/GnosticCore/", with: "")))
+        }
+
+        let expectedContractImports: Set<String> = [
+            "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
+            "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
+            "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
+            "Sources/GnosticCore/Providers/AgentChatProvider.swift",
+            "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
+            "Sources/GnosticCore/Providers/TimelineStatusProvider.swift",
+            "Sources/GnosticCore/Providers/WorkspaceOpsProvider.swift",
+            "Sources/GnosticCore/Runtime/AscendantPermissionCoordinator.swift",
+            "Sources/GnosticCore/Runtime/BackendWorkspaceService.swift",
+            "Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift",
+            "Sources/GnosticCore/Runtime/NodeAssembly.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntime.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
+            "Sources/GnosticCore/Runtime/NodeRuntimeHost.swift",
+            "Sources/GnosticCore/Runtime/NodeTransport.swift",
+            "Sources/GnosticCore/Runtime/WorkspaceService.swift",
+            "Sources/GnosticCore/Services/DiscoveredWorkspaceAttachmentService.swift",
+            "Sources/GnosticCore/Services/NetworkManagementTools.swift",
+            "Sources/GnosticCore/Services/WorkspaceReferenceProjection.swift",
+        ]
+        let actualContractImports = Set(try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            .filter { $0.hasSuffix(".swift") }
+            .compactMap { relativePath -> String? in
+                let source = try? String(
+                    contentsOf: sourceRoot.appendingPathComponent(relativePath),
+                    encoding: .utf8
+                )
+                guard source?.contains("import PKContracts") == true else { return nil }
+                return "Sources/GnosticCore/\(relativePath)"
+            })
+        #expect(actualContractImports == expectedContractImports)
     }
 
     @Test("pre-reset Agent and Chat compatibility does not remain in Gnostic seams")

@@ -82,7 +82,7 @@ struct ProjectionAndCatalogTests {
             id: "inspect",
             name: "Inspect",
             description: "Inspects remote state.",
-            parametersSchema: ["type": AnyCodable("object")],
+            parametersSchema: ["type": .string("object")],
             usageExample: "inspect state",
             requiresPermission: true
         )

@@ -3,7 +3,7 @@
 import Axoloty
 import Foundation
 
-/// Projects local PositronicKit models into Gnostic network objects.
+/// Projects backend-owned models into Gnostic network objects.
 @MainActor
 public final class OrchestrationProjector {
     private let advertiseObject: (CoatyObject) -> Void
@@ -53,7 +53,7 @@ public final class OrchestrationProjector {
 
     /// Projects and readvertises a timeline after its attachments change.
     ///
-    /// - Parameter timeline: The latest PositronicKit timeline state.
+    /// - Parameter timeline: The latest backend timeline state.
     /// - Returns: The timeline object sent in the readvertisement.
     @discardableResult
     public func readvertise(timeline: AscendantRuntimeTimeline) -> GnosticTimelineObject {
