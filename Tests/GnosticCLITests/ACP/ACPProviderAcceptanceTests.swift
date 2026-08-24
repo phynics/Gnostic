@@ -297,7 +297,8 @@ struct ACPProviderAcceptanceTests {
         let store = CLIConfigurationStore(configPath: configURL, environment: [:])
         let migrated = try store.loadManifest()
         #expect(migrated.schemaVersion == 2)
-        #expect(migrated.llmProfiles.count == 1)
+        #expect(migrated.ascendants.count == 1)
+        #expect(migrated.ascendants[0].backend.settings["provider"] == .string("stub"))
         #expect(FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
 
         let workspaceID = try #require(migrated.workspaces.first?.id)
@@ -509,12 +510,10 @@ private func acceptanceManifest(
 ) throws -> NodeManifest {
     let nodeID = try #require(UUID(uuidString: nodeID))
     let timelineID = try #require(UUID(uuidString: timelineID))
-    let profileID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000299")!
     return NodeManifest(
         broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
         node: .init(id: nodeID),
-        llmProfiles: [.init(id: profileID, provider: "stub", model: "deterministic")],
-        ascendants: [.init(id: ascendantID, name: name, defaultTimelineID: timelineID, llmProfileID: profileID)],
+        ascendants: [.init(id: ascendantID, name: name, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["provider": .string("stub"), "model": .string("deterministic")]))],
         timelines: [.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID)]
     )
 }

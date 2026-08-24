@@ -9,7 +9,7 @@ struct ConfigCommand: AsyncParsableCommand {
         commandName: "config",
         abstract: "Create and manage the Gnostic Node configuration.",
         subcommands: [
-            Init.self, Show.self, Validate.self, Path.self, Broker.self, LLM.self,
+            Init.self, Show.self, Validate.self, Path.self, Broker.self, Positronic.self,
             Ascendant.self, Timeline.self, Workspace.self,
         ]
     )
@@ -24,7 +24,7 @@ struct ConfigCommand: AsyncParsableCommand {
     }
 
     struct Init: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(commandName: "init", abstract: "Create a default schema-v1 Node manifest.")
+        static let configuration = CommandConfiguration(commandName: "init", abstract: "Create a default schema-v2 Node manifest.")
         @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
         var configPath: String?
 
@@ -115,23 +115,21 @@ struct ConfigCommand: AsyncParsableCommand {
         }
     }
 
-    struct LLM: AsyncParsableCommand {
+    struct Positronic: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            commandName: "llm",
-            abstract: "Manage named LLM profiles.",
-            subcommands: [LLMAdd.self, LLMUpdate.self, LLMRemove.self, LLMSetAPIKey.self]
+            commandName: "positronic",
+            abstract: "Configure one Positronic Ascendant backend.",
+            subcommands: [Set.self, SetAPIKey.self, Clear.self]
         )
 
-        struct LLMAdd: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add an LLM profile.")
+        struct Set: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "set", abstract: "Set fields on one Positronic Ascendant backend.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument(help: "Provider name (also accepted as --provider).")
-            var providerArgument: String?
+            @Argument(help: "Existing Positronic Ascendant UUID.")
+            var ascendantID: String
             @Option(name: .long, help: "Provider name.")
             var provider: String?
-            @Option(name: .long, help: "Profile display name.")
-            var name: String = "Default LLM Profile"
             @Option(name: .long, help: "Provider endpoint URL.")
             var endpoint: String?
             @Option(name: .long, help: "Primary model name.")
@@ -142,62 +140,38 @@ struct ConfigCommand: AsyncParsableCommand {
             var fastModel: String?
 
             func run() async throws {
-                try ConfigCommandLogic.addLLM(
-                    provider: provider ?? providerArgument,
-                    name: provider != nil && name == "Default LLM Profile" ? (providerArgument ?? name) : name,
-                    endpoint: endpoint,
+                try ConfigCommandLogic.configurePositronic(
+                    ascendantID: ascendantID, provider: provider, endpoint: endpoint,
                     model: model, utilityModel: utilityModel, fastModel: fastModel,
                     store: ConfigCommandLogic.store(for: configPath)
                 )
             }
         }
 
-        struct LLMUpdate: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "update", abstract: "Update an LLM profile without changing its ID or kind.")
+        struct SetAPIKey: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "set-api-key", abstract: "Read a Positronic API key from standard input.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument(help: "LLM profile UUID.")
-            var id: String
-            @Option(name: .long) var name: String?
-            @Option(name: .long) var provider: String?
-            @Option(name: .long) var endpoint: String?
-            @Option(name: .long) var model: String?
-            @Option(name: .customLong("utility-model")) var utilityModel: String?
-            @Option(name: .customLong("fast-model")) var fastModel: String?
+            @Argument(help: "Existing Positronic Ascendant UUID.")
+            var ascendantID: String
 
             func run() async throws {
-                try ConfigCommandLogic.updateLLM(
-                    id: id, name: name, provider: provider, endpoint: endpoint, model: model,
-                    utilityModel: utilityModel, fastModel: fastModel,
+                try ConfigCommandLogic.setPositronicAPIKey(
+                    id: ascendantID, value: ConfigCommandLogic.readSecret(),
                     store: ConfigCommandLogic.store(for: configPath)
                 )
             }
         }
 
-        struct LLMRemove: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove an unreferenced LLM profile.")
+        struct Clear: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear the selected Positronic backend envelope.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument(help: "LLM profile UUID.")
-            var id: String
+            @Argument(help: "Existing Positronic Ascendant UUID.")
+            var ascendantID: String
 
             func run() async throws {
-                try ConfigCommandLogic.removeLLM(id: id, store: ConfigCommandLogic.store(for: configPath))
-            }
-        }
-
-        struct LLMSetAPIKey: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "set-api-key", abstract: "Read an LLM API key from standard input.")
-            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-            var configPath: String?
-            @Argument(help: "LLM profile UUID.")
-            var id: String
-
-            func run() async throws {
-                try ConfigCommandLogic.setLLMAPIKey(
-                    id: id, value: ConfigCommandLogic.readSecret(),
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                try ConfigCommandLogic.clearPositronic(ascendantID: ascendantID, store: ConfigCommandLogic.store(for: configPath))
             }
         }
     }
@@ -217,12 +191,9 @@ struct ConfigCommand: AsyncParsableCommand {
             var nameArgument: String?
             @Option(name: .long) var name: String?
             @Option(name: .long) var description: String = ""
-            @Option(name: .customLong("llm-profile"), help: "Existing LLM profile UUID.")
-            var llmProfile: String?
-
             func run() async throws {
                 try ConfigCommandLogic.addAscendant(
-                    name: name ?? nameArgument, description: description, llmProfileID: llmProfile,
+                    name: name ?? nameArgument, description: description,
                     store: ConfigCommandLogic.store(for: configPath)
                 )
             }
@@ -235,20 +206,12 @@ struct ConfigCommand: AsyncParsableCommand {
             @Argument var id: String
             @Option(name: .long) var name: String?
             @Option(name: .long) var description: String?
-            @Option(name: .customLong("llm-profile")) var llmProfile: String?
-            @Flag(name: .customLong("clear-llm-profile"), help: "Clear the optional LLM profile reference.")
-            var clearLLMProfile = false
             @Option(name: .customLong("default-timeline"), help: "Existing Timeline operated by this Ascendant.")
             var defaultTimeline: String?
 
             func run() async throws {
-                if llmProfile != nil && clearLLMProfile {
-                    throw ValidationError("Use either --llm-profile or --clear-llm-profile, not both.")
-                }
                 try ConfigCommandLogic.updateAscendant(
-                    id: id, name: name, description: description, llmProfileID: llmProfile,
-                    defaultTimelineID: defaultTimeline,
-                    clearLLMProfile: clearLLMProfile,
+                    id: id, name: name, description: description, defaultTimelineID: defaultTimeline,
                     store: ConfigCommandLogic.store(for: configPath)
                 )
             }
@@ -486,58 +449,55 @@ public enum ConfigCommandLogic {
         _ = try store.mutateManifest { $0.broker.password = password }
     }
 
-    public static func addLLM(provider: String?, name: String, endpoint: String?, model: String?, utilityModel: String?, fastModel: String?, store: CLIConfigurationStore) throws {
-        guard let provider, !provider.isEmpty else { throw CLIConfigurationError.invalidArgument("An LLM provider is required.") }
-        let profileID = UUID.makeVersion4()
-        _ = try store.mutateManifest { manifest in
-            guard let ascendantID = manifest.ascendants.first?.id else { throw CLIConfigurationError.invalidArgument("An LLM profile must target an existing Ascendant.") }
-            manifest.llmProfiles = [PositronicProfile(id: profileID, ascendantID: ascendantID, provider: provider, name: name, endpoint: endpoint, model: model, utilityModel: utilityModel, fastModel: fastModel)] + manifest.llmProfiles.dropFirst()
+    public static func configurePositronic(
+        ascendantID: String,
+        provider: String?,
+        endpoint: String?,
+        model: String?,
+        utilityModel: String?,
+        fastModel: String?,
+        store: CLIConfigurationStore
+    ) throws {
+        guard provider != nil || endpoint != nil || model != nil || utilityModel != nil || fastModel != nil else {
+            throw CLIConfigurationError.invalidArgument("Provide at least one Positronic backend field to set.")
         }
-        printID("Added llm profile", profileID)
-    }
-
-    public static func updateLLM(id: String, name: String?, provider: String?, endpoint: String?, model: String?, utilityModel: String?, fastModel: String?, store: CLIConfigurationStore) throws {
-        let profileID = try parseID(id, kind: "llm profile")
-        _ = try store.mutateManifest { manifest in
-            guard var profile = manifest.llmProfiles.first(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            if let name { profile.name = name }
-            if let provider { profile.provider = provider }
-            if let endpoint { profile.endpoint = endpoint }
-            if let model { profile.model = model }
-            if let utilityModel { profile.utilityModel = utilityModel }
-            if let fastModel { profile.fastModel = fastModel }
-            manifest.llmProfiles = manifest.llmProfiles.map { $0.id == profileID ? profile : $0 }
+        if let provider, provider.isEmpty {
+            throw CLIConfigurationError.invalidArgument("A Positronic provider cannot be empty.")
         }
-    }
-
-    public static func removeLLM(id: String, store: CLIConfigurationStore) throws {
-        let profileID = try parseID(id, kind: "llm profile")
+        let id = try parseID(ascendantID, kind: "ascendant")
         _ = try store.mutateManifest { manifest in
-            guard manifest.llmProfiles.contains(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            for index in manifest.ascendants.indices where manifest.ascendants[index].llmProfileID == profileID {
-                manifest.ascendants[index].backend = .init(kind: manifest.ascendants[index].kind)
-            }
+            let index = try positronicIndex(id, in: manifest)
+            let configuration = PositronicBackendConfiguration(
+                provider: provider, endpoint: endpoint, model: model,
+                utilityModel: utilityModel, fastModel: fastModel
+            )
+            manifest.ascendants[index].backend = configuration.applying(to: manifest.ascendants[index].backend)
         }
     }
 
-    public static func setLLMAPIKey(id: String, value: String, store: CLIConfigurationStore) throws {
-        let profileID = try parseID(id, kind: "llm profile")
+    public static func setPositronicAPIKey(id: String, value: String, store: CLIConfigurationStore) throws {
+        let ascendantID = try parseID(id, kind: "ascendant")
         _ = try store.mutateManifest { manifest in
-            guard var profile = manifest.llmProfiles.first(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            profile.apiKey = value
-            manifest.llmProfiles = manifest.llmProfiles.map { $0.id == profileID ? profile : $0 }
+            let index = try positronicIndex(ascendantID, in: manifest)
+            manifest.ascendants[index].backend = PositronicBackendConfiguration(apiKey: value)
+                .applying(to: manifest.ascendants[index].backend)
         }
     }
 
-    public static func addAscendant(name: String?, description: String, llmProfileID: String?, store: CLIConfigurationStore) throws {
+    public static func clearPositronic(ascendantID: String, store: CLIConfigurationStore) throws {
+        let id = try parseID(ascendantID, kind: "ascendant")
+        _ = try store.mutateManifest { manifest in
+            let index = try positronicIndex(id, in: manifest)
+            manifest.ascendants[index].backend = .init(kind: "positronic")
+        }
+    }
+
+    public static func addAscendant(name: String?, description: String, store: CLIConfigurationStore) throws {
         guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("An Ascendant name is required.") }
         let ascendantID = UUID.makeVersion4()
         let timelineID = UUID.makeVersion4()
-        let profileID = try llmProfileID.map { try parseID($0, kind: "llm profile") }
         _ = try store.mutateManifest { manifest in
-            if let profileID, !manifest.llmProfiles.contains(where: { $0.id == profileID }) { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID) }
-            let backend = profileID.flatMap { id in manifest.llmProfiles.first(where: { $0.id == id })?.backend() } ?? .init(kind: "positronic")
-            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, backend: backend))
+            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, backend: .init(kind: "positronic")))
             manifest.timelines.append(.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID))
         }
         printID("Added ascendant", ascendantID)
@@ -548,24 +508,15 @@ public enum ConfigCommandLogic {
         id: String,
         name: String?,
         description: String?,
-        llmProfileID: String?,
         defaultTimelineID: String?,
-        clearLLMProfile: Bool = false,
         store: CLIConfigurationStore
     ) throws {
         let ascendantID = try parseID(id, kind: "ascendant")
-        let profileID = try llmProfileID.map { try parseID($0, kind: "llm profile") }
         let timelineID = try defaultTimelineID.map { try parseID($0, kind: "timeline") }
         _ = try store.mutateManifest { manifest in
             guard let index = manifest.ascendants.firstIndex(where: { $0.id == ascendantID }) else { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID) }
             if let name { manifest.ascendants[index].name = name }
             if let description { manifest.ascendants[index].description = description }
-            if clearLLMProfile {
-                manifest.ascendants[index].backend = .init(kind: manifest.ascendants[index].kind)
-            } else if llmProfileID != nil {
-                guard let profileID, manifest.llmProfiles.contains(where: { $0.id == profileID }) else { throw CLIConfigurationError.resourceNotFound(kind: "llm profile", id: profileID ?? UUID()) }
-                if let profile = manifest.llmProfiles.first(where: { $0.id == profileID }) { manifest.ascendants[index].backend = profile.backend(kind: manifest.ascendants[index].kind) }
-            }
             if let timelineID {
                 guard manifest.timelines.contains(where: { $0.id == timelineID && $0.operatingAscendantID == ascendantID }) else { throw CLIConfigurationError.invalidArgument("Default Timeline \(timelineID.uuidString.lowercased()) must exist and be operated by Ascendant \(ascendantID.uuidString.lowercased()).") }
                 manifest.ascendants[index].defaultTimelineID = timelineID
@@ -683,6 +634,16 @@ public enum ConfigCommandLogic {
         return id
     }
 
+    private static func positronicIndex(_ id: UUID, in manifest: NodeManifest) throws -> Int {
+        guard let index = manifest.ascendants.firstIndex(where: { $0.id == id }) else {
+            throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
+        }
+        guard manifest.ascendants[index].backend.kind == "positronic" else {
+            throw CLIConfigurationError.invalidArgument("Ascendant \(id.uuidString.lowercased()) does not use the Positronic backend.")
+        }
+        return index
+    }
+
     private static func printID(_ label: String, _ id: UUID) {
         print("\(label): \(id.uuidString.lowercased())")
     }
@@ -691,7 +652,6 @@ public enum ConfigCommandLogic {
         [
             "Initialized configuration.",
             "node: \(manifest.node.id.uuidString.lowercased())",
-            "llm profile: \(manifest.llmProfiles[0].id.uuidString.lowercased())",
             "ascendant: \(manifest.ascendants[0].id.uuidString.lowercased())",
             "timeline: \(manifest.timelines[0].id.uuidString.lowercased())",
             "workspace: \(manifest.workspaces[0].id.uuidString.lowercased())",
@@ -713,18 +673,19 @@ public enum ConfigCommandLogic {
         ]
         if let username = manifest.broker.username { lines.append("broker.username = \(username)") }
         if manifest.broker.password != nil { lines.append("broker.password = <redacted>") }
-        for profile in manifest.llmProfiles {
-            lines.append("llm.profile \(profile.id.uuidString.lowercased()) = \(profile.name) [\(profile.provider)]")
-            if let endpoint = profile.endpoint { lines.append("  endpoint = \(endpoint)") }
-            if let model = profile.model { lines.append("  model = \(model)") }
-            if let utilityModel = profile.utilityModel { lines.append("  utilityModel = \(utilityModel)") }
-            if let fastModel = profile.fastModel { lines.append("  fastModel = \(fastModel)") }
-            if profile.apiKey != nil { lines.append("  apiKey = <redacted>") }
-        }
         for ascendant in manifest.ascendants {
             lines.append("ascendant \(ascendant.id.uuidString.lowercased()) = \(ascendant.name) default=\(ascendant.defaultTimelineID.uuidString.lowercased())")
             if !ascendant.description.isEmpty { lines.append("  description = \(ascendant.description)") }
-            if let profileID = ascendant.llmProfileID { lines.append("  llmProfile = \(profileID.uuidString.lowercased())") }
+            lines.append("  backend.kind = \(ascendant.backend.kind)")
+            if ascendant.backend.kind == "positronic" {
+                let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
+                if let provider = configuration.provider { lines.append("  backend.provider = \(provider)") }
+                if let endpoint = configuration.endpoint { lines.append("  backend.endpoint = \(endpoint)") }
+                if let model = configuration.model { lines.append("  backend.model = \(model)") }
+                if let utilityModel = configuration.utilityModel { lines.append("  backend.utilityModel = \(utilityModel)") }
+                if let fastModel = configuration.fastModel { lines.append("  backend.fastModel = \(fastModel)") }
+                if configuration.apiKey != nil { lines.append("  backend.apiKey = <redacted>") }
+            }
         }
         for timeline in manifest.timelines {
             lines.append("timeline \(timeline.id.uuidString.lowercased()) = \(timeline.title)")

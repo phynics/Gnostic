@@ -8,22 +8,34 @@ import Testing
 
 @Suite("Resource-oriented configuration commands")
 struct ResourceCommandTests {
-    @Test("config exposes every resource command and no flat set command")
+    @Test("config exposes every resource command and no profile abstraction")
     func completeResourceCommandTree() {
         let help = ConfigCommand.helpMessage()
 
         for command in [
-            "init", "show", "validate", "path", "broker", "llm", "ascendant", "timeline", "workspace",
+            "init", "show", "validate", "path", "broker", "positronic", "ascendant", "timeline", "workspace",
         ] {
             #expect(help.contains(command), "missing config command: \(command)")
         }
         #expect(!help.contains("config set"))
+        #expect(!help.lowercased().contains("profile"))
         #expect(help.contains("--config"))
 
         #expect(ConfigCommand.Broker.helpMessage().contains("set-password"))
-        #expect(ConfigCommand.LLM.helpMessage().contains("set-api-key"))
+        #expect(ConfigCommand.Positronic.helpMessage().contains("set-api-key"))
+        #expect(!ConfigCommand.Ascendant.helpMessage().contains("llm-profile"))
         #expect(ConfigCommand.Timeline.helpMessage().contains("attach-workspace"))
         #expect(ConfigCommand.Timeline.helpMessage().contains("detach-workspace"))
+    }
+
+    @Test("generic profile commands are not registered")
+    func genericProfileCommandsAreRemoved() {
+        #expect(throws: (any Error).self) {
+            _ = try GnosticCLI.parseAsRoot(["config", "llm"])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try GnosticCLI.parseAsRoot(["config", "ascendant", "add", "--llm-profile", UUID().uuidString])
+        }
     }
 
     @Test("init creates the complete default graph and refuses replacement")
@@ -35,8 +47,9 @@ struct ResourceCommandTests {
         try ConfigCommandLogic.initialize(store: store, writeOutput: { output.append($0) })
         let manifest = try store.loadManifest()
 
-        #expect(manifest.llmProfiles.count == 1)
         #expect(manifest.ascendants.count == 1)
+        #expect(manifest.ascendants[0].backend.kind == "positronic")
+        #expect(manifest.ascendants[0].backend.settings.isEmpty)
         #expect(manifest.timelines.count == 1)
         #expect(manifest.workspaces.count == 1)
         #expect(manifest.timelines[0].operatingAscendantID == manifest.ascendants[0].id)
@@ -55,13 +68,56 @@ struct ResourceCommandTests {
         let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
 
         try ConfigCommandLogic.initialize(store: store)
-        try ConfigCommandLogic.addAscendant(name: "Second", description: "two", llmProfileID: nil, store: store)
+        try ConfigCommandLogic.addAscendant(name: "Second", description: "two", store: store)
         let manifest = try store.loadManifest()
         let ascendant = try #require(manifest.ascendants.last)
         let timeline = try #require(manifest.timelines.first { $0.id == ascendant.defaultTimelineID })
 
         #expect(ascendant.name == "Second")
         #expect(timeline.operatingAscendantID == ascendant.id)
+    }
+
+    @Test("Positronic convenience targets one Ascendant envelope")
+    func positronicConfigurationIsScopedToSelectedAscendant() throws {
+        let folder = try TemporaryFolder()
+        let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
+        try ConfigCommandLogic.initialize(store: store)
+        try ConfigCommandLogic.addAscendant(name: "Second", description: "two", store: store)
+        let initial = try store.loadManifest()
+        let firstID = try #require(initial.ascendants.first?.id)
+        let secondID = try #require(initial.ascendants.last?.id)
+        _ = try store.mutateManifest { manifest in
+            manifest.ascendants[0].backend.settings["custom"] = .string("preserved")
+        }
+
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: secondID.uuidString, provider: "anthropic", endpoint: nil,
+            model: "sonnet", utilityModel: nil, fastModel: nil, store: store
+        )
+        let updated = try store.loadManifest()
+        #expect(updated.ascendants.first { $0.id == firstID }?.backend.settings["custom"] == .string("preserved"))
+        #expect(updated.ascendants.first { $0.id == secondID }?.backend.settings["provider"] == .string("anthropic"))
+        #expect(updated.ascendants.first { $0.id == secondID }?.backend.settings["model"] == .string("sonnet"))
+        let encoded = try JSONEncoder().encode(updated)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["llmProfiles"] == nil)
+    }
+
+    @Test("Positronic selection follows the backend envelope kind")
+    func positronicSelectionUsesBackendKind() throws {
+        let folder = try TemporaryFolder()
+        let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
+        try ConfigCommandLogic.initialize(store: store)
+        _ = try store.mutateManifest { manifest in
+            manifest.ascendants[0].kind = "legacy-label"
+        }
+
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: try store.loadManifest().ascendants[0].id.uuidString,
+            provider: "stub", endpoint: nil, model: "deterministic",
+            utilityModel: nil, fastModel: nil, store: store
+        )
+        #expect(try store.loadManifest().ascendants[0].backend.settings["provider"] == .string("stub"))
     }
 
     @Test("invalid reference removal leaves the original bytes intact and names the reference")
@@ -97,15 +153,12 @@ struct ResourceCommandTests {
         )
         let secondaryTimeline = try #require(try store.loadManifest().timelines.last)
 
-        try ConfigCommandLogic.updateAscendant(
-            id: initial.ascendants[0].id.uuidString,
-            name: nil,
-            description: nil,
-            llmProfileID: nil,
-            defaultTimelineID: nil,
-            clearLLMProfile: true,
-            store: store
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: initial.ascendants[0].id.uuidString,
+            provider: "stub", endpoint: nil, model: "deterministic",
+            utilityModel: nil, fastModel: nil, store: store
         )
+        try ConfigCommandLogic.clearPositronic(ascendantID: initial.ascendants[0].id.uuidString, store: store)
         try ConfigCommandLogic.updateTimeline(
             id: secondaryTimeline.id.uuidString,
             title: nil,
@@ -115,9 +168,8 @@ struct ResourceCommandTests {
         )
 
         let updated = try store.loadManifest()
-        #expect(updated.ascendants[0].llmProfileID == nil)
+        #expect(updated.ascendants[0].backend.settings.isEmpty)
         #expect(updated.timelines.first { $0.id == secondaryTimeline.id }?.operatingAscendantID == nil)
-        try ConfigCommandLogic.removeLLM(id: initial.llmProfiles[0].id.uuidString, store: store)
     }
 
     @Test("show JSON redacts both secret fields")
@@ -127,7 +179,7 @@ struct ResourceCommandTests {
         try ConfigCommandLogic.initialize(store: store)
         try ConfigCommandLogic.setBrokerPassword("broker-secret", store: store)
         let manifest = try store.loadManifest()
-        try ConfigCommandLogic.setLLMAPIKey(id: manifest.llmProfiles[0].id.uuidString, value: "llm-secret", store: store)
+        try ConfigCommandLogic.setPositronicAPIKey(id: manifest.ascendants[0].id.uuidString, value: "llm-secret", store: store)
 
         var output = ""
         try ConfigCommandLogic.show(store: store, json: true, writeOutput: { output = $0 })
@@ -144,22 +196,17 @@ struct ResourceCommandTests {
         try ConfigCommandLogic.initialize(store: store)
         var manifest = try store.loadManifest()
 
-        try ConfigCommandLogic.addLLM(
-            provider: "anthropic", name: "Secondary", endpoint: nil, model: "sonnet",
-            utilityModel: nil, fastModel: nil, store: store
-        )
-        manifest = try store.loadManifest()
-        let secondaryProfile = try #require(manifest.llmProfiles.last)
-        try ConfigCommandLogic.updateLLM(
-            id: secondaryProfile.id.uuidString, name: "Updated", provider: nil,
-            endpoint: "https://example.test", model: nil, utilityModel: nil,
-            fastModel: nil, store: store
-        )
         try ConfigCommandLogic.addAscendant(
-            name: "Secondary Ascendant", description: "", llmProfileID: secondaryProfile.id.uuidString, store: store
+            name: "Secondary Ascendant", description: "", store: store
         )
         manifest = try store.loadManifest()
         let secondaryAscendant = try #require(manifest.ascendants.last)
+        try ConfigCommandLogic.configurePositronic(
+            ascendantID: secondaryAscendant.id.uuidString, provider: "anthropic",
+            endpoint: "https://example.test", model: "sonnet", utilityModel: nil,
+            fastModel: nil, store: store
+        )
+        manifest = try store.loadManifest()
         try ConfigCommandLogic.addTimeline(title: "Unoperated", operatingAscendantID: nil, store: store)
         manifest = try store.loadManifest()
         let unoperatedTimeline = try #require(manifest.timelines.last { $0.operatingAscendantID == nil })
@@ -175,12 +222,10 @@ struct ResourceCommandTests {
         )
         try ConfigCommandLogic.removeTimeline(id: unoperatedTimeline.id.uuidString, store: store)
         try ConfigCommandLogic.removeAscendant(id: secondaryAscendant.id.uuidString, store: store)
-        try ConfigCommandLogic.removeLLM(id: secondaryProfile.id.uuidString, store: store)
         try ConfigCommandLogic.removeWorkspace(id: workspace.id.uuidString, store: store)
 
         manifest = try store.loadManifest()
         #expect(manifest.ascendants.count == 1)
-        #expect(manifest.llmProfiles.count == 1)
         #expect(manifest.workspaces.isEmpty)
     }
 }
@@ -209,19 +254,17 @@ struct ResourceConfigurationSubprocessTests {
         #expect(!setPassword.stderr.contains(secret))
         #expect(!["config", "broker", "set-password", "--config", path.path].contains(secret))
         #expect(try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest().broker.password == secret)
-        #expect(manifest.llmProfiles.count == 1)
-
-        let profileID = manifest.llmProfiles[0].id.uuidString.lowercased()
+        let ascendantID = manifest.ascendants[0].id.uuidString.lowercased()
         let apiSecret = "stdin-only-api-key"
         let setAPIKey = try run(
             binary: binary,
-            arguments: ["config", "llm", "set-api-key", profileID, "--config", path.path],
+            arguments: ["config", "positronic", "set-api-key", ascendantID, "--config", path.path],
             stdin: apiSecret + "\n"
         )
         #expect(setAPIKey.status == 0, Comment(rawValue: setAPIKey.stderr))
         #expect(!setAPIKey.stdout.contains(apiSecret))
         #expect(!setAPIKey.stderr.contains(apiSecret))
-        #expect(try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest().llmProfiles[0].apiKey == apiSecret)
+        #expect(try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest().ascendants[0].backend.secrets["apiKey"] == .string(apiSecret))
     }
 
     @Test("public CLI performs CRUD and rejects invalid direct JSON without rewriting it")

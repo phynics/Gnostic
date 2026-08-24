@@ -44,6 +44,36 @@ struct NodeManifestTests {
         #expect(throws: DecodingError.self) { _ = try JSONDecoder().decode(NodeManifest.self, from: Data(source.utf8)) }
     }
 
+    @Test("v2 load removes the retired CLI profile identity marker")
+    func v2LoadCanonicalizesRetiredProfileMarker() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        var manifest = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
+        manifest.ascendants[0].backend.settings["_legacyID"] = .string(UUID().uuidString)
+        try JSONEncoder().encode(manifest).write(to: path)
+
+        let loaded = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(loaded.ascendants[0].backend.settings["_legacyID"] == nil)
+        #expect(String(data: try Data(contentsOf: path), encoding: .utf8)?.contains("_legacyID") == false)
+    }
+
+    @Test("v2 load preserves opaque settings owned by other backends")
+    func v2LoadPreservesNonPositronicLegacyIDSetting() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        var manifest = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
+        manifest.ascendants[0].kind = "custom"
+        manifest.ascendants[0].backend = .init(
+            kind: "custom",
+            settings: ["_legacyID": .string("backend-owned"), "mode": .string("deterministic")]
+        )
+        try JSONEncoder().encode(manifest).write(to: path)
+
+        let loaded = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(loaded.ascendants[0].backend.settings["_legacyID"] == .string("backend-owned"))
+        #expect(loaded.ascendants[0].backend.settings["mode"] == .string("deterministic"))
+    }
+
     @Test("invalid legacy profile does not rewrite its source")
     func invalidLegacyProfileIsNotRewritten() throws {
         let folder = try TemporaryFolder()
@@ -76,6 +106,7 @@ struct NodeManifestTests {
         #expect(migrated.workspaces.first?.id.uuidString.lowercased() == workspace.lowercased())
         #expect(migrated.ascendants.first?.backend.settings["provider"] == .string("anthropic"))
         #expect(migrated.ascendants.first?.backend.secrets["apiKey"] == .string("llm-secret"))
+        #expect(migrated.ascendants.first?.backend.settings["_legacyID"] == nil)
         let canonical = try Data(contentsOf: path)
         #expect(String(data: canonical, encoding: .utf8)?.contains("llmProfiles") == false)
         #expect(FileManager.default.fileExists(atPath: path.appendingPathExtension("legacy").path))
@@ -91,9 +122,9 @@ struct NodeManifestTests {
         try Data(source.utf8).write(to: path)
 
         let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(migrated.ascendants.count == 2)
         #expect(migrated.ascendants.allSatisfy { $0.backend.settings["provider"] == .string("stub") })
-        #expect(Set(migrated.llmProfiles.map(\.id)).count == 2)
-        #expect(migrated.llmProfiles.count == 2)
+        #expect(migrated.ascendants.allSatisfy { $0.backend.settings["_legacyID"] == nil })
     }
 
     @Test("backend settings and secrets are bounded")
@@ -117,7 +148,6 @@ struct NodeManifestTests {
 
     @Test("manifest validates its graph and compiles a launch plan")
     func manifestValidatesAndCompilesLaunchPlan() throws {
-        let profileID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000001"))
         let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000002"))
         let timelineID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000003"))
         let workspaceID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000004"))
@@ -127,8 +157,7 @@ struct NodeManifestTests {
             schemaVersion: 2,
             broker: .init(host: "broker.example", port: 1883, namespace: "gnostic", username: "alice", password: "secret"),
             node: .init(id: nodeID, kind: "node"),
-            llmProfiles: [.init(id: profileID, kind: "positronic", provider: "anthropic", endpoint: nil, model: "claude")],
-            ascendants: [.init(id: ascendantID, name: "Alice", defaultTimelineID: timelineID, kind: "positronic", description: "Primary assistant", metadata: ["team": "core"], llmProfileID: profileID)],
+            ascendants: [.init(id: ascendantID, name: "Alice", defaultTimelineID: timelineID, kind: "positronic", description: "Primary assistant", metadata: ["team": "core"], backend: .init(kind: "positronic", settings: ["provider": .string("anthropic"), "model": .string("claude")]))],
             timelines: [.init(id: timelineID, title: "Default", kind: "timeline", operatingAscendantID: ascendantID, attachments: [.local(workspaceID)])],
             workspaces: [.init(id: workspaceID, name: "Echo Workspace", uri: "echo://default", kind: "echo")]
         )
@@ -150,7 +179,6 @@ struct NodeManifestTests {
             schemaVersion: 2,
             broker: .init(host: "localhost", port: 1883, namespace: "gnostic"),
             node: .init(id: id, kind: "node"),
-            llmProfiles: [.init(id: id, kind: "positronic", provider: "openai")],
             ascendants: [], timelines: [], workspaces: []
         )
 
@@ -187,8 +215,8 @@ struct NodeManifestTests {
         #expect(manifest.schemaVersion == 2)
         #expect(manifest.broker.host == "legacy.example")
         #expect(manifest.broker.password == "broker-secret")
-        #expect(manifest.llmProfiles.count == 1)
-        #expect(manifest.llmProfiles.first?.endpoint == nil)
+        #expect(manifest.ascendants.count == 1)
+        #expect(manifest.ascendants.first?.backend.settings["endpoint"] == nil)
         #expect(manifest.ascendants.first?.kind == "positronic")
         #expect(manifest.timelines.count == 1)
         #expect(manifest.timelines.first?.attachments.isEmpty == true)
@@ -348,7 +376,7 @@ struct NodeManifestTests {
             broker: .init(host: "localhost", port: 1883, namespace: "gnostic", password: "broker-secret")
         )
         var secured = manifest
-        secured.llmProfiles[0].apiKey = "llm-secret"
+        secured.ascendants[0].backend.secrets["apiKey"] = .string("llm-secret")
         let shown = secured.redactedDescription()
 
         #expect(!shown.contains("broker-secret"))
