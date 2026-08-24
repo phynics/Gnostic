@@ -76,7 +76,7 @@ make verify
 The development container includes a local, anonymous Mosquitto listener at
 `127.0.0.1:1883`. No repository, LLM, or broker credentials are required.
 
-Run the deterministic fixture scenario through the configured broker:
+Build and inspect the shipped runner command:
 
 ```sh
 make resolve
@@ -85,7 +85,7 @@ make runner-smoke
 
 Broker settings may be supplied with command-line arguments (`--host`, `--port`,
 and `--namespace`) or `GNOSTIC_HOST`, `GNOSTIC_PORT`, and `GNOSTIC_NAMESPACE`.
-The fixture advertises `list_files`, `read_file`, and `workspace_echo` over the
-generic unary workspace invocation route. `make test` runs the full consumer
+The runner starts an online Axoloty host when invoked without `--help`; it does
+not ship the former fixture scenario. `make test` runs the test-only consumer
 discovery, approved attachment, tool invocation, and Timeline readvertisement
 verification against the same local Mosquitto service.

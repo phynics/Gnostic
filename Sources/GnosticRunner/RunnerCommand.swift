@@ -2,10 +2,7 @@
 
 import ArgumentParser
 import Foundation
-import Axoloty
 import GnosticCore
-import PKContracts
-import PositronicKit
 
 /// The `gnostic-runner` executable.
 @main
@@ -24,25 +21,18 @@ struct GnosticRunner: AsyncParsableCommand {
     @Option(help: "MQTT namespace (defaults to GNOSTIC_NAMESPACE or gnostic).")
     var namespace: String?
 
-    @Flag(help: "Run the deterministic fixture scenario instead of the online runner.")
-    var scenario = false
-
     @MainActor
     func run() async throws {
         let configuration = try RunnerConfiguration.resolve(
             flags: RunnerParsingFlags(host: host, port: port, namespace: namespace),
             environment: ProcessInfo.processInfo.environment
         )
-        if scenario {
-            try await FixtureScenario(configuration: configuration).run()
-        } else {
-            let runtime = try RunnerRuntime(configuration: configuration)
-            defer { runtime.shutdown() }
-            try await runtime.start()
-            print("gnostic-runner online at \(configuration.host):\(configuration.port) namespace \(configuration.namespace)")
-            await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
-                _ = continuation
-            }
+        let runtime = try RunnerRuntime(configuration: configuration)
+        defer { runtime.shutdown() }
+        try await runtime.start()
+        print("gnostic-runner online at \(configuration.host):\(configuration.port) namespace \(configuration.namespace)")
+        await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
+            _ = continuation
         }
     }
 }
