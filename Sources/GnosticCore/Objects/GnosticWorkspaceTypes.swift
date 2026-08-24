@@ -22,6 +22,25 @@ public enum GnosticWorkspaceStatus: String, Codable, Sendable, Equatable {
     case unknown
 }
 
+/// The Gnostic-owned effective usability of a Workspace attachment.
+public enum GnosticWorkspaceEffectiveStatus: String, Codable, Sendable, Equatable, CaseIterable {
+    /// The Workspace is currently safe to use.
+    case available
+    /// The intended Workspace is known but cannot currently be used.
+    case unavailable
+    /// The Workspace cannot safely be used by this runtime or protocol.
+    case unsupported
+
+    /// Derives effective usability from a provider lifecycle projection.
+    public init(providerStatus: GnosticWorkspaceStatus) {
+        switch providerStatus {
+        case .active: self = .available
+        case .missing: self = .unavailable
+        case .unknown: self = .unavailable
+        }
+    }
+}
+
 /// The Gnostic-owned placement of a Workspace relative to its runtime.
 public enum GnosticWorkspaceLocation: String, Codable, Sendable, Equatable {
     /// A Workspace owned directly by the runtime.
@@ -89,11 +108,18 @@ public struct GnosticWorkspaceReference: Codable, Sendable, Equatable {
     /// The provider-owned lifecycle state.
     public let status: GnosticWorkspaceStatus
 
+    /// The Gnostic-owned effective usability of this Workspace.
+    public let effectiveStatus: GnosticWorkspaceEffectiveStatus
+
     /// The custom tools exposed by this Workspace.
     public let tools: [GnosticWorkspaceToolDefinition]
 
     /// The Workspace creation timestamp.
     public let createdAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id, uri, location, trustLevel, status, effectiveStatus, tools, createdAt
+    }
 
     public init(
         id: UUID,
@@ -101,6 +127,7 @@ public struct GnosticWorkspaceReference: Codable, Sendable, Equatable {
         location: GnosticWorkspaceLocation = .runtime,
         trustLevel: GnosticWorkspaceTrustLevel = .full,
         status: GnosticWorkspaceStatus = .active,
+        effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil,
         tools: [GnosticWorkspaceToolDefinition] = [],
         createdAt: Date = Date()
     ) {
@@ -109,7 +136,35 @@ public struct GnosticWorkspaceReference: Codable, Sendable, Equatable {
         self.location = location
         self.trustLevel = trustLevel
         self.status = status
+        self.effectiveStatus = effectiveStatus ?? GnosticWorkspaceEffectiveStatus(providerStatus: status)
         self.tools = tools
         self.createdAt = createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let status = try container.decodeIfPresent(GnosticWorkspaceStatus.self, forKey: .status) ?? .unknown
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            uri: try container.decode(String.self, forKey: .uri),
+            location: try container.decodeIfPresent(GnosticWorkspaceLocation.self, forKey: .location) ?? .runtime,
+            trustLevel: try container.decodeIfPresent(GnosticWorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full,
+            status: status,
+            effectiveStatus: try container.decodeIfPresent(GnosticWorkspaceEffectiveStatus.self, forKey: .effectiveStatus),
+            tools: try container.decodeIfPresent([GnosticWorkspaceToolDefinition].self, forKey: .tools) ?? [],
+            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(uri, forKey: .uri)
+        try container.encode(location, forKey: .location)
+        try container.encode(trustLevel, forKey: .trustLevel)
+        try container.encode(status, forKey: .status)
+        try container.encode(effectiveStatus, forKey: .effectiveStatus)
+        try container.encode(tools, forKey: .tools)
+        try container.encode(createdAt, forKey: .createdAt)
     }
 }

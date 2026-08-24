@@ -79,20 +79,37 @@ public final class WorkspaceService {
         references.values.filter { reference in plan.workspaces.contains { $0.id == reference.id } }
     }
 
+    func publicReferences() async -> [GnosticWorkspaceReference] {
+        var projections: [GnosticWorkspaceReference] = []
+        for reference in localReferences() {
+            let status = await registry.effectiveWorkspaceStatus(id: reference.id)
+            let effectiveStatus = status.map { GnosticWorkspaceEffectiveStatus(rawValue: $0.rawValue) ?? .unsupported }
+            projections.append(WorkspaceReferenceProjection.networkReference(from: reference, effectiveStatus: effectiveStatus))
+        }
+        return projections
+    }
+
     func executeLocalTool(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) async throws -> ToolResult {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         guard let workspace = localWorkspaces[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
+        let status = await registry.effectiveWorkspaceStatus(id: workspaceID)
+        guard status == .available else {
+            throw DiscoveredWorkspaceAttachmentError.unavailable(Self.attachmentStatus(for: status))
+        }
         return try await workspace.executeTool(id: toolID, parameters: arguments)
     }
 
     func listAttachable() async -> [WorkspaceListing] {
-        var listings = Dictionary(uniqueKeysWithValues: plan.workspaces.map {
-            ($0.id, WorkspaceListing(id: $0.id, name: $0.name, isAvailable: true))
-        })
+        var listings: [UUID: WorkspaceListing] = [:]
+        for workspace in plan.workspaces {
+            guard await registry.effectiveWorkspaceStatus(id: workspace.id) == .available else { continue }
+            listings[workspace.id] = WorkspaceListing(id: workspace.id, name: workspace.name, status: .available)
+        }
         for entry in await discovery.objects() where entry.objectType == GnosticObjectType.workspace
-            && entry.workspace?.isAvailable == true && listings[entry.objectID] == nil {
+            && entry.isProtocolCompatible
+            && entry.workspace?.effectiveStatus == .available && listings[entry.objectID] == nil {
             guard case .available = await discovery.attachmentStatus(id: entry.objectID) else { continue }
-            listings[entry.objectID] = WorkspaceListing(id: entry.objectID, name: entry.name, isAvailable: true)
+            listings[entry.objectID] = WorkspaceListing(id: entry.objectID, name: entry.name, status: .available)
         }
         return listings.values.sorted { ($0.id.uuidString, $0.name) < ($1.id.uuidString, $1.name) }
     }
@@ -104,6 +121,10 @@ public final class WorkspaceService {
         }
         let reference: WorkspaceReference
         if localWorkspaces[request.workspaceID] != nil, let local = references[request.workspaceID] {
+            let status = await registry.effectiveWorkspaceStatus(id: request.workspaceID)
+            guard status == .available else {
+                throw DiscoveredWorkspaceAttachmentError.unavailable(Self.attachmentStatus(for: status))
+            }
             reference = local
         } else {
             reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID)
@@ -364,7 +385,14 @@ public final class WorkspaceService {
         switch status {
         case .available: return .available
         case .unavailable: return .unavailable
-        case .ambiguous, .malformed: return .unsupported
+        case .ambiguous, .malformed, .unsupported: return .unsupported
+        }
+    }
+
+    private static func attachmentStatus(for status: NodeRegistry.WorkspaceEffectiveStatus?) -> WorkspaceAttachmentStatus {
+        switch status {
+        case .unsupported: return .unsupported
+        case .available, .unavailable, nil: return .unavailable
         }
     }
 

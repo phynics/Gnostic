@@ -1080,7 +1080,9 @@ struct NodeRuntimeTests {
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
-        #expect(await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == true)
+        let unresolvedReference = try #require(await runtime.workspaceReference(id: workspaceID))
+        #expect(unresolvedReference.effectiveStatus == .unavailable)
+        #expect(unresolvedReference.tools.isEmpty)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
 
         let remote = try CommunicationManager(

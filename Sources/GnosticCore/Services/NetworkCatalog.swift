@@ -11,7 +11,7 @@ public actor NetworkCatalog {
     private static let knownPropertyNames: [String: Set<String>] = [
         GnosticObjectType.ascendant: ["protocolMajor", "capabilities", "backendHealth", "backendKind", "backendVersion", "ascendantDescription", "primaryWorkspaceID", "privateTimelineID", "lastActiveAt", "createdAt", "updatedAt"],
         GnosticObjectType.timeline: ["protocolMajor", "title", "isArchived", "isPrivate", "attachedAscendantID", "attachedWorkspaceIDs", "createdAt", "updatedAt"],
-        GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "tools", "createdAt"],
+        GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "effectiveStatus", "tools", "createdAt"],
     ]
 
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
@@ -38,18 +38,25 @@ public actor NetworkCatalog {
             return
         }
         let protocolMajor = Self.protocolMajor(from: snapshot)
+        let isProtocolCompatible = GnosticProtocol.isCompatible(protocolMajor)
         let knownProperties = knownProperties(from: snapshot)
         let dynamicProperties = dynamicProperties(from: snapshot)
         let workspace = workspaceDescriptor(from: snapshot, id: objectID)
+        let effectiveStatus = !isProtocolCompatible && snapshot.objectType == GnosticObjectType.workspace
+            ? .unsupported
+            : workspace?.effectiveStatus
+            ?? (snapshot.objectType == GnosticObjectType.workspace ? .unsupported : nil)
         let entry = NetworkCatalogEntry(
             objectID: objectID,
             objectType: snapshot.objectType,
             protocolMajor: protocolMajor,
+            isProtocolCompatible: isProtocolCompatible,
             providerID: providerID,
             name: snapshot.name,
             knownProperties: knownProperties,
             dynamicProperties: dynamicProperties,
-            workspace: workspace
+            workspace: workspace,
+            effectiveStatus: effectiveStatus
         )
         entries[objectID, default: [:]][providerID] = entry
     }
@@ -104,15 +111,22 @@ public actor NetworkCatalog {
     /// - Parameter id: The workspace identifier.
     /// - Returns: The workspace attachment status.
     public func workspaceAttachmentStatus(id: UUID) -> WorkspaceAttachmentStatus {
-        let workspaceEntries = entries[id]?.values.filter { $0.objectType == GnosticObjectType.workspace && $0.isProtocolCompatible } ?? []
+        let workspaceEntries = entries[id]?.values.filter { $0.objectType == GnosticObjectType.workspace } ?? []
         guard !workspaceEntries.isEmpty else { return .unavailable }
-        guard workspaceEntries.count == 1 else { return .ambiguous }
-        guard let entry = workspaceEntries.first,
-              let workspace = entry.workspace else {
-            return .malformed
+        let compatibleEntries = workspaceEntries.filter(\.isProtocolCompatible)
+        guard !compatibleEntries.isEmpty else {
+            return workspaceEntries.count == 1 ? .unsupported : .ambiguous
         }
-        guard workspace.isAvailable else { return .unavailable }
-        return .available(providerID: entry.providerID, uri: workspace.uri)
+        guard compatibleEntries.count == 1, let entry = compatibleEntries.first else { return .ambiguous }
+        guard let workspace = entry.workspace else { return .malformed }
+        switch workspace.effectiveStatus {
+        case .available:
+            return .available(providerID: entry.providerID, uri: workspace.uri)
+        case .unavailable:
+            return .unavailable
+        case .unsupported:
+            return .unsupported
+        }
     }
 
     private func dynamicProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {
@@ -177,6 +191,7 @@ public actor NetworkCatalog {
             isAvailable: object.isAvailable,
             trustLevel: object.trustLevel,
             status: object.status,
+            effectiveStatus: object.effectiveStatus,
             tools: object.tools,
             createdAt: object.createdAt
         )

@@ -56,6 +56,14 @@ struct InspectRendererTests {
         #expect(lines[1].contains("Beta workspace"))
     }
 
+    @Test("workspace inspection renders the effective status without collapsing it")
+    func workspaceInspectionRendersEffectiveStatus() {
+        let id = UUID(uuidString: "A21D0000-0000-4000-8000-000000000013")!
+        let entry = workspaceEntry(id: id, isAvailable: false)
+
+        #expect(InspectRenderer.line(for: entry).contains("unavailable"))
+    }
+
     @Test("object output includes known fields and unknown dynamic fields verbatim")
     func objectOutputIncludesKnownAndDynamicFields() throws {
         let entry = workspaceEntry(dynamic: [
@@ -71,6 +79,7 @@ struct InspectRendererTests {
         let object = try JSONDecoder().decode([String: JSONValue].self, from: Data(json.utf8))
         #expect(object["known"] != nil)
         #expect(object["dynamic"] != nil)
+        #expect(object["effectiveStatus"] == .string("available"))
     }
 
     @Test("object resolution classifies unknown, unique, and ambiguous")
