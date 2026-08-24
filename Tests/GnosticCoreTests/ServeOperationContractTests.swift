@@ -210,6 +210,7 @@ struct ServeOperationContractTests {
         let listResponse = try await provider.handle(operation: WorkspaceOpsProvider.listOperation, parameters: payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID())))
         let list = try JSONDecoder().decode(WorkspaceListResult.self, from: Data(try resultText(listResponse).utf8))
         #expect(list.workspaces.first?.name == "Atlas")
+        #expect(list.workspaces.first?.status == .available)
 
         let attachRequest = WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: UUID())
         let attachResponse = try await provider.handle(operation: WorkspaceOpsProvider.attachOperation, parameters: payload(attachRequest))

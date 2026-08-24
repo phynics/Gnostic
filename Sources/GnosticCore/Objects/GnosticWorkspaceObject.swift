@@ -44,13 +44,16 @@ public final class GnosticWorkspaceObject: CoatyObject {
     public var uri: String
 
     /// Whether the workspace is available for use.
-    public var isAvailable: Bool
+    public var isAvailable: Bool { effectiveStatus == .available }
 
     /// The workspace trust level.
     public var trustLevel: GnosticWorkspaceTrustLevel
 
     /// The workspace lifecycle status.
     public var status: GnosticWorkspaceStatus
+
+    /// The Gnostic-owned effective usability of the workspace.
+    public var effectiveStatus: GnosticWorkspaceEffectiveStatus
 
     /// The safe custom tool definitions exposed by this workspace.
     public var tools: [GnosticWorkspaceTool]
@@ -67,9 +70,9 @@ public final class GnosticWorkspaceObject: CoatyObject {
     public init(workspace: GnosticWorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         uri = workspace.uri
-        isAvailable = workspace.status == .active
         trustLevel = workspace.trustLevel
         status = workspace.status
+        effectiveStatus = workspace.effectiveStatus
         tools = workspace.tools.map(GnosticWorkspaceTool.init)
         createdAt = workspace.createdAt
         super.init(
@@ -86,6 +89,7 @@ public final class GnosticWorkspaceObject: CoatyObject {
         case isAvailable
         case trustLevel
         case status
+        case effectiveStatus
         case tools
         case createdAt
     }
@@ -97,9 +101,12 @@ public final class GnosticWorkspaceObject: CoatyObject {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         uri = try container.decode(String.self, forKey: .uri)
-        isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
+        let legacyAvailability = try container.decodeIfPresent(Bool.self, forKey: .isAvailable)
         trustLevel = try container.decodeIfPresent(GnosticWorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
         status = try container.decodeIfPresent(GnosticWorkspaceStatus.self, forKey: .status) ?? .unknown
+        effectiveStatus = try container.decodeIfPresent(GnosticWorkspaceEffectiveStatus.self, forKey: .effectiveStatus)
+            ?? legacyAvailability.map { $0 ? .available : .unavailable }
+            ?? GnosticWorkspaceEffectiveStatus(providerStatus: status)
         tools = try container.decode([GnosticWorkspaceTool].self, forKey: .tools)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
         try super.init(from: decoder)
@@ -116,6 +123,7 @@ public final class GnosticWorkspaceObject: CoatyObject {
         try container.encode(isAvailable, forKey: .isAvailable)
         try container.encode(trustLevel, forKey: .trustLevel)
         try container.encode(status, forKey: .status)
+        try container.encode(effectiveStatus, forKey: .effectiveStatus)
         try container.encode(tools, forKey: .tools)
         try container.encode(createdAt, forKey: .createdAt)
     }

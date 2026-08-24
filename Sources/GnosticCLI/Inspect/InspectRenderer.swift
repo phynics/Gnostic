@@ -61,7 +61,7 @@ public enum InspectRenderer {
     /// - Returns: The JSON text.
     /// - Throws: `EncodingError` when the entry cannot be encoded.
     public static func objectJSON(_ entry: NetworkCatalogEntry, compact: Bool) throws -> String {
-        let object: [String: AnyEncodable] = [
+        var object: [String: AnyEncodable] = [
             "objectType": AnyEncodable(entry.objectType),
             "objectId": AnyEncodable(entry.objectID.uuidString.lowercased()),
             "name": AnyEncodable(entry.name),
@@ -69,6 +69,11 @@ public enum InspectRenderer {
             "known": AnyEncodable(entry.knownProperties),
             "dynamic": AnyEncodable(entry.dynamicProperties),
         ]
+        if entry.objectType == GnosticObjectType.workspace {
+            object["effectiveStatus"] = AnyEncodable(
+                entry.effectiveStatus?.rawValue ?? GnosticWorkspaceEffectiveStatus.unsupported.rawValue
+            )
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = compact ? [] : [.prettyPrinted, .sortedKeys]
         if !compact { encoder.outputFormatting.insert(.sortedKeys) }
@@ -101,11 +106,11 @@ public enum InspectRenderer {
     }
 
     private static func extraFields(for entry: NetworkCatalogEntry) -> String {
-        guard entry.objectType == GnosticObjectType.workspace,
-              let workspace = entry.workspace else { return "" }
+        guard entry.objectType == GnosticObjectType.workspace else { return "" }
+        let status = entry.effectiveStatus?.rawValue ?? GnosticWorkspaceEffectiveStatus.unsupported.rawValue
+        guard let workspace = entry.workspace else { return status }
         let toolIDs = workspace.tools.map(\.id).sorted().joined(separator: ",")
-        let availability = workspace.isAvailable ? "available" : "unavailable"
-        return "\(availability) uri=\(workspace.uri) tools=[\(toolIDs)]"
+        return "\(status) uri=\(workspace.uri) tools=[\(toolIDs)]"
     }
 }
 

@@ -13,13 +13,18 @@ public enum WorkspaceReferenceProjection {
 
     /// Converts a runtime Workspace value into the Gnostic-owned network shape.
     /// This is the only conversion needed by network advertisement callers.
-    public static func networkReference(from reference: WorkspaceReference) -> GnosticWorkspaceReference {
-        GnosticWorkspaceReference(
+    public static func networkReference(
+        from reference: WorkspaceReference,
+        effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil
+    ) -> GnosticWorkspaceReference {
+        let providerStatus = GnosticWorkspaceStatus(rawValue: reference.status.rawValue) ?? .unknown
+        return GnosticWorkspaceReference(
             id: reference.id,
             uri: reference.uri.description,
             location: GnosticWorkspaceLocation(rawValue: reference.location.rawValue) ?? .runtime,
             trustLevel: GnosticWorkspaceTrustLevel(rawValue: reference.trustLevel.rawValue) ?? .full,
-            status: GnosticWorkspaceStatus(rawValue: reference.status.rawValue) ?? .unknown,
+            status: providerStatus,
+            effectiveStatus: effectiveStatus ?? GnosticWorkspaceEffectiveStatus(providerStatus: providerStatus),
             tools: reference.tools.compactMap { tool in
                 guard case let .custom(definition) = tool else { return nil }
                 return GnosticWorkspaceToolDefinition(
@@ -49,6 +54,7 @@ public enum WorkspaceReferenceProjection {
             uri: descriptor.uri,
             trustLevel: descriptor.trustLevel,
             status: status,
+            effectiveStatus: descriptor.effectiveStatus,
             tools: descriptor.tools.map { tool in
                 GnosticWorkspaceToolDefinition(
                     id: tool.id,

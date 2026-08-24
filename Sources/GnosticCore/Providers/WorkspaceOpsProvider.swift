@@ -31,23 +31,47 @@ public struct WorkspaceListing: Codable, Sendable {
     public let protocolMajor: Int
     public let id: UUID
     public let name: String
-    public let isAvailable: Bool
+    /// The Gnostic-owned effective usability of this listing.
+    public let status: GnosticWorkspaceEffectiveStatus
 
-    public init(id: UUID, name: String, isAvailable: Bool = true, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    /// Compatibility alias for clients that only consume attachable entries.
+    public var isAvailable: Bool { status == .available }
+
+    /// Explicit name for the effective status projection.
+    public var effectiveStatus: GnosticWorkspaceEffectiveStatus { status }
+
+    public init(id: UUID, name: String, status: GnosticWorkspaceEffectiveStatus = .available, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.id = id
         self.name = name
-        self.isAvailable = isAvailable
+        self.status = status
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, id, name, isAvailable }
+    public init(id: UUID, name: String, isAvailable: Bool, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.init(id: id, name: name, status: isAvailable ? .available : .unavailable, protocolMajor: protocolMajor)
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, id, name, isAvailable, status }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
-        isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
+        if let status = try container.decodeIfPresent(GnosticWorkspaceEffectiveStatus.self, forKey: .status) {
+            self.status = status
+        } else {
+            self.status = (try container.decode(Bool.self, forKey: .isAvailable)) ? .available : .unavailable
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(isAvailable, forKey: .isAvailable)
+        try container.encode(status, forKey: .status)
     }
 }
 

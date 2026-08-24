@@ -82,6 +82,7 @@ struct NodeTransportTests {
             entry: .init(
                 objectID: workspaceID,
                 objectType: GnosticObjectType.workspace,
+                protocolMajor: GnosticProtocol.currentMajor,
                 providerID: "stub-provider",
                 name: "Remote stub",
                 knownProperties: [:],
@@ -108,6 +109,95 @@ struct NodeTransportTests {
 
         #expect(listings.map(\.id) == [workspaceID])
         #expect(listings.first?.name == "Remote stub")
+        #expect(listings.first?.status == .available)
+    }
+
+    @Test("workspace listing rejects incompatible discovery entries")
+    @MainActor
+    func workspaceListingRejectsIncompatibleDiscoveryEntries() async throws {
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000014")!
+        let discovery = ServiceStubWorkspaceDiscovery(
+            entry: .init(
+                objectID: workspaceID,
+                objectType: GnosticObjectType.workspace,
+                protocolMajor: 99,
+                providerID: "future-provider",
+                name: "Future workspace",
+                knownProperties: [:],
+                dynamicProperties: [:],
+                workspace: .init(id: workspaceID, uri: "gnostic://workspace/future", isAvailable: true, tools: [])
+            ),
+            status: .available(providerID: "future-provider", uri: "gnostic://workspace/future")
+        )
+        let plan = try NodeManifest.empty(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-incompatible-unit")
+        ).compileLaunchPlan()
+        let service = WorkspaceService(
+            plan: plan,
+            registry: try NodeRegistry(plan: plan, operatedTimelines: []),
+            discovery: discovery,
+            localWorkspaces: [:],
+            references: [:],
+            isRunning: { true },
+            adapter: { _ in nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        #expect(await service.listAttachable().isEmpty)
+    }
+
+    @Test("local Workspace operations revalidate effective status")
+    @MainActor
+    func localWorkspaceOperationsRevalidateEffectiveStatus() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000010")!
+        let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000011")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000012")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "echo://local")!,
+            location: .runtime,
+            tools: EchoWorkspace.toolDefinitions
+        )
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-status-unit"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000013")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local", kind: "echo")]
+        ).compileLaunchPlan()
+        let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: ServiceStubWorkspaceDiscovery(
+                entry: .init(
+                    objectID: workspaceID,
+                    objectType: GnosticObjectType.workspace,
+                    protocolMajor: GnosticProtocol.currentMajor,
+                    providerID: "stub-provider",
+                    name: "Local",
+                    knownProperties: [:],
+                    dynamicProperties: [:],
+                    workspace: .init(id: workspaceID, uri: "echo://local", isAvailable: true, tools: [])
+                ),
+                status: .available(providerID: "stub-provider", uri: "echo://local")
+            ),
+            localWorkspaces: [workspaceID: EchoWorkspace(reference: reference)],
+            references: [workspaceID: reference],
+            isRunning: { true },
+            adapter: { $0 == ascendantID ? adapter : nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
+
+        await #expect(throws: DiscoveredWorkspaceAttachmentError.unavailable(.unsupported)) {
+            _ = try await service.executeLocalTool(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
+        }
+        await #expect(throws: DiscoveredWorkspaceAttachmentError.unavailable(.unsupported)) {
+            _ = try await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
+        }
     }
 
     @Test("dynamic Workspace attachments are restored after loss and rediscovery")

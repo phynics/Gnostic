@@ -142,11 +142,7 @@ public final class NodeRuntime {
         let wiring = NodeRuntimeHost.TransportWiring(
             ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
             ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
-            workspaceReferences: { [initialWorkspaceReferences, plan] in
-                initialWorkspaceReferences.values.filter { reference in
-                    plan.workspaces.contains { $0.id == reference.id }
-                }.map(WorkspaceReferenceProjection.networkReference)
-            },
+            workspaceReferences: { [weak self] in await self?.workspaceService.publicReferences() ?? [] },
             localWorkspaces: localWorkspaces,
             isAvailable: { [weak self] in self?.isRunning == true },
             turn: { [weak self] request in
@@ -235,7 +231,9 @@ public final class NodeRuntime {
 
     public func workspaceReference(id: UUID) async -> GnosticWorkspaceReference? {
         guard let reference = await workspaceService.reference(id: id) else { return nil }
-        return WorkspaceReferenceProjection.networkReference(from: reference)
+        let status = await registry.effectiveWorkspaceStatus(id: id)
+            .map { GnosticWorkspaceEffectiveStatus(rawValue: $0.rawValue) ?? .unsupported }
+        return WorkspaceReferenceProjection.networkReference(from: reference, effectiveStatus: status)
     }
 
     public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) async throws -> ToolResult {

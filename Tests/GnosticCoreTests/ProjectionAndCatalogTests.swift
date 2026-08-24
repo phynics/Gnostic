@@ -118,6 +118,104 @@ struct ProjectionAndCatalogTests {
         #expect(projected.tools == networkReference.tools)
     }
 
+    @Test("Workspace projections preserve every effective status")
+    func workspaceProjectionsPreserveEffectiveStatuses() throws {
+        for effectiveStatus in GnosticWorkspaceEffectiveStatus.allCases {
+            let reference = GnosticWorkspaceReference(
+                id: workspaceID,
+                uri: "workspace://status-\(effectiveStatus.rawValue)",
+                status: .active,
+                effectiveStatus: effectiveStatus,
+                createdAt: creationDate
+            )
+            let object = GnosticWorkspaceObject(workspace: reference)
+            let decoded = try JSONDecoder().decode(
+                GnosticWorkspaceObject.self,
+                from: JSONEncoder().encode(object)
+            )
+
+            #expect(decoded.effectiveStatus == effectiveStatus)
+            #expect(decoded.isAvailable == (effectiveStatus == .available))
+        }
+    }
+
+    @Test("legacy Workspace payloads derive effective status from availability")
+    func legacyWorkspacePayloadDerivesEffectiveStatus() throws {
+        let payload = #"{"protocolMajor":2,"objectId":"a21d0000-0000-4000-8000-000000000003","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Legacy","uri":"workspace://legacy","isAvailable":false,"tools":[]}"#
+        let object = try JSONDecoder().decode(GnosticWorkspaceObject.self, from: Data(payload.utf8))
+
+        #expect(object.effectiveStatus == .unavailable)
+        #expect(!object.isAvailable)
+    }
+
+    @Test("catalog preserves effective status while keeping unavailable workspaces unattached")
+    func catalogPreservesEffectiveStatusWhileRejectingAttachment() async throws {
+        let catalog = NetworkCatalog()
+        let snapshot = CoatyObjectSnapshot(
+            objectId: workspaceID.uuidString.lowercased(),
+            coreType: .CoatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: "Unsupported workspace",
+            payload: try payload([
+                "objectId": workspaceID.uuidString.lowercased(),
+                "coreType": "CoatyObject",
+                "objectType": GnosticObjectType.workspace,
+                "name": "Unsupported workspace",
+                "uri": "workspace://unsupported",
+                "isAvailable": false,
+                "effectiveStatus": GnosticWorkspaceEffectiveStatus.unsupported.rawValue,
+                "tools": [],
+            ])
+        )
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider-a", object: snapshot))
+
+        let entry = try #require(await catalog.object(id: workspaceID, providerID: "provider-a"))
+        #expect(entry.effectiveStatus == .unsupported)
+        #expect(entry.workspace?.effectiveStatus == .unsupported)
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unsupported)
+    }
+
+    @Test("catalog marks an incompatible Workspace unsupported for inspection")
+    func catalogMarksIncompatibleWorkspaceUnsupported() async throws {
+        let catalog = NetworkCatalog()
+        let snapshot = CoatyObjectSnapshot(
+            objectId: workspaceID.uuidString.lowercased(),
+            coreType: .CoatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: "Future workspace",
+            payload: try payload([
+                "objectId": workspaceID.uuidString.lowercased(),
+                "coreType": "CoatyObject",
+                "objectType": GnosticObjectType.workspace,
+                "name": "Future workspace",
+                "uri": "workspace://future",
+                "isAvailable": true,
+                "effectiveStatus": GnosticWorkspaceEffectiveStatus.available.rawValue,
+                "tools": [],
+            ], protocolMajor: 99)
+        )
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider-a", object: snapshot))
+
+        let entry = try #require(await catalog.object(id: workspaceID, providerID: "provider-a"))
+        #expect(!entry.isProtocolCompatible)
+        #expect(entry.effectiveStatus == .unsupported)
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unsupported)
+        #expect(await catalog.networkObjects(includeIncompatible: false).isEmpty)
+        #expect(await catalog.networkObjects(includeIncompatible: true).count == 1)
+    }
+
+    @Test("catalog ignores an incompatible duplicate when a compatible provider exists")
+    func catalogPrefersCompatibleWorkspaceProvider() async {
+        let catalog = NetworkCatalog()
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://compatible", sourceID: "provider-a"))
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://future", sourceID: "provider-b", protocolMajor: 99))
+
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .available(
+            providerID: "provider-a",
+            uri: "workspace://compatible"
+        ))
+    }
+
     @Test("catalog scopes Ascendant backend health replacements by provider")
     func catalogScopesBackendHealthByProvider() async throws {
         let catalog = NetworkCatalog()
@@ -402,7 +500,7 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .ambiguous)
     }
 
-    private func workspaceSnapshot(uri: String, sourceID: String) -> AdvertiseEventSnapshot {
+    private func workspaceSnapshot(uri: String, sourceID: String, protocolMajor: Int = 2) -> AdvertiseEventSnapshot {
         AdvertiseEventSnapshot(
             sourceId: sourceID,
             object: CoatyObjectSnapshot(
@@ -418,7 +516,7 @@ struct ProjectionAndCatalogTests {
                     "uri": uri,
                     "isAvailable": true,
                     "tools": [],
-                ])
+                ], protocolMajor: protocolMajor)
             )
         )
     }
@@ -451,9 +549,9 @@ struct ProjectionAndCatalogTests {
         )
     }
 
-    private func payload(_ object: [String: Any]) throws -> String {
+    private func payload(_ object: [String: Any], protocolMajor: Int = 2) throws -> String {
         var object = object
-        object["protocolMajor"] = 2
+        object["protocolMajor"] = protocolMajor
         let data = try JSONSerialization.data(withJSONObject: object)
         return try #require(String(data: data, encoding: .utf8))
     }

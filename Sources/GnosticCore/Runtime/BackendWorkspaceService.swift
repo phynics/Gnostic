@@ -160,7 +160,7 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
         switch await catalog.workspaceAttachmentStatus(id: id) {
         case .available: return .available
         case .unavailable: return .unavailable
-        case .ambiguous, .malformed: return .unsupported
+        case .ambiguous, .malformed, .unsupported: return .unsupported
         }
     }
 
