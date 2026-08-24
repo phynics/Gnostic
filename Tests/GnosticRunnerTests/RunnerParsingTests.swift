@@ -7,6 +7,14 @@ import Testing
 
 @Suite("Runner argument parsing")
 struct RunnerParsingTests {
+    @Test("fixture scenario is not exposed by the shipped runner")
+    func fixtureScenarioIsNotExposed() {
+        #expect(!GnosticRunner.helpMessage().contains("--scenario"))
+        #expect(throws: (any Error).self) {
+            _ = try GnosticRunner.parseAsRoot(["--scenario"])
+        }
+    }
+
     @Test("flags override environment which overrides defaults")
     func flagOverridesEnvironmentOverridesDefaults() throws {
         // Defaults only.

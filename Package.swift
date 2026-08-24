@@ -54,8 +54,6 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .testTarget(
