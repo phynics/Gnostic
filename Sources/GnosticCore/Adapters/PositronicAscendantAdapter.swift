@@ -152,8 +152,10 @@ import struct PositronicKit.Thread
     /// network request or executing a model. The rules mirror
     /// `LLMConfiguration.validate()`: provider names must be supported, model
     /// names must be non-empty, hosted providers require an API key, and the
-    /// endpoint must be an HTTP(S) URL with a host. An empty envelope is the
-    /// explicit unconfigured state used by deterministic hosts and test runtimes.
+    /// endpoint must be an HTTP(S) URL with a host. PositronicKit consumes all
+    /// three model slots, so utility and fast models are validated as well. An
+    /// empty envelope is the explicit unconfigured state used by deterministic
+    /// hosts and test runtimes.
     public func validateConfiguration() throws {
         try Self.validateConfiguration(configuration)
     }

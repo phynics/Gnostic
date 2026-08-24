@@ -63,6 +63,36 @@ struct PositronicBackendValidationTests {
         }
     }
 
+    @Test("rejects an empty utility model")
+    @MainActor
+    func rejectsEmptyUtilityModel() async throws {
+        var backend = makeBackend()
+        backend.settings["utilityModel"] = .string("")
+        let adapter = try await makeAdapter(backend: backend)
+
+        do {
+            try adapter.validateConfiguration()
+            Issue.record("The Positronic adapter accepted an empty utility model.")
+        } catch let error as AscendantBackendError {
+            #expect(error.localizedDescription.contains("utilityModel"))
+        }
+    }
+
+    @Test("rejects a non-string fast model")
+    @MainActor
+    func rejectsNonStringFastModel() async throws {
+        var backend = makeBackend()
+        backend.settings["fastModel"] = .number(1)
+        let adapter = try await makeAdapter(backend: backend)
+
+        do {
+            try adapter.validateConfiguration()
+            Issue.record("The Positronic adapter accepted a non-string fast model.")
+        } catch let error as AscendantBackendError {
+            #expect(error.localizedDescription.contains("fastModel"))
+        }
+    }
+
     @Test("rejects malformed endpoints without exposing credential values")
     @MainActor
     func rejectsMalformedEndpointWithoutRedactionLeak() async throws {
