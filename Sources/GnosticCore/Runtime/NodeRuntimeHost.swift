@@ -13,7 +13,7 @@ final class NodeRuntimeHost {
     struct TransportWiring {
         let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
         let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
-        let workspaceReferences: @MainActor () async -> [WorkspaceReference]
+        let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
         let localWorkspaces: [UUID: any Workspace]
         let isAvailable: @MainActor () -> Bool
         let turn: NodeTransport.Turn

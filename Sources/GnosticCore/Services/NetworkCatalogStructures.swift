@@ -144,15 +144,35 @@ public struct NetworkWorkspaceDescriptor: Sendable {
     /// Whether the provider currently reports the workspace as available.
     public let isAvailable: Bool
 
+    /// The advertised trust boundary.
+    public let trustLevel: GnosticWorkspaceTrustLevel
+
+    /// The provider-owned lifecycle status.
+    public let status: GnosticWorkspaceStatus
+
     /// The workspace's safe tool descriptions.
     public let tools: [GnosticWorkspaceTool]
 
+    /// The workspace creation timestamp.
+    public let createdAt: Date
+
     /// Creates a workspace descriptor.
-    public init(id: UUID, uri: String, isAvailable: Bool, tools: [GnosticWorkspaceTool]) {
+    public init(
+        id: UUID,
+        uri: String,
+        isAvailable: Bool,
+        trustLevel: GnosticWorkspaceTrustLevel = .full,
+        status: GnosticWorkspaceStatus = .unknown,
+        tools: [GnosticWorkspaceTool],
+        createdAt: Date = Date()
+    ) {
         self.id = id
         self.uri = uri
         self.isAvailable = isAvailable
+        self.trustLevel = trustLevel
+        self.status = status
         self.tools = tools
+        self.createdAt = createdAt
     }
 }
 

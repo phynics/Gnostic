@@ -19,7 +19,11 @@ struct FixtureScenario {
 
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
         let tools = fixtureTools
-        let workspace = WorkspaceReference(id: workspaceID, uri: WorkspaceURI(parsing: "workspace://fixture")!, location: .runtime, tools: tools.map(ToolReference.custom))
+        let gnosticWorkspace = GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://fixture",
+            tools: tools
+        )
         let providerAPI = WorkspaceProvider(workspaceID: workspaceID, tools: tools) { toolID, arguments in
             switch toolID {
             case "list_files": return .success("README.md")
@@ -34,7 +38,7 @@ struct FixtureScenario {
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer.communication)
         try await subscription.start()
         defer { subscription.stop() }
-        provider.lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: workspace))
+        provider.lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: gnosticWorkspace))
         try await waitForWorkspace(catalog, id: workspaceID)
         print("fixture workspace discovered: \(workspaceID.uuidString.lowercased())")
 
@@ -76,7 +80,7 @@ struct FixtureScenario {
 }
 
 private let fixtureTools = [
-    WorkspaceToolDefinition(id: "list_files", name: "List files", description: "Lists fixture files."),
-    WorkspaceToolDefinition(id: "read_file", name: "Read file", description: "Reads a fixture file."),
-    WorkspaceToolDefinition(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."),
+    GnosticWorkspaceToolDefinition(id: "list_files", name: "List files", description: "Lists fixture files."),
+    GnosticWorkspaceToolDefinition(id: "read_file", name: "Read file", description: "Reads a fixture file."),
+    GnosticWorkspaceToolDefinition(id: "workspace_echo", name: "Workspace echo", description: "Echoes fixture input."),
 ]

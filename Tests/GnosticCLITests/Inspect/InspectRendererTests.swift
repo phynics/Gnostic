@@ -32,7 +32,7 @@ struct InspectRendererTests {
                 id: id,
                 uri: uri,
                 isAvailable: isAvailable,
-                tools: [GnosticWorkspaceTool(definition: WorkspaceToolDefinition(id: "echo", name: "Echo", description: "Echoes input."))]
+                tools: [GnosticWorkspaceTool(definition: GnosticWorkspaceToolDefinition(id: "echo", name: "Echo", description: "Echoes input."))]
             )
         )
     }

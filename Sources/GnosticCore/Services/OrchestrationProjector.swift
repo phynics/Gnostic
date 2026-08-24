@@ -2,7 +2,6 @@
 
 import Axoloty
 import Foundation
-import PKContracts
 
 /// Projects local PositronicKit models into Gnostic network objects.
 @MainActor
@@ -39,11 +38,11 @@ public final class OrchestrationProjector {
     /// - Parameters:
     ///   - ascendant: The local Ascendant identity.
     ///   - timeline: The local Timeline projection.
-    ///   - workspaces: The local workspace references to advertise.
+    ///   - workspaces: The local Workspace references to advertise.
     public func advertise(
         ascendant: AscendantRuntimeIdentity,
         timeline: AscendantRuntimeTimeline,
-        workspaces: [WorkspaceReference]
+        workspaces: [GnosticWorkspaceReference]
     ) {
         advertiseObject(GnosticAscendantObject(identity: ascendant))
         let timelineObject = GnosticTimelineObject(timeline: timeline)

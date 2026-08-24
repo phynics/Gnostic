@@ -4,8 +4,8 @@ import Axoloty
 import Foundation
 import PKContracts
 
-/// The safe subset of a PositronicKit workspace tool definition advertised by Gnostic.
-public struct GnosticWorkspaceTool: Codable, Sendable {
+/// The safe subset of a Workspace tool definition advertised by Gnostic.
+public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
     /// The stable tool identifier.
     public let id: String
 
@@ -25,9 +25,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
     public let requiresPermission: Bool
 
     /// Creates a safe tool projection.
-    ///
-    /// - Parameter definition: The PositronicKit tool definition to project.
-    public init(definition: WorkspaceToolDefinition) {
+    public init(definition: GnosticWorkspaceToolDefinition) {
         id = definition.id
         name = definition.name
         toolDescription = definition.description
@@ -37,7 +35,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
     }
 }
 
-/// A safe network projection of a PositronicKit ``WorkspaceReference``.
+/// A safe network projection of a Gnostic Workspace reference.
 public final class GnosticWorkspaceObject: CoatyObject {
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
@@ -49,10 +47,10 @@ public final class GnosticWorkspaceObject: CoatyObject {
     public var isAvailable: Bool
 
     /// The workspace trust level.
-    public var trustLevel: WorkspaceTrustLevel
+    public var trustLevel: GnosticWorkspaceTrustLevel
 
     /// The workspace lifecycle status.
-    public var status: WorkspaceReference.WorkspaceStatus
+    public var status: GnosticWorkspaceStatus
 
     /// The safe custom tool definitions exposed by this workspace.
     public var tools: [GnosticWorkspaceTool]
@@ -65,25 +63,20 @@ public final class GnosticWorkspaceObject: CoatyObject {
         register(objectType: GnosticObjectType.workspace, with: self)
     }
 
-    /// Creates a safe Axoloty projection of a workspace reference.
-    ///
-    /// - Parameter workspace: The PositronicKit workspace reference to expose on the network.
-    public init(workspace: WorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    /// Creates a safe Axoloty projection of a Workspace reference.
+    public init(workspace: GnosticWorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
-        uri = workspace.uri.description
+        uri = workspace.uri
         isAvailable = workspace.status == .active
         trustLevel = workspace.trustLevel
         status = workspace.status
-        tools = workspace.tools.compactMap { reference in
-            guard case let .custom(definition) = reference else { return nil }
-            return GnosticWorkspaceTool(definition: definition)
-        }
+        tools = workspace.tools.map(GnosticWorkspaceTool.init)
         createdAt = workspace.createdAt
         super.init(
             coreType: .CoatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: workspace.id.uuidString)!,
-            name: workspace.uri.description
+            name: workspace.uri
         )
     }
 
@@ -105,8 +98,8 @@ public final class GnosticWorkspaceObject: CoatyObject {
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         uri = try container.decode(String.self, forKey: .uri)
         isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
-        trustLevel = try container.decodeIfPresent(WorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
-        status = try container.decodeIfPresent(WorkspaceReference.WorkspaceStatus.self, forKey: .status) ?? .unknown
+        trustLevel = try container.decodeIfPresent(GnosticWorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
+        status = try container.decodeIfPresent(GnosticWorkspaceStatus.self, forKey: .status) ?? .unknown
         tools = try container.decode([GnosticWorkspaceTool].self, forKey: .tools)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
         try super.init(from: decoder)

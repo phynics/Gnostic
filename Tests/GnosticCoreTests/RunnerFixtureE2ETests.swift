@@ -47,7 +47,9 @@ struct RunnerFixtureE2ETests {
         let registration = try await fixture.register(on: provider)
         defer { registration.cancel() }
         let lifecycle = try #require(providerContainer.getController(name: "ObjectLifecycleController") as ObjectLifecycleController?)
-        lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: fixtureReference(id: workspaceID)))
+        lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(
+            workspace: WorkspaceReferenceProjection.networkReference(from: fixtureReference(id: workspaceID))
+        ))
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()
         let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in

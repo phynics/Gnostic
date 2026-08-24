@@ -145,7 +145,7 @@ public final class NodeRuntime {
             workspaceReferences: { [initialWorkspaceReferences, plan] in
                 initialWorkspaceReferences.values.filter { reference in
                     plan.workspaces.contains { $0.id == reference.id }
-                }
+                }.map(WorkspaceReferenceProjection.networkReference)
             },
             localWorkspaces: localWorkspaces,
             isAvailable: { [weak self] in self?.isRunning == true },
@@ -233,8 +233,9 @@ public final class NodeRuntime {
         try timelineService.selectAscendant(requested: ascendantID)
     }
 
-    public func workspaceReference(id: UUID) async -> WorkspaceReference? {
-        await workspaceService.reference(id: id)
+    public func workspaceReference(id: UUID) async -> GnosticWorkspaceReference? {
+        guard let reference = await workspaceService.reference(id: id) else { return nil }
+        return WorkspaceReferenceProjection.networkReference(from: reference)
     }
 
     public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) async throws -> ToolResult {
@@ -287,8 +288,9 @@ public final class NodeRuntime {
     /// Discovers and imports a network Workspace only when a caller needs it.
     /// Construction and startup never resolve network attachments.
     @discardableResult
-    public func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> WorkspaceReference {
-        try await workspaceService.resolveNetworkWorkspace(workspaceID: workspaceID, timeout: timeout)
+    public func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> GnosticWorkspaceReference {
+        let reference = try await workspaceService.resolveNetworkWorkspace(workspaceID: workspaceID, timeout: timeout)
+        return WorkspaceReferenceProjection.networkReference(from: reference)
     }
 
     public func networkAttachmentStatus(workspaceID: UUID) async -> WorkspaceAttachmentStatus {

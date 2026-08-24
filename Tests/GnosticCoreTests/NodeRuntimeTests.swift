@@ -1029,7 +1029,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: "existing_echo", name: "Existing echo", description: "Already online."))]
         )
-        let object = GnosticWorkspaceObject(workspace: reference)
+        let object = GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: reference))
         let remote = try CommunicationManager(
             identity: Identity(name: "existing-workspace-provider"),
             communicationOptions: .init(
@@ -1101,7 +1101,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: "remote_echo", name: "Remote echo", description: "Echoes remotely."))]
         )
-        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: reference)))
+        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: reference))))
 
         for _ in 0..<40 where await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
             try await Task.sleep(for: .milliseconds(50))
@@ -1138,7 +1138,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: "dynamic_echo", name: "Dynamic echo", description: "Echoes dynamically."))]
         )
-        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: advertised)))
+        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: advertised))))
 
         let resolved = try await runtime.resolveNetworkWorkspace(workspaceID: workspaceID, timeout: .seconds(2))
 
