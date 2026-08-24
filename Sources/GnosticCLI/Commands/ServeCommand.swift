@@ -56,9 +56,9 @@ struct ServeCommand: AsyncParsableCommand {
             }
 
             var adapters = NodeRuntimeAdapters.default
-            adapters.ascendants.register(kind: "positronic") { ascendant, backend in
-                let profile = PositronicProfile(ascendant: .init(id: ascendant.id, name: ascendant.name, defaultTimelineID: ascendant.defaultTimelineID, kind: ascendant.kind, description: ascendant.description, metadata: ascendant.metadata, backend: backend))
-                if backend.settings["provider"] != nil { return ConfiguredLLMService.make(from: profile) }
+            adapters.ascendants.register(kind: "positronic") { _, backend in
+                let configuration = PositronicBackendConfiguration(backend: backend)
+                if configuration.provider != nil { return ConfiguredLLMService.make(from: configuration) }
                 return UnconfiguredLLMService()
             }
             let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
