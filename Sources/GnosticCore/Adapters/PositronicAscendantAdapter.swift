@@ -10,6 +10,7 @@ import struct PositronicKit.Thread
 /// native values do not cross the AscendantBackend contract.
 @MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
+    private let configuration: AscendantBackendConfiguration
     private let kit: PositronicKit
     private let threadStore: InMemoryThreadPersistence
     private let networkTools: [AnyTool]
@@ -25,6 +26,7 @@ import struct PositronicKit.Thread
         languageModel: any LanguageModel
     ) async throws {
         try AscendantBackendConfigurationValidator.validate(backend)
+        configuration = backend
         guard timelines.contains(where: { $0.id == ascendant.defaultTimelineID }) else {
             throw NodeRuntimeError.missingTimeline(ascendant.defaultTimelineID)
         }
@@ -146,7 +148,95 @@ import struct PositronicKit.Thread
         return try await kit.threads.list(includeArchived: false).map(Self.projection)
     }
 
-    public func validateConfiguration() throws {}
+    /// Validates the offline PositronicKit provider contract without making a
+    /// network request or executing a model. The rules mirror
+    /// `LLMConfiguration.validate()`: provider names must be supported, model
+    /// names must be non-empty, hosted providers require an API key, and the
+    /// endpoint must be an HTTP(S) URL with a host. An empty envelope is the
+    /// explicit unconfigured state used by deterministic hosts and test runtimes.
+    public func validateConfiguration() throws {
+        try Self.validateConfiguration(configuration)
+    }
+
+    private static func validateConfiguration(_ configuration: AscendantBackendConfiguration) throws {
+        guard configuration.kind == "positronic" else {
+            throw invalidConfiguration("backend kind")
+        }
+
+        let knownSettings = ["provider", "endpoint", "model", "utilityModel", "fastModel"]
+        let hasKnownValue = knownSettings.contains { configuration.settings[$0] != nil }
+            || configuration.secrets["apiKey"] != nil
+        guard hasKnownValue else { return }
+
+        let providerName = try stringValue(for: "provider", in: configuration.settings)
+        guard let provider = LLMProvider.allCases.first(where: {
+            $0.rawValue.caseInsensitiveCompare(providerName) == .orderedSame
+        }) else {
+            throw invalidConfiguration("provider")
+        }
+
+        var llmConfiguration = LLMConfiguration(activeProvider: provider)
+        var providerConfiguration = llmConfiguration.activeProviderConfiguration
+        providerConfiguration.endpoint = try stringValue(
+            for: "endpoint", in: configuration.settings, defaultingTo: providerConfiguration.endpoint
+        )
+        providerConfiguration.modelName = try stringValue(
+            for: "model", in: configuration.settings, defaultingTo: providerConfiguration.modelName
+        )
+        providerConfiguration.utilityModel = try stringValue(
+            for: "utilityModel", in: configuration.settings, defaultingTo: providerConfiguration.utilityModel
+        )
+        providerConfiguration.fastModel = try stringValue(
+            for: "fastModel", in: configuration.settings, defaultingTo: providerConfiguration.fastModel
+        )
+        providerConfiguration.apiKey = try stringValue(
+            for: "apiKey", in: configuration.secrets, defaultingTo: providerConfiguration.apiKey
+        )
+
+        guard !providerConfiguration.utilityModel.isEmpty else {
+            throw invalidConfiguration("utilityModel")
+        }
+        guard !providerConfiguration.fastModel.isEmpty else {
+            throw invalidConfiguration("fastModel")
+        }
+
+        llmConfiguration.providers[provider] = providerConfiguration
+        do {
+            try llmConfiguration.validate()
+        } catch let error as ConfigurationError {
+            switch error {
+            case .missingAPIKey:
+                throw invalidConfiguration("apiKey")
+            case .invalidEndpoint:
+                throw invalidConfiguration("endpoint")
+            case .invalidConfiguration:
+                throw invalidConfiguration("model")
+            case .noBackupFound, .importFailed:
+                throw invalidConfiguration("provider configuration")
+            }
+        } catch {
+            throw invalidConfiguration("provider configuration")
+        }
+    }
+
+    private static func stringValue(
+        for key: String,
+        in values: [String: ManifestJSONValue],
+        defaultingTo defaultValue: String? = nil
+    ) throws -> String {
+        guard let value = values[key] else {
+            guard let defaultValue else { throw invalidConfiguration(key) }
+            return defaultValue
+        }
+        guard case let .string(string) = value else {
+            throw invalidConfiguration(key)
+        }
+        return string
+    }
+
+    private static func invalidConfiguration(_ field: String) -> AscendantBackendError {
+        .invalidConfiguration("Invalid Positronic configuration field '\(field)'.")
+    }
 
     public func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         try requireUsable()

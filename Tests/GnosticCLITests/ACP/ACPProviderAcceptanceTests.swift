@@ -290,7 +290,7 @@ struct ACPProviderAcceptanceTests {
         let namespace = "legacy-runtime-\(UUID().uuidString.lowercased())"
         let configURL = folder.url.appendingPathComponent("config.json")
         let legacy = """
-        {"mqtt.host":"127.0.0.1","mqtt.port":1883,"mqtt.namespace":"\(namespace)","llm.provider":"stub","llm.model":"deterministic"}
+        {"mqtt.host":"127.0.0.1","mqtt.port":1883,"mqtt.namespace":"\(namespace)","llm.provider":"Ollama","llm.model":"deterministic"}
         """
         _ = FileManager.default.createFile(atPath: configURL.path, contents: Data(legacy.utf8))
 
@@ -298,7 +298,7 @@ struct ACPProviderAcceptanceTests {
         let migrated = try store.loadManifest()
         #expect(migrated.schemaVersion == 2)
         #expect(migrated.ascendants.count == 1)
-        #expect(migrated.ascendants[0].backend.settings["provider"] == .string("stub"))
+        #expect(migrated.ascendants[0].backend.settings["provider"] == .string("Ollama"))
         #expect(FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
 
         let workspaceID = try #require(migrated.workspaces.first?.id)
@@ -513,7 +513,7 @@ private func acceptanceManifest(
     return NodeManifest(
         broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
         node: .init(id: nodeID),
-        ascendants: [.init(id: ascendantID, name: name, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["provider": .string("stub"), "model": .string("deterministic")]))],
+        ascendants: [.init(id: ascendantID, name: name, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["provider": .string("Ollama"), "model": .string("deterministic")]))],
         timelines: [.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID)]
     )
 }
