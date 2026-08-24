@@ -67,6 +67,36 @@ struct BackendArchitectureFitnessTests {
         }
     }
 
+    @Test("generic Workspace projections do not expose PositronicKit types")
+    func workspaceProjectionIsBackendNeutral() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourcePaths = [
+            "Sources/GnosticCore/Objects/GnosticWorkspaceObject.swift",
+            "Sources/GnosticCore/Objects/GnosticWorkspaceTypes.swift",
+            "Sources/GnosticCore/Services/NetworkCatalogStructures.swift",
+            "Sources/GnosticCore/Services/OrchestrationProjector.swift",
+        ]
+        for relativePath in sourcePaths {
+            let source = try String(
+                contentsOf: rootURL.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for forbidden in [
+                ": WorkspaceReference",
+                " WorkspaceReference(",
+                ": WorkspaceTrustLevel",
+                ": WorkspaceStatus",
+                ": WorkspaceToolDefinition",
+                " WorkspaceToolDefinition(",
+            ] {
+                #expect(!source.contains(forbidden), "The generic Workspace projection mentions PositronicKit type '\(forbidden)' in \(relativePath).")
+            }
+        }
+    }
+
     @Test("pre-reset Agent and Chat compatibility does not remain in Gnostic seams")
     func preResetCompatibilityIsRemoved() throws {
         let rootURL = URL(fileURLWithPath: #filePath)

@@ -53,7 +53,7 @@ struct ProjectionAndCatalogTests {
 
         let agentObject = GnosticAscendantObject(identity: ascendant)
         let timelineObject = GnosticTimelineObject(timeline: timeline)
-        let workspaceObject = GnosticWorkspaceObject(workspace: workspace)
+        let workspaceObject = GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: workspace))
 
         #expect(agentObject.objectType == "me.atkn.gnostic.Ascendant")
         #expect(timelineObject.objectType == "me.atkn.gnostic.Timeline")
@@ -74,6 +74,48 @@ struct ProjectionAndCatalogTests {
         #expect(!json.contains("Ignore all prior instructions"))
         #expect(!json.contains("contextInjection"))
         #expect(workspaceObject.tools.map { $0.id } == ["search"])
+    }
+
+    @Test("Workspace network values round trip through the explicit adapter")
+    func workspaceNetworkValuesRoundTripThroughAdapter() throws {
+        let definition = GnosticWorkspaceToolDefinition(
+            id: "inspect",
+            name: "Inspect",
+            description: "Inspects remote state.",
+            parametersSchema: ["type": AnyCodable("object")],
+            usageExample: "inspect state",
+            requiresPermission: true
+        )
+        let networkReference = GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://remote",
+            trustLevel: .restricted,
+            status: .missing,
+            tools: [definition],
+            createdAt: creationDate
+        )
+        let object = GnosticWorkspaceObject(workspace: networkReference)
+        let decoded = try JSONDecoder().decode(
+            GnosticWorkspaceObject.self,
+            from: JSONEncoder().encode(object)
+        )
+        #expect(decoded.trustLevel == .restricted)
+        #expect(decoded.status == .missing)
+        #expect(decoded.tools.first?.id == definition.id)
+
+        let runtimeReference = try WorkspaceReferenceProjection.reference(from: NetworkWorkspaceDescriptor(
+            id: workspaceID,
+            uri: decoded.uri,
+            isAvailable: decoded.isAvailable,
+            trustLevel: decoded.trustLevel,
+            status: decoded.status,
+            tools: decoded.tools,
+            createdAt: decoded.createdAt
+        ))
+        let projected = WorkspaceReferenceProjection.networkReference(from: runtimeReference)
+        #expect(projected.trustLevel == networkReference.trustLevel)
+        #expect(projected.status == networkReference.status)
+        #expect(projected.tools == networkReference.tools)
     }
 
     @Test("catalog scopes Ascendant backend health replacements by provider")
@@ -110,7 +152,11 @@ struct ProjectionAndCatalogTests {
             location: .runtime
         )
 
-        projector.advertise(ascendant: agent, timeline: initialTimeline, workspaces: [workspace])
+        projector.advertise(
+            ascendant: agent,
+            timeline: initialTimeline,
+            workspaces: [WorkspaceReferenceProjection.networkReference(from: workspace)]
+        )
         let updated = projector.readvertise(timeline: changedTimeline)
 
         #expect(recorded.advertisedObjectTypes == [

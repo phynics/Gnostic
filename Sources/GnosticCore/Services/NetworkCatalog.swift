@@ -175,7 +175,10 @@ public actor NetworkCatalog {
             id: id,
             uri: object.uri,
             isAvailable: object.isAvailable,
-            tools: object.tools
+            trustLevel: object.trustLevel,
+            status: object.status,
+            tools: object.tools,
+            createdAt: object.createdAt
         )
     }
 }
