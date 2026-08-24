@@ -2,17 +2,16 @@
 
 import Axoloty
 import Foundation
-import PKContracts
 
 /// Canonical Gnostic object type identifiers advertised through Axoloty.
 public enum GnosticObjectType {
     /// The object type for a projected Gnostic Ascendant.
     public static let ascendant = "me.atkn.gnostic.Ascendant"
 
-    /// The object type for a projected PositronicKit timeline.
+    /// The object type for a projected Gnostic Timeline.
     public static let timeline = "me.atkn.gnostic.Timeline"
 
-    /// The object type for a projected PositronicKit workspace.
+    /// The object type for a projected Gnostic Workspace.
     public static let workspace = "me.atkn.gnostic.Workspace"
 
     /// Returns whether an object type is handled by the Gnostic catalog.

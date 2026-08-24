@@ -81,7 +81,7 @@ public indirect enum NetworkDynamicValue: Codable, Sendable, Equatable {
 
 /// A catalogued network object, scoped to its advertising provider.
 public struct NetworkCatalogEntry: Sendable {
-    /// The PositronicKit object identifier.
+    /// The advertised Gnostic object identifier.
     public let objectID: UUID
 
     /// The canonical Gnostic object type.

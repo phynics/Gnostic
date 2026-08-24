@@ -33,7 +33,7 @@ struct RunnerFixtureE2ETests {
                     id: "workspace_echo",
                     name: "Workspace echo",
                     description: "Echoes fixture input.",
-                    parametersSchema: workspaceEchoSchema
+                    parametersSchema: gnosticWorkspaceEchoSchema
                 ),
             ]
         ) { toolID, arguments in
@@ -139,6 +139,14 @@ private let workspaceEchoSchema: [String: AnyCodable] = [
         "value": AnyCodable(["type": AnyCodable("string")]),
     ]),
     "required": AnyCodable(["value"]),
+]
+
+private let gnosticWorkspaceEchoSchema: [String: ManifestJSONValue] = [
+    "type": .string("object"),
+    "properties": .object([
+        "value": .object(["type": .string("string")]),
+    ]),
+    "required": .array([.string("value")]),
 ]
 
 private func waitForWorkspace(_ catalog: NetworkCatalog, id: UUID) async throws {

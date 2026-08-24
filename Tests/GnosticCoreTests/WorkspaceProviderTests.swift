@@ -148,7 +148,7 @@ struct WorkspaceProviderTests {
             id: "search_notes",
             name: "Search notes",
             description: "Searches remote notes.",
-            parametersSchema: ["query": AnyCodable("string")]
+            parametersSchema: ["query": .string("string")]
         )
         let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
             #expect(toolID == "search_notes")

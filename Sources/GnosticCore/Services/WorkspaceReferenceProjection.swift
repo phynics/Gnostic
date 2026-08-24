@@ -26,7 +26,7 @@ public enum WorkspaceReferenceProjection {
                     id: definition.id,
                     name: definition.name,
                     description: definition.description,
-                    parametersSchema: definition.parametersSchema,
+                    parametersSchema: definition.parametersSchema.mapValues(Self.manifestValue),
                     usageExample: definition.usageExample,
                     requiresPermission: definition.requiresPermission
                 )
@@ -79,7 +79,7 @@ public enum WorkspaceReferenceProjection {
                     id: tool.id,
                     name: tool.name,
                     description: tool.description,
-                    parametersSchema: tool.parametersSchema,
+                    parametersSchema: tool.parametersSchema.mapValues(Self.anyCodable),
                     usageExample: tool.usageExample,
                     requiresPermission: tool.requiresPermission
                 ))
@@ -88,5 +88,37 @@ public enum WorkspaceReferenceProjection {
             status: status,
             createdAt: reference.createdAt
         )
+    }
+
+    private static func manifestValue(_ value: AnyCodable) -> ManifestJSONValue {
+        if let value = value.value as? String { return .string(value) }
+        if let value = value.value as? Bool { return .bool(value) }
+        if let value = value.value as? Int { return .number(Double(value)) }
+        if let value = value.value as? Int64 { return .number(Double(value)) }
+        if let value = value.value as? UInt64 { return .number(Double(value)) }
+        if let value = value.value as? Double { return .number(value) }
+        if let value = value.value as? Float { return .number(Double(value)) }
+        if let value = value.value as? [String: AnyCodable] {
+            return .object(value.mapValues(Self.manifestValue))
+        }
+        if let value = value.value as? [AnyCodable] {
+            return .array(value.map(Self.manifestValue))
+        }
+        if let data = try? JSONEncoder().encode(value),
+           let decoded = try? JSONDecoder().decode(ManifestJSONValue.self, from: data) {
+            return decoded
+        }
+        return .null
+    }
+
+    private static func anyCodable(_ value: ManifestJSONValue) -> AnyCodable {
+        switch value {
+        case let .string(value): return AnyCodable(value)
+        case let .number(value): return AnyCodable(value)
+        case let .bool(value): return AnyCodable(value)
+        case let .object(value): return AnyCodable(value.mapValues(Self.anyCodable))
+        case let .array(value): return AnyCodable(value.map(Self.anyCodable))
+        case .null: return AnyCodable(NSNull())
+        }
     }
 }
