@@ -37,18 +37,18 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
     /// Creates a network projection without exposing a provider's Timeline type.
     public init(timeline: AscendantRuntimeTimeline, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
-        title = timeline.title
+        title = GnosticWirePayload.boundedLabel(timeline.title)
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
         attachedAscendantID = timeline.attachedAscendantID
-        attachedWorkspaceIDs = timeline.attachedWorkspaceIDs
+        attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(timeline.attachedWorkspaceIDs)
         createdAt = timeline.createdAt
         updatedAt = timeline.updatedAt
         super.init(
             coreType: .CoatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: timeline.id.uuidString)!,
-            name: timeline.title
+            name: GnosticWirePayload.boundedLabel(timeline.title)
         )
     }
 
@@ -69,11 +69,11 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
     public required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        title = try container.decode(String.self, forKey: .title)
+        title = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .title))
         isArchived = try container.decode(Bool.self, forKey: .isArchived)
         isPrivate = try container.decode(Bool.self, forKey: .isPrivate)
         attachedAscendantID = try container.decodeIfPresent(UUID.self, forKey: .attachedAscendantID)
-        attachedWorkspaceIDs = try container.decode([UUID].self, forKey: .attachedWorkspaceIDs)
+        attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(try container.decode([UUID].self, forKey: .attachedWorkspaceIDs))
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         try super.init(from: decoder)

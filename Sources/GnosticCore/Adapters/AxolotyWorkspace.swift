@@ -125,7 +125,7 @@ private func invokeWorkspace(
     guard let providerID = invocation.providerID else {
         throw WorkspaceError.connectionFailed
     }
-    let data = try JSONEncoder().encode(invocation)
+    let data = try GnosticWirePayload.encode(invocation, context: "workspace.invoke request")
     let response = try await communication.call(
         operation: GnosticWorkspaceProvider.invocationOperation,
         parameters: String(decoding: data, as: UTF8.self),

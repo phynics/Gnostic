@@ -15,12 +15,15 @@ public enum GnosticObjectType {
     /// The object type for a projected PositronicKit workspace.
     public static let workspace = "me.atkn.gnostic.Workspace"
 
+    /// The query-only object type for a public Workspace tool.
+    public static let workspaceTool = "me.atkn.gnostic.WorkspaceTool"
+
     /// Returns whether an object type is handled by the Gnostic catalog.
     ///
     /// - Parameter objectType: A network object type.
     /// - Returns: `true` when the type is one of Gnostic's canonical types.
     public static func isSupported(_ objectType: String) -> Bool {
-        [ascendant, timeline, workspace].contains(objectType)
+        [ascendant, timeline, workspace, workspaceTool].contains(objectType)
     }
 }
 
@@ -70,11 +73,13 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
-        capabilities = identity.capabilities.interoperability.sorted()
+        capabilities = identity.capabilities.interoperability
+            .filter { GnosticCapability.stable.contains($0) || GnosticCapability.isNamespacedExperimental($0) }
+            .sorted()
         self.backendHealth = backendHealth
         backendKind = identity.capabilities.backendKind
         backendVersion = identity.capabilities.backendVersion
-        ascendantDescription = identity.description
+        ascendantDescription = GnosticWirePayload.boundedLabel(identity.description)
         primaryWorkspaceID = identity.primaryWorkspaceID
         privateTimelineID = identity.privateTimelineID
         lastActiveAt = identity.lastActiveAt
@@ -84,7 +89,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
             coreType: .CoatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: identity.id.uuidString)!,
-            name: identity.name
+            name: GnosticWirePayload.boundedLabel(identity.name)
         )
     }
 
@@ -108,11 +113,13 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
     public required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        capabilities = (try container.decodeIfPresent([String].self, forKey: .capabilities) ?? [])
+            .filter { GnosticCapability.stable.contains($0) || GnosticCapability.isNamespacedExperimental($0) }
+            .sorted()
         backendHealth = try container.decodeIfPresent(AscendantBackendHealth.self, forKey: .backendHealth) ?? .unknown
         backendKind = try container.decodeIfPresent(String.self, forKey: .backendKind)
         backendVersion = try container.decodeIfPresent(String.self, forKey: .backendVersion)
-        ascendantDescription = try container.decode(String.self, forKey: .ascendantDescription)
+        ascendantDescription = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .ascendantDescription))
         primaryWorkspaceID = try container.decodeIfPresent(UUID.self, forKey: .primaryWorkspaceID)
         privateTimelineID = try container.decode(UUID.self, forKey: .privateTimelineID)
         lastActiveAt = try container.decode(Date.self, forKey: .lastActiveAt)

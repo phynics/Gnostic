@@ -57,6 +57,9 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
     /// The safe custom tool definitions exposed by this workspace.
     public var tools: [GnosticWorkspaceTool]
 
+    /// Whether all custom tools fit in this advertisement.
+    public private(set) var toolsComplete: Bool
+
     /// The workspace creation timestamp.
     public var createdAt: Date
 
@@ -68,23 +71,39 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
     /// Creates a safe Axoloty projection of a workspace reference.
     ///
     /// - Parameter workspace: The PositronicKit workspace reference to expose on the network.
-    public init(workspace: WorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    /// - Parameter includeTools: Whether to include the bounded prefix of the
+    ///   tool list in this projection. Tools that do not fit remain available
+    ///   through the separate query-only ``GnosticWorkspaceToolObject`` path.
+    public init(workspace: WorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor, includeTools: Bool = true) {
         self.protocolMajor = protocolMajor
-        uri = workspace.uri.description
+        uri = GnosticWirePayload.boundedLabel(workspace.uri.description)
         isAvailable = workspace.status == .active
         trustLevel = workspace.trustLevel
         status = workspace.status
-        tools = workspace.tools.compactMap { reference in
+        let projectedTools: [GnosticWorkspaceTool] = workspace.tools.compactMap { reference in
             guard case let .custom(definition) = reference else { return nil }
             return GnosticWorkspaceTool(definition: definition)
         }
+        tools = []
+        toolsComplete = includeTools && projectedTools.isEmpty
         createdAt = workspace.createdAt
         super.init(
             coreType: .CoatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: workspace.id.uuidString)!,
-            name: workspace.uri.description
+            name: GnosticWirePayload.boundedLabel(workspace.uri.description)
         )
+        guard includeTools else { return }
+        for tool in projectedTools {
+            let candidate = tools + [tool]
+            tools = candidate
+            guard let encoded = try? JSONEncoder().encode(self),
+                  encoded.count <= GnosticWirePayload.maximumEmbeddedValueBytes else {
+                tools.removeLast()
+                break
+            }
+        }
+        toolsComplete = includeTools && tools.count == projectedTools.count
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -93,7 +112,7 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         case isAvailable
         case trustLevel
         case status
-        case tools
+        case tools, toolsComplete
         case createdAt
     }
 
@@ -103,11 +122,12 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
     public required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        uri = try container.decode(String.self, forKey: .uri)
+        uri = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .uri))
         isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
         trustLevel = try container.decodeIfPresent(WorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
         status = try container.decodeIfPresent(WorkspaceReference.WorkspaceStatus.self, forKey: .status) ?? .unknown
-        tools = try container.decode([GnosticWorkspaceTool].self, forKey: .tools)
+        tools = try container.decodeIfPresent([GnosticWorkspaceTool].self, forKey: .tools) ?? []
+        toolsComplete = try container.decodeIfPresent(Bool.self, forKey: .toolsComplete) ?? true
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
         try super.init(from: decoder)
     }
@@ -123,7 +143,10 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         try container.encode(isAvailable, forKey: .isAvailable)
         try container.encode(trustLevel, forKey: .trustLevel)
         try container.encode(status, forKey: .status)
-        try container.encode(tools, forKey: .tools)
+        if !tools.isEmpty {
+            try container.encode(tools, forKey: .tools)
+        }
+        try container.encode(toolsComplete, forKey: .toolsComplete)
         try container.encode(createdAt, forKey: .createdAt)
     }
 }

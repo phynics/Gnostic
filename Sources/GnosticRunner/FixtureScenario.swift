@@ -30,18 +30,21 @@ struct FixtureScenario {
         }
         let registration = try await providerAPI.register(on: provider.communication)
         defer { registration.cancel() }
+        let queryRegistration = await providerAPI.registerQuery(on: provider.communication)
+        defer { queryRegistration.cancel() }
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer.communication)
         try await subscription.start()
         defer { subscription.stop() }
-        provider.lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: workspace))
+        provider.lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: workspace, includeTools: false))
         try await waitForWorkspace(catalog, id: workspaceID)
+        await subscription.queryTools(using: consumer.communication, workspaceID: workspaceID, timeout: .seconds(1))
         print("fixture workspace discovered: \(workspaceID.uuidString.lowercased())")
 
         let store = InMemoryWorkspacePersistence()
         let runtimeRepository = InMemoryThreadRuntimeRepository()
         let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
-            let encoded = try JSONEncoder().encode(invocation)
+            let encoded = try GnosticWirePayload.encode(invocation, context: "workspace.invoke request")
             let response = try await consumer.communication.call(
                 operation: GnosticWorkspaceProvider.invocationOperation,
                 parameters: String(decoding: encoded, as: UTF8.self),

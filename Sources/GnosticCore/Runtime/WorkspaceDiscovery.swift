@@ -12,6 +12,8 @@ protocol WorkspaceDiscovery: Sendable {
     func discover(timeout: Duration) async
     func objects() async -> [NetworkCatalogEntry]
     func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus
+    func queryTools(workspaceID: UUID, timeout: Duration) async
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor?
 }
 
 /// Gnostic-owned optional host capability for backends that expose network
@@ -69,5 +71,13 @@ final class AxolotyWorkspaceDiscovery: WorkspaceDiscovery {
 
     func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
         await catalog.workspaceAttachmentStatus(id: id)
+    }
+
+    func queryTools(workspaceID: UUID, timeout: Duration) async {
+        await subscription.queryTools(using: communication, workspaceID: workspaceID, timeout: timeout)
+    }
+
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
+        await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID)
     }
 }

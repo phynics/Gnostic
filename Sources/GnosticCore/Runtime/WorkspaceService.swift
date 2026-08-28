@@ -204,10 +204,13 @@ public final class WorkspaceService {
         await discovery.discover(timeout: timeout)
         let status = await discovery.attachmentStatus(id: workspaceID)
         await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status))
-        guard case let .available(_, uri) = status else {
+        guard case let .available(providerID, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
-        guard let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
+        if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
+            await discovery.queryTools(workspaceID: workspaceID, timeout: timeout)
+        }
+        guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID), descriptor.uri == uri else {
             await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
@@ -241,9 +244,15 @@ public final class WorkspaceService {
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let status = await discovery.attachmentStatus(id: workspaceID)
         await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status))
-        guard case let .available(_, uri) = status, uri == expectedURI,
-              let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
+        guard case let .available(providerID, uri) = status, uri == expectedURI else {
             if case .available = status { await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported) }
+            return nil
+        }
+        if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
+            await discovery.queryTools(workspaceID: workspaceID, timeout: .seconds(5))
+        }
+        guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported)
             return nil
         }
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {

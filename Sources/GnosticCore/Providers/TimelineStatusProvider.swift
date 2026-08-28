@@ -42,8 +42,8 @@ public struct TimelineStatus: Codable, Sendable {
     ) {
         self.protocolMajor = protocolMajor
         self.timelineID = timelineID
-        self.title = title
-        self.attachedWorkspaceIDs = attachedWorkspaceIDs
+        self.title = GnosticWirePayload.boundedLabel(title)
+        self.attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(attachedWorkspaceIDs)
         self.isArchived = isArchived
         self.isPrivate = isPrivate
     }
@@ -56,8 +56,8 @@ public struct TimelineStatus: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        title = try container.decode(String.self, forKey: .title)
-        attachedWorkspaceIDs = try container.decode([UUID].self, forKey: .attachedWorkspaceIDs)
+        title = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .title))
+        attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(try container.decode([UUID].self, forKey: .attachedWorkspaceIDs))
         isArchived = try container.decode(Bool.self, forKey: .isArchived)
         isPrivate = try container.decode(Bool.self, forKey: .isPrivate)
     }

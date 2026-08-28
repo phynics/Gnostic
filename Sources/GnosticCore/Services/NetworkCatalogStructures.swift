@@ -109,6 +109,9 @@ public struct NetworkCatalogEntry: Sendable {
     /// A parsed workspace descriptor when this is a well-formed workspace.
     public let workspace: NetworkWorkspaceDescriptor?
 
+    /// A query-only Workspace tool projection, when this entry is a tool.
+    public let workspaceTool: GnosticWorkspaceTool?
+
     /// Creates a catalogued entry.
     public init(
         objectID: UUID,
@@ -119,7 +122,8 @@ public struct NetworkCatalogEntry: Sendable {
         name: String,
         knownProperties: [String: NetworkDynamicValue],
         dynamicProperties: [String: NetworkDynamicValue],
-        workspace: NetworkWorkspaceDescriptor?
+        workspace: NetworkWorkspaceDescriptor?,
+        workspaceTool: GnosticWorkspaceTool? = nil
     ) {
         self.objectID = objectID
         self.objectType = objectType
@@ -130,6 +134,7 @@ public struct NetworkCatalogEntry: Sendable {
         self.knownProperties = knownProperties
         self.dynamicProperties = dynamicProperties
         self.workspace = workspace
+        self.workspaceTool = workspaceTool
     }
 }
 
@@ -147,12 +152,16 @@ public struct NetworkWorkspaceDescriptor: Sendable {
     /// The workspace's safe tool descriptions.
     public let tools: [GnosticWorkspaceTool]
 
+    /// Whether the advertisement contains every custom tool.
+    public let toolsComplete: Bool
+
     /// Creates a workspace descriptor.
-    public init(id: UUID, uri: String, isAvailable: Bool, tools: [GnosticWorkspaceTool]) {
+    public init(id: UUID, uri: String, isAvailable: Bool, tools: [GnosticWorkspaceTool], toolsComplete: Bool = true) {
         self.id = id
         self.uri = uri
         self.isAvailable = isAvailable
         self.tools = tools
+        self.toolsComplete = toolsComplete
     }
 }
 

@@ -37,6 +37,7 @@ public final class NodeTransport {
     private let workspaceProvider: MultiplexedWorkspaceProvider?
     private var registrations: [CallHandlerRegistration] = []
     private var discoverResponder: DiscoverResponderRegistration?
+    private var queryResponder: QueryResponderRegistration?
     private var permissionResponses: Task<Void, Never>?
     private var advertisedObjects: [String: CoatyObject] = [:]
 
@@ -91,6 +92,7 @@ public final class NodeTransport {
         guard let communication else { throw NodeRuntimeError.notRunning }
         if let workspaceProvider {
             registrations.append(try await workspaceProvider.register(on: communication))
+            queryResponder = await workspaceProvider.registerQuery(on: communication)
         }
         let turnProvider = AscendantTurnProvider(
             execute: { [weak self] request in
@@ -201,6 +203,8 @@ public final class NodeTransport {
     func cancel() async {
         discoverResponder?.cancel()
         discoverResponder = nil
+        queryResponder?.cancel()
+        queryResponder = nil
         registrations.forEach { $0.cancel() }
         registrations.removeAll()
         let responses = permissionResponses

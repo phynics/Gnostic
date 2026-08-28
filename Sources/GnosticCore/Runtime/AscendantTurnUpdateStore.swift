@@ -91,7 +91,7 @@ public actor AscendantTurnUpdateStore {
                 terminal: terminal,
                 protocolMajor: protocolMajor
             ),
-            maxBytes: maxBytes / 2
+            maxBytes: min(maxBytes / 2, 1_200)
         )
         entry.nextSequence += 1
         entry.updates.append(update)
@@ -150,10 +150,24 @@ public actor AscendantTurnUpdateStore {
         if let message, let digest = entry.messageDigest, digest != Self.messageDigest(message) {
             return AscendantTurnReplay(updates: [], compacted: false, terminal: true, conflict: true)
         }
+        let available = entry.updates.filter { $0.sequence > afterSequence }
+        var updates: [AscendantTurnUpdate] = []
+        for update in available {
+            let candidate = updates + [update]
+            let replay = AscendantTurnReplay(
+                updates: candidate,
+                compacted: entry.compacted && afterSequence < (entry.updates.first?.sequence ?? 0),
+                terminal: entry.terminal
+            )
+            guard (try? GnosticWirePayload.encode(replay, context: "ascendant.turn.replay result")) != nil else { break }
+            updates.append(update)
+        }
+        let nextSequence = updates.last?.sequence != available.last?.sequence ? updates.last?.sequence : nil
         return AscendantTurnReplay(
-            updates: entry.updates.filter { $0.sequence > afterSequence },
+            updates: updates,
             compacted: entry.compacted && afterSequence < (entry.updates.first?.sequence ?? 0),
-            terminal: entry.terminal
+            terminal: entry.terminal,
+            nextSequence: nextSequence
         )
     }
 
@@ -162,19 +176,26 @@ public actor AscendantTurnUpdateStore {
     }
 
     private static func bounded(_ update: AscendantTurnUpdate, maxBytes: Int) -> AscendantTurnUpdate {
-        var text = update.text
-        var toolStates = update.toolStates
-        var permissionStates = update.permissionStates
+        var text = update.text.map { GnosticWirePayload.prefix($0, maximumBytes: 800) }
+        let toolState = update.toolState.map(bounded)
+        var toolStates = update.toolStates.map(bounded)
+        let permissionState = update.permissionState.map(bounded)
+        var permissionStates = update.permissionStates.map(bounded)
+        let kind = GnosticWirePayload.boundedIdentifier(update.kind)
         var candidate = update
+        candidate = AscendantTurnUpdate(
+            sequence: update.sequence, kind: kind, text: text, toolState: toolState,
+            toolStates: toolStates, permissionState: permissionState,
+            permissionStates: permissionStates, terminal: update.terminal
+        )
         while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
-            text = String(current.prefix(current.count / 2))
+            text = GnosticWirePayload.prefix(current, maximumBytes: max(1, current.utf8.count / 2))
             candidate = AscendantTurnUpdate(
-                sequence: update.sequence,
-                kind: update.kind,
+                sequence: update.sequence, kind: kind,
                 text: text,
-                toolState: update.toolState,
+                toolState: toolState,
                 toolStates: toolStates,
-                permissionState: update.permissionState,
+                permissionState: permissionState,
                 permissionStates: permissionStates,
                 terminal: update.terminal
             )
@@ -183,11 +204,11 @@ public actor AscendantTurnUpdateStore {
             toolStates.removeFirst()
             candidate = AscendantTurnUpdate(
                 sequence: update.sequence,
-                kind: update.kind,
+                kind: kind,
                 text: text,
-                toolState: update.toolState,
+                toolState: toolState,
                 toolStates: toolStates,
-                permissionState: update.permissionState,
+                permissionState: permissionState,
                 permissionStates: permissionStates,
                 terminal: update.terminal
             )
@@ -196,9 +217,9 @@ public actor AscendantTurnUpdateStore {
             permissionStates.removeFirst()
             candidate = AscendantTurnUpdate(
                 sequence: update.sequence,
-                kind: update.kind,
+                kind: kind,
                 text: text,
-                toolState: update.toolState,
+                toolState: toolState,
                 toolStates: toolStates,
                 permissionState: update.permissionState,
                 permissionStates: permissionStates,
@@ -206,6 +227,24 @@ public actor AscendantTurnUpdateStore {
             )
         }
         return candidate
+    }
+
+    private static func bounded(_ state: AscendantToolState) -> AscendantToolState {
+        AscendantToolState(
+            toolCallID: GnosticWirePayload.boundedIdentifier(state.toolCallID),
+            title: state.title.map { GnosticWirePayload.boundedLabel($0) },
+            status: GnosticWirePayload.boundedIdentifier(state.status),
+            content: state.content.map { GnosticWirePayload.prefix($0, maximumBytes: 256) }
+        )
+    }
+
+    private static func bounded(_ state: AscendantPermissionState) -> AscendantPermissionState {
+        AscendantPermissionState(
+            correlationID: GnosticWirePayload.boundedIdentifier(state.correlationID),
+            toolCallID: GnosticWirePayload.boundedIdentifier(state.toolCallID),
+            title: GnosticWirePayload.boundedLabel(state.title),
+            status: GnosticWirePayload.boundedIdentifier(state.status)
+        )
     }
 
     private static func upsert(_ state: AscendantToolState, into states: inout [AscendantToolState]) {

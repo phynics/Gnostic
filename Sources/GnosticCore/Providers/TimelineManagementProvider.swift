@@ -21,7 +21,7 @@ public struct TimelineCreateRequest: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        title = try container.decode(String.self, forKey: .title)
+        title = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .title))
         ascendantID = try container.decodeIfPresent(UUID.self, forKey: .ascendantID)
     }
 }
@@ -44,7 +44,7 @@ public struct TimelineUpdateRequest: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        title = try container.decode(String.self, forKey: .title)
+        title = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .title))
     }
 }
 
@@ -52,34 +52,43 @@ public struct TimelineUpdateRequest: Codable, Sendable {
 public struct TimelineListResult: Codable, Sendable {
     public let protocolMajor: Int
     public let timelines: [TimelineStatus]
+    public let nextOffset: Int?
 
-    public init(timelines: [TimelineStatus], protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(timelines: [TimelineStatus], nextOffset: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.timelines = timelines
+        self.nextOffset = nextOffset
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, timelines }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, timelines, nextOffset }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         timelines = try container.decode([TimelineStatus].self, forKey: .timelines)
+        nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
     }
 }
 
 /// The protocol-bearing request for `timeline.list`.
 public struct TimelineListRequest: Codable, Sendable {
     public let protocolMajor: Int
+    public let offset: Int
+    public let limit: Int
 
-    public init(protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(offset: Int = 0, limit: Int = GnosticWirePayload.maximumListItems, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
+        self.offset = offset
+        self.limit = limit
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, offset, limit }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? GnosticWirePayload.maximumListItems
     }
 }
 
@@ -124,7 +133,7 @@ public struct TimelineManagementProvider: Sendable {
             do {
                 let status = try await create(request.title, request.ascendantID)
                 try GnosticProtocol.validate(status.protocolMajor)
-                let encoded = try JSONEncoder().encode(status)
+                let encoded = try GnosticWirePayload.encode(status, context: "timeline.create result")
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
                 return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
@@ -135,10 +144,19 @@ public struct TimelineManagementProvider: Sendable {
             }
         case Self.listOperation:
             if let error = protocolError(parameters) { return error }
+            guard let request = decodeList(parameters), request.offset >= 0, request.limit > 0 else {
+                return failure(code: 400, reasonCode: "invalidTimelineListPayload", message: "Invalid timeline.list payload")
+            }
             do {
                 let statuses = try await list()
                 try statuses.forEach { try GnosticProtocol.validate($0.protocolMajor) }
-                let encoded = try JSONEncoder().encode(TimelineListResult(timelines: statuses))
+                let pageLimit = min(request.limit, GnosticWirePayload.maximumListItems)
+                let page = boundedPage(statuses, offset: request.offset, limit: pageLimit)
+                let nextOffset = request.offset + page.count < statuses.count ? request.offset + page.count : nil
+                let encoded = try GnosticWirePayload.encode(
+                    TimelineListResult(timelines: page, nextOffset: nextOffset),
+                    context: "timeline.list result"
+                )
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
                 return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
@@ -156,7 +174,7 @@ public struct TimelineManagementProvider: Sendable {
             do {
                 let status = try await update(request)
                 try GnosticProtocol.validate(status.protocolMajor)
-                let encoded = try JSONEncoder().encode(status)
+                let encoded = try GnosticWirePayload.encode(status, context: "timeline.update result")
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch let error as NodeRuntimeError {
                 return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
@@ -179,6 +197,22 @@ public struct TimelineManagementProvider: Sendable {
         } catch {
             return failure(code: 400, reasonCode: "invalidTimelinePayload", message: "Invalid timeline payload")
         }
+    }
+
+    private func decodeList(_ parameters: String?) -> TimelineListRequest? {
+        guard let parameters else { return nil }
+        return try? JSONDecoder().decode(TimelineListRequest.self, from: Data(parameters.utf8))
+    }
+
+    private func boundedPage(_ values: [TimelineStatus], offset: Int, limit: Int) -> [TimelineStatus] {
+        guard offset < values.count else { return [] }
+        var result: [TimelineStatus] = []
+        for value in values.dropFirst(offset).prefix(limit) {
+            let candidate = result + [value]
+            guard (try? GnosticWirePayload.encode(TimelineListResult(timelines: candidate), context: "timeline.list result")) != nil else { break }
+            result.append(value)
+        }
+        return result
     }
 
     private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
