@@ -909,7 +909,7 @@ struct NodeRuntimeTests {
 
     @Test("each backend identity is published from one runtime") @MainActor
     func twoBackendsPublishBothAscendants() async throws {
-        let namespace = "node-runtime-two-backend-ascendants-\(UUID().uuidString.lowercased())"
+        let namespace = "node-two-backend-\(UUID().uuidString.lowercased())"
         let firstAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000301")!
         let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000302")!
         let secondAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000303")!

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import AxolotyWire
 import Foundation
 
 /// The payload budget shared by every Gnostic Axoloty event.
@@ -9,10 +10,10 @@ import Foundation
 /// transport boundary instead of relying on the size of an embedded field.
 public enum GnosticWirePayload {
     /// Maximum bytes accepted by the Axoloty wire configuration.
-    public static let maximumBytes = 2 * 1024
+    public static let maximumBytes = WireBufferConfig.maxPayloadSize
 
-    /// Maximum Coaty topic bytes provided by the upcoming Axoloty hotfix.
-    public static let maximumTopicBytes = 256
+    /// Maximum Coaty topic bytes provided by the released Axoloty wire profile.
+    public static let maximumTopicBytes = WireBufferConfig.maxTopicLength
 
     /// A conservative application-value budget leaves room for the Axoloty
     /// event envelope when an encoded value is embedded in a Call or Channel.

@@ -28,7 +28,7 @@ struct WirePayloadBudgetTests {
         }
     }
 
-    @Test("topic budget targets the upcoming Axoloty hotfix")
+    @Test("topic budget matches the released Axoloty wire profile")
     func topicBudget() {
         #expect(GnosticWirePayload.maximumTopicBytes == 256)
     }
