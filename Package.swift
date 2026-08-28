@@ -15,9 +15,7 @@ let package = Package(
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
-        // Temporary exact revision for the granted 2 KiB wire budget; replace
-        // with the next released Axoloty version once the cap is published.
-        .package(url: "https://github.com/phynics/Axoloty.git", revision: "a61db1c"),
+        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.6.1"),
         .package(url: "https://github.com/phynics/PositronicKit.git", exact: "5.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),

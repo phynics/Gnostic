@@ -573,7 +573,7 @@ public final class CommunicationManager {
         let runtimeIdentity = try RuntimeIdentity(id: uuid16(identity.objectId.foundationUUID), name: identity.name)
         let capacities = try RuntimeCapacities(
             protocolMaximumPayloadBytes: GnosticWirePayload.maximumBytes,
-            protocolMaximumTopicBytes: 65_536
+            protocolMaximumTopicBytes: GnosticWirePayload.maximumTopicBytes
         )
         var builder = try RuntimeDefinition.Builder(identity: runtimeIdentity, namespace: namespace, limits: capacities)
         let callOperations = [

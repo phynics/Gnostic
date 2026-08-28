@@ -28,6 +28,11 @@ struct WirePayloadBudgetTests {
         }
     }
 
+    @Test("topic budget targets the upcoming Axoloty hotfix")
+    func topicBudget() {
+        #expect(GnosticWirePayload.maximumTopicBytes == 256)
+    }
+
     @Test("workspace advertisements omit the unbounded tool list")
     func workspaceAdvertisementOmitsTools() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)

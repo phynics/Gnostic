@@ -11,6 +11,9 @@ public enum GnosticWirePayload {
     /// Maximum bytes accepted by the Axoloty wire configuration.
     public static let maximumBytes = 2 * 1024
 
+    /// Maximum Coaty topic bytes provided by the upcoming Axoloty hotfix.
+    public static let maximumTopicBytes = 256
+
     /// A conservative application-value budget leaves room for the Axoloty
     /// event envelope when an encoded value is embedded in a Call or Channel.
     public static let maximumEmbeddedValueBytes = 1_800
