@@ -20,7 +20,7 @@ struct FixtureScenario {
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
         let tools = fixtureTools
         let workspace = WorkspaceReference(id: workspaceID, uri: WorkspaceURI(parsing: "workspace://fixture")!, location: .runtime, tools: tools.map(ToolReference.custom))
-        let providerAPI = WorkspaceProvider(workspaceID: workspaceID, tools: tools) { toolID, arguments in
+        let providerAPI = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: tools) { toolID, arguments in
             switch toolID {
             case "list_files": return .success("README.md")
             case "read_file": return .success("fixture contents")
@@ -39,10 +39,11 @@ struct FixtureScenario {
         print("fixture workspace discovered: \(workspaceID.uuidString.lowercased())")
 
         let store = InMemoryWorkspacePersistence()
+        let runtimeRepository = InMemoryThreadRuntimeRepository()
         let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
             let encoded = try JSONEncoder().encode(invocation)
             let response = try await consumer.communication.call(
-                operation: WorkspaceProvider.invocationOperation,
+                operation: GnosticWorkspaceProvider.invocationOperation,
                 parameters: String(decoding: encoded, as: UTF8.self),
                 timeout: .seconds(3)
             )
@@ -50,7 +51,7 @@ struct FixtureScenario {
         }
         let kit = PositronicKit(configuration: .init(
             provider: .init(languageModel: UnconfiguredLLMService()),
-            persistence: .init(workspacePersistence: store),
+            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store, workspaceBindingRepository: runtimeRepository),
             runtime: .init(workspaceCreator: factory)
         ))
         let timeline = try await kit.threads.create()
@@ -62,13 +63,13 @@ struct FixtureScenario {
         try await kit.workspaces.update(reference)
         try await kit.threads.attachWorkspace(reference.id, to: timeline.id)
         if let changed = try await kit.threads.get(timeline.id) {
-            readvertised.record(changed)
+            readvertised.record(changed, attachedWorkspaceIDs: [workspaceID])
         }
         let remote = AxolotyWorkspace(reference: reference, catalog: catalog, communication: consumer.communication, timeout: .seconds(3))
         try await invoke(remote, id: "list_files", arguments: [:], expected: "README.md")
         try await invoke(remote, id: "read_file", arguments: [:], expected: "fixture contents")
         try await invoke(remote, id: "workspace_echo", arguments: ["value": AnyCodable("network")], expected: "network")
-        guard readvertised.latest?.attachedWorkspaceIDs == [workspaceID] else { throw RunnerError.timelineNotReadvertised }
+        guard readvertised.latestWorkspaceIDs == [workspaceID] else { throw RunnerError.timelineNotReadvertised }
         print("timeline readvertised with fixture workspace: \(workspaceID.uuidString.lowercased())")
 
         print("fixture scenario passed: list_files, read_file, workspace_echo used me.atkn.gnostic.workspace.invoke")

@@ -11,9 +11,10 @@ import struct PositronicKit.Thread
 @MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
     private let kit: PositronicKit
-    private let threadStore: InMemoryThreadPersistence
+    private let threadStore: any ThreadRuntimeRepository
     private let networkTools: [AnyTool]
     private var workspaceToolsByID: [UUID: [AnyTool]]
+    private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
 
@@ -22,7 +23,7 @@ import struct PositronicKit.Thread
         backend: AscendantBackendConfiguration,
         services: AscendantBackendServices,
         timelines: [NodeManifest.Timeline],
-        languageModel: any LanguageModel
+        languageModel: any LLMStreamClient
     ) async throws {
         try AscendantBackendConfigurationValidator.validate(backend)
         guard timelines.contains(where: { $0.id == ascendant.defaultTimelineID }) else {
@@ -71,26 +72,25 @@ import struct PositronicKit.Thread
 
         let stores = (
             InMemoryAgentStore(),
-            InMemoryThreadPersistence(),
             InMemoryMessageStore(),
             InMemoryWorkspacePersistence(),
             InMemoryToolPersistence()
         )
+        let runtimeRepository = InMemoryThreadRuntimeRepository()
         try await stores.0.saveAgent(agent)
         for configuration in timelines {
             let thread = Thread(
                 id: configuration.id,
                 title: configuration.title,
-                attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID),
                 attachedAgentID: ascendant.id,
                 isPrivate: false
             )
-            try await stores.1.saveThread(thread)
+            try await runtimeRepository.saveThread(thread)
             for workspaceID in configuration.attachments.map(\.workspaceID) {
                 guard let reference = references[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
                 guard reference.status == .available,
                       let native = try? Self.positronicReference(reference) else { continue }
-                try await stores.3.saveWorkspace(native)
+                try await stores.2.saveWorkspace(native)
             }
         }
 
@@ -98,11 +98,11 @@ import struct PositronicKit.Thread
         let createdKit = PositronicKit(configuration: .init(
             provider: .init(languageModel: languageModel),
             persistence: .init(
-                messageStore: stores.2,
-                threadPersistence: stores.1,
-                workspacePersistence: stores.3,
-                toolPersistence: stores.4,
-                agentStore: stores.0
+                runtimeRepository: runtimeRepository,
+                workspacePersistence: stores.2,
+                toolPersistence: stores.3,
+                agentStore: stores.0,
+                workspaceBindingRepository: runtimeRepository
             ),
             runtime: .init(
                 workspaceCreator: factory,
@@ -115,12 +115,15 @@ import struct PositronicKit.Thread
             )
         ))
         kit = createdKit
-        threadStore = stores.1
+        threadStore = runtimeRepository
         lifecycleFailure = nil
         workspaceService = services.workspace
         workspaceToolsByID = try references.reduce(into: [:]) { result, entry in
             result[entry.key] = try Self.workspaceTools(for: entry.value, service: services.workspace)
         }
+        workspaceIDsByTimeline = Dictionary(uniqueKeysWithValues: timelines.map {
+            ($0.id, $0.attachments.map(\.workspaceID))
+        })
 
         if let host = services.capability(BackendWorkspaceDiscoveryCapability.self) {
             let attachmentHost = services.capability(BackendWorkspaceAttachmentCapability.self)
@@ -143,7 +146,12 @@ import struct PositronicKit.Thread
 
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
         try requireUsable()
-        return try await kit.threads.list(includeArchived: false).map(Self.projection)
+        let threads = try await kit.threads.list(includeArchived: false)
+        var projections: [AscendantBackendTimeline] = []
+        for thread in threads {
+            projections.append(await projection(thread))
+        }
+        return projections
     }
 
     public func validateConfiguration() throws {}
@@ -152,13 +160,15 @@ import struct PositronicKit.Thread
         try requireUsable()
         let thread = Thread(id: id, title: title, attachedAgentID: identity.id, isPrivate: false)
         try await threadStore.saveThread(thread)
-        return Self.projection(thread)
+        workspaceIDsByTimeline[id] = []
+        return await projection(thread)
     }
 
     public func removeTimeline(id: UUID) async {
         guard lifecycleFailure == nil else { return }
         await kit.threads.open(id).cancel()
         try? await threadStore.deleteThread(id: id)
+        workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
     public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
@@ -174,18 +184,21 @@ import struct PositronicKit.Thread
         try requireUsable()
         try await kit.workspaces.update(Self.positronicReference(reference))
         workspaceToolsByID[reference.id] = try Self.workspaceTools(for: reference, service: workspaceService)
-        try await kit.threads.attachWorkspace(reference.id, to: timelineID)
+        if !workspaceIDsByTimeline[timelineID, default: []].contains(reference.id) {
+            workspaceIDsByTimeline[timelineID, default: []].append(reference.id)
+        }
     }
 
     public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
         try requireUsable()
-        try await kit.threads.detachWorkspace(workspaceID, from: timelineID)
+        workspaceIDsByTimeline[timelineID, default: []].removeAll { $0 == workspaceID }
     }
 
     public func enabledToolIDs(for timelineID: UUID) async -> [String] {
         guard lifecycleFailure == nil else { return [] }
-        guard let thread = try? await kit.threads.get(timelineID) else { return [] }
-        let workspaceToolIDs = thread.attachedWorkspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
+        let workspaceToolIDs: [String]
+        let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
+        workspaceToolIDs = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
         return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
     }
 
@@ -210,8 +223,8 @@ import struct PositronicKit.Thread
         let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
             .init(timelineID: request.timelineID, clientTurnID: $0)
         }) {
-            let workspaceTools = (try? await kit.threads.get(request.timelineID))?.attachedWorkspaceIDs
-                .flatMap { workspaceToolsByID[$0, default: []] } ?? []
+            let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
+            let workspaceTools = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []] }
             let turnRequest = TurnRequest(
                 threadID: request.timelineID,
                 requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
@@ -275,11 +288,12 @@ import struct PositronicKit.Thread
         }
     }
 
-    private static func projection(_ thread: Thread) -> AscendantBackendTimeline {
-        .init(
+    private func projection(_ thread: Thread) async -> AscendantBackendTimeline {
+        let attachedWorkspaceIDs = workspaceIDsByTimeline[thread.id, default: []]
+        return .init(
             id: thread.id,
             title: thread.title,
-            attachedWorkspaceIDs: thread.attachedWorkspaceIDs,
+            attachedWorkspaceIDs: attachedWorkspaceIDs,
             ascendantID: thread.attachedAgentID,
             isArchived: thread.isArchived,
             isPrivate: thread.isPrivate,
@@ -340,7 +354,7 @@ import struct PositronicKit.Thread
     ) throws -> [AnyTool] {
         let native = try positronicReference(reference)
         let workspace = PositronicBackendWorkspace(reference: native, service: service)
-        return native.tools.compactMap { tool in
+        return native.tools.compactMap { tool -> AnyTool? in
             guard case let .custom(definition) = tool else { return nil }
             return WorkspaceToolWrapper(workspace: workspace, definition: definition).toAnyTool()
         }
@@ -361,12 +375,12 @@ import struct PositronicKit.Thread
 private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
     let service: (any AscendantBackendWorkspaceService)?
 
-    func create(from reference: WorkspaceReference) throws -> any Workspace {
+    func create(from reference: WorkspaceReference) throws -> any WorkspaceProvider {
         PositronicBackendWorkspace(reference: reference, service: service)
     }
 }
 
-private struct PositronicBackendWorkspace: Workspace, Sendable {
+private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
     let service: (any AscendantBackendWorkspaceService)?
 

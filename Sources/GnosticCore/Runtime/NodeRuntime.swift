@@ -55,7 +55,7 @@ public final class NodeRuntime {
     private let subscription: GnosticSubscription
     private let adapters: NodeRuntimeAdapters
     private let initialWorkspaceReferences: [UUID: WorkspaceReference]
-    private let localWorkspaces: [UUID: any Workspace]
+    private let localWorkspaces: [UUID: any WorkspaceProvider]
     private let backendWorkspaceService: GnosticWorkspaceBackendService
     private var backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?
     private var lifecycleState: LifecycleState = .stopped
@@ -199,7 +199,7 @@ public final class NodeRuntime {
         try adapters.workspaces.validate(kinds: plan.workspaces.map(\.kind))
 
         var references: [UUID: WorkspaceReference] = [:]
-        var workspaces: [UUID: any Workspace] = [:]
+        var workspaces: [UUID: any WorkspaceProvider] = [:]
         for configuration in plan.workspaces {
             guard let uri = WorkspaceURI(parsing: configuration.uri) else { throw NodeRuntimeError.invalidWorkspaceURI(configuration.id) }
             let provisionalReference = WorkspaceReference(
@@ -212,11 +212,13 @@ public final class NodeRuntime {
                 for: configuration,
                 reference: provisionalReference
             )
+            let workspaceToolProvider = workspace as? any WorkspaceToolProvider
+            let tools = try await workspaceToolProvider?.listTools() ?? []
             let reference = WorkspaceReference(
                 id: configuration.id,
                 uri: uri,
                 location: .runtime,
-                tools: try await workspace.listTools()
+                tools: tools
             )
             references[configuration.id] = reference
             workspaces[configuration.id] = workspace

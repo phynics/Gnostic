@@ -33,7 +33,7 @@ public struct AscendantAdapterRegistry: Sendable {
 
     /// Transitional composition seam for the CLI. Backend semantics remain
     /// outside Core; the closure receives only the opaque envelope.
-    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LanguageModel) {
+    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient) {
         factories[kind] = { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: factory(ascendant, backend))
         }
@@ -55,7 +55,7 @@ public struct AscendantAdapterRegistry: Sendable {
 
 /// A registry of local Workspace adapters keyed by the manifest's `kind` field.
 public struct WorkspaceAdapterRegistry: Sendable {
-    public typealias Factory = @Sendable (_ configuration: NodeManifest.Workspace, _ reference: WorkspaceReference) throws -> any Workspace
+    public typealias Factory = @Sendable (_ configuration: NodeManifest.Workspace, _ reference: WorkspaceReference) throws -> any WorkspaceProvider
 
     private var factories: [String: Factory]
 
@@ -67,7 +67,7 @@ public struct WorkspaceAdapterRegistry: Sendable {
         factories[kind] = factory
     }
 
-    func makeWorkspace(for configuration: NodeManifest.Workspace, reference: WorkspaceReference) throws -> any Workspace {
+    func makeWorkspace(for configuration: NodeManifest.Workspace, reference: WorkspaceReference) throws -> any WorkspaceProvider {
         guard let factory = factories[configuration.kind] else { throw NodeRuntimeError.unsupportedWorkspaceKind(configuration.kind) }
         return try factory(configuration, reference)
     }
@@ -128,7 +128,7 @@ public struct NodeRuntimeAdapters: Sendable {
 
 /// A local echo Workspace implementation. All configured echo Workspaces use
 /// the same multiplexed provider route while retaining their own stable IDs.
-public struct EchoWorkspace: Workspace, Sendable {
+public struct EchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     public let reference: WorkspaceReference
     public var id: UUID { reference.id }
 

@@ -32,7 +32,7 @@ final class DiscoveredWorkspaceAttachmentService {
     /// Backend construction supplies `hostAttachment` so Gnostic can commit
     /// the attachment intent and effective state after the backend accepts the
     /// private projection. The capability path keeps PositronicKit's
-    /// coordinators behind its public v4 facade.
+    /// coordinators behind its public v5 facade.
     init(
         discovery: any WorkspaceDiscovery,
         threadCapability: ThreadCapability,

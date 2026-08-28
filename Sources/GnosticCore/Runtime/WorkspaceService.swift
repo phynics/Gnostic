@@ -10,7 +10,7 @@ public final class WorkspaceService {
     private let plan: NodeLaunchPlan
     private let registry: NodeRegistry
     private let discovery: any WorkspaceDiscovery
-    private let localWorkspaces: [UUID: any Workspace]
+    private let localWorkspaces: [UUID: any WorkspaceProvider]
     private let backendWorkspaceService: GnosticWorkspaceBackendService?
     private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
     private let isRunning: @MainActor () -> Bool
@@ -26,7 +26,7 @@ public final class WorkspaceService {
         plan: NodeLaunchPlan,
         registry: NodeRegistry,
         discovery: any WorkspaceDiscovery,
-        localWorkspaces: [UUID: any Workspace],
+        localWorkspaces: [UUID: any WorkspaceProvider],
         references: [UUID: WorkspaceReference],
         backendWorkspaceService: GnosticWorkspaceBackendService? = nil,
         isRunning: @escaping @MainActor () -> Bool,
@@ -62,7 +62,7 @@ public final class WorkspaceService {
 
     func executeLocalTool(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) async throws -> ToolResult {
         guard isRunning() else { throw NodeRuntimeError.notRunning }
-        guard let workspace = localWorkspaces[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
+        guard let workspace = localWorkspaces[workspaceID] as? any WorkspaceToolProvider else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
         return try await workspace.executeTool(id: toolID, parameters: arguments)
     }
 

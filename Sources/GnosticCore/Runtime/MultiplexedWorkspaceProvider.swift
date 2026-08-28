@@ -10,13 +10,13 @@ import PositronicKit
 /// This is transport infrastructure: its registration and cancellation belong
 /// to ``NodeTransport`` rather than the node composition root.
 public actor MultiplexedWorkspaceProvider {
-    public static let invocationOperation = WorkspaceProvider.invocationOperation
+    public static let invocationOperation = GnosticWorkspaceProvider.invocationOperation
 
-    private let workspaces: [UUID: any Workspace]
+    private let workspaces: [UUID: any WorkspaceProvider]
     private let isAvailable: @Sendable () async -> Bool
 
     public init(
-        workspaces: [UUID: any Workspace],
+        workspaces: [UUID: any WorkspaceProvider],
         isAvailable: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.workspaces = workspaces
@@ -35,6 +35,9 @@ public actor MultiplexedWorkspaceProvider {
             }
             guard let workspace = workspaces[invocation.workspaceID] else {
                 throw WorkspaceError.workspaceNotFound
+            }
+            guard let workspace = workspace as? any WorkspaceToolProvider else {
+                throw WorkspaceError.toolExecutionNotSupported
             }
             let result = try await workspace.executeTool(id: invocation.toolID, parameters: invocation.arguments)
             let data = try JSONEncoder().encode(result)

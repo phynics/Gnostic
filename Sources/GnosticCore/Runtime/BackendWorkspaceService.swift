@@ -67,13 +67,13 @@ public protocol AscendantBackendWorkspaceFileService: Sendable {
 /// the ``AscendantBackendWorkspaceService`` contract remains Foundation-only.
 @MainActor
 final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, AscendantBackendWorkspaceFileService, @unchecked Sendable {
-    private let localWorkspaces: [UUID: any Workspace]
+    private let localWorkspaces: [UUID: any WorkspaceProvider]
     private var references: [UUID: WorkspaceReference]
     private let catalog: NetworkCatalog
     private let communication: CommunicationManager
 
     init(
-        localWorkspaces: [UUID: any Workspace],
+        localWorkspaces: [UUID: any WorkspaceProvider],
         references: [UUID: WorkspaceReference],
         catalog: NetworkCatalog,
         communication: CommunicationManager
@@ -122,6 +122,9 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
         }
         let toolResult: ToolResult
         if let local = localWorkspaces[invocation.workspaceID] {
+            guard let local = local as? any WorkspaceToolProvider else {
+                throw WorkspaceError.toolExecutionNotSupported
+            }
             toolResult = try await local.executeTool(id: invocation.toolID, parameters: parameters)
         } else {
             let proxy = AxolotyWorkspace(
@@ -137,22 +140,22 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
     }
 
     func readFile(workspaceID: UUID, path: String) async throws -> String {
-        guard let workspace = localWorkspaces[workspaceID] else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let workspace = localWorkspaces[workspaceID] as? any WorkspaceFileProvider else { throw WorkspaceError.toolExecutionNotSupported }
         return try await workspace.readFile(path: path)
     }
 
     func writeFile(workspaceID: UUID, path: String, content: String) async throws {
-        guard let workspace = localWorkspaces[workspaceID] else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let workspace = localWorkspaces[workspaceID] as? any WorkspaceFileProvider else { throw WorkspaceError.toolExecutionNotSupported }
         try await workspace.writeFile(path: path, content: content)
     }
 
     func listFiles(workspaceID: UUID, path: String) async throws -> [String] {
-        guard let workspace = localWorkspaces[workspaceID] else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let workspace = localWorkspaces[workspaceID] as? any WorkspaceFileProvider else { throw WorkspaceError.toolExecutionNotSupported }
         return try await workspace.listFiles(path: path)
     }
 
     func deleteFile(workspaceID: UUID, path: String) async throws {
-        guard let workspace = localWorkspaces[workspaceID] else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let workspace = localWorkspaces[workspaceID] as? any WorkspaceFileProvider else { throw WorkspaceError.toolExecutionNotSupported }
         try await workspace.deleteFile(path: path)
     }
 

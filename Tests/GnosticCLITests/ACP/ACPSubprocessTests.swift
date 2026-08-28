@@ -530,7 +530,7 @@ private func discoverProviderID(namespace: String, ascendantID: UUID) async thro
     throw ACPSubprocessError.timeout
 }
 
-private struct PermissionedEchoWorkspace: Workspace, Sendable {
+private struct PermissionedEchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
     var id: UUID { reference.id }
 
@@ -548,7 +548,7 @@ private struct PermissionedEchoWorkspace: Workspace, Sendable {
     func healthCheck() async -> Bool { true }
 }
 
-private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendable {
+private final class RepeatingToolLanguageModel: LLMStreamClient, @unchecked Sendable {
     var isConfigured: Bool { get async { true } }
     var configuration: LLMConfiguration {
         get async { .init(activeProvider: .openAI, providers: [:]) }
@@ -623,10 +623,6 @@ private final class RepeatingToolLanguageModel: LanguageModel, @unchecked Sendab
     ) async throws -> String { "ok" }
     func generateTags(for _: String) async throws -> [String] { [] }
     func generateTitle(for _: [Message]) async throws -> String { "fixture" }
-    func evaluateRecallPerformance(
-        transcript _: String,
-        recalledMemories _: [Memory]
-    ) async throws -> [String: Double] { [:] }
     func fetchAvailableModels() async throws -> [String]? { nil }
 }
 

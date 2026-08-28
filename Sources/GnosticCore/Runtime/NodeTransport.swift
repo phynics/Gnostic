@@ -47,7 +47,7 @@ public final class NodeTransport {
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         workspaceReferences: @escaping @MainActor () async -> [WorkspaceReference] = { [] },
-        localWorkspaces: [UUID: any Workspace] = [:],
+        localWorkspaces: [UUID: any WorkspaceProvider] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         turn: @escaping Turn,
         timelineStatus: @escaping TimelineStatusLookup,

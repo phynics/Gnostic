@@ -1,5 +1,5 @@
 {
-  "originHash" : "b5250cd7147abfe7ce65a34804ba67c6e39c8d459a740153ef82c248a2b9b2e3",
+  "originHash" : "a5bd1f8959ca6b90abb05b5084b1f81f20cc99039feb52a27a50d51cc6df78a6",
   "pins" : [
     {
       "identity" : "axoloty",
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/phynics/PositronicKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "a213244655b7389df135107fcb2c0ea78db42104"
+        "revision" : "d4f87df4626906fb02420b321a86159d2c19bd59",
+        "version" : "5.0.0"
       }
     },
     {

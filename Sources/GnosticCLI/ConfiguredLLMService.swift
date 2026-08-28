@@ -9,7 +9,7 @@ import PKOpenRouterProvider
 import PKContracts
 import PositronicKit
 
-/// Builds a configured `LanguageModel` from a CLI/PositronicKit `LLMConfiguration`.
+/// Builds a configured `LLMStreamClient` from a CLI/PositronicKit `LLMConfiguration`.
 ///
 /// The per-provider client factory routes the active provider to its bundled
 /// client package (`PKOpenAIProvider`, `PKOpenRouterProvider`, ...) so the LLM
@@ -21,14 +21,14 @@ public enum ConfiguredLLMService {
     /// - Parameter configuration: The LLM provider + endpoint/key/model settings.
     /// - Returns: A configured model, or `UnconfiguredLLMService` when the
     ///   configuration is not valid (e.g. missing provider or API key).
-    public static func make(from configuration: LLMConfiguration) -> any LanguageModel {
+    public static func make(from configuration: LLMConfiguration) -> any LLMStreamClient {
         guard configuration.isValid else { return UnconfiguredLLMService() }
         return LLMService(configuration: configuration, clients: makeClients(for: configuration))
     }
 
     /// Bridges a validated Core launch-plan profile without making GnosticCore
     /// depend on CLI provider packages.
-    public static func make(from profile: PositronicProfile) -> any LanguageModel {
+    public static func make(from profile: PositronicProfile) -> any LLMStreamClient {
         guard let provider = LLMProvider.allCases.first(where: {
             $0.rawValue.lowercased() == profile.provider.lowercased()
         }) else { return UnconfiguredLLMService() }
