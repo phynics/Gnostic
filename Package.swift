@@ -15,9 +15,8 @@ let package = Package(
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.5.1"),
-        // Temporary v4 pin until PositronicKit publishes the migrated API in a semantic release.
-        .package(url: "https://github.com/phynics/PositronicKit.git", revision: "a213244655b7389df135107fcb2c0ea78db42104"),
+        .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.6.0"),
+        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "5.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
@@ -26,6 +25,8 @@ let package = Package(
             name: "GnosticCore",
             dependencies: [
                 .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "AxolotyProtocol", package: "Axoloty"),
+                .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),

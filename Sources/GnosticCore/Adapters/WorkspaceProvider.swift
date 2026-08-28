@@ -42,7 +42,7 @@ public struct WorkspaceInvocation: Codable, Sendable {
 }
 
 /// Hosts arbitrary custom workspace tools over Gnostic's unary Call/Return operation.
-public actor WorkspaceProvider {
+public actor GnosticWorkspaceProvider {
     /// The single operation used for all workspace tool invocations.
     public static let invocationOperation = "me.atkn.gnostic.workspace.invoke"
 

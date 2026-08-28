@@ -627,7 +627,7 @@ private func launchACP(
     return ACPProcess(process: process, input: input, lines: LineStream(handle: output.fileHandleForReading))
 }
 
-private final class AcceptanceFinalLanguageModel: LanguageModel, @unchecked Sendable {
+private final class AcceptanceFinalLanguageModel: LLMStreamClient, @unchecked Sendable {
     var isConfigured: Bool { get async { true } }
     var configuration: LLMConfiguration { get async { .init(activeProvider: .openAI, providers: [:]) } }
 
@@ -680,15 +680,11 @@ private final class AcceptanceFinalLanguageModel: LanguageModel, @unchecked Send
     ) async throws -> String { "ok" }
     func generateTags(for _: String) async throws -> [String] { [] }
     func generateTitle(for _: [Message]) async throws -> String { "acceptance" }
-    func evaluateRecallPerformance(
-        transcript _: String,
-        recalledMemories _: [Memory]
-    ) async throws -> [String: Double] { [:] }
     func fetchAvailableModels() async throws -> [String]? { nil }
 }
 
 /// Deterministic two-step model for the migrated-config ACP acceptance path.
-private final class LegacyMigrationToolLanguageModel: LanguageModel, @unchecked Sendable {
+private final class LegacyMigrationToolLanguageModel: LLMStreamClient, @unchecked Sendable {
     private actor Counter {
         private var value = 0
         func next() -> Int {
@@ -781,9 +777,5 @@ private final class LegacyMigrationToolLanguageModel: LanguageModel, @unchecked 
     ) async throws -> String { "ok" }
     func generateTags(for _: String) async throws -> [String] { [] }
     func generateTitle(for _: [Message]) async throws -> String { "acceptance" }
-    func evaluateRecallPerformance(
-        transcript _: String,
-        recalledMemories _: [Memory]
-    ) async throws -> [String: Double] { [:] }
     func fetchAvailableModels() async throws -> [String]? { nil }
 }

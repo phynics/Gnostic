@@ -38,7 +38,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
 }
 
 /// A safe network projection of a PositronicKit ``WorkspaceReference``.
-public final class GnosticWorkspaceObject: CoatyObject {
+public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 

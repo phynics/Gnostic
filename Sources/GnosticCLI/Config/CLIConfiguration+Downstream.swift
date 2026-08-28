@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticCore
 import PKContracts
 
 extension CLIConfiguration {

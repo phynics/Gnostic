@@ -21,7 +21,11 @@ enum RunnerError: Error {
 
 final class TimelineReadvertisement: @unchecked Sendable {
     private(set) var latest: Thread?
-    func record(_ timeline: Thread) { latest = timeline }
+    private(set) var latestWorkspaceIDs: [UUID] = []
+    func record(_ timeline: Thread, attachedWorkspaceIDs: [UUID] = []) {
+        latest = timeline
+        latestWorkspaceIDs = attachedWorkspaceIDs
+    }
 }
 
 func waitForWorkspace(_ catalog: NetworkCatalog, id: UUID) async throws {

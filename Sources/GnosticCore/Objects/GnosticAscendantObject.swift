@@ -25,7 +25,7 @@ public enum GnosticObjectType {
 }
 
 /// A safe network projection of a backend-neutral Ascendant identity.
-public final class GnosticAscendantObject: CoatyObject {
+public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 

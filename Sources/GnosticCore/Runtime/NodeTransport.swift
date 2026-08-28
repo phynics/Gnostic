@@ -47,7 +47,7 @@ public final class NodeTransport {
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         workspaceReferences: @escaping @MainActor () async -> [WorkspaceReference] = { [] },
-        localWorkspaces: [UUID: any Workspace] = [:],
+        localWorkspaces: [UUID: any WorkspaceProvider] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         turn: @escaping Turn,
         timelineStatus: @escaping TimelineStatusLookup,
@@ -150,7 +150,7 @@ public final class NodeTransport {
     func registerDiscoverResponder() async {
         guard let communication else { return }
         discoverResponder = await communication.registerDiscoverResponder { [weak self] request in
-            guard let self, self.isAvailable() else { return }
+            guard let self, await self.isAvailable() else { return }
             let types = request.snapshot.objectTypes
             for object in await self.discoverableObjects()
                 where types == nil || types?.contains(object.objectType) == true {

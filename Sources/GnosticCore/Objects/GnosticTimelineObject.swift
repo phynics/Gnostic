@@ -4,7 +4,7 @@ import Axoloty
 import Foundation
 
 /// A safe network projection of a Gnostic Timeline.
-public final class GnosticTimelineObject: CoatyObject {
+public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 

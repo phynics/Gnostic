@@ -81,9 +81,10 @@ struct WorkspaceProviderTests {
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
+        let runtimeRepository = InMemoryThreadRuntimeRepository()
         let kit = PositronicKit(configuration: .init(
             provider: .init(languageModel: UnconfiguredLLMService()),
-            persistence: .init(workspacePersistence: store),
+            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store, workspaceBindingRepository: runtimeRepository),
             runtime: .init(workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
         ))
         let timeline = try await kit.threads.create()
@@ -103,7 +104,7 @@ struct WorkspaceProviderTests {
         #expect(projectedSchema["required"] as? [String] == ["query"])
         let properties = try #require(projectedSchema["properties"] as? [String: Any])
         #expect((properties["query"] as? [String: Any])?["type"] as? String == "string")
-        #expect(try await kit.threads.get(timeline.id)?.attachedWorkspaceIDs == [workspaceID])
+        #expect(try await runtimeRepository.bindings(for: timeline.id).map(\.workspaceID) == [workspaceID])
         #expect(recorder.ids == [timeline.id])
     }
 
@@ -138,7 +139,6 @@ struct WorkspaceProviderTests {
         #expect(result.success)
         #expect(await recorder.workspaceID == workspaceID)
         #expect(await recorder.timelineID == timeline.id)
-        #expect(try await kit.threads.get(timeline.id)?.attachedWorkspaceIDs.isEmpty == true)
     }
 
     @Test("provider preserves advertised custom definitions and dispatches the addressed tool")
@@ -150,7 +150,7 @@ struct WorkspaceProviderTests {
             description: "Searches remote notes.",
             parametersSchema: ["query": AnyCodable("string")]
         )
-        let provider = WorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
+        let provider = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
             #expect(toolID == "search_notes")
             #expect(arguments["query"] == AnyCodable("wave 2"))
             return .success("found")
@@ -168,7 +168,7 @@ struct WorkspaceProviderTests {
     func providerHandleFailuresCarryProtocolMajor() async throws {
         struct InjectedFailure: Error {}
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
-        let provider = WorkspaceProvider(
+        let provider = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
             tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
         ) { _, _ in
@@ -191,7 +191,7 @@ struct WorkspaceProviderTests {
     @Test("provider preserves cancellation from an executor")
     func providerHandlePreservesCancellation() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000007")!
-        let provider = WorkspaceProvider(
+        let provider = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
             tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
         ) { _, _ in
@@ -298,14 +298,14 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(caller)
         try await startBrokerManager(remote)
         let id = UUID()
-        let provider = WorkspaceProvider(workspaceID: id, tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
+        let provider = GnosticWorkspaceProvider(workspaceID: id, tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
             #expect(toolID == "custom")
             return .success("broker-result")
         }
         let registration = try await provider.register(on: remote)
         defer { registration.cancel() }
         let payload = try JSONEncoder().encode(WorkspaceInvocation(workspaceID: id, toolID: "custom", arguments: [:]))
-        let response = try await caller.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: payload, as: UTF8.self), timeout: .seconds(3))
+        let response = try await caller.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: payload, as: UTF8.self), timeout: .seconds(3))
         let result = try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         #expect(result.success)
         #expect(result.output == "broker-result")
@@ -327,7 +327,7 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(competing)
 
         let targetRegistration = try await target.registerCallHandler(
-            operation: WorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProvider.invocationOperation,
             context: target.identity
         ) { _ in
             try await Task.sleep(for: .milliseconds(100))
@@ -335,7 +335,7 @@ struct WorkspaceProviderTests {
         }
         defer { targetRegistration.cancel() }
         let competingRegistration = try await competing.registerCallHandler(
-            operation: WorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProvider.invocationOperation,
             context: competing.identity
         ) { _ in
             .failure(code: 499, message: "non-target provider")
@@ -351,7 +351,7 @@ struct WorkspaceProviderTests {
 
         targetRegistration.cancel()
         let forgedRegistration = try await competing.registerCallHandler(
-            operation: WorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProvider.invocationOperation,
             context: target.identity
         ) { _ in
             return .success(result: try encodeProtocolToolResult("forged"))
