@@ -549,6 +549,7 @@ public final class CommunicationManager {
     public let namespace: String
     public let identity: Identity
     private let runtime: AxolotyRuntime
+    private let transport: MQTTBinding
     private var startTask: Task<Void, Error>?
     private var stateContinuations: [UUID: AsyncStream<CommunicationState>.Continuation] = [:]
     private var advertiseContinuations: [UUID: (objectType: String?, continuation: AsyncStream<AdvertiseEventSnapshot>.Continuation)] = [:]
@@ -608,7 +609,9 @@ public final class CommunicationManager {
         let calls = try builder.events(matching: .family(.call), buffering: .dropOldest(capacity: 64))
         let permissionChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.permission.response"), buffering: .dropOldest(capacity: 64))
         let turnChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.turn.update"), buffering: .dropOldest(capacity: 64))
-        self.runtime = AxolotyRuntime(definition: try builder.finish(), transport: try MQTTBinding(configuration: .init(host: mqtt.host, port: mqtt.port, usesTLS: mqtt.enableSSL, username: mqtt.username, password: mqtt.password)))
+        let transport = try MQTTBinding(configuration: .init(host: mqtt.host, port: mqtt.port, usesTLS: mqtt.enableSSL, username: mqtt.username, password: mqtt.password))
+        self.transport = transport
+        self.runtime = AxolotyRuntime(definition: try builder.finish(), transport: transport)
         self.eventStreams = [advertise, deadvertise, resolve, retrieves, returns, calls, permissionChannel, turnChannel]
         Task { await dispatch.attach(runtime: self.runtime) }
     }
@@ -654,7 +657,18 @@ public final class CommunicationManager {
     }
 
     public func startAndWaitUntilReady() async throws { try start(); try await startTask?.value }
-    public func stop() { eventTasks.forEach { $0.cancel() }; eventTasks.removeAll(); isRuntimeReady = false; Task { await runtime.stop() }; isStarted = false; emitState(.offline) }
+    public func stop() {
+        eventTasks.forEach { $0.cancel() }
+        eventTasks.removeAll()
+        isRuntimeReady = false
+        // MQTTBinding fails its pending start continuation before awaiting
+        // socket teardown. Start that cancellation independently so a broker
+        // handshake cannot hold the lifecycle owner until its deadline.
+        Task { await transport.stop() }
+        Task { await runtime.stop() }
+        isStarted = false
+        emitState(.offline)
+    }
 
     public func observeCommunicationStateStream() async -> AsyncStream<CommunicationState> {
         let id = UUID(); let pair = AsyncStream<CommunicationState>.makeStream(bufferingPolicy: .bufferingNewest(8)); stateContinuations[id] = pair.continuation

@@ -423,8 +423,12 @@ public final class NodeRuntime {
 
         let startup = startupTask
         let cleanup = Task { @MainActor [weak self, startup] in
-            startup?.cancel()
             guard let self else { return }
+            // Stop the transport before waiting for startup. Axoloty's
+            // connection handshake is continuation-backed; canceling this
+            // wrapper task alone cannot wake that handshake.
+            self.container.shutdown()
+            startup?.cancel()
             if let startup {
                 let result = await startup.result
                 if case .success = result {
