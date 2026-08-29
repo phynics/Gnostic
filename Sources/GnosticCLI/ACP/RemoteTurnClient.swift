@@ -153,9 +153,9 @@ public final class RemoteTurnClient: Sendable {
         clientTurnID: String?,
         providerID: String? = nil
     ) async throws -> AscendantTurnResult {
-        let payload = try JSONEncoder().encode(
+        let payload = try GnosticWirePayload.encode(
             AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
-        )
+            , context: "ascendant.turn request")
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
         let response = try await call(
             operation: AscendantTurnProvider.turnOperation,
@@ -176,9 +176,9 @@ public final class RemoteTurnClient: Sendable {
         afterSequence: Int = 0,
         providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
-        let payload = try JSONEncoder().encode(
+        let payload = try GnosticWirePayload.encode(
             AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
-        )
+            , context: "ascendant.turn.replay request")
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
         let response = try await call(
             operation: AscendantTurnProvider.replayOperation,

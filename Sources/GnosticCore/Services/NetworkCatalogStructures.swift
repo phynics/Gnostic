@@ -109,6 +109,9 @@ public struct NetworkCatalogEntry: Sendable {
     /// A parsed workspace descriptor when this is a well-formed workspace.
     public let workspace: NetworkWorkspaceDescriptor?
 
+    /// A query-only Workspace tool projection, when this entry is a tool.
+    public let workspaceTool: GnosticWorkspaceTool?
+
     /// The effective Workspace status, including malformed or incompatible entries.
     public let effectiveStatus: GnosticWorkspaceEffectiveStatus?
 
@@ -126,7 +129,8 @@ public struct NetworkCatalogEntry: Sendable {
         knownProperties: [String: NetworkDynamicValue],
         dynamicProperties: [String: NetworkDynamicValue],
         workspace: NetworkWorkspaceDescriptor?,
-        effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil
+        effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil,
+        workspaceTool: GnosticWorkspaceTool? = nil
     ) {
         self.objectID = objectID
         self.objectType = objectType
@@ -138,6 +142,7 @@ public struct NetworkCatalogEntry: Sendable {
         self.dynamicProperties = dynamicProperties
         self.workspace = workspace
         self.effectiveStatus = effectiveStatus ?? workspace?.effectiveStatus
+        self.workspaceTool = workspaceTool
     }
 }
 
@@ -164,6 +169,9 @@ public struct NetworkWorkspaceDescriptor: Sendable {
     /// The workspace's safe tool descriptions.
     public let tools: [GnosticWorkspaceTool]
 
+    /// Whether the advertisement contains every custom tool.
+    public let toolsComplete: Bool
+
     /// The workspace creation timestamp.
     public let createdAt: Date
 
@@ -176,6 +184,7 @@ public struct NetworkWorkspaceDescriptor: Sendable {
         status: GnosticWorkspaceStatus = .unknown,
         effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil,
         tools: [GnosticWorkspaceTool],
+        toolsComplete: Bool = true,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -184,6 +193,7 @@ public struct NetworkWorkspaceDescriptor: Sendable {
         self.status = status
         self.effectiveStatus = effectiveStatus ?? (isAvailable ? .available : .unavailable)
         self.tools = tools
+        self.toolsComplete = toolsComplete
         self.createdAt = createdAt
     }
 }

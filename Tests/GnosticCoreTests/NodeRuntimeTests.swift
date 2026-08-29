@@ -686,7 +686,7 @@ struct NodeRuntimeTests {
             arguments: ["value": AnyCodable("during-advertisement")]
         ))
         let response = try? await consumer.call(
-            operation: WorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProvider.invocationOperation,
             parameters: String(decoding: payload, as: UTF8.self),
             timeout: Duration.seconds(1)
         )
@@ -977,7 +977,7 @@ struct NodeRuntimeTests {
 
     @Test("each backend identity is published from one runtime") @MainActor
     func twoBackendsPublishBothAscendants() async throws {
-        let namespace = "node-runtime-two-backend-ascendants-\(UUID().uuidString.lowercased())"
+        let namespace = "node-two-backend-\(UUID().uuidString.lowercased())"
         let firstAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000301")!
         let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000302")!
         let secondAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000303")!
@@ -1276,7 +1276,7 @@ private actor AdapterCreationProbe {
     func recordRemoval(_ id: UUID) { removedIDs.append(id) }
 }
 
-private final class NodeToolCaptureLanguageModel: LanguageModel, @unchecked Sendable {
+private final class NodeToolCaptureLanguageModel: LLMStreamClient, @unchecked Sendable {
     private let capture = ToolNameCapture()
 
     var isConfigured: Bool { get async { true } }
@@ -1338,10 +1338,6 @@ private final class NodeToolCaptureLanguageModel: LanguageModel, @unchecked Send
     ) async throws -> String { "ready" }
     func generateTags(for _: String) async throws -> [String] { [] }
     func generateTitle(for _: [Message]) async throws -> String { "capture" }
-    func evaluateRecallPerformance(
-        transcript _: String,
-        recalledMemories _: [Memory]
-    ) async throws -> [String: Double] { [:] }
     func fetchAvailableModels() async throws -> [String]? { nil }
 
     private actor ToolNameCapture {
@@ -1353,7 +1349,7 @@ private final class NodeToolCaptureLanguageModel: LanguageModel, @unchecked Send
     }
 }
 
-private struct ProjectedToolWorkspace: Workspace, Sendable {
+private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
     var id: UUID { reference.id }
 
@@ -1380,7 +1376,7 @@ private struct ProjectedToolWorkspace: Workspace, Sendable {
     func healthCheck() async -> Bool { true }
 }
 
-private struct CancellationWorkspace: Workspace, Sendable {
+private struct CancellationWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
     var id: UUID { reference.id }
 
@@ -1395,7 +1391,7 @@ private struct CancellationWorkspace: Workspace, Sendable {
     func healthCheck() async -> Bool { true }
 }
 
-private final class ProviderIsolationLanguageModel: LanguageModel, @unchecked Sendable {
+private final class ProviderIsolationLanguageModel: LLMStreamClient, @unchecked Sendable {
     let response: String
     private let state = InvocationState()
 
@@ -1472,10 +1468,6 @@ private final class ProviderIsolationLanguageModel: LanguageModel, @unchecked Se
     ) async throws -> String { response }
     func generateTags(for _: String) async throws -> [String] { [] }
     func generateTitle(for _: [Message]) async throws -> String { response }
-    func evaluateRecallPerformance(
-        transcript _: String,
-        recalledMemories _: [Memory]
-    ) async throws -> [String: Double] { [:] }
     func fetchAvailableModels() async throws -> [String]? { [response] }
 
     private actor InvocationState {

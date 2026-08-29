@@ -24,8 +24,15 @@ public enum GnosticProtocol {
     public static let currentMajor = 2
 
     public static func failureMessage(reasonCode: String, message: String) -> String {
-        let envelope = GnosticProtocolFailure(reasonCode: reasonCode, message: message)
-        let data = try! JSONEncoder().encode(envelope)
+        var envelope = GnosticProtocolFailure(
+            reasonCode: GnosticWirePayload.boundedIdentifier(reasonCode),
+            message: GnosticWirePayload.boundedLabel(message)
+        )
+        var data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"internalError","message":"Internal error"}"#.utf8)
+        if data.count > GnosticWirePayload.maximumEmbeddedValueBytes {
+            envelope = GnosticProtocolFailure(reasonCode: "payloadTooLarge", message: "The response was too large to send.")
+            data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"payloadTooLarge","message":"The response was too large to send."}"#.utf8)
+        }
         return String(decoding: data, as: UTF8.self)
     }
 

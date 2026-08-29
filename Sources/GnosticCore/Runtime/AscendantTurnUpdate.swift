@@ -89,17 +89,19 @@ public struct AscendantTurnReplay: Codable, Sendable, Equatable {
     public let compacted: Bool
     public let terminal: Bool
     public let conflict: Bool
+    public let nextSequence: Int?
 
-    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false, nextSequence: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.updates = updates
         self.compacted = compacted
         self.terminal = terminal
         self.conflict = conflict
+        self.nextSequence = nextSequence
     }
 
     private enum CodingKeys: String, CodingKey {
-        case protocolMajor, updates, compacted, terminal, conflict
+        case protocolMajor, updates, compacted, terminal, conflict, nextSequence
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,5 +111,6 @@ public struct AscendantTurnReplay: Codable, Sendable, Equatable {
         compacted = try container.decode(Bool.self, forKey: .compacted)
         terminal = try container.decode(Bool.self, forKey: .terminal)
         conflict = try container.decodeIfPresent(Bool.self, forKey: .conflict) ?? false
+        nextSequence = try container.decodeIfPresent(Int.self, forKey: .nextSequence)
     }
 }

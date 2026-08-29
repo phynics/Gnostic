@@ -14,7 +14,7 @@ final class NodeRuntimeHost {
         let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
         let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
-        let localWorkspaces: [UUID: any Workspace]
+        let localWorkspaces: [UUID: any WorkspaceProvider]
         let isAvailable: @MainActor () -> Bool
         let turn: NodeTransport.Turn
         let timelineStatus: NodeTransport.TimelineStatusLookup
@@ -109,6 +109,10 @@ final class NodeRuntimeHost {
     }
 
     func shutdown() async {
+        // Interrupt the broker handshake before the coordinator waits for
+        // startup. Axoloty's transport teardown is continuation-backed and
+        // must be signalled before lifecycle cleanup can join the task.
+        resources.container.shutdown()
         await lifecycleCoordinator.shutdown { [weak self] cleanup in
             await self?.performCleanup(cleanup)
         }

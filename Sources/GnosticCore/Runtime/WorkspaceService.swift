@@ -10,7 +10,7 @@ public final class WorkspaceService {
     private let plan: NodeLaunchPlan
     private let registry: NodeRegistry
     private let discovery: any WorkspaceDiscovery
-    private let localWorkspaces: [UUID: any Workspace]
+    private let localWorkspaces: [UUID: any WorkspaceProvider]
     private let backendWorkspaceService: GnosticWorkspaceBackendService?
     private let backendProvider: any BackendSessionProviding
     private let readvertiseTimeline: @MainActor (AscendantRuntimeTimeline) -> Void
@@ -20,7 +20,7 @@ public final class WorkspaceService {
         plan: NodeLaunchPlan,
         registry: NodeRegistry,
         discovery: any WorkspaceDiscovery,
-        localWorkspaces: [UUID: any Workspace],
+        localWorkspaces: [UUID: any WorkspaceProvider],
         references: [UUID: WorkspaceReference],
         backendWorkspaceService: GnosticWorkspaceBackendService? = nil,
         isRunning: @escaping @MainActor () -> Bool,
@@ -55,7 +55,7 @@ public final class WorkspaceService {
         plan: NodeLaunchPlan,
         registry: NodeRegistry,
         discovery: any WorkspaceDiscovery,
-        localWorkspaces: [UUID: any Workspace],
+        localWorkspaces: [UUID: any WorkspaceProvider],
         references: [UUID: WorkspaceReference],
         backendWorkspaceService: GnosticWorkspaceBackendService? = nil,
         backendProvider: any BackendSessionProviding,
@@ -91,7 +91,7 @@ public final class WorkspaceService {
 
     func executeLocalTool(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) async throws -> ToolResult {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
-        guard let workspace = localWorkspaces[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
+        guard let workspace = localWorkspaces[workspaceID] as? any WorkspaceToolProvider else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
         let status = await registry.effectiveWorkspaceStatus(id: workspaceID)
         guard status == .available else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(Self.attachmentStatus(for: status))
@@ -245,10 +245,13 @@ public final class WorkspaceService {
         guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
             throw NodeRuntimeError.notRunning
         }
-        guard case let .available(_, uri) = status else {
+        guard case let .available(providerID, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
-        guard let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
+        if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
+            await discovery.queryTools(workspaceID: workspaceID, timeout: timeout)
+        }
+        guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                 throw NodeRuntimeError.notRunning
@@ -299,13 +302,21 @@ public final class WorkspaceService {
             throw NodeRuntimeError.notRunning
         }
         guard case let .available(_, uri) = status, uri == expectedURI,
-              let descriptor = await discovery.objects().first(where: { $0.objectID == workspaceID && $0.workspace?.uri == uri })?.workspace else {
+              let providerID = providerID(for: status) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             if case .available = status {
                 guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                     throw NodeRuntimeError.notRunning
                 }
             }
+            return nil
+        }
+        if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
+            await discovery.queryTools(workspaceID: workspaceID, timeout: .seconds(5))
+        }
+        guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
+            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation)
             return nil
         }
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
@@ -387,6 +398,11 @@ public final class WorkspaceService {
         case .unavailable: return .unavailable
         case .ambiguous, .malformed, .unsupported: return .unsupported
         }
+    }
+
+    private func providerID(for status: WorkspaceAttachmentStatus) -> String? {
+        guard case let .available(providerID, _) = status else { return nil }
+        return providerID
     }
 
     private static func attachmentStatus(for status: NodeRegistry.WorkspaceEffectiveStatus?) -> WorkspaceAttachmentStatus {

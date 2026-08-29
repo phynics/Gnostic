@@ -269,6 +269,11 @@ private final class ServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
     func discover(timeout _: Duration) async {}
     func objects() async -> [NetworkCatalogEntry] { [entry] }
     func attachmentStatus(id _: UUID) async -> WorkspaceAttachmentStatus { status }
+    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
+        guard providerID == entry.providerID, workspaceID == entry.workspace?.id else { return nil }
+        return entry.workspace
+    }
 }
 
 @MainActor
@@ -286,6 +291,11 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
         isAvailable
             ? .available(providerID: entry.providerID, uri: entry.workspace?.uri ?? "")
             : .unavailable
+    }
+    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
+        guard providerID == entry.providerID, workspaceID == entry.workspace?.id else { return nil }
+        return entry.workspace
     }
 }
 

@@ -24,7 +24,7 @@ struct RunnerFixtureE2ETests {
         defer { subscription.stop() }
 
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
-        let fixture = WorkspaceProvider(
+        let fixture = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
             tools: [
                 .init(id: "list_files", name: "List files", description: "Lists fixture files."),
@@ -52,14 +52,15 @@ struct RunnerFixtureE2ETests {
         ))
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()
+        let runtimeRepository = InMemoryThreadRuntimeRepository()
         let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
             let encoded = try JSONEncoder().encode(invocation)
-            let response = try await consumer.call(operation: WorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
+            let response = try await consumer.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
         let kit = PositronicKit(configuration: .init(
             provider: .init(languageModel: UnconfiguredLLMService()),
-            persistence: .init(workspacePersistence: store),
+            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store, workspaceBindingRepository: runtimeRepository),
             runtime: .init(workspaceCreator: factory)
         ))
         let timeline = try await kit.threads.create()
@@ -67,18 +68,24 @@ struct RunnerFixtureE2ETests {
         let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces, readvertiseTimeline: { readvertised.record($0) })
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
-        let reference = try #require(try await kit.workspaces.get(workspaceID))
+        guard let reference = try await kit.workspaces.get(workspaceID) else {
+            Issue.record("attached workspace was not persisted")
+            return
+        }
         let echoTool = try #require(reference.tools.first { $0.toolID == "workspace_echo" })
         guard case let .custom(echoDefinition) = echoTool else {
             Issue.record("workspace_echo must remain a custom tool after broker discovery")
             return
         }
         #expect(echoDefinition.parametersSchema == workspaceEchoSchema)
-        let workspace = try factory.create(from: reference)
+        guard let workspace = try factory.create(from: reference) as? any WorkspaceToolProvider else {
+            Issue.record("workspace factory returned a provider without tool support")
+            return
+        }
         #expect((try await workspace.executeTool(id: "list_files", parameters: [:])).output == "README.md")
         #expect((try await workspace.executeTool(id: "read_file", parameters: [:])).output == "fixture contents")
         #expect((try await workspace.executeTool(id: "workspace_echo", parameters: ["value": AnyCodable("network")])).output == "network")
-        #expect(readvertised.timelines.last?.attachedWorkspaceIDs == [workspaceID])
+        #expect(try await runtimeRepository.bindings(for: timeline.id).map(\.workspaceID) == [workspaceID])
     }
 
 }

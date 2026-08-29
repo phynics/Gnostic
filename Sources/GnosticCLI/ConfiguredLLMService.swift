@@ -21,14 +21,14 @@ public enum ConfiguredLLMService {
     /// - Parameter configuration: The LLM provider + endpoint/key/model settings.
     /// - Returns: A configured model, or `UnconfiguredLLMService` when the
     ///   configuration is not valid (e.g. missing provider or API key).
-    public static func make(from configuration: LLMConfiguration) -> any LanguageModel {
+    public static func make(from configuration: LLMConfiguration) -> any LLMStreamClient {
         guard configuration.isValid else { return UnconfiguredLLMService() }
         return LLMService(configuration: configuration, clients: makeClients(for: configuration))
     }
 
     /// Bridges one validated Positronic backend envelope without making
     /// GnosticCore depend on CLI provider packages.
-    public static func make(from backend: PositronicBackendConfiguration) -> any LanguageModel {
+    public static func make(from backend: PositronicBackendConfiguration) -> any LLMStreamClient {
         guard let providerName = backend.provider,
               let provider = LLMProvider.allCases.first(where: {
             $0.rawValue.lowercased() == providerName.lowercased()

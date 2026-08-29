@@ -96,7 +96,7 @@ public enum WorkspaceReferenceProjection {
         )
     }
 
-    private static func manifestValue(_ value: AnyCodable) -> ManifestJSONValue {
+    fileprivate static func manifestValue(_ value: AnyCodable) -> ManifestJSONValue {
         if let value = value.value as? String { return .string(value) }
         if let value = value.value as? Bool { return .bool(value) }
         if let value = value.value as? Int { return .number(Double(value)) }
@@ -126,5 +126,31 @@ public enum WorkspaceReferenceProjection {
         case let .array(value): return AnyCodable(value.map(Self.anyCodable))
         case .null: return AnyCodable(NSNull())
         }
+    }
+}
+
+/// Bridges the released PositronicKit reference into Gnostic's transport projection.
+public extension GnosticWorkspaceObject {
+    convenience init(workspace: WorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor, includeTools: Bool = true) {
+        self.init(workspace: WorkspaceReferenceProjection.networkReference(from: workspace), protocolMajor: protocolMajor, includeTools: includeTools)
+    }
+}
+
+/// Bridges PositronicKit tool definitions into query-only Gnostic objects.
+public extension GnosticWorkspaceToolObject {
+    convenience init(workspaceID: UUID, definition: WorkspaceToolDefinition, page: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.init(
+            workspaceID: workspaceID,
+            definition: GnosticWorkspaceToolDefinition(
+                id: definition.id,
+                name: definition.name,
+                description: definition.description,
+                parametersSchema: definition.parametersSchema.mapValues(WorkspaceReferenceProjection.manifestValue),
+                usageExample: definition.usageExample,
+                requiresPermission: definition.requiresPermission
+            ),
+            page: page,
+            protocolMajor: protocolMajor
+        )
     }
 }

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Axoloty
+import Foundation
 
 /// Owns bounded Axoloty advertisement subscriptions for Gnostic object types.
 @MainActor
@@ -80,6 +81,46 @@ public final class GnosticSubscription {
             }
             _ = await group.next()
             group.cancelAll()
+        }
+    }
+
+    /// Retrieves one public Workspace tool object per bounded query page.
+    /// Querying stops at the first empty page or at the fixed page ceiling;
+    /// no response contains an unbounded collection.
+    public func queryTools(
+        using communicationManager: CommunicationManager,
+        workspaceID: UUID,
+        timeout: Duration = .seconds(5)
+    ) async {
+        for page in 0..<64 {
+            let stream = await communicationManager.publishQuery(
+                QueryEvent.with(
+                    objectTypes: [GnosticObjectType.workspaceTool],
+                    objectFilter: GnosticWorkspaceToolQuery.filter(workspaceID: workspaceID, page: page)
+                ),
+                timeout: timeout
+            )
+            let received = await receiveOne(from: stream, timeout: timeout)
+            guard received else { break }
+        }
+    }
+
+    private func receiveOne(from stream: AsyncStream<ResponseEventSnapshot>, timeout: Duration) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { [catalog] in
+                for await response in stream {
+                    await catalog.ingest(response)
+                    return true
+                }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
         }
     }
 

@@ -331,7 +331,7 @@ struct BackendLifecycleTests {
         )
         let runtime = try await NodeRuntime(
             plan: NodeManifest(
-                broker: .init(host: "127.0.0.1", port: 1883, namespace: "backend-workspace-replacement-\(UUID().uuidString.lowercased())"),
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "backend-ws-replacement-\(UUID().uuidString.lowercased())"),
                 node: .init(id: UUID()),
                 ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: firstTimelineID, kind: "lifecycle-fixture")],
                 timelines: [

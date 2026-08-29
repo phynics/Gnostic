@@ -6,7 +6,7 @@ import PKContracts
 import PositronicKit
 
 /// A PositronicKit workspace proxy backed by a catalogued Gnostic advertisement.
-public struct AxolotyWorkspace: Workspace, Sendable {
+public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     /// The imported runtime workspace reference.
     public let reference: WorkspaceReference
 
@@ -111,7 +111,7 @@ public struct AxolotyWorkspaceFactory: WorkspaceFactory, Sendable {
     }
 
     /// Creates the runtime proxy used by `WorkspaceToolWrapper` and `TimelineToolRegistry`.
-    public func create(from reference: WorkspaceReference) throws -> any Workspace {
+    public func create(from reference: WorkspaceReference) throws -> any WorkspaceProvider {
         AxolotyWorkspace(reference: reference, catalog: catalog, invoke: invoke)
     }
 }
@@ -125,9 +125,9 @@ private func invokeWorkspace(
     guard let providerID = invocation.providerID else {
         throw WorkspaceError.connectionFailed
     }
-    let data = try JSONEncoder().encode(invocation)
+    let data = try GnosticWirePayload.encode(invocation, context: "workspace.invoke request")
     let response = try await communication.call(
-        operation: WorkspaceProvider.invocationOperation,
+        operation: GnosticWorkspaceProvider.invocationOperation,
         parameters: String(decoding: data, as: UTF8.self),
         context: ObjectFilter(condition: ObjectFilterCondition(
             property: ObjectFilterProperty("objectId"),

@@ -5,6 +5,45 @@ import Foundation
 import PKContracts
 import PositronicKit
 
+/// Constructs and reads the standard Axoloty object-filter form used by the
+/// query-only Workspace tool catalog.
+enum GnosticWorkspaceToolQuery {
+    static func filter(workspaceID: UUID, page: Int) -> [String: Any] {
+        [
+            "conditions": [
+                "and": [
+                    ["workspaceID", [7, workspaceID.uuidString.lowercased()]],
+                    ["page", [7, page]],
+                ],
+            ],
+        ]
+    }
+
+    static func value<T>(_ type: T.Type, key: String, in raw: String?) -> T? {
+        guard let raw, let data = raw.data(using: .utf8), let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return find(type, key: key, in: root)
+    }
+
+    private static func find<T>(_ type: T.Type, key: String, in value: Any) -> T? {
+        if let condition = value as? [Any], condition.count == 2,
+           let property = condition[0] as? String, property == key,
+           let expression = condition[1] as? [Any], expression.count == 2,
+           let equals = expression[0] as? Int, equals == 7 {
+            return expression[1] as? T
+        }
+        if let object = value as? [String: Any] {
+            for child in object.values {
+                if let result: T = find(type, key: key, in: child) { return result }
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                if let result: T = find(type, key: key, in: child) { return result }
+            }
+        }
+        return nil
+    }
+}
+
 /// The wire payload for Gnostic's generic remote workspace invocation.
 public struct WorkspaceInvocation: Codable, Sendable {
     public let protocolMajor: Int
@@ -42,9 +81,10 @@ public struct WorkspaceInvocation: Codable, Sendable {
 }
 
 /// Hosts arbitrary custom workspace tools over Gnostic's unary Call/Return operation.
-public actor WorkspaceProvider {
+public actor GnosticWorkspaceProvider {
     /// The single operation used for all workspace tool invocations.
     public static let invocationOperation = "me.atkn.gnostic.workspace.invoke"
+    public static let toolObjectType = GnosticObjectType.workspaceTool
 
     /// Executes one advertised tool.
     public typealias ToolExecutor = @Sendable (_ toolID: String, _ arguments: [String: AnyCodable]) async throws -> ToolResult
@@ -63,6 +103,19 @@ public actor WorkspaceProvider {
     /// Returns the exact custom tools currently advertised by this provider.
     public func listTools() -> [GnosticWorkspaceTool] {
         definitions.values.sorted { $0.id < $1.id }.map(GnosticWorkspaceTool.init)
+    }
+
+    /// Responds to a bounded page of public Workspace tool objects. Tool
+    /// objects are queryable but are deliberately never advertised.
+    public func query(_ request: QueryResponderRequest) throws {
+        guard request.snapshot.objectTypes?.contains(Self.toolObjectType) == true else { return }
+        guard let filter = request.snapshot.objectFilter,
+              filter.lowercased().contains(workspaceID.uuidString.lowercased()) else { return }
+        let page: Int = GnosticWorkspaceToolQuery.value(Int.self, key: "page", in: request.snapshot.objectFilter) ?? 0
+        guard page >= 0 else { return }
+        let definitions = definitions.values.sorted { $0.id < $1.id }
+        guard let definition = definitions.dropFirst(page).first else { return }
+        try request.retrieve(object: GnosticWorkspaceToolObject(workspaceID: workspaceID, definition: definition, page: page))
     }
 
     /// Dispatches a decoded invocation only when it addresses this workspace and an advertised tool.
@@ -92,12 +145,14 @@ public actor WorkspaceProvider {
     }
 
     private static func encodeResult(_ result: ToolResult) throws -> String {
-        let data = try JSONEncoder().encode(result)
+        let data = try GnosticWirePayload.encode(result, context: "workspace.invoke result")
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
         }
         object["protocolMajor"] = GnosticProtocol.currentMajor
-        return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        let encoded = try JSONSerialization.data(withJSONObject: object)
+        try GnosticWirePayload.validateEvent(encoded, context: "workspace.invoke result")
+        return String(decoding: encoded, as: UTF8.self)
     }
 
     private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
@@ -109,6 +164,13 @@ public actor WorkspaceProvider {
     public func register(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
         try await communication.registerCallHandler(operation: Self.invocationOperation, context: communication.identity) { [self] request in
             try await handle(parameters: request.parameters)
+        }
+    }
+
+    @MainActor
+    public func registerQuery(on communication: CommunicationManager) async -> QueryResponderRegistration {
+        await communication.registerQueryResponder { [self] request in
+            try await self.query(request)
         }
     }
 }

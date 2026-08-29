@@ -43,7 +43,7 @@ public struct WorkspaceListing: Codable, Sendable {
     public init(id: UUID, name: String, status: GnosticWorkspaceEffectiveStatus = .available, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.id = id
-        self.name = name
+        self.name = GnosticWirePayload.boundedLabel(name)
         self.status = status
     }
 
@@ -57,7 +57,7 @@ public struct WorkspaceListing: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         id = try container.decode(UUID.self, forKey: .id)
-        name = try container.decode(String.self, forKey: .name)
+        name = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .name))
         if let status = try container.decodeIfPresent(GnosticWorkspaceEffectiveStatus.self, forKey: .status) {
             self.status = status
         } else {

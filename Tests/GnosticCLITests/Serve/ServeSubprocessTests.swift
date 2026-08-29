@@ -103,11 +103,16 @@ struct ServeSubprocessTests {
     @Test("SIGINT gracefully stops gnostic serve during startup", .timeLimit(.minutes(1)))
     @MainActor
     func sigintStopsServeDuringStartup() async throws {
+        let blackhole = try TCPBlackhole()
+        blackhole.start()
+        defer { blackhole.stop() }
+
         try await assertGracefulStop(
             using: .interrupt,
-            port: 1,
+            port: blackhole.port,
             // Give the launched Swift process enough time to enter `run()` and
-            // install its signal sources; it is still blocked in broker startup.
+            // install its signal sources; the local listener accepts the TCP
+            // connection but never sends an MQTT response.
             signalDelay: .milliseconds(500),
             requireOnlineBeforeSignal: false
         )
@@ -194,3 +199,89 @@ struct ServeSubprocessTests {
 }
 
 private enum TestSignal: String { case interrupt = "SIGINT", terminate = "SIGTERM" }
+
+/// A local TCP listener that accepts one connection and deliberately never
+/// speaks MQTT. This keeps the serve subprocess in transport startup without
+/// depending on an unroutable address or an external broker.
+private final class TCPBlackhole: @unchecked Sendable {
+    let port: Int
+
+    private let listener: Int32
+    private let lock = NSLock()
+    private var connection: Int32 = -1
+    private var acceptTask: Task<Void, Never>?
+
+    init() throws {
+        #if os(Linux)
+        let socketType = Int32(SOCK_STREAM.rawValue)
+        #else
+        let socketType = SOCK_STREAM
+        #endif
+        let listener = socket(AF_INET, socketType, 0)
+        guard listener >= 0 else { throw POSIXError(.init(rawValue: errno)!) }
+        self.listener = listener
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: in_addr_t(0x7F000001).bigEndian)
+        let bindResult = withUnsafePointer(to: &address) { address in
+            address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            close(listener)
+            throw POSIXError(.init(rawValue: errno)!)
+        }
+        guard listen(listener, 1) == 0 else {
+            close(listener)
+            throw POSIXError(.init(rawValue: errno)!)
+        }
+
+        var boundAddress = sockaddr_in()
+        var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { address in
+            address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(listener, $0, &addressLength)
+            }
+        }
+        guard nameResult == 0 else {
+            close(listener)
+            throw POSIXError(.init(rawValue: errno)!)
+        }
+        self.port = Int(UInt16(bigEndian: boundAddress.sin_port))
+    }
+
+    func start() {
+        acceptTask = Task.detached { [weak self] in
+            guard let self else { return }
+            var address = sockaddr_storage()
+            var addressLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let connection = withUnsafeMutablePointer(to: &address) { address in
+                address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    accept(self.listener, $0, &addressLength)
+                }
+            }
+            guard connection >= 0 else { return }
+            self.store(connection: connection)
+        }
+    }
+
+    func stop() {
+        acceptTask?.cancel()
+        acceptTask = nil
+        lock.lock()
+        let connection = self.connection
+        self.connection = -1
+        lock.unlock()
+        if connection >= 0 { close(connection) }
+        close(listener)
+    }
+
+    private func store(connection: Int32) {
+        lock.lock()
+        self.connection = connection
+        lock.unlock()
+    }
+}

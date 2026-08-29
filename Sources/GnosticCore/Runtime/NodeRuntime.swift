@@ -26,7 +26,7 @@ public final class NodeRuntime {
 
     private let adapters: NodeRuntimeAdapters
     private let initialWorkspaceReferences: [UUID: WorkspaceReference]
-    private let localWorkspaces: [UUID: any Workspace]
+    private let localWorkspaces: [UUID: any WorkspaceProvider]
     private let backendSupervisor: AscendantBackendSupervisor
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore

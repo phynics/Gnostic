@@ -32,7 +32,7 @@ final class DiscoveredWorkspaceAttachmentService {
     /// Backend construction supplies `hostAttachment` so Gnostic can commit
     /// the attachment intent and effective state after the backend accepts the
     /// private projection. The capability path keeps PositronicKit's
-    /// coordinators behind its public v4 facade.
+    /// coordinators behind its public v5 facade.
     init(
         discovery: any WorkspaceDiscovery,
         threadCapability: ThreadCapability,
@@ -93,13 +93,13 @@ final class DiscoveredWorkspaceAttachmentService {
             throw DiscoveredWorkspaceAttachmentError.timelineNotOwned(timelineID)
         }
         let status = await discovery.attachmentStatus(id: workspaceID)
-        guard case let .available(_, uri) = status else {
+        guard case let .available(providerID, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
-        guard let descriptor = await discovery.objects().first(where: {
-            $0.objectID == workspaceID && $0.workspace?.uri == uri
-        })?.workspace,
-            let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+        await discovery.queryTools(workspaceID: workspaceID, timeout: .seconds(5))
+        guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID),
+              descriptor.uri == uri,
+              let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
             throw DiscoveredWorkspaceAttachmentError.invalidURI
         }
         if let hostAttachment {
@@ -132,5 +132,11 @@ private final class CatalogWorkspaceDiscovery: WorkspaceDiscovery {
     func objects() async -> [NetworkCatalogEntry] { await catalog.networkObjects() }
     func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
         await catalog.workspaceAttachmentStatus(id: id)
+    }
+
+    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
+
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
+        await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID)
     }
 }

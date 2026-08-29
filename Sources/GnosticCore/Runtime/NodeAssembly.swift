@@ -12,7 +12,7 @@ import PositronicKit
 struct NodeAssembly {
     struct WorkspaceProducts {
         let references: [UUID: WorkspaceReference]
-        let workspaces: [UUID: any Workspace]
+        let workspaces: [UUID: any WorkspaceProvider]
     }
 
     struct Infrastructure {
@@ -49,7 +49,7 @@ struct NodeAssembly {
         adapters: NodeRuntimeAdapters
     ) async throws -> WorkspaceProducts {
         var references: [UUID: WorkspaceReference] = [:]
-        var workspaces: [UUID: any Workspace] = [:]
+        var workspaces: [UUID: any WorkspaceProvider] = [:]
         for configuration in plan.workspaces {
             guard let uri = WorkspaceURI(parsing: configuration.uri) else {
                 throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
@@ -68,7 +68,7 @@ struct NodeAssembly {
                     id: configuration.id,
                     uri: uri,
                     location: .runtime,
-                    tools: try await workspace.listTools()
+                    tools: try await (workspace as? any WorkspaceToolProvider)?.listTools() ?? []
                 )
             }
             references[configuration.id] = reference
@@ -97,7 +97,7 @@ struct NodeAssembly {
         let resolvedContainer = try Container.resolve(
             components: Components(
                 controllers: ["ObjectLifecycleController": ObjectLifecycleController.self],
-                objectTypes: [GnosticAscendantObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self]
+                objectTypes: [GnosticAscendantObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self, GnosticWorkspaceToolObject.self]
             ),
             configuration: Configuration(
                 common: CommonOptions(agentIdentity: ["name": "gnostic-node-\(plan.nodeID.uuidString.lowercased())"]),
@@ -110,7 +110,7 @@ struct NodeAssembly {
             )
         )
         guard let communication = resolvedContainer.communicationManager,
-              let lifecycle = resolvedContainer.getController(name: "ObjectLifecycleController") as? ObjectLifecycleController else {
+              let lifecycle = resolvedContainer.getController(name: "ObjectLifecycleController") else {
             resolvedContainer.shutdown()
             throw NodeRuntimeError.notRunning
         }

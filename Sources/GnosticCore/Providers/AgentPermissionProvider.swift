@@ -121,7 +121,7 @@ public struct AscendantPermissionProvider: Sendable {
 
     /// Creates a generic Axoloty Channel event carrying one permission decision.
     public static func responseEvent(_ response: AscendantPermissionResponse) throws -> ChannelEvent {
-        let data = try JSONEncoder().encode(response)
+        let data = try GnosticWirePayload.encode(response, context: "ascendant.permission.response event")
         guard let privateData = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
         }
