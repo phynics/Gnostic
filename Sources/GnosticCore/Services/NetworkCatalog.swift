@@ -11,12 +11,13 @@ public actor NetworkCatalog {
     private static let knownPropertyNames: [String: Set<String>] = [
         GnosticObjectType.ascendant: ["protocolMajor", "capabilities", "backendHealth", "backendKind", "backendVersion", "ascendantDescription", "primaryWorkspaceID", "privateTimelineID", "lastActiveAt", "createdAt", "updatedAt"],
         GnosticObjectType.timeline: ["protocolMajor", "title", "isArchived", "isPrivate", "attachedAscendantID", "attachedWorkspaceIDs", "createdAt", "updatedAt"],
-        GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "tools", "toolsComplete", "createdAt"],
+        GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "effectiveStatus", "tools", "toolsComplete", "createdAt"],
         GnosticObjectType.workspaceTool: ["protocolMajor", "workspaceID", "toolID", "toolName", "toolDescription", "parametersSchema", "usageExample", "requiresPermission", "page"],
     ]
 
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
+    private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
 
     /// Creates an empty catalog.
     public init() {}
@@ -40,25 +41,33 @@ public actor NetworkCatalog {
             return
         }
         let protocolMajor = Self.protocolMajor(from: snapshot)
+        let isProtocolCompatible = GnosticProtocol.isCompatible(protocolMajor)
         let knownProperties = knownProperties(from: snapshot)
         let dynamicProperties = dynamicProperties(from: snapshot)
         let workspaceTool = workspaceTool(from: snapshot)
         if snapshot.objectType == GnosticObjectType.workspaceTool,
            let workspaceTool,
            let payload = snapshot.payload,
-           let toolObject = try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8)) {
+            let toolObject = try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8)) {
             workspaceTools[toolObject.workspaceID, default: [:]][providerID, default: [:]][workspaceTool.id] = workspaceTool
+            workspaceToolOwners[objectID] = (toolObject.workspaceID, providerID, workspaceTool.id)
         }
         let workspace = workspaceDescriptor(from: snapshot, id: objectID, providerID: providerID)
+        let effectiveStatus = !isProtocolCompatible && snapshot.objectType == GnosticObjectType.workspace
+            ? .unsupported
+            : workspace?.effectiveStatus
+            ?? (snapshot.objectType == GnosticObjectType.workspace ? .unsupported : nil)
         let entry = NetworkCatalogEntry(
             objectID: objectID,
             objectType: snapshot.objectType,
             protocolMajor: protocolMajor,
+            isProtocolCompatible: isProtocolCompatible,
             providerID: providerID,
             name: snapshot.name,
             knownProperties: knownProperties,
             dynamicProperties: dynamicProperties,
             workspace: workspace,
+            effectiveStatus: effectiveStatus,
             workspaceTool: workspaceTool
         )
         entries[objectID, default: [:]][providerID] = entry
@@ -84,8 +93,14 @@ public actor NetworkCatalog {
         let providerID = event.sourceId ?? Self.anonymousProviderID
         for rawID in event.objectIds {
             guard let objectID = UUID(uuidString: rawID) else { continue }
-            if entries[objectID]?.values.contains(where: { $0.objectType == GnosticObjectType.workspace }) == true {
-                workspaceTools[objectID] = nil
+            if let owner = workspaceToolOwners.removeValue(forKey: objectID) {
+                workspaceTools[owner.workspaceID]?[owner.providerID]?[owner.toolID] = nil
+                if workspaceTools[owner.workspaceID]?[owner.providerID]?.isEmpty == true {
+                    workspaceTools[owner.workspaceID]?[owner.providerID] = nil
+                }
+                if workspaceTools[owner.workspaceID]?.isEmpty == true {
+                    workspaceTools[owner.workspaceID] = nil
+                }
             }
             entries[objectID]?[providerID] = nil
             if entries[objectID]?.isEmpty == true {
@@ -116,35 +131,34 @@ public actor NetworkCatalog {
             }
     }
 
+    /// Returns a workspace descriptor with query-only tools merged into its
+    /// compact advertised summary.
+    public func workspaceDescriptor(id: UUID, providerID: String) -> NetworkWorkspaceDescriptor? {
+        entries[id]?[providerID]?.workspace.map { descriptor in
+            mergedWorkspaceDescriptor(descriptor, id: id, providerID: providerID)
+        }
+    }
+
     /// Returns whether a workspace can be attached without ambiguity.
     ///
     /// - Parameter id: The workspace identifier.
     /// - Returns: The workspace attachment status.
     public func workspaceAttachmentStatus(id: UUID) -> WorkspaceAttachmentStatus {
-        let workspaceEntries = entries[id]?.values.filter { $0.objectType == GnosticObjectType.workspace && $0.isProtocolCompatible } ?? []
+        let workspaceEntries = entries[id]?.values.filter { $0.objectType == GnosticObjectType.workspace } ?? []
         guard !workspaceEntries.isEmpty else { return .unavailable }
-        guard workspaceEntries.count == 1 else { return .ambiguous }
-        guard let entry = workspaceEntries.first,
-              let workspace = entry.workspace else {
-            return .malformed
+        let compatibleEntries = workspaceEntries.filter(\.isProtocolCompatible)
+        guard !compatibleEntries.isEmpty else {
+            return workspaceEntries.count == 1 ? .unsupported : .ambiguous
         }
-        guard workspace.isAvailable else { return .unavailable }
-        return .available(providerID: entry.providerID, uri: workspace.uri)
-    }
-
-    /// Returns a workspace descriptor with any query-only public tools merged
-    /// into the compact advertised summary.
-    public func workspaceDescriptor(id: UUID, providerID: String) -> NetworkWorkspaceDescriptor? {
-        entries[id]?[providerID]?.workspace.map { descriptor in
-            let queried = workspaceTools[id]?[providerID]?.values.sorted { $0.id < $1.id } ?? []
-            let known = Set(descriptor.tools.map(\.id))
-            return NetworkWorkspaceDescriptor(
-                id: descriptor.id,
-                uri: descriptor.uri,
-                isAvailable: descriptor.isAvailable,
-                tools: descriptor.tools + queried.filter { !known.contains($0.id) },
-                toolsComplete: descriptor.toolsComplete || !queried.isEmpty
-            )
+        guard compatibleEntries.count == 1, let entry = compatibleEntries.first else { return .ambiguous }
+        guard let workspace = entry.workspace else { return .malformed }
+        switch workspace.effectiveStatus {
+        case .available:
+            return .available(providerID: entry.providerID, uri: workspace.uri)
+        case .unavailable:
+            return .unavailable
+        case .unsupported:
+            return .unsupported
         }
     }
 
@@ -204,15 +218,17 @@ public actor NetworkCatalog {
               object.objectId.string == id.uuidString.lowercased() else {
             return nil
         }
-        let queried = workspaceTools[id]?[providerID]?.values.sorted { $0.id < $1.id } ?? []
-        let known = Set(object.tools.map(\.id))
-        return NetworkWorkspaceDescriptor(
+        return mergedWorkspaceDescriptor(NetworkWorkspaceDescriptor(
             id: id,
             uri: object.uri,
             isAvailable: object.isAvailable,
-            tools: object.tools + queried.filter { !known.contains($0.id) },
-            toolsComplete: object.toolsComplete || !queried.isEmpty
-        )
+            trustLevel: object.trustLevel,
+            status: object.status,
+            effectiveStatus: object.effectiveStatus,
+            tools: object.tools,
+            toolsComplete: object.toolsComplete,
+            createdAt: object.createdAt
+        ), id: id, providerID: providerID)
     }
 
     private func workspaceTool(from snapshot: CoatyObjectSnapshot) -> GnosticWorkspaceTool? {
@@ -227,15 +243,6 @@ public actor NetworkCatalog {
     private func mergedWorkspaceEntry(_ entry: NetworkCatalogEntry) -> NetworkCatalogEntry {
         guard entry.objectType == GnosticObjectType.workspace,
               let workspace = entry.workspace else { return entry }
-        let queried = workspaceTools[entry.objectID]?[entry.providerID]?.values.sorted { $0.id < $1.id } ?? []
-        let known = Set(workspace.tools.map(\.id))
-        let merged = NetworkWorkspaceDescriptor(
-            id: workspace.id,
-            uri: workspace.uri,
-            isAvailable: workspace.isAvailable,
-            tools: workspace.tools + queried.filter { !known.contains($0.id) },
-            toolsComplete: workspace.toolsComplete || !queried.isEmpty
-        )
         return NetworkCatalogEntry(
             objectID: entry.objectID,
             objectType: entry.objectType,
@@ -245,8 +252,25 @@ public actor NetworkCatalog {
             name: entry.name,
             knownProperties: entry.knownProperties,
             dynamicProperties: entry.dynamicProperties,
-            workspace: merged,
+            workspace: mergedWorkspaceDescriptor(workspace, id: entry.objectID, providerID: entry.providerID),
+            effectiveStatus: entry.effectiveStatus,
             workspaceTool: entry.workspaceTool
+        )
+    }
+
+    private func mergedWorkspaceDescriptor(_ descriptor: NetworkWorkspaceDescriptor, id: UUID, providerID: String) -> NetworkWorkspaceDescriptor {
+        let queried = workspaceTools[id]?[providerID]?.values.sorted { $0.id < $1.id } ?? []
+        let known = Set(descriptor.tools.map(\.id))
+        return NetworkWorkspaceDescriptor(
+            id: descriptor.id,
+            uri: descriptor.uri,
+            isAvailable: descriptor.isAvailable,
+            trustLevel: descriptor.trustLevel,
+            status: descriptor.status,
+            effectiveStatus: descriptor.effectiveStatus,
+            tools: descriptor.tools + queried.filter { !known.contains($0.id) },
+            toolsComplete: descriptor.toolsComplete || !queried.isEmpty,
+            createdAt: descriptor.createdAt
         )
     }
 }

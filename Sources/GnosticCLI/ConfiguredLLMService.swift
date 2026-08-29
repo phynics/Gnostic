@@ -9,7 +9,7 @@ import PKOpenRouterProvider
 import PKContracts
 import PositronicKit
 
-/// Builds a configured `LLMStreamClient` from a CLI/PositronicKit `LLMConfiguration`.
+/// Builds a configured `LanguageModel` from a CLI/PositronicKit `LLMConfiguration`.
 ///
 /// The per-provider client factory routes the active provider to its bundled
 /// client package (`PKOpenAIProvider`, `PKOpenRouterProvider`, ...) so the LLM
@@ -26,19 +26,20 @@ public enum ConfiguredLLMService {
         return LLMService(configuration: configuration, clients: makeClients(for: configuration))
     }
 
-    /// Bridges a validated Core launch-plan profile without making GnosticCore
-    /// depend on CLI provider packages.
-    public static func make(from profile: PositronicProfile) -> any LLMStreamClient {
-        guard let provider = LLMProvider.allCases.first(where: {
-            $0.rawValue.lowercased() == profile.provider.lowercased()
+    /// Bridges one validated Positronic backend envelope without making
+    /// GnosticCore depend on CLI provider packages.
+    public static func make(from backend: PositronicBackendConfiguration) -> any LLMStreamClient {
+        guard let providerName = backend.provider,
+              let provider = LLMProvider.allCases.first(where: {
+            $0.rawValue.lowercased() == providerName.lowercased()
         }) else { return UnconfiguredLLMService() }
         var configuration = LLMConfiguration(activeProvider: provider)
         var providerConfiguration = provider.providerConfiguration
-        providerConfiguration.endpoint = profile.endpoint ?? providerConfiguration.endpoint
-        providerConfiguration.apiKey = profile.apiKey ?? providerConfiguration.apiKey
-        providerConfiguration.modelName = profile.model ?? providerConfiguration.modelName
-        providerConfiguration.utilityModel = profile.utilityModel ?? providerConfiguration.utilityModel
-        providerConfiguration.fastModel = profile.fastModel ?? providerConfiguration.fastModel
+        providerConfiguration.endpoint = backend.endpoint ?? providerConfiguration.endpoint
+        providerConfiguration.apiKey = backend.apiKey ?? providerConfiguration.apiKey
+        providerConfiguration.modelName = backend.model ?? providerConfiguration.modelName
+        providerConfiguration.utilityModel = backend.utilityModel ?? providerConfiguration.utilityModel
+        providerConfiguration.fastModel = backend.fastModel ?? providerConfiguration.fastModel
         configuration.providers[provider] = providerConfiguration
         return make(from: configuration)
     }

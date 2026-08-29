@@ -290,14 +290,15 @@ struct ACPProviderAcceptanceTests {
         let namespace = "legacy-runtime-\(UUID().uuidString.lowercased())"
         let configURL = folder.url.appendingPathComponent("config.json")
         let legacy = """
-        {"mqtt.host":"127.0.0.1","mqtt.port":1883,"mqtt.namespace":"\(namespace)","llm.provider":"stub","llm.model":"deterministic"}
+        {"mqtt.host":"127.0.0.1","mqtt.port":1883,"mqtt.namespace":"\(namespace)","llm.provider":"Ollama","llm.model":"deterministic"}
         """
         _ = FileManager.default.createFile(atPath: configURL.path, contents: Data(legacy.utf8))
 
         let store = CLIConfigurationStore(configPath: configURL, environment: [:])
         let migrated = try store.loadManifest()
         #expect(migrated.schemaVersion == 2)
-        #expect(migrated.llmProfiles.count == 1)
+        #expect(migrated.ascendants.count == 1)
+        #expect(migrated.ascendants[0].backend.settings["provider"] == .string("Ollama"))
         #expect(FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
 
         let workspaceID = try #require(migrated.workspaces.first?.id)
@@ -310,9 +311,9 @@ struct ACPProviderAcceptanceTests {
 
         var adapters = NodeRuntimeAdapters.default
         adapters.ascendants.register(kind: "positronic") { _, _ in LegacyMigrationToolLanguageModel() }
-        adapters.workspaces.register(kind: "echo") { configuration, _ in
+        adapters.workspaces.registerProduct(kind: "echo") { configuration in
             let tool = WorkspaceToolDefinition(
-                id: NodeRuntime.echoToolID,
+                id: EchoWorkspace.toolID,
                 name: "Workspace echo",
                 description: "Echoes fixture input.",
                 requiresPermission: true
@@ -509,12 +510,10 @@ private func acceptanceManifest(
 ) throws -> NodeManifest {
     let nodeID = try #require(UUID(uuidString: nodeID))
     let timelineID = try #require(UUID(uuidString: timelineID))
-    let profileID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000299")!
     return NodeManifest(
         broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
         node: .init(id: nodeID),
-        llmProfiles: [.init(id: profileID, provider: "stub", model: "deterministic")],
-        ascendants: [.init(id: ascendantID, name: name, defaultTimelineID: timelineID, llmProfileID: profileID)],
+        ascendants: [.init(id: ascendantID, name: name, defaultTimelineID: timelineID, backend: .init(kind: "positronic", settings: ["provider": .string("Ollama"), "model": .string("deterministic")]))],
         timelines: [.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID)]
     )
 }

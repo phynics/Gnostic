@@ -28,11 +28,10 @@ struct OnlineRunnerTests {
         defer { consumer.stop() }
 
         let workspaceID = UUID(uuidString: "E51D0000-0000-4000-8000-000000000001")!
-        let workspace = GnosticWorkspaceObject(workspace: WorkspaceReference(
+        let workspace = GnosticWorkspaceObject(workspace: GnosticWorkspaceReference(
             id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://online")!,
-            location: .runtime,
-            tools: [.custom(.init(id: "echo", name: "Echo", description: "Echoes input."))],
+            uri: "workspace://online",
+            tools: [.init(id: "echo", name: "Echo", description: "Echoes input.")],
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         ))
 

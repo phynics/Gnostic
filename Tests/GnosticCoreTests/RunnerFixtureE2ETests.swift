@@ -33,7 +33,7 @@ struct RunnerFixtureE2ETests {
                     id: "workspace_echo",
                     name: "Workspace echo",
                     description: "Echoes fixture input.",
-                    parametersSchema: workspaceEchoSchema
+                    parametersSchema: gnosticWorkspaceEchoSchema
                 ),
             ]
         ) { toolID, arguments in
@@ -47,7 +47,9 @@ struct RunnerFixtureE2ETests {
         let registration = try await fixture.register(on: provider)
         defer { registration.cancel() }
         let lifecycle = try #require(providerContainer.getController(name: "ObjectLifecycleController") as ObjectLifecycleController?)
-        lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(workspace: fixtureReference(id: workspaceID)))
+        lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(
+            workspace: WorkspaceReferenceProjection.networkReference(from: fixtureReference(id: workspaceID))
+        ))
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()
         let runtimeRepository = InMemoryThreadRuntimeRepository()
@@ -144,6 +146,14 @@ private let workspaceEchoSchema: [String: AnyCodable] = [
         "value": AnyCodable(["type": AnyCodable("string")]),
     ]),
     "required": AnyCodable(["value"]),
+]
+
+private let gnosticWorkspaceEchoSchema: [String: ManifestJSONValue] = [
+    "type": .string("object"),
+    "properties": .object([
+        "value": .object(["type": .string("string")]),
+    ]),
+    "required": .array([.string("value")]),
 ]
 
 private func waitForWorkspace(_ catalog: NetworkCatalog, id: UUID) async throws {

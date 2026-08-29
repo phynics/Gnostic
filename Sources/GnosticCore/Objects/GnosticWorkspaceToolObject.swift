@@ -2,7 +2,6 @@
 
 import Axoloty
 import Foundation
-import PKContracts
 
 /// A public Workspace tool returned by Axoloty Query/Retrieve.
 ///
@@ -15,7 +14,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
     public let toolID: String
     public let toolName: String
     public let toolDescription: String
-    public let parametersSchema: [String: AnyCodable]
+    public let parametersSchema: [String: ManifestJSONValue]
     public let usageExample: String?
     public let requiresPermission: Bool
     public let page: Int
@@ -27,26 +26,40 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
         register(objectType: GnosticObjectType.workspaceTool, with: self)
     }
 
-    public init(workspaceID: UUID, definition: WorkspaceToolDefinition, page: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public convenience init(workspaceID: UUID, definition: GnosticWorkspaceToolDefinition, page: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.init(
+            workspaceID: workspaceID,
+            toolID: definition.id,
+            toolName: definition.name,
+            toolDescription: definition.description,
+            parametersSchema: definition.parametersSchema,
+            usageExample: definition.usageExample,
+            requiresPermission: definition.requiresPermission,
+            page: page,
+            protocolMajor: protocolMajor
+        )
+    }
+
+    private init(workspaceID: UUID, toolID: String, toolName: String, toolDescription: String, parametersSchema: [String: ManifestJSONValue], usageExample: String?, requiresPermission: Bool, page: Int, protocolMajor: Int) {
         self.protocolMajor = protocolMajor
         self.workspaceID = workspaceID
-        toolID = definition.id
-        toolName = GnosticWirePayload.boundedLabel(definition.name)
-        toolDescription = GnosticWirePayload.boundedLabel(definition.description)
-        let schemaData = try? JSONEncoder().encode(definition.parametersSchema)
+        self.toolID = toolID
+        self.toolName = GnosticWirePayload.boundedLabel(toolName)
+        self.toolDescription = GnosticWirePayload.boundedLabel(toolDescription)
+        let schemaData = try? JSONEncoder().encode(parametersSchema)
         schemaTruncated = schemaData.map { $0.count > 700 } ?? true
-        parametersSchema = schemaTruncated ? [:] : definition.parametersSchema
-        usageExample = definition.usageExample.map { GnosticWirePayload.boundedLabel($0) }
-        requiresPermission = definition.requiresPermission
+        self.parametersSchema = schemaTruncated ? [:] : parametersSchema
+        self.usageExample = usageExample.map { GnosticWirePayload.boundedLabel($0) }
+        self.requiresPermission = requiresPermission
         self.page = page
         super.init(
             coreType: .CoatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(),
-            name: GnosticWirePayload.boundedLabel(definition.name)
+            name: GnosticWirePayload.boundedLabel(toolName)
         )
         parentObjectId = CoatyUUID(uuidString: workspaceID.uuidString)!
-        externalId = definition.id
+        externalId = toolID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -61,7 +74,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
         toolID = try container.decode(String.self, forKey: .toolID)
         toolName = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .toolName))
         toolDescription = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .toolDescription))
-        parametersSchema = try container.decode([String: AnyCodable].self, forKey: .parametersSchema)
+        parametersSchema = try container.decode([String: ManifestJSONValue].self, forKey: .parametersSchema)
         usageExample = try container.decodeIfPresent(String.self, forKey: .usageExample).map { GnosticWirePayload.boundedLabel($0) }
         requiresPermission = try container.decode(Bool.self, forKey: .requiresPermission)
         page = try container.decodeIfPresent(Int.self, forKey: .page) ?? 0
@@ -97,7 +110,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
 }
 
 private extension GnosticWorkspaceTool {
-    init(id: String, name: String, toolDescription: String, parametersSchema: [String: AnyCodable], usageExample: String?, requiresPermission: Bool) {
+    init(id: String, name: String, toolDescription: String, parametersSchema: [String: ManifestJSONValue], usageExample: String?, requiresPermission: Bool) {
         self.id = id
         self.name = name
         self.toolDescription = toolDescription

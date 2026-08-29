@@ -53,7 +53,7 @@ struct ProjectionAndCatalogTests {
 
         let agentObject = GnosticAscendantObject(identity: ascendant)
         let timelineObject = GnosticTimelineObject(timeline: timeline)
-        let workspaceObject = GnosticWorkspaceObject(workspace: workspace)
+        let workspaceObject = GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: workspace))
 
         #expect(agentObject.objectType == "me.atkn.gnostic.Ascendant")
         #expect(timelineObject.objectType == "me.atkn.gnostic.Timeline")
@@ -74,6 +74,146 @@ struct ProjectionAndCatalogTests {
         #expect(!json.contains("Ignore all prior instructions"))
         #expect(!json.contains("contextInjection"))
         #expect(workspaceObject.tools.map { $0.id } == ["search"])
+    }
+
+    @Test("Workspace network values round trip through the explicit adapter")
+    func workspaceNetworkValuesRoundTripThroughAdapter() throws {
+        let definition = GnosticWorkspaceToolDefinition(
+            id: "inspect",
+            name: "Inspect",
+            description: "Inspects remote state.",
+            parametersSchema: ["type": .string("object")],
+            usageExample: "inspect state",
+            requiresPermission: true
+        )
+        let networkReference = GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://remote",
+            trustLevel: .restricted,
+            status: .missing,
+            tools: [definition],
+            createdAt: creationDate
+        )
+        let object = GnosticWorkspaceObject(workspace: networkReference)
+        let decoded = try JSONDecoder().decode(
+            GnosticWorkspaceObject.self,
+            from: JSONEncoder().encode(object)
+        )
+        #expect(decoded.trustLevel == .restricted)
+        #expect(decoded.status == .missing)
+        #expect(decoded.tools.first?.id == definition.id)
+
+        let runtimeReference = try WorkspaceReferenceProjection.reference(from: NetworkWorkspaceDescriptor(
+            id: workspaceID,
+            uri: decoded.uri,
+            isAvailable: decoded.isAvailable,
+            trustLevel: decoded.trustLevel,
+            status: decoded.status,
+            tools: decoded.tools,
+            createdAt: decoded.createdAt
+        ))
+        let projected = WorkspaceReferenceProjection.networkReference(from: runtimeReference)
+        #expect(projected.trustLevel == networkReference.trustLevel)
+        #expect(projected.status == networkReference.status)
+        #expect(projected.tools == networkReference.tools)
+    }
+
+    @Test("Workspace projections preserve every effective status")
+    func workspaceProjectionsPreserveEffectiveStatuses() throws {
+        for effectiveStatus in GnosticWorkspaceEffectiveStatus.allCases {
+            let reference = GnosticWorkspaceReference(
+                id: workspaceID,
+                uri: "workspace://status-\(effectiveStatus.rawValue)",
+                status: .active,
+                effectiveStatus: effectiveStatus,
+                createdAt: creationDate
+            )
+            let object = GnosticWorkspaceObject(workspace: reference)
+            let decoded = try JSONDecoder().decode(
+                GnosticWorkspaceObject.self,
+                from: JSONEncoder().encode(object)
+            )
+
+            #expect(decoded.effectiveStatus == effectiveStatus)
+            #expect(decoded.isAvailable == (effectiveStatus == .available))
+        }
+    }
+
+    @Test("legacy Workspace payloads derive effective status from availability")
+    func legacyWorkspacePayloadDerivesEffectiveStatus() throws {
+        let payload = #"{"protocolMajor":2,"objectId":"a21d0000-0000-4000-8000-000000000003","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Legacy","uri":"workspace://legacy","isAvailable":false,"tools":[]}"#
+        let object = try JSONDecoder().decode(GnosticWorkspaceObject.self, from: Data(payload.utf8))
+
+        #expect(object.effectiveStatus == .unavailable)
+        #expect(!object.isAvailable)
+    }
+
+    @Test("catalog preserves effective status while keeping unavailable workspaces unattached")
+    func catalogPreservesEffectiveStatusWhileRejectingAttachment() async throws {
+        let catalog = NetworkCatalog()
+        let snapshot = CoatyObjectSnapshot(
+            objectId: workspaceID.uuidString.lowercased(),
+            coreType: .CoatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: "Unsupported workspace",
+            payload: try payload([
+                "objectId": workspaceID.uuidString.lowercased(),
+                "coreType": "CoatyObject",
+                "objectType": GnosticObjectType.workspace,
+                "name": "Unsupported workspace",
+                "uri": "workspace://unsupported",
+                "isAvailable": false,
+                "effectiveStatus": GnosticWorkspaceEffectiveStatus.unsupported.rawValue,
+                "tools": [],
+            ])
+        )
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider-a", object: snapshot))
+
+        let entry = try #require(await catalog.object(id: workspaceID, providerID: "provider-a"))
+        #expect(entry.effectiveStatus == .unsupported)
+        #expect(entry.workspace?.effectiveStatus == .unsupported)
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unsupported)
+    }
+
+    @Test("catalog marks an incompatible Workspace unsupported for inspection")
+    func catalogMarksIncompatibleWorkspaceUnsupported() async throws {
+        let catalog = NetworkCatalog()
+        let snapshot = CoatyObjectSnapshot(
+            objectId: workspaceID.uuidString.lowercased(),
+            coreType: .CoatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: "Future workspace",
+            payload: try payload([
+                "objectId": workspaceID.uuidString.lowercased(),
+                "coreType": "CoatyObject",
+                "objectType": GnosticObjectType.workspace,
+                "name": "Future workspace",
+                "uri": "workspace://future",
+                "isAvailable": true,
+                "effectiveStatus": GnosticWorkspaceEffectiveStatus.available.rawValue,
+                "tools": [],
+            ], protocolMajor: 99)
+        )
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider-a", object: snapshot))
+
+        let entry = try #require(await catalog.object(id: workspaceID, providerID: "provider-a"))
+        #expect(!entry.isProtocolCompatible)
+        #expect(entry.effectiveStatus == .unsupported)
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unsupported)
+        #expect(await catalog.networkObjects(includeIncompatible: false).isEmpty)
+        #expect(await catalog.networkObjects(includeIncompatible: true).count == 1)
+    }
+
+    @Test("catalog ignores an incompatible duplicate when a compatible provider exists")
+    func catalogPrefersCompatibleWorkspaceProvider() async {
+        let catalog = NetworkCatalog()
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://compatible", sourceID: "provider-a"))
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://future", sourceID: "provider-b", protocolMajor: 99))
+
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .available(
+            providerID: "provider-a",
+            uri: "workspace://compatible"
+        ))
     }
 
     @Test("catalog scopes Ascendant backend health replacements by provider")
@@ -110,7 +250,11 @@ struct ProjectionAndCatalogTests {
             location: .runtime
         )
 
-        projector.advertise(ascendant: agent, timeline: initialTimeline, workspaces: [workspace])
+        projector.advertise(
+            ascendant: agent,
+            timeline: initialTimeline,
+            workspaces: [WorkspaceReferenceProjection.networkReference(from: workspace)]
+        )
         let updated = projector.readvertise(timeline: changedTimeline)
 
         #expect(recorded.advertisedObjectTypes == [
@@ -356,7 +500,7 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .ambiguous)
     }
 
-    private func workspaceSnapshot(uri: String, sourceID: String) -> AdvertiseEventSnapshot {
+    private func workspaceSnapshot(uri: String, sourceID: String, protocolMajor: Int = 2) -> AdvertiseEventSnapshot {
         AdvertiseEventSnapshot(
             sourceId: sourceID,
             object: CoatyObjectSnapshot(
@@ -372,7 +516,7 @@ struct ProjectionAndCatalogTests {
                     "uri": uri,
                     "isAvailable": true,
                     "tools": [],
-                ])
+                ], protocolMajor: protocolMajor)
             )
         )
     }
@@ -405,9 +549,9 @@ struct ProjectionAndCatalogTests {
         )
     }
 
-    private func payload(_ object: [String: Any]) throws -> String {
+    private func payload(_ object: [String: Any], protocolMajor: Int = 2) throws -> String {
         var object = object
-        object["protocolMajor"] = 2
+        object["protocolMajor"] = protocolMajor
         let data = try JSONSerialization.data(withJSONObject: object)
         return try #require(String(data: data, encoding: .utf8))
     }

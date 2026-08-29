@@ -25,10 +25,7 @@ let package = Package(
             name: "GnosticCore",
             dependencies: [
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "AxolotyProtocol", package: "Axoloty"),
-                .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "Logging", package: "swift-log"),
             ]
@@ -46,7 +43,6 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKPrompt", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
@@ -56,8 +52,6 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .testTarget(

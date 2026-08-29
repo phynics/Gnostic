@@ -66,6 +66,33 @@ struct AscendantPermissionCoordinatorTests {
         #expect(replay.updates.last?.permissionState?.status == "connection_lost")
     }
 
+    @Test("responses after connection loss cannot reopen a permission")
+    func lateResponseAfterConnectionLossIsRejected() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates)
+        let timelineID = UUID()
+        let request = AscendantPermissionRequest(
+            correlationID: "permission-late",
+            timelineID: timelineID,
+            clientTurnID: "turn-late",
+            toolCallID: "call-late",
+            title: "Delete file"
+        )
+
+        let decision = Task { await coordinator.request(request) }
+        try await waitUntil { await coordinator.pendingCount == 1 }
+        await coordinator.denyAll(reason: "connection_lost")
+
+        #expect(!(await coordinator.request(request)))
+        #expect(!(await coordinator.respond(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: request.clientTurnID,
+            approved: true
+        )))
+        #expect(!(await decision.value))
+    }
+
     private func waitUntil(_ condition: @escaping @Sendable () async -> Bool) async throws {
         for _ in 0..<100 {
             if await condition() { return }

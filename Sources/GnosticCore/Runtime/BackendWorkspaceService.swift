@@ -163,7 +163,7 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
         switch await catalog.workspaceAttachmentStatus(id: id) {
         case .available: return .available
         case .unavailable: return .unavailable
-        case .ambiguous, .malformed: return .unsupported
+        case .ambiguous, .malformed, .unsupported: return .unsupported
         }
     }
 
@@ -194,7 +194,7 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
             id: definition.id,
             name: definition.name,
             description: definition.toolDescription,
-            parametersSchema: .object(definition.parametersSchema.mapValues { manifestValue($0) }),
+            parametersSchema: .object(definition.parametersSchema),
             requiresPermission: definition.requiresPermission
         )
     }

@@ -90,19 +90,19 @@ public actor GnosticWorkspaceProvider {
     public typealias ToolExecutor = @Sendable (_ toolID: String, _ arguments: [String: AnyCodable]) async throws -> ToolResult
 
     private let workspaceID: UUID
-    private let definitions: [String: WorkspaceToolDefinition]
+    private let definitions: [String: GnosticWorkspaceToolDefinition]
     private let executor: ToolExecutor
 
     /// Creates a provider for a workspace's advertised custom tools.
-    public init(workspaceID: UUID, tools: [WorkspaceToolDefinition], execute: @escaping ToolExecutor) {
+    public init(workspaceID: UUID, tools: [GnosticWorkspaceToolDefinition], execute: @escaping ToolExecutor) {
         self.workspaceID = workspaceID
         definitions = Dictionary(uniqueKeysWithValues: tools.map { ($0.id, $0) })
         executor = execute
     }
 
     /// Returns the exact custom tools currently advertised by this provider.
-    public func listTools() -> [ToolReference] {
-        definitions.values.sorted { $0.id < $1.id }.map(ToolReference.custom)
+    public func listTools() -> [GnosticWorkspaceTool] {
+        definitions.values.sorted { $0.id < $1.id }.map(GnosticWorkspaceTool.init)
     }
 
     /// Responds to a bounded page of public Workspace tool objects. Tool
@@ -125,7 +125,7 @@ public actor GnosticWorkspaceProvider {
         return try await executor(invocation.toolID, invocation.arguments)
     }
 
-    /// Decodes a generic Call payload and returns the serialized PositronicKit tool result.
+    /// Decodes a generic Call payload and returns the serialized tool result.
     public func handle(parameters: String?) async throws -> CallHandlerResult {
         do {
             try GnosticProtocol.validatePayload(parameters)

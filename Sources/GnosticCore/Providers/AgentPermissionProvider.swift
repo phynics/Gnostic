@@ -99,6 +99,7 @@ public struct AscendantPermissionProvider: Sendable {
         let stream = try await communication.observeChannelStream(channelId: Self.responseChannel)
         return Task { [coordinator] in
             for await snapshot in stream {
+                guard !Task.isCancelled else { break }
                 guard let raw = snapshot.privateData,
                       let response = try? JSONDecoder().decode(
                           AscendantPermissionResponse.self,
@@ -107,6 +108,7 @@ public struct AscendantPermissionProvider: Sendable {
                 if let target = response.targetProviderID,
                    let providerID,
                    target.lowercased() != providerID.lowercased() { continue }
+                guard !Task.isCancelled else { break }
                 _ = await coordinator.respond(
                     correlationID: response.correlationID,
                     timelineID: response.timelineID,

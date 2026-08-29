@@ -71,6 +71,7 @@ public actor AscendantPermissionCoordinator {
 
     private let updates: AscendantTurnUpdateStore
     private var pending: [String: Pending] = [:]
+    private var acceptingResponses = true
 
     public init(updates: AscendantTurnUpdateStore) {
         self.updates = updates
@@ -79,6 +80,7 @@ public actor AscendantPermissionCoordinator {
     public var pendingCount: Int { pending.count }
 
     public func request(_ request: AscendantPermissionRequest) async -> Bool {
+        guard acceptingResponses else { return false }
         guard pending[request.correlationID] == nil else { return false }
         let (decisions, continuation) = AsyncStream<Bool>.makeStream()
         pending[request.correlationID] = Pending(request: request, continuation: continuation)
@@ -94,6 +96,7 @@ public actor AscendantPermissionCoordinator {
         clientTurnID: String,
         approved: Bool
     ) async -> Bool {
+        guard acceptingResponses else { return false }
         guard let value = pending[correlationID],
               value.request.timelineID == timelineID,
               value.request.clientTurnID == clientTurnID else { return false }
@@ -105,6 +108,7 @@ public actor AscendantPermissionCoordinator {
     }
 
     public func denyAll(reason: String) async {
+        acceptingResponses = false
         let values = Array(pending.values)
         pending.removeAll()
         for value in values {

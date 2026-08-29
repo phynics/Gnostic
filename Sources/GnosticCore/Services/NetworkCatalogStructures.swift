@@ -81,7 +81,7 @@ public indirect enum NetworkDynamicValue: Codable, Sendable, Equatable {
 
 /// A catalogued network object, scoped to its advertising provider.
 public struct NetworkCatalogEntry: Sendable {
-    /// The PositronicKit object identifier.
+    /// The advertised Gnostic object identifier.
     public let objectID: UUID
 
     /// The canonical Gnostic object type.
@@ -112,6 +112,12 @@ public struct NetworkCatalogEntry: Sendable {
     /// A query-only Workspace tool projection, when this entry is a tool.
     public let workspaceTool: GnosticWorkspaceTool?
 
+    /// The effective Workspace status, including malformed or incompatible entries.
+    public let effectiveStatus: GnosticWorkspaceEffectiveStatus?
+
+    /// Compatibility alias for callers that scope the status to Workspaces.
+    public var workspaceStatus: GnosticWorkspaceEffectiveStatus? { effectiveStatus }
+
     /// Creates a catalogued entry.
     public init(
         objectID: UUID,
@@ -123,6 +129,7 @@ public struct NetworkCatalogEntry: Sendable {
         knownProperties: [String: NetworkDynamicValue],
         dynamicProperties: [String: NetworkDynamicValue],
         workspace: NetworkWorkspaceDescriptor?,
+        effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil,
         workspaceTool: GnosticWorkspaceTool? = nil
     ) {
         self.objectID = objectID
@@ -134,6 +141,7 @@ public struct NetworkCatalogEntry: Sendable {
         self.knownProperties = knownProperties
         self.dynamicProperties = dynamicProperties
         self.workspace = workspace
+        self.effectiveStatus = effectiveStatus ?? workspace?.effectiveStatus
         self.workspaceTool = workspaceTool
     }
 }
@@ -147,7 +155,16 @@ public struct NetworkWorkspaceDescriptor: Sendable {
     public let uri: String
 
     /// Whether the provider currently reports the workspace as available.
-    public let isAvailable: Bool
+    public var isAvailable: Bool { effectiveStatus == .available }
+
+    /// The advertised trust boundary.
+    public let trustLevel: GnosticWorkspaceTrustLevel
+
+    /// The provider-owned lifecycle status.
+    public let status: GnosticWorkspaceStatus
+
+    /// The Gnostic-owned effective usability of the Workspace.
+    public let effectiveStatus: GnosticWorkspaceEffectiveStatus
 
     /// The workspace's safe tool descriptions.
     public let tools: [GnosticWorkspaceTool]
@@ -155,13 +172,29 @@ public struct NetworkWorkspaceDescriptor: Sendable {
     /// Whether the advertisement contains every custom tool.
     public let toolsComplete: Bool
 
+    /// The workspace creation timestamp.
+    public let createdAt: Date
+
     /// Creates a workspace descriptor.
-    public init(id: UUID, uri: String, isAvailable: Bool, tools: [GnosticWorkspaceTool], toolsComplete: Bool = true) {
+    public init(
+        id: UUID,
+        uri: String,
+        isAvailable: Bool,
+        trustLevel: GnosticWorkspaceTrustLevel = .full,
+        status: GnosticWorkspaceStatus = .unknown,
+        effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil,
+        tools: [GnosticWorkspaceTool],
+        toolsComplete: Bool = true,
+        createdAt: Date = Date()
+    ) {
         self.id = id
         self.uri = uri
-        self.isAvailable = isAvailable
+        self.trustLevel = trustLevel
+        self.status = status
+        self.effectiveStatus = effectiveStatus ?? (isAvailable ? .available : .unavailable)
         self.tools = tools
         self.toolsComplete = toolsComplete
+        self.createdAt = createdAt
     }
 }
 
@@ -175,6 +208,9 @@ public enum WorkspaceAttachmentStatus: Sendable, Equatable {
 
     /// More than one provider claims this workspace identifier.
     case ambiguous
+
+    /// Exactly one provider advertises a Workspace that this runtime cannot use.
+    case unsupported
 
     /// Exactly one provider advertises an available, well-formed workspace.
     case available(providerID: String, uri: String)

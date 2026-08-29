@@ -2,10 +2,9 @@
 
 import Axoloty
 import Foundation
-import PKContracts
 
-/// The safe subset of a PositronicKit workspace tool definition advertised by Gnostic.
-public struct GnosticWorkspaceTool: Codable, Sendable {
+/// The safe subset of a Workspace tool definition advertised by Gnostic.
+public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
     /// The stable tool identifier.
     public let id: String
 
@@ -16,7 +15,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
     public let toolDescription: String
 
     /// The tool's parameter schema.
-    public let parametersSchema: [String: AnyCodable]
+    public let parametersSchema: [String: ManifestJSONValue]
 
     /// An optional usage example.
     public let usageExample: String?
@@ -25,9 +24,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
     public let requiresPermission: Bool
 
     /// Creates a safe tool projection.
-    ///
-    /// - Parameter definition: The PositronicKit tool definition to project.
-    public init(definition: WorkspaceToolDefinition) {
+    public init(definition: GnosticWorkspaceToolDefinition) {
         id = definition.id
         name = definition.name
         toolDescription = definition.description
@@ -37,7 +34,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable {
     }
 }
 
-/// A safe network projection of a PositronicKit ``WorkspaceReference``.
+/// A safe network projection of a Gnostic Workspace reference.
 public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
@@ -46,13 +43,16 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
     public var uri: String
 
     /// Whether the workspace is available for use.
-    public var isAvailable: Bool
+    public var isAvailable: Bool { effectiveStatus == .available }
 
     /// The workspace trust level.
-    public var trustLevel: WorkspaceTrustLevel
+    public var trustLevel: GnosticWorkspaceTrustLevel
 
     /// The workspace lifecycle status.
-    public var status: WorkspaceReference.WorkspaceStatus
+    public var status: GnosticWorkspaceStatus
+
+    /// The Gnostic-owned effective usability of the workspace.
+    public var effectiveStatus: GnosticWorkspaceEffectiveStatus
 
     /// The safe custom tool definitions exposed by this workspace.
     public var tools: [GnosticWorkspaceTool]
@@ -68,22 +68,14 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         register(objectType: GnosticObjectType.workspace, with: self)
     }
 
-    /// Creates a safe Axoloty projection of a workspace reference.
-    ///
-    /// - Parameter workspace: The PositronicKit workspace reference to expose on the network.
-    /// - Parameter includeTools: Whether to include the bounded prefix of the
-    ///   tool list in this projection. Tools that do not fit remain available
-    ///   through the separate query-only ``GnosticWorkspaceToolObject`` path.
-    public init(workspace: WorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor, includeTools: Bool = true) {
+    /// Creates a safe Axoloty projection of a Workspace reference.
+    public init(workspace: GnosticWorkspaceReference, protocolMajor: Int = GnosticProtocol.currentMajor, includeTools: Bool = true) {
         self.protocolMajor = protocolMajor
-        uri = GnosticWirePayload.boundedLabel(workspace.uri.description)
-        isAvailable = workspace.status == .active
+        uri = GnosticWirePayload.boundedLabel(workspace.uri)
         trustLevel = workspace.trustLevel
         status = workspace.status
-        let projectedTools: [GnosticWorkspaceTool] = workspace.tools.compactMap { reference in
-            guard case let .custom(definition) = reference else { return nil }
-            return GnosticWorkspaceTool(definition: definition)
-        }
+        effectiveStatus = workspace.effectiveStatus
+        let projectedTools = workspace.tools.map(GnosticWorkspaceTool.init)
         tools = []
         toolsComplete = includeTools && projectedTools.isEmpty
         createdAt = workspace.createdAt
@@ -91,7 +83,7 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
             coreType: .CoatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: workspace.id.uuidString)!,
-            name: GnosticWirePayload.boundedLabel(workspace.uri.description)
+            name: GnosticWirePayload.boundedLabel(workspace.uri)
         )
         guard includeTools else { return }
         for tool in projectedTools {
@@ -103,7 +95,7 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
                 break
             }
         }
-        toolsComplete = includeTools && tools.count == projectedTools.count
+        toolsComplete = tools.count == projectedTools.count
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -112,7 +104,9 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         case isAvailable
         case trustLevel
         case status
-        case tools, toolsComplete
+        case effectiveStatus
+        case tools
+        case toolsComplete
         case createdAt
     }
 
@@ -123,9 +117,12 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         uri = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .uri))
-        isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
-        trustLevel = try container.decodeIfPresent(WorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
-        status = try container.decodeIfPresent(WorkspaceReference.WorkspaceStatus.self, forKey: .status) ?? .unknown
+        let legacyAvailability = try container.decodeIfPresent(Bool.self, forKey: .isAvailable)
+        trustLevel = try container.decodeIfPresent(GnosticWorkspaceTrustLevel.self, forKey: .trustLevel) ?? .full
+        status = try container.decodeIfPresent(GnosticWorkspaceStatus.self, forKey: .status) ?? .unknown
+        effectiveStatus = try container.decodeIfPresent(GnosticWorkspaceEffectiveStatus.self, forKey: .effectiveStatus)
+            ?? legacyAvailability.map { $0 ? .available : .unavailable }
+            ?? GnosticWorkspaceEffectiveStatus(providerStatus: status)
         tools = try container.decodeIfPresent([GnosticWorkspaceTool].self, forKey: .tools) ?? []
         toolsComplete = try container.decodeIfPresent(Bool.self, forKey: .toolsComplete) ?? true
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
@@ -143,9 +140,8 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         try container.encode(isAvailable, forKey: .isAvailable)
         try container.encode(trustLevel, forKey: .trustLevel)
         try container.encode(status, forKey: .status)
-        if !tools.isEmpty {
-            try container.encode(tools, forKey: .tools)
-        }
+        try container.encode(effectiveStatus, forKey: .effectiveStatus)
+        if !tools.isEmpty { try container.encode(tools, forKey: .tools) }
         try container.encode(toolsComplete, forKey: .toolsComplete)
         try container.encode(createdAt, forKey: .createdAt)
     }

@@ -31,23 +31,47 @@ public struct WorkspaceListing: Codable, Sendable {
     public let protocolMajor: Int
     public let id: UUID
     public let name: String
-    public let isAvailable: Bool
+    /// The Gnostic-owned effective usability of this listing.
+    public let status: GnosticWorkspaceEffectiveStatus
 
-    public init(id: UUID, name: String, isAvailable: Bool = true, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    /// Compatibility alias for clients that only consume attachable entries.
+    public var isAvailable: Bool { status == .available }
+
+    /// Explicit name for the effective status projection.
+    public var effectiveStatus: GnosticWorkspaceEffectiveStatus { status }
+
+    public init(id: UUID, name: String, status: GnosticWorkspaceEffectiveStatus = .available, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.id = id
         self.name = GnosticWirePayload.boundedLabel(name)
-        self.isAvailable = isAvailable
+        self.status = status
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, id, name, isAvailable }
+    public init(id: UUID, name: String, isAvailable: Bool, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.init(id: id, name: name, status: isAvailable ? .available : .unavailable, protocolMajor: protocolMajor)
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, id, name, isAvailable, status }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         id = try container.decode(UUID.self, forKey: .id)
         name = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .name))
-        isAvailable = try container.decode(Bool.self, forKey: .isAvailable)
+        if let status = try container.decodeIfPresent(GnosticWorkspaceEffectiveStatus.self, forKey: .status) {
+            self.status = status
+        } else {
+            self.status = (try container.decode(Bool.self, forKey: .isAvailable)) ? .available : .unavailable
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(isAvailable, forKey: .isAvailable)
+        try container.encode(status, forKey: .status)
     }
 }
 
@@ -55,43 +79,18 @@ public struct WorkspaceListing: Codable, Sendable {
 public struct WorkspaceListResult: Codable, Sendable {
     public let protocolMajor: Int
     public let workspaces: [WorkspaceListing]
-    public let nextOffset: Int?
 
-    public init(workspaces: [WorkspaceListing], nextOffset: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(workspaces: [WorkspaceListing], protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.workspaces = workspaces
-        self.nextOffset = nextOffset
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces, nextOffset }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         workspaces = try container.decode([WorkspaceListing].self, forKey: .workspaces)
-        nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
-    }
-}
-
-/// The paged request for `workspace.list`.
-public struct WorkspaceListRequest: Codable, Sendable {
-    public let protocolMajor: Int
-    public let offset: Int
-    public let limit: Int
-
-    public init(offset: Int = 0, limit: Int = GnosticWirePayload.maximumListItems, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.offset = offset
-        self.limit = limit
-    }
-
-    private enum CodingKeys: String, CodingKey { case protocolMajor, offset, limit }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
-        limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? GnosticWirePayload.maximumListItems
     }
 }
 
@@ -141,19 +140,10 @@ public struct WorkspaceOpsProvider: Sendable {
         switch operation {
         case Self.listOperation:
             if let error = protocolError(parameters) { return error }
-            guard let request = decodeList(parameters), request.offset >= 0, request.limit > 0 else {
-                return failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
-            }
             do {
                 let listings = try await list()
                 try listings.forEach { try GnosticProtocol.validate($0.protocolMajor) }
-                let pageLimit = min(request.limit, GnosticWirePayload.maximumListItems)
-                let page = boundedPage(listings, offset: request.offset, limit: pageLimit)
-                let nextOffset = request.offset + page.count < listings.count ? request.offset + page.count : nil
-                let encoded = try GnosticWirePayload.encode(
-                    WorkspaceListResult(workspaces: page, nextOffset: nextOffset),
-                    context: "workspace.list result"
-                )
+                let encoded = try JSONEncoder().encode(WorkspaceListResult(workspaces: listings))
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch {
                 return failure(for: error)
@@ -165,8 +155,7 @@ public struct WorkspaceOpsProvider: Sendable {
             }
             do {
                 let ok = try await attach(request)
-                let encoded = try GnosticWirePayload.encode(WorkspaceMutationResult(accepted: ok), context: "workspace.attach result")
-                return .success(result: String(decoding: encoded, as: UTF8.self))
+                return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
             } catch {
                 return failure(for: error)
             }
@@ -177,8 +166,7 @@ public struct WorkspaceOpsProvider: Sendable {
             }
             do {
                 let ok = try await detach(request)
-                let encoded = try GnosticWirePayload.encode(WorkspaceMutationResult(accepted: ok), context: "workspace.detach result")
-                return .success(result: String(decoding: encoded, as: UTF8.self))
+                return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
             } catch {
                 return failure(for: error)
             }
@@ -192,22 +180,6 @@ public struct WorkspaceOpsProvider: Sendable {
               let data = parameters.data(using: .utf8),
               let request = try? JSONDecoder().decode(WorkspaceOpsRequest.self, from: data) else { return nil }
         return request
-    }
-
-    private func decodeList(_ parameters: String?) -> WorkspaceListRequest? {
-        guard let parameters else { return nil }
-        return try? JSONDecoder().decode(WorkspaceListRequest.self, from: Data(parameters.utf8))
-    }
-
-    private func boundedPage(_ values: [WorkspaceListing], offset: Int, limit: Int) -> [WorkspaceListing] {
-        guard offset < values.count else { return [] }
-        var result: [WorkspaceListing] = []
-        for value in values.dropFirst(offset).prefix(limit) {
-            let candidate = result + [value]
-            guard (try? GnosticWirePayload.encode(WorkspaceListResult(workspaces: candidate), context: "workspace.list result")) != nil else { break }
-            result.append(value)
-        }
-        return result
     }
 
     private func protocolError(_ parameters: String?) -> CallHandlerResult? {

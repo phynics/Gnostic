@@ -2,8 +2,6 @@
 
 import Axoloty
 import Foundation
-import PKContracts
-import PositronicKit
 
 /// The narrow network-discovery capability consumed by Workspace domain logic.
 /// Tests can supply a stub without constructing Axoloty or a broker connection.

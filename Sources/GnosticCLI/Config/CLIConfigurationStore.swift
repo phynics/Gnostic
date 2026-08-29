@@ -132,8 +132,16 @@ public struct CLIConfigurationStore: Sendable {
         return configuration
     }
 
-    /// Sets a compatibility key in the manifest, preserving all unrelated graph data.
+    /// Sets a broker compatibility key in the manifest, preserving all unrelated graph data.
+    /// Positronic fields require an explicitly selected Ascendant through
+    /// `config positronic` and cannot be mutated through this compatibility API.
     public func setValue(_ value: String, for key: ConfigurationKey) throws {
+        switch key {
+        case .llmProvider, .llmEndpoint, .llmModel, .llmUtilityModel, .llmFastModel, .llmAPIKey:
+            throw CLIConfigurationError.invalidArgument("Use `gnostic config positronic` with an explicit Ascendant ID.")
+        default:
+            break
+        }
         let validated = try key.validatedValue(value)
         try ManifestStoreLock.withLock(at: path()) {
             var manifest = try existingManifestOrEmptyUnlocked()
@@ -175,8 +183,12 @@ public struct CLIConfigurationStore: Sendable {
                     try writeManifestUnlocked(migrated)
                     return migrated
                 }
-                try manifest.validate()
-                return manifest
+                let canonical = canonicalV2Manifest(manifest)
+                try canonical.validate()
+                if canonical != manifest {
+                    try writeManifestUnlocked(canonical)
+                }
+                return canonical
             } catch let error as NodeManifestError {
                 throw CLIConfigurationError.invalidManifest(error, url)
             } catch {
@@ -211,6 +223,16 @@ public struct CLIConfigurationStore: Sendable {
             if data.isEmpty { throw CLIConfigurationError.malformedFile(path()) }
         }
         return try loadManifestUnlocked() ?? NodeManifest.empty(broker: defaultBroker)
+    }
+
+    /// Removes the retired profile identity marker from v2 files emitted by
+    /// the pre-164 CLI projection without changing opaque backend settings.
+    private func canonicalV2Manifest(_ manifest: NodeManifest) -> NodeManifest {
+        var result = manifest
+        for index in result.ascendants.indices where result.ascendants[index].backend.kind == "positronic" {
+            result.ascendants[index].backend.settings.removeValue(forKey: "_legacyID")
+        }
+        return result
     }
 
     private var defaultBroker: NodeManifest.Broker {
@@ -271,13 +293,14 @@ public struct CLIConfigurationStore: Sendable {
             llmFastModel: nil,
             llmAPIKey: nil
         )
-        if let profile = manifest.llmProfiles.first {
-            result.llmProvider = profile.provider
-            result.llmEndpoint = profile.endpoint
-            result.llmModel = profile.model
-            result.llmUtilityModel = profile.utilityModel
-            result.llmFastModel = profile.fastModel
-            result.llmAPIKey = profile.apiKey
+        if let ascendant = manifest.ascendants.first(where: { $0.backend.kind == "positronic" }) {
+            let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
+            result.llmProvider = configuration.provider
+            result.llmEndpoint = configuration.endpoint
+            result.llmModel = configuration.model
+            result.llmUtilityModel = configuration.utilityModel
+            result.llmFastModel = configuration.fastModel
+            result.llmAPIKey = configuration.apiKey
         }
         return result
     }
@@ -285,35 +308,6 @@ public struct CLIConfigurationStore: Sendable {
     private func manifestApplying(_ configuration: CLIConfiguration, to manifest: NodeManifest) throws -> NodeManifest {
         var result = manifest
         result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword)
-        let hasProfileValues = configuration.llmProvider != nil
-            || configuration.llmEndpoint != nil
-            || configuration.llmModel != nil
-            || configuration.llmUtilityModel != nil
-            || configuration.llmFastModel != nil
-            || configuration.llmAPIKey != nil
-        if hasProfileValues && result.ascendants.isEmpty {
-            let ascendantID = UUID.makeVersion4()
-            let timelineID = UUID.makeVersion4()
-            let profile = PositronicProfile(
-                id: UUID.makeVersion4(), ascendantID: ascendantID,
-                provider: configuration.llmProvider ?? "positronic",
-                endpoint: configuration.llmEndpoint, model: configuration.llmModel,
-                utilityModel: configuration.llmUtilityModel, fastModel: configuration.llmFastModel,
-                apiKey: configuration.llmAPIKey
-            )
-            result.ascendants = [.init(id: ascendantID, name: "Default Ascendant", defaultTimelineID: timelineID, backend: profile.backend())]
-            result.timelines = [.init(id: timelineID, title: "Default Timeline", operatingAscendantID: ascendantID)]
-            return result
-        }
-        guard let first = result.llmProfiles.first else { return result }
-        var profile = first
-        profile.provider = configuration.llmProvider ?? profile.provider
-        profile.endpoint = configuration.llmEndpoint
-        profile.model = configuration.llmModel
-        profile.utilityModel = configuration.llmUtilityModel
-        profile.fastModel = configuration.llmFastModel
-        profile.apiKey = configuration.llmAPIKey
-        result.llmProfiles = [profile] + result.llmProfiles.dropFirst()
         return result
     }
 
@@ -322,21 +316,18 @@ public struct CLIConfigurationStore: Sendable {
         let hasLLMValues = [legacy.llmProvider, legacy.llmEndpoint, legacy.llmModel, legacy.llmUtilityModel, legacy.llmFastModel, legacy.llmAPIKey].contains { $0 != nil }
         let timelineID = UUID.makeVersion4()
         let ascendantID = UUID.makeVersion4()
-        let profile: PositronicProfile? = hasLLMValues ? .init(
-            id: UUID.makeVersion4(),
-            ascendantID: ascendantID,
+        let backend = hasLLMValues ? PositronicBackendConfiguration(
             provider: configuration.llmProvider ?? "positronic",
-            name: "Migrated LLM Profile",
             endpoint: configuration.llmEndpoint,
             model: configuration.llmModel,
             utilityModel: configuration.llmUtilityModel,
             fastModel: configuration.llmFastModel,
             apiKey: configuration.llmAPIKey
-        ) : nil
+        ).applying() : .init(kind: "positronic")
         return NodeManifest(
             broker: broker,
             node: .init(id: UUID.makeVersion4()),
-            ascendants: [.init(id: ascendantID, name: "Migrated Ascendant", defaultTimelineID: timelineID, backend: profile?.backend() ?? .init(kind: "positronic"))],
+            ascendants: [.init(id: ascendantID, name: "Migrated Ascendant", defaultTimelineID: timelineID, backend: backend)],
             timelines: [.init(id: timelineID, title: "Default Timeline", operatingAscendantID: ascendantID)],
             workspaces: [.init(id: UUID.makeVersion4(), name: "Echo Workspace", uri: "echo://default")]
         )

@@ -27,7 +27,6 @@ public struct RunnerConfiguration: Sendable {
     public let host: String
     public let port: Int
     public let namespace: String
-    public let scenario: Bool
 
     /// Resolves flags (highest priority), then environment, then defaults.
     ///
@@ -66,8 +65,7 @@ public struct RunnerConfiguration: Sendable {
         return RunnerConfiguration(
             host: host,
             port: port,
-            namespace: namespace,
-            scenario: false
+            namespace: namespace
         )
     }
 }
@@ -85,4 +83,3 @@ public struct RunnerParsingFlags: Sendable {
         self.namespace = namespace
     }
 }
-

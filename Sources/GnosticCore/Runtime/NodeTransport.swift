@@ -33,7 +33,7 @@ public final class NodeTransport {
     private let registry: NodeRegistry?
     private let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
-    private let workspaceReferences: @MainActor () async -> [WorkspaceReference]
+    private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
     private let workspaceProvider: MultiplexedWorkspaceProvider?
     private var registrations: [CallHandlerRegistration] = []
     private var discoverResponder: DiscoverResponderRegistration?
@@ -47,7 +47,7 @@ public final class NodeTransport {
         registry: NodeRegistry? = nil,
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
-        workspaceReferences: @escaping @MainActor () async -> [WorkspaceReference] = { [] },
+        workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
         localWorkspaces: [UUID: any WorkspaceProvider] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         turn: @escaping Turn,
@@ -200,7 +200,7 @@ public final class NodeTransport {
         return objects
     }
 
-    func cancel() async {
+    func cancel() {
         discoverResponder?.cancel()
         discoverResponder = nil
         queryResponder?.cancel()
@@ -210,7 +210,6 @@ public final class NodeTransport {
         let responses = permissionResponses
         permissionResponses = nil
         responses?.cancel()
-        await responses?.value
         if let lifecycle {
             advertisedObjects.values.forEach { lifecycle.deadvertiseDiscoverableObject(object: $0) }
         }

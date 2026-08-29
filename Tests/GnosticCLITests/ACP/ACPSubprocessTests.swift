@@ -496,9 +496,9 @@ private func makeACPNode(
     )
     var adapters = NodeRuntimeAdapters.default
     adapters.ascendants.register(kind: "positronic") { _, _ in RepeatingToolLanguageModel() }
-    adapters.workspaces.register(kind: "permissioned-echo") { configuration, _ in
+    adapters.workspaces.registerProduct(kind: "permissioned-echo") { configuration in
         let tool = WorkspaceToolDefinition(
-            id: NodeRuntime.echoToolID,
+            id: EchoWorkspace.toolID,
             name: "Workspace echo",
             description: "Echoes fixture input.",
             requiresPermission: true
@@ -537,7 +537,7 @@ private struct PermissionedEchoWorkspace: WorkspaceToolProvider, WorkspaceFilePr
     func listTools() async throws -> [ToolReference] { reference.tools }
 
     func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
-        guard id == NodeRuntime.echoToolID else { throw WorkspaceError.toolExecutionNotSupported }
+        guard id == EchoWorkspace.toolID else { throw WorkspaceError.toolExecutionNotSupported }
         return .success(parameters["value"]?.value as? String ?? "")
     }
 

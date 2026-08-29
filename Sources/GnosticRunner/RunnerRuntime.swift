@@ -25,3 +25,14 @@ final class RunnerRuntime {
     func start() async throws { try await container.startAndWaitUntilReady() }
     func shutdown() { container.shutdown() }
 }
+
+private enum RunnerRuntimeError: Error {
+    case missingRuntimeComponent
+}
+
+private extension Optional {
+    func unwrap() throws -> Wrapped {
+        guard let self else { throw RunnerRuntimeError.missingRuntimeComponent }
+        return self
+    }
+}

@@ -7,6 +7,21 @@ import Testing
 
 @Suite("Ascendant turn update replay")
 struct AscendantTurnUpdateStoreTests {
+    @Test("finishing the store closes its event stream")
+    func finishingClosesEventStream() async {
+        let store = AscendantTurnUpdateStore()
+        let events = await store.events()
+        let consumer = Task {
+            var count = 0
+            for await _ in events { count += 1 }
+            return count
+        }
+
+        await store.finish()
+
+        #expect(await consumer.value == 0)
+    }
+
     @Test("retains ordered updates and reports terminal state")
     func orderedUpdates() async {
         let store = AscendantTurnUpdateStore(maxEvents: 4, maxBytes: 10_000)

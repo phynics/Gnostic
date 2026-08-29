@@ -74,11 +74,10 @@ struct InspectCommandsTests {
         let lifecycle = try #require(
             provider.getController(name: "ObjectLifecycleController") as ObjectLifecycleController?
         )
-        let object = GnosticWorkspaceObject(workspace: WorkspaceReference(
+        let object = GnosticWorkspaceObject(workspace: GnosticWorkspaceReference(
             id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://inspect")!,
-            location: .runtime,
-            tools: [.custom(.init(id: "echo", name: "Echo", description: "Echoes input."))],
+            uri: "workspace://inspect",
+            tools: [.init(id: "echo", name: "Echo", description: "Echoes input.")],
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         ))
         try await provider.startAndWaitUntilReady()
@@ -131,7 +130,7 @@ enum InspectRendererTestsEntry {
                 id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000003")!,
                 uri: "workspace://alpha",
                 isAvailable: true,
-                tools: [GnosticWorkspaceTool(definition: WorkspaceToolDefinition(id: "echo", name: "Echo", description: "Echoes input."))]
+                tools: [GnosticWorkspaceTool(definition: GnosticWorkspaceToolDefinition(id: "echo", name: "Echo", description: "Echoes input."))]
             )
         )
     }

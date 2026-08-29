@@ -403,11 +403,8 @@ public struct NodeManifest: Codable, Equatable, Sendable {
             let legacy = try container.decodeIfPresent([LegacyAscendant].self, forKey: .ascendants) ?? []
             legacyMigrationError = legacy.contains { value in value.profileID != nil && byID[value.profileID!] == nil }
                 || legacyMigrationError
-            let references = legacy.compactMap(\.profileID).reduce(into: [:]) { $0[$1, default: 0] += 1 }
             ascendants = legacy.map { value in
                 var settings = byID[value.profileID ?? UUID()]?.values ?? [:]
-                let migratedID = (value.profileID.flatMap { references[$0] == 1 ? $0 : nil }) ?? value.id
-                settings["_legacyID"] = .string(migratedID.uuidString.lowercased())
                 let secrets = settings.filter { key, _ in
                     let normalized = key.lowercased()
                     return normalized.contains("secret") || normalized.contains("password") || normalized.contains("token") || normalized.hasSuffix("key")

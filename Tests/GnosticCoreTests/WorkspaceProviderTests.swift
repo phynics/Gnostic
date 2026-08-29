@@ -84,7 +84,7 @@ struct WorkspaceProviderTests {
         let runtimeRepository = InMemoryThreadRuntimeRepository()
         let kit = PositronicKit(configuration: .init(
             provider: .init(languageModel: UnconfiguredLLMService()),
-            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store, workspaceBindingRepository: runtimeRepository),
+            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store),
             runtime: .init(workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
         ))
         let timeline = try await kit.threads.create()
@@ -144,11 +144,11 @@ struct WorkspaceProviderTests {
     @Test("provider preserves advertised custom definitions and dispatches the addressed tool")
     func providerDispatchesAdvertisedTool() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000001")!
-        let definition = WorkspaceToolDefinition(
+        let definition = GnosticWorkspaceToolDefinition(
             id: "search_notes",
             name: "Search notes",
             description: "Searches remote notes.",
-            parametersSchema: ["query": AnyCodable("string")]
+            parametersSchema: ["query": .string("string")]
         )
         let provider = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
             #expect(toolID == "search_notes")
@@ -156,7 +156,7 @@ struct WorkspaceProviderTests {
             return .success("found")
         }
 
-        #expect(await provider.listTools() == [.custom(definition: definition)])
+        #expect(await provider.listTools() == [GnosticWorkspaceTool(definition: definition)])
         let result = try await provider.invoke(
             WorkspaceInvocation(workspaceID: workspaceID, toolID: "search_notes", arguments: ["query": AnyCodable("wave 2")])
         )
@@ -170,7 +170,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
         let provider = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
-            tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
+            tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
         ) { _, _ in
             throw InjectedFailure()
         }
@@ -193,7 +193,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000007")!
         let provider = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
-            tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
+            tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
         ) { _, _ in
             throw CancellationError()
         }
@@ -298,7 +298,7 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(caller)
         try await startBrokerManager(remote)
         let id = UUID()
-        let provider = GnosticWorkspaceProvider(workspaceID: id, tools: [WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
+        let provider = GnosticWorkspaceProvider(workspaceID: id, tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
             #expect(toolID == "custom")
             return .success("broker-result")
         }
