@@ -7,6 +7,57 @@ import Testing
 
 @Suite("Ascendant backend lifecycle")
 struct BackendLifecycleTests {
+    @Test("a stale leased Timeline session never enters backend execution")
+    @MainActor
+    func staleTimelineSessionRejectsBeforeExecution() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000721")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000722")!
+        let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000723")!
+        let probe = LifecycleBackendProbe()
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: probe,
+            outcome: .success
+        )
+        let owner = AscendantBackendSession(
+            ascendantID: ascendantID,
+            backend: backend,
+            lease: lease,
+            generation: 1
+        )
+        var isCurrent = true
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                isCurrent
+                    && id == ascendantID
+                    && generation == 1
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            failure: { _, _, _ in },
+            backend: { _ in backend }
+        )
+        let backendTimeline = try await backend.timeline(id: timelineID)
+        let timeline = LeasedBackendTimelineSession(
+            parent: owner,
+            timeline: backendTimeline,
+            provider: provider
+        )
+
+        isCurrent = false
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await timeline.runTurn(.init(message: "must not execute"), updates: NoopLifecycleUpdateSink())
+        }
+        #expect(await probe.runCount == 0)
+    }
+
     @Test("startup construction failure shuts down already-created backends")
     @MainActor
     func startupConstructionFailureRollsBackAllCreatedBackends() async throws {
@@ -1421,7 +1472,14 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
 
     func enabledToolIDs(for _: UUID) async -> [String] { [] }
 
-    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+        guard timelines.contains(where: { $0.id == id }) else {
+            throw AscendantBackendError.timelineNotFound(id)
+        }
+        return TimelineSession(id: id, backend: self)
+    }
+
+    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) async throws -> String {
         await probe.recordRun()
         let outcome = outcomes.isEmpty ? .success : outcomes.removeFirst()
         await probe.waitForRunReleaseIfNeeded()
@@ -1430,6 +1488,24 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         case .success: return "ok: \(request.message)"
         case .lifecycle: throw AscendantBackendError.lifecycleUnusable(.init(message: "backend lifecycle failed"))
         case .ordinary: throw AscendantBackendError.terminal(.init(code: "ordinaryFailure", message: "ordinary failure"))
+        }
+    }
+
+    @MainActor
+    private final class TimelineSession: AscendantBackendTimelineSession {
+        let id: UUID
+        private let backend: LifecycleFixtureBackend
+
+        init(id: UUID, backend: LifecycleFixtureBackend) {
+            self.id = id
+            self.backend = backend
+        }
+
+        func runTurn(
+            _ request: AscendantBackendTimelineTurnRequest,
+            updates _: any AscendantBackendUpdateSink
+        ) async throws -> String {
+            try await backend.runTurn(request)
         }
     }
 
@@ -1445,4 +1521,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         await probe.recordShutdownStarted(factoryNumber)
         await probe.waitForShutdownReleaseIfNeeded(factoryNumber)
     }
+}
+
+private struct NoopLifecycleUpdateSink: AscendantBackendUpdateSink {
+    func append(_: AscendantBackendUpdate) async {}
 }

@@ -67,23 +67,16 @@ public final class TurnService {
                     detail: error.localizedDescription
                 )
             }
-            do {
-                let result = try await session.backend.runTurn(
-                    AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
-                    updates: sink
-                )
-                guard await self.backendProvider.isCurrentSession(session),
-                      await self.backendProvider.isRunning,
-                      await self.backendProvider.lifecycleGeneration == generation else {
-                    throw CancellationError()
-                }
-                return result
-            } catch let error as AscendantBackendError {
-                if case let .lifecycleUnusable(failure) = error {
-                    await self.backendProvider.markLifecycleFailure(session, failure: failure)
-                }
-                throw error
+            let timeline = try await self.backendProvider.timeline(id: request.timelineID, in: session)
+            let result = try await timeline.runTurn(
+                .init(message: request.message, clientTurnID: request.clientTurnID),
+                updates: sink
+            )
+            guard self.backendProvider.isRunning,
+                  self.backendProvider.lifecycleGeneration == generation else {
+                throw CancellationError()
             }
+            return result
         }
     }
 }

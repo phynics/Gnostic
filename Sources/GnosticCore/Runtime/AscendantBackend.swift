@@ -142,14 +142,13 @@ public struct AscendantBackendTimeline: Sendable, Equatable {
     public var attachedAscendantID: UUID? { ascendantID }
 }
 
-/// A Timeline-addressed operation supplied to an Ascendant Backend.
-public struct AscendantBackendTurnRequest: Sendable, Equatable {
-    public let timelineID: UUID
+/// A turn supplied to a backend Timeline session. Timeline identity is bound
+/// when the session is opened and cannot drift between execution calls.
+public struct AscendantBackendTimelineTurnRequest: Sendable, Equatable {
     public let message: String
     public let clientTurnID: String?
 
-    public init(timelineID: UUID, message: String, clientTurnID: String? = nil) {
-        self.timelineID = timelineID
+    public init(message: String, clientTurnID: String? = nil) {
         self.message = message
         self.clientTurnID = clientTurnID
     }
@@ -181,6 +180,19 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
 /// Host-owned sink for backend turn updates.
 public protocol AscendantBackendUpdateSink: Sendable {
     func append(_ update: AscendantBackendUpdate) async
+}
+
+/// Backend-owned execution context for one Gnostic Timeline.
+///
+/// Implementations may hold a provider-native thread handle, transcript, and
+/// tool context. Gnostic retains ownership of routing and Timeline identity.
+@MainActor
+public protocol AscendantBackendTimelineSession: AnyObject, Sendable {
+    var id: UUID { get }
+    func runTurn(
+        _ request: AscendantBackendTimelineTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String
 }
 
 /// A generic, backend-neutral description of a Workspace capability.
@@ -413,7 +425,7 @@ public protocol AscendantBackend: AnyObject, Sendable {
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
     func removeTimeline(id: UUID) async
     func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
-    func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession
     func cancel() async
     func shutdown() async
 }

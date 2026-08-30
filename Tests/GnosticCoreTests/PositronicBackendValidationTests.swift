@@ -288,8 +288,25 @@ private final class ReconstructionValidationBackend: AscendantBackend {
         )
     }
 
-    func runTurn(_: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
-        throw AscendantBackendError.lifecycleUnusable(.init(message: "fixture lifecycle failure"))
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+        guard id == timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
+        return TimelineSession(id: id)
+    }
+
+    @MainActor
+    private final class TimelineSession: AscendantBackendTimelineSession {
+        let id: UUID
+
+        init(id: UUID) {
+            self.id = id
+        }
+
+        func runTurn(
+            _: AscendantBackendTimelineTurnRequest,
+            updates _: any AscendantBackendUpdateSink
+        ) async throws -> String {
+            throw AscendantBackendError.lifecycleUnusable(.init(message: "fixture lifecycle failure"))
+        }
     }
 
     func cancel() async {}

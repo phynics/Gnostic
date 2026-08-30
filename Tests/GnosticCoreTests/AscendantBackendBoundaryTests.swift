@@ -26,14 +26,16 @@ struct AscendantBackendBoundaryTests {
 
         #expect(fixture.identity.id == ascendantID)
         #expect(try await fixture.operatedTimelines().map(\.id) == [timelineID])
-        let result = try await fixture.runTurn(
-            .init(timelineID: timelineID, message: "hello"),
+        let timeline = try await fixture.timeline(id: timelineID)
+        #expect(timeline.id == timelineID)
+        let result = try await timeline.runTurn(
+            .init(message: "hello"),
             updates: NoopBackendUpdateSink()
         )
         #expect(result == "fixture: hello")
         await fixture.shutdown()
         await #expect(throws: AscendantBackendError.lifecycleUnusable(.init(code: "fixtureShutdown", message: "fixture is shut down"))) {
-            _ = try await fixture.runTurn(.init(timelineID: timelineID, message: "after shutdown"), updates: NoopBackendUpdateSink())
+            _ = try await timeline.runTurn(.init(message: "after shutdown"), updates: NoopBackendUpdateSink())
         }
     }
 
@@ -129,11 +131,34 @@ private final class FixtureBackend: AscendantBackend {
         return timeline
     }
 
-    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+        guard timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
+        return TimelineSession(id: id, backend: self)
+    }
+
+    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) throws -> String {
         guard !isShutdown else {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "fixtureShutdown", message: "fixture is shut down"))
         }
         return "fixture: \(request.message)"
+    }
+
+    @MainActor
+    private final class TimelineSession: AscendantBackendTimelineSession {
+        let id: UUID
+        private let backend: FixtureBackend
+
+        init(id: UUID, backend: FixtureBackend) {
+            self.id = id
+            self.backend = backend
+        }
+
+        func runTurn(
+            _ request: AscendantBackendTimelineTurnRequest,
+            updates _: any AscendantBackendUpdateSink
+        ) async throws -> String {
+            try backend.runTurn(request)
+        }
     }
 
     func cancel() async {}

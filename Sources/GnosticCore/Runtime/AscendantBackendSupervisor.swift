@@ -14,6 +14,50 @@ struct AscendantBackendSession {
     let generation: UInt64
 }
 
+/// A Timeline execution session fenced by the backend lease that opened it.
+/// The wrapper keeps lifecycle policy out of TurnService while the backend's
+/// Timeline session owns provider-native execution state.
+@MainActor
+struct LeasedBackendTimelineSession {
+    let id: UUID
+    private let parent: AscendantBackendSession
+    private let timeline: any AscendantBackendTimelineSession
+    private let provider: any BackendSessionProviding
+
+    init(
+        parent: AscendantBackendSession,
+        timeline: any AscendantBackendTimelineSession,
+        provider: any BackendSessionProviding
+    ) {
+        id = timeline.id
+        self.parent = parent
+        self.timeline = timeline
+        self.provider = provider
+    }
+
+    func runTurn(
+        _ request: AscendantBackendTimelineTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        guard provider.isRunning, provider.isCurrentSession(parent) else {
+            throw CancellationError()
+        }
+        do {
+            let result = try await timeline.runTurn(request, updates: updates)
+            guard provider.isRunning, provider.isCurrentSession(parent) else {
+                throw CancellationError()
+            }
+            return result
+        } catch let error as AscendantBackendError {
+            if case let .lifecycleUnusable(failure) = error,
+               provider.isCurrentSession(parent) {
+                await provider.markLifecycleFailure(parent, failure: failure)
+            }
+            throw error
+        }
+    }
+}
+
 /// Typed admission boundary shared by domain services. The supervisor owns
 /// the lifecycle and lease policy; services never receive callback bundles.
 @MainActor
@@ -28,6 +72,29 @@ protocol BackendSessionProviding: AnyObject, Sendable {
     func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID?
     func markLifecycleFailure(_ session: AscendantBackendSession, failure: AscendantBackendLifecycleFailure) async
     func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async
+}
+
+extension BackendSessionProviding {
+    func timeline(
+        id: UUID,
+        in session: AscendantBackendSession
+    ) async throws -> LeasedBackendTimelineSession {
+        guard isRunning, isCurrentSession(session) else { throw CancellationError() }
+        do {
+            let timeline = try await session.backend.timeline(id: id)
+            guard timeline.id == id else {
+                throw AscendantBackendError.timelineNotFound(id)
+            }
+            guard isRunning, isCurrentSession(session) else { throw CancellationError() }
+            return LeasedBackendTimelineSession(parent: session, timeline: timeline, provider: self)
+        } catch let error as AscendantBackendError {
+            if case let .lifecycleUnusable(failure) = error,
+               isCurrentSession(session) {
+                await markLifecycleFailure(session, failure: failure)
+            }
+            throw error
+        }
+    }
 }
 
 /// Compatibility bridge for tests and older internal composition points that
