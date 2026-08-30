@@ -12,10 +12,24 @@ RUN apt-get update \
         git \
         mosquitto \
         mosquitto-clients \
-        nodejs \
-        npm \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+ARG NODE_VERSION=22.18.0
+
+RUN node_arch=$(dpkg --print-architecture) \
+    && case "$node_arch" in \
+        amd64) node_arch=x64 ;; \
+        arm64) node_arch=arm64 ;; \
+        armhf) node_arch=armv7l ;; \
+        *) echo "Unsupported Node.js architecture: $node_arch" >&2; exit 1 ;; \
+    esac \
+    && curl --fail --location --silent --show-error \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.gz" \
+        | tar --extract --gzip --strip-components=1 --directory /usr/local \
+    && ln -s /usr/local/bin/node /usr/bin/node \
+    && node --version \
+    && npm --version
 
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
