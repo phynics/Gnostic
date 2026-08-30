@@ -7,6 +7,7 @@ cargo --version
 git --version
 node --version
 npm --version
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)'
 test -w /workspace/.swiftpm-cache
 mosquitto -c /etc/mosquitto/gnostic.conf -d
 smoke_output=$(mktemp)
