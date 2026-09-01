@@ -58,24 +58,49 @@ struct LeasedBackendTimelineSession {
         _ request: AscendantBackendTimelineTurnRequest,
         updates: any AscendantBackendUpdateSink
     ) async throws -> String {
-        guard provider.isRunning, provider.isCurrentSession(parent) else {
+        guard !Task.isCancelled,
+              provider.isRunning,
+              provider.isCurrentSession(parent) else {
             throw CancellationError()
         }
+        let updateGate = LeaseFencedUpdateGate()
         let fencedUpdates = LeaseFencedUpdateSink(
             updates: updates,
             parent: parent,
-            provider: provider
+            provider: provider,
+            gate: updateGate
         )
         do {
-            let result = try await timeline.runTurn(request, updates: fencedUpdates)
-            guard provider.isRunning, provider.isCurrentSession(parent) else {
+            let result = try await withTaskCancellationHandler(operation: {
+                try await timeline.runTurn(request, updates: fencedUpdates)
+            }, onCancel: {
+                updateGate.close()
+            })
+            updateGate.close()
+            guard !Task.isCancelled,
+                  provider.isRunning,
+                  provider.isCurrentSession(parent) else {
                 throw CancellationError()
             }
             return result
         } catch let error as AscendantBackendError {
+            updateGate.close()
+            guard !Task.isCancelled,
+                  provider.isRunning,
+                  provider.isCurrentSession(parent) else {
+                throw CancellationError()
+            }
             if case let .lifecycleUnusable(failure) = error,
                provider.isCurrentSession(parent) {
                 await provider.markLifecycleFailure(parent, failure: failure)
+            }
+            throw error
+        } catch {
+            updateGate.close()
+            guard !Task.isCancelled,
+                  provider.isRunning,
+                  provider.isCurrentSession(parent) else {
+                throw CancellationError()
             }
             throw error
         }
@@ -89,11 +114,34 @@ private struct LeaseFencedUpdateSink: AscendantBackendUpdateSink {
     let updates: any AscendantBackendUpdateSink
     let parent: AscendantBackendSession
     let provider: any BackendSessionProviding
+    let gate: LeaseFencedUpdateGate
 
     func append(_ update: AscendantBackendUpdate) async {
-        guard !Task.isCancelled,
+        guard gate.isOpen,
+              !Task.isCancelled,
               await provider.isCurrentSession(parent) else { return }
+        guard gate.isOpen, !Task.isCancelled else { return }
         await updates.append(update)
+    }
+}
+
+/// Synchronously closes a Turn's update channel from both its owner task and
+/// its cancellation handler. The sink remains safe to retain after the native
+/// backend returns because late provider callbacks observe this closed gate.
+private final class LeaseFencedUpdateGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = true
+
+    var isOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return open
+    }
+
+    func close() {
+        lock.lock()
+        open = false
+        lock.unlock()
     }
 }
 
@@ -123,26 +171,41 @@ extension BackendSessionProviding {
         id: UUID,
         in session: AscendantBackendSession
     ) async throws -> LeasedBackendTimelineSession {
-        guard isRunning, isCurrentSession(session) else { throw CancellationError() }
+        guard !Task.isCancelled, isRunning, isCurrentSession(session) else {
+            throw CancellationError()
+        }
+        let timeline: any AscendantBackendTimelineSession
         do {
-            let timeline = try await session.backend.timeline(id: id)
-            guard timeline.id == id else {
-                let violation = AscendantBackendContractViolation.sessionTimelineMismatch(
-                    expected: id,
-                    actual: timeline.id
-                )
-                await markContractViolation(session, violation: violation)
-                throw AscendantBackendError.contractViolation(violation)
-            }
-            guard isRunning, isCurrentSession(session) else { throw CancellationError() }
-            return LeasedBackendTimelineSession(parent: session, timeline: timeline, provider: self)
+            timeline = try await session.backend.timeline(id: id)
         } catch let error as AscendantBackendError {
-            if case let .lifecycleUnusable(failure) = error,
-               isCurrentSession(session) {
+            guard !Task.isCancelled, isRunning, isCurrentSession(session) else {
+                throw CancellationError()
+            }
+            if case let .lifecycleUnusable(failure) = error {
                 await markLifecycleFailure(session, failure: failure)
             }
             throw error
+        } catch {
+            guard !Task.isCancelled, isRunning, isCurrentSession(session) else {
+                throw CancellationError()
+            }
+            throw error
         }
+        guard !Task.isCancelled, isRunning, isCurrentSession(session) else {
+            throw CancellationError()
+        }
+        guard timeline.id == id else {
+            let violation = AscendantBackendContractViolation.sessionTimelineMismatch(
+                expected: id,
+                actual: timeline.id
+            )
+            await markContractViolation(session, violation: violation)
+            throw AscendantBackendError.contractViolation(violation)
+        }
+        guard !Task.isCancelled, isRunning, isCurrentSession(session) else {
+            throw CancellationError()
+        }
+        return LeasedBackendTimelineSession(parent: session, timeline: timeline, provider: self)
     }
 }
 
@@ -199,12 +262,23 @@ final class ClosureBackendSessionProvider: BackendSessionProviding {
         _ ascendantID: UUID,
         admittedUnder admission: BackendTurnAdmission
     ) async throws -> AscendantBackendSession {
-        guard running(), generation() == admission.generation else {
-            throw NodeRuntimeError.notRunning
+        guard !Task.isCancelled, running() else {
+            throw CancellationError()
         }
-        let backend = try await self.backend(ascendantID)
-        guard running(), generation() == admission.generation else {
-            throw NodeRuntimeError.notRunning
+        guard generation() == admission.generation else {
+            throw CancellationError()
+        }
+        let backend: any AscendantBackend
+        do {
+            backend = try await self.backend(ascendantID)
+        } catch {
+            guard !Task.isCancelled, running(), generation() == admission.generation else {
+                throw CancellationError()
+            }
+            throw error
+        }
+        guard !Task.isCancelled, running(), generation() == admission.generation else {
+            throw CancellationError()
         }
         return AscendantBackendSession(
             ascendantID: ascendantID,
@@ -365,9 +439,11 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         _ ascendantID: UUID,
         admittedUnder admission: BackendTurnAdmission
     ) async throws -> AscendantBackendSession {
-        guard lifetime.state == .running,
-              lifetime.generation == admission.generation else {
-            throw NodeRuntimeError.notRunning
+        guard !Task.isCancelled, lifetime.state == .running else {
+            throw CancellationError()
+        }
+        guard lifetime.generation == admission.generation else {
+            throw CancellationError()
         }
         guard backendSpecs[ascendantID] != nil else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
@@ -375,11 +451,21 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         if let session = session(for: ascendantID, generation: admission.generation) {
             return session
         }
-        _ = try await reconstructBackend(for: ascendantID)
-        guard lifetime.state == .running,
+        do {
+            _ = try await reconstructBackend(for: ascendantID)
+        } catch {
+            guard !Task.isCancelled,
+                  lifetime.state == .running,
+                  lifetime.generation == admission.generation else {
+                throw CancellationError()
+            }
+            throw error
+        }
+        guard !Task.isCancelled,
+              lifetime.state == .running,
               lifetime.generation == admission.generation,
               let session = session(for: ascendantID, generation: admission.generation) else {
-            throw NodeRuntimeError.notRunning
+            throw CancellationError()
         }
         return session
     }

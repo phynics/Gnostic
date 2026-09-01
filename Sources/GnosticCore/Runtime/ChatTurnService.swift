@@ -63,6 +63,8 @@ public final class TurnService {
                 )
             } catch let error as AscendantTurnError {
                 throw error
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 throw AscendantTurnError.backendUnavailable(
                     timelineID: request.timelineID,
