@@ -484,7 +484,7 @@ struct NodeTransportTests {
             uri: WorkspaceURI(parsing: uri)!,
             location: .attached
         )
-        let oldBackendReference = BackendWorkspaceReference(reference: oldReference)
+        let oldBackendReference = BackendWorkspaceReference(reference: oldReference, status: .unavailable)
         let backend = ServiceStubAscendantBackend(
             ascendantID: ascendantID,
             timelineID: firstTimelineID,

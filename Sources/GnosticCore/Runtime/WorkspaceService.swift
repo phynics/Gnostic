@@ -267,6 +267,18 @@ public final class WorkspaceService {
 
     func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> WorkspaceReference {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
+        return try await withWorkspaceOperation(id: workspaceID) { [self] in
+            try await self.resolveNetworkWorkspaceWithinWorkspaceOperation(
+                workspaceID: workspaceID,
+                timeout: timeout
+            )
+        }
+    }
+
+    private func resolveNetworkWorkspaceWithinWorkspaceOperation(
+        workspaceID: UUID,
+        timeout: Duration
+    ) async throws -> WorkspaceReference {
         let generation = backendProvider.lifecycleGeneration
         let previousStatus = await registry.effectiveWorkspaceStatus(id: workspaceID)
         await discovery.discover(timeout: timeout)
@@ -303,7 +315,11 @@ public final class WorkspaceService {
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
-        try await installResolved(reference, workspaceID: workspaceID, previousStatus: previousStatus)
+        try await installResolvedWithinWorkspaceOperation(
+            reference,
+            workspaceID: workspaceID,
+            previousStatus: previousStatus
+        )
         return reference
     }
 
@@ -325,6 +341,14 @@ public final class WorkspaceService {
     @discardableResult
     func resolveAvailableNetworkWorkspace(_ workspaceID: UUID) async throws -> WorkspaceReference? {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
+        return try await withWorkspaceOperation(id: workspaceID) { [self] in
+            try await self.resolveAvailableNetworkWorkspaceWithinWorkspaceOperation(workspaceID)
+        }
+    }
+
+    private func resolveAvailableNetworkWorkspaceWithinWorkspaceOperation(
+        _ workspaceID: UUID
+    ) async throws -> WorkspaceReference? {
         let generation = backendProvider.lifecycleGeneration
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let previousStatus = await registry.effectiveWorkspaceStatus(id: workspaceID)
@@ -358,7 +382,11 @@ public final class WorkspaceService {
             }
             return nil
         }
-        try await installResolved(reference, workspaceID: workspaceID, previousStatus: previousStatus)
+        try await installResolvedWithinWorkspaceOperation(
+            reference,
+            workspaceID: workspaceID,
+            previousStatus: previousStatus
+        )
         return reference
     }
 
@@ -376,20 +404,6 @@ public final class WorkspaceService {
         return (ascendantID, try await ascendant.timeline(id: timelineID))
     }
 
-    private func installResolved(
-        _ reference: WorkspaceReference,
-        workspaceID: UUID,
-        previousStatus: NodeRegistry.WorkspaceEffectiveStatus?
-    ) async throws {
-        try await withWorkspaceOperation(id: workspaceID) { [self] in
-            try await self.installResolvedWithinWorkspaceOperation(
-                reference,
-                workspaceID: workspaceID,
-                previousStatus: previousStatus
-            )
-        }
-    }
-
     private func installResolvedWithinWorkspaceOperation(
         _ reference: WorkspaceReference,
         workspaceID: UUID,
@@ -397,7 +411,9 @@ public final class WorkspaceService {
     ) async throws {
         let backendReference = BackendWorkspaceReference(reference: reference)
         let generation = backendProvider.lifecycleGeneration
-        let priorReference = references[workspaceID].map { BackendWorkspaceReference(reference: $0) }
+        let priorReference = references[workspaceID].map {
+            BackendWorkspaceReference(reference: $0, status: Self.backendStatus(previousStatus))
+        }
         var mutations: [AppliedWorkspaceMutation] = []
         do {
             for target in await registry.attachmentTargets(for: workspaceID) {
@@ -555,6 +571,15 @@ public final class WorkspaceService {
         case .available: return .available
         case .unavailable: return .unavailable
         case .ambiguous, .malformed, .unsupported: return .unsupported
+        }
+    }
+
+    private static func backendStatus(_ status: NodeRegistry.WorkspaceEffectiveStatus?) -> BackendWorkspaceStatus {
+        switch status {
+        case .available: return .available
+        case .unavailable: return .unavailable
+        case .unsupported: return .unsupported
+        case nil: return .available
         }
     }
 
