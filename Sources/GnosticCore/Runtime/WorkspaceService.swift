@@ -312,13 +312,23 @@ public final class WorkspaceService {
         let status = await discovery.attachmentStatus(id: workspaceID)
         try requireCurrent(requestContext, generation: generation)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-        guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
+        guard await registry.setWorkspaceStatus(
+            id: workspaceID,
+            status: Self.effectiveStatus(status),
+            generation: generation,
+            guardedBy: requestContext
+        ) else {
             throw NodeRuntimeError.notRunning
         }
         do {
             try requireCurrent(requestContext, generation: generation)
         } catch {
-            await restoreWorkspaceStatus(id: workspaceID, status: previousStatus, generation: generation)
+            await restoreWorkspaceStatus(
+                id: workspaceID,
+                status: previousStatus,
+                generation: generation,
+                requestContext: requestContext
+            )
             throw error
         }
         guard case let .available(providerID, uri) = status else {
@@ -331,7 +341,12 @@ public final class WorkspaceService {
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
             try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+            guard await registry.setWorkspaceStatus(
+                id: workspaceID,
+                status: .unsupported,
+                generation: generation,
+                guardedBy: requestContext
+            ) else {
                 throw NodeRuntimeError.notRunning
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
@@ -339,7 +354,12 @@ public final class WorkspaceService {
         try requireCurrent(requestContext, generation: generation)
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+            guard await registry.setWorkspaceStatus(
+                id: workspaceID,
+                status: .unsupported,
+                generation: generation,
+                guardedBy: requestContext
+            ) else {
                 throw NodeRuntimeError.notRunning
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
@@ -347,7 +367,12 @@ public final class WorkspaceService {
         if let configured = await registry.workspace(id: workspaceID), configured.uri != uri {
             try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+            guard await registry.setWorkspaceStatus(
+                id: workspaceID,
+                status: .unsupported,
+                generation: generation,
+                guardedBy: requestContext
+            ) else {
                 throw NodeRuntimeError.notRunning
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
@@ -403,7 +428,11 @@ public final class WorkspaceService {
               let providerID = providerID(for: status) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             if case .available = status {
-                guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                guard await registry.setWorkspaceStatus(
+                    id: workspaceID,
+                    status: .unsupported,
+                    generation: generation
+                ) else {
                     throw NodeRuntimeError.notRunning
                 }
             }
@@ -415,7 +444,11 @@ public final class WorkspaceService {
         try requireCurrent(nil, generation: generation)
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-            await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation)
+            await registry.setWorkspaceStatus(
+                id: workspaceID,
+                status: .unsupported,
+                generation: generation
+            )
             return nil
         }
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
@@ -534,7 +567,12 @@ public final class WorkspaceService {
                 guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
                     throw NodeRuntimeError.notRunning
                 }
-                guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                guard await registry.setWorkspaceStatus(
+                    id: workspaceID,
+                    status: .unsupported,
+                    generation: generation,
+                    guardedBy: requestContext
+                ) else {
                     throw NodeRuntimeError.notRunning
                 }
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
@@ -549,7 +587,8 @@ public final class WorkspaceService {
                 _ = await registry.setWorkspaceStatus(
                     id: workspaceID,
                     status: previousStatus,
-                    generation: generation
+                    generation: generation,
+                    guardedBy: requestContext
                 )
             }
             for mutation in mutations.reversed() {
@@ -597,10 +636,16 @@ public final class WorkspaceService {
     private func restoreWorkspaceStatus(
         id workspaceID: UUID,
         status: NodeRegistry.WorkspaceEffectiveStatus?,
-        generation: UInt64
+        generation: UInt64,
+        requestContext: BackendSessionContext?
     ) async {
         guard let status else { return }
-        _ = await registry.setWorkspaceStatus(id: workspaceID, status: status, generation: generation)
+        _ = await registry.setWorkspaceStatus(
+            id: workspaceID,
+            status: status,
+            generation: generation,
+            guardedBy: requestContext
+        )
     }
 
     private func withWorkspaceOperation<T: Sendable>(

@@ -493,13 +493,17 @@ public actor NodeRegistry {
         return true
     }
 
+    /// Optionally validates an initiating backend session in the same actor
+    /// turn as the status mutation.
     @discardableResult
     func setWorkspaceStatus(
         id: UUID,
         status: WorkspaceEffectiveStatus,
-        generation: UInt64
+        generation: UInt64,
+        guardedBy context: BackendSessionContext? = nil
     ) -> Bool {
         guard lifecycleGeneration == generation else { return false }
+        if let context, !isCurrentBackendContext(context) { return false }
         _ = setWorkspaceStatus(id: id, status: status)
         return true
     }
@@ -518,7 +522,11 @@ public actor NodeRegistry {
     }
 
     private func requireBackendContext(_ context: BackendSessionContext) throws {
-        guard lifecycleGeneration == context.generation else { throw NodeRuntimeError.notRunning }
-        try requireBackendLease(context.lease, for: context.ascendantID)
+        guard isCurrentBackendContext(context) else { throw NodeRuntimeError.notRunning }
+    }
+
+    private func isCurrentBackendContext(_ context: BackendSessionContext) -> Bool {
+        guard lifecycleGeneration == context.generation else { return false }
+        return backendLeases[context.ascendantID] == context.lease
     }
 }

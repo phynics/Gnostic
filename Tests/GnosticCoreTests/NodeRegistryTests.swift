@@ -87,28 +87,40 @@ struct NodeRegistryTests {
     @Test("a retired origin cannot mutate canonical state in a guarded registry transaction")
     func guardedBackendMutationRejectsRetiredOrigin() async throws {
         let fixture = try Fixture()
-        let lease = UUID.makeVersion4()
+        let targetLease = UUID.makeVersion4()
+        let originLease = UUID.makeVersion4()
         let registry = try NodeRegistry(
             plan: fixture.plan,
             operatedTimelines: [fixture.operated],
-            backendLeases: [fixture.ascendantID: lease]
+            backendLeases: [fixture.ascendantID: targetLease]
         )
-        let context = BackendSessionContext(
+        let targetContext = BackendSessionContext(
             ascendantID: fixture.ascendantID,
-            lease: lease,
+            lease: targetLease,
             generation: 0
         )
-        await registry.invalidateBackendLease(for: fixture.ascendantID)
+        let originContext = BackendSessionContext(
+            ascendantID: fixture.ascendantID,
+            lease: originLease,
+            generation: 0
+        )
 
         await #expect(throws: NodeRuntimeError.notRunning) {
             try await registry.resolveLazyWorkspace(
                 id: fixture.networkWorkspaceID,
                 uri: "workspace://expected",
                 toolIDs: ["remote_echo"],
-                generation: context.generation,
-                guardedBy: context
+                generation: originContext.generation,
+                guardedBy: originContext
             )
         }
+        #expect(await registry.workspace(id: fixture.networkWorkspaceID)?.isAvailable == false)
+        #expect(await registry.setWorkspaceStatus(
+            id: fixture.networkWorkspaceID,
+            status: .available,
+            generation: targetContext.generation,
+            guardedBy: originContext
+        ) == false)
         #expect(await registry.workspace(id: fixture.networkWorkspaceID)?.isAvailable == false)
 
         let projection = AscendantRuntimeTimeline(
@@ -124,8 +136,8 @@ struct NodeRegistryTests {
         await #expect(throws: NodeRuntimeError.notRunning) {
             try await registry.commitBackendTimeline(
                 projection,
-                context: context,
-                guardedBy: context
+                context: targetContext,
+                guardedBy: originContext
             )
         }
         #expect(await registry.timeline(id: fixture.operated.id)?.timeline == fixture.operated)
