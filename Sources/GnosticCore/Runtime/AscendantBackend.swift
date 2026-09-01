@@ -116,30 +116,6 @@ public struct AscendantBackendTimeline: Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 
-    /// Compatibility initializer for the pre-reset projection spelling.
-    public init(
-        id: UUID,
-        title: String,
-        attachedWorkspaceIDs: [UUID],
-        attachedAscendantID: UUID?,
-        isArchived: Bool,
-        isPrivate: Bool,
-        createdAt: Date,
-        updatedAt: Date
-    ) {
-        self.init(
-            id: id,
-            title: title,
-            attachedWorkspaceIDs: attachedWorkspaceIDs,
-            ascendantID: attachedAscendantID,
-            isArchived: isArchived,
-            isPrivate: isPrivate,
-            createdAt: createdAt,
-            updatedAt: updatedAt
-        )
-    }
-
-    public var attachedAscendantID: UUID? { ascendantID }
 }
 
 /// A turn supplied to a backend Timeline session. Timeline identity is bound

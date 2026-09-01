@@ -11,31 +11,6 @@ public final class TurnService {
     private let updates: AscendantTurnUpdateStore
     private let backendProvider: any BackendSessionProviding
 
-    convenience init(
-        registry: NodeRegistry,
-        coordinator: AscendantTurnCoordinator,
-        updates: AscendantTurnUpdateStore,
-        isRunning: @escaping @MainActor () -> Bool,
-        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend,
-        lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
-        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in }
-    ) {
-        self.init(
-            registry: registry,
-            coordinator: coordinator,
-            updates: updates,
-            backendProvider: ClosureBackendSessionProvider(
-                isRunning: isRunning,
-                lifecycleGeneration: lifecycleGeneration,
-                adapter: { _ in nil as (any AscendantBackend)? },
-                current: { _, _, _ in true },
-                backendLease: { _, _ in nil as UUID? },
-                failure: lifecycleFailure,
-                backend: backend
-            )
-        )
-    }
-
     init(
         registry: NodeRegistry,
         coordinator: AscendantTurnCoordinator,

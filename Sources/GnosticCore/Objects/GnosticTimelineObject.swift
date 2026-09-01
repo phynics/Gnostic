@@ -40,7 +40,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
         title = GnosticWirePayload.boundedLabel(timeline.title)
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
-        attachedAscendantID = timeline.attachedAscendantID
+        attachedAscendantID = timeline.ascendantID
         attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(timeline.attachedWorkspaceIDs)
         createdAt = timeline.createdAt
         updatedAt = timeline.updatedAt

@@ -14,6 +14,7 @@ whether its decision is delivered or remains a target.
 3. [ADR 0003 — Pre-1.0 manifest and protocol reset](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md)
 4. [ADR 0004 — Atlas supersedes Narrative](ADRs/0004-atlas-supersedes-narrative.md)
 5. [ADR 0005 — Core PositronicKit dependency boundary](ADRs/0005-core-positronic-dependency-boundary.md)
+6. [ADR 0006 — Timeline-bound backend execution](ADRs/0006-timeline-bound-backend-execution.md)
 
 The delivered 0.3 compatibility declaration is [documented here](../Compatibility/0.3.0.md).
 
