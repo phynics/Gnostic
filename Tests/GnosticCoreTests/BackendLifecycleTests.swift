@@ -45,7 +45,8 @@ struct BackendLifecycleTests {
         )
         let backendTimeline = try await backend.timeline(id: timelineID)
         let timeline = LeasedBackendTimelineSession(
-            parent: owner,
+            id: timelineID,
+            context: owner.context,
             timeline: backendTimeline,
             provider: provider
         )
@@ -56,6 +57,56 @@ struct BackendLifecycleTests {
             _ = try await timeline.runTurn(.init(message: "must not execute"), updates: NoopLifecycleUpdateSink())
         }
         #expect(await probe.runCount == 0)
+    }
+
+    @Test("factory-admitted lifecycle failures use the exact current context")
+    @MainActor
+    func factoryAdmittedLifecycleFailuresUseExactContext() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000731")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000732")!
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: LifecycleBackendProbe(),
+            outcome: .success
+        )
+        let currentState = CurrentSessionState()
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { _ in nil },
+            current: { id, candidate, generation in
+                currentState.isCurrent
+                    && id == ascendantID
+                    && generation == 1
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { _, _ in nil },
+            failure: { _, _, _ in
+                currentState.failureCount += 1
+            },
+            backend: { _ in backend }
+        )
+
+        let admission = try provider.turnAdmission()
+        let session = try await provider.sessionForTurn(
+            timelineID: timelineID,
+            operatedBy: ascendantID,
+            admittedUnder: admission
+        )
+
+        await provider.markLifecycleFailure(
+            session.context,
+            failure: .init(message: "current failure")
+        )
+        #expect(currentState.failureCount == 1)
+
+        currentState.isCurrent = false
+        await provider.markLifecycleFailure(
+            session.context,
+            failure: .init(message: "retired failure")
+        )
+        #expect(currentState.failureCount == 1)
     }
 
     @Test("late Timeline updates are discarded and their result is rejected")
@@ -89,7 +140,8 @@ struct BackendLifecycleTests {
         )
         let parent = try #require(provider.session(for: ascendantID))
         let timeline = LeasedBackendTimelineSession(
-            parent: parent,
+            id: timelineID,
+            context: parent.context,
             timeline: StreamingTimelineSession(id: timelineID, state: currentState),
             provider: provider
         )
@@ -129,7 +181,11 @@ struct BackendLifecycleTests {
         )
         let admission = try provider.turnAdmission()
         let acquisition = Task { @MainActor in
-            try await provider.sessionForTurn(ascendantID, admittedUnder: admission)
+            try await provider.sessionForTurn(
+                timelineID: timelineID,
+                operatedBy: ascendantID,
+                admittedUnder: admission
+            )
         }
         await factoryGate.waitUntilStarted()
         state.generation = 2
@@ -162,7 +218,12 @@ struct BackendLifecycleTests {
         )
         let parent = try #require(provider.session(for: ascendantID))
         let native = RetainingTimelineSession(id: timelineID)
-        let timeline = LeasedBackendTimelineSession(parent: parent, timeline: native, provider: provider)
+        let timeline = LeasedBackendTimelineSession(
+            id: timelineID,
+            context: parent.context,
+            timeline: native,
+            provider: provider
+        )
         let sink = RecordingBackendUpdateSink()
 
         #expect(try await timeline.runTurn(.init(message: "complete"), updates: sink) == "complete")
@@ -1107,6 +1168,7 @@ private actor ManualShutdownDeadline {
 @MainActor
 private final class CurrentSessionState: Sendable {
     var isCurrent = true
+    var failureCount = 0
 }
 
 @MainActor
@@ -1133,6 +1195,10 @@ private final class StreamingTimelineSession: AscendantBackendTimelineSession {
         await updates.append(.init(kind: "late"))
         return request.message
     }
+
+    func rename(to _: String) async throws -> AscendantBackendTimeline {
+        throw NodeRuntimeError.notRunning
+    }
 }
 
 @MainActor
@@ -1155,6 +1221,10 @@ private final class RetainingTimelineSession: AscendantBackendTimelineSession {
 
     func emitLateUpdate() async {
         await updates?.append(.init(kind: "late"))
+    }
+
+    func rename(to _: String) async throws -> AscendantBackendTimeline {
+        throw NodeRuntimeError.notRunning
     }
 }
 
@@ -1609,29 +1679,6 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         return timeline
     }
     func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        await probe.recordRename()
-        await probe.beginBlockedOperation("rename")
-        await probe.waitForBlockedOperationRelease("rename")
-        if probe.shouldFailRename {
-            throw AscendantBackendError.lifecycleUnusable(.init(code: "timelineLifecycle", message: "timeline backend failed"))
-        }
-        guard let index = timelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
-        let old = timelines[index]
-        let renamed = AscendantBackendTimeline(
-            id: old.id,
-            title: title,
-            attachedWorkspaceIDs: old.attachedWorkspaceIDs,
-            ascendantID: old.ascendantID,
-            isArchived: old.isArchived,
-            isPrivate: old.isPrivate,
-            createdAt: old.createdAt,
-            updatedAt: Date()
-        )
-        timelines[index] = renamed
-        return renamed
-    }
-
     func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         await probe.recordWorkspaceAttach()
         await probe.beginBlockedOperation("attach")
@@ -1713,6 +1760,31 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
             updates _: any AscendantBackendUpdateSink
         ) async throws -> String {
             try await backend.runTurn(request)
+        }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            await backend.probe.recordRename()
+            await backend.probe.beginBlockedOperation("rename")
+            await backend.probe.waitForBlockedOperationRelease("rename")
+            if backend.probe.shouldFailRename {
+                throw AscendantBackendError.lifecycleUnusable(.init(code: "timelineLifecycle", message: "timeline backend failed"))
+            }
+            guard let index = backend.timelines.firstIndex(where: { $0.id == id }) else {
+                throw NodeRuntimeError.missingTimeline(id)
+            }
+            let old = backend.timelines[index]
+            let renamed = AscendantBackendTimeline(
+                id: old.id,
+                title: title,
+                attachedWorkspaceIDs: old.attachedWorkspaceIDs,
+                ascendantID: old.ascendantID,
+                isArchived: old.isArchived,
+                isPrivate: old.isPrivate,
+                createdAt: old.createdAt,
+                updatedAt: Date()
+            )
+            backend.timelines[index] = renamed
+            return renamed
         }
     }
 

@@ -193,6 +193,7 @@ public protocol AscendantBackendTimelineSession: AnyObject, Sendable {
         _ request: AscendantBackendTimelineTurnRequest,
         updates: any AscendantBackendUpdateSink
     ) async throws -> String
+    func rename(to title: String) async throws -> AscendantBackendTimeline
 }
 
 /// A generic, backend-neutral description of a Workspace capability.
@@ -446,7 +447,6 @@ public protocol AscendantBackend: AnyObject, Sendable {
     func operatedTimelines() async throws -> [AscendantBackendTimeline]
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
     func removeTimeline(id: UUID) async
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession
     func cancel() async
     func shutdown() async

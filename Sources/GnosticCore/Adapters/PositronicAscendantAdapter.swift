@@ -18,6 +18,7 @@ import struct PositronicKit.Thread
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
+    private var timelineMutationGates: [UUID: TimelineMutationGate] = [:]
 
     public init(
         ascendant: NodeManifest.Ascendant,
@@ -263,15 +264,6 @@ import struct PositronicKit.Thread
         workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
-    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        try requireUsable()
-        try await kit.threads.rename(id, title: title)
-        guard let thread = try await operatedTimelines().first(where: { $0.id == id }) else {
-            throw NodeRuntimeError.missingTimeline(id)
-        }
-        return thread
-    }
-
     public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         try requireUsable()
         try await kit.workspaces.update(Self.positronicReference(reference))
@@ -391,6 +383,32 @@ import struct PositronicKit.Thread
             }
             return finalText.isEmpty ? "(empty reply)" : finalText
         }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            try host.requireUsable()
+            return try await host.withTimelineMutation(id: id) {
+                try await self.host.kit.threads.rename(self.id, title: title)
+                guard let thread = try await self.host.kit.threads.get(self.id) else {
+                    throw AscendantBackendError.timelineNotFound(self.id)
+                }
+                return await self.host.projection(thread)
+            }
+        }
+    }
+
+    private func withTimelineMutation<T: Sendable>(
+        id: UUID,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let gate: TimelineMutationGate
+        if let existing = timelineMutationGates[id] {
+            gate = existing
+        } else {
+            let created = TimelineMutationGate()
+            timelineMutationGates[id] = created
+            gate = created
+        }
+        return try await gate.withExclusiveAccess(operation)
     }
 
     private func requireUsable() throws {
@@ -479,6 +497,61 @@ import struct PositronicKit.Thread
         case let .object(value): return value.mapValues(anyValue)
         case let .array(value): return value.map(anyValue)
         case .null: return NSNull()
+        }
+    }
+}
+
+actor TimelineMutationGate {
+    private var held = false
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private var waiters: [Waiter] = []
+
+    var waitingCount: Int { waiters.count }
+
+    func withExclusiveAccess<T: Sendable>(
+        _ operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        try await acquire()
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            release()
+            return result
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        guard held else {
+            held = true
+            return
+        }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                waiters.append(.init(id: waiterID, continuation: continuation))
+            }
+        }, onCancel: {
+            Task { await self.cancelWaiter(waiterID) }
+        })
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            held = false
+        } else {
+            waiters.removeFirst().continuation.resume()
         }
     }
 }

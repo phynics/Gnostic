@@ -70,7 +70,7 @@ struct NodeRuntimeTests {
         }
     }
 
-    @Test("a rejected adapter-created Timeline is removed from adapter and registry")
+    @Test("a contract-invalid adapter-created Timeline is quarantined before registry projection")
     @MainActor
     func runtimeTimelineCreationCompensatesAdapterFailure() async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000218")!
@@ -88,12 +88,21 @@ struct NodeRuntimeTests {
         }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
 
-        await #expect(throws: NodeRuntimeError.self) {
+        do {
             _ = try await runtime.createTimeline(title: "Rejected", ascendantID: ascendantID)
+            Issue.record("The contract-invalid Timeline unexpectedly succeeded.")
+        } catch let error as AscendantBackendError {
+            guard case .contractViolation(.projectionTimelineMismatch) = error else {
+                Issue.record("The wrong backend error was returned: \(error).")
+                return
+            }
+        } catch {
+            Issue.record("The wrong error type was returned: \(error).")
         }
 
         #expect(await runtime.snapshot().timelineIDs == [timelineID])
-        #expect(await probe.removedIDs.count == 2)
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+        #expect(await probe.removedIDs.isEmpty)
     }
 
     @Test("runtime rejects an unregistered adapter before startup")
@@ -1225,13 +1234,6 @@ private final class FixtureAscendantBackend: AscendantBackend {
         storedTimelines.removeAll { $0.id == id }
         await creationProbe?.recordRemoval(id)
     }
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
-        let current = storedTimelines[index]
-        let renamed = AscendantBackendTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, ascendantID: current.ascendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
-        storedTimelines[index] = renamed
-        return renamed
-    }
     func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {}
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
     func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
@@ -1262,6 +1264,25 @@ private final class FixtureAscendantBackend: AscendantBackend {
             updates _: any AscendantBackendUpdateSink
         ) async throws -> String {
             try await backend.runTurn(request)
+        }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            guard let index = backend.storedTimelines.firstIndex(where: { $0.id == id }) else {
+                throw NodeRuntimeError.missingTimeline(id)
+            }
+            let current = backend.storedTimelines[index]
+            let renamed = AscendantBackendTimeline(
+                id: current.id,
+                title: title,
+                attachedWorkspaceIDs: current.attachedWorkspaceIDs,
+                ascendantID: current.ascendantID,
+                isArchived: current.isArchived,
+                isPrivate: current.isPrivate,
+                createdAt: current.createdAt,
+                updatedAt: Date()
+            )
+            backend.storedTimelines[index] = renamed
+            return renamed
         }
     }
 

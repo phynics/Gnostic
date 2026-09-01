@@ -332,7 +332,7 @@ public final class WorkspaceService {
 
     private func operatingAdapter(for timelineID: UUID) async throws -> (UUID, AscendantBackendSession) {
         let ascendantID = try await registry.requireOperatingAscendant(for: timelineID)
-        guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        guard let session = backendProvider.rawSession(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
         return (ascendantID, session)
     }
@@ -359,7 +359,7 @@ public final class WorkspaceService {
         let backendReference = BackendWorkspaceReference(reference: reference)
         var operationContext: AscendantBackendSession?
         for target in await registry.attachmentTargets(for: workspaceID) {
-            guard let session = backendProvider.session(for: target.ascendantID),
+            guard let session = backendProvider.rawSession(for: target.ascendantID),
                   let runtime = session.backend as? any AscendantBackendWorkspaceCapability else { continue }
             guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
             operationContext = session

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
@@ -14,6 +14,127 @@ struct PositronicBackendValidationTests {
         let adapter = try await makeAdapter(backend: .init(kind: "positronic"))
 
         try adapter.validateConfiguration()
+    }
+
+    @Test("Timeline mutation serialization keeps mutation and projection together")
+    @MainActor
+    func timelineMutationSerializationIsDeterministic() async throws {
+        let gate = TimelineMutationGate()
+        let probe = RenameInterleavingProbe()
+
+        let first = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                await probe.mutate(title: "First")
+                await probe.waitForFirstRelease()
+                return await probe.title
+            }
+        }
+        await probe.waitUntilFirstMutation()
+
+        let second = Task { @MainActor in
+            await probe.markSecondAttempted()
+            return try await gate.withExclusiveAccess {
+                await probe.mutate(title: "Second")
+                return await probe.title
+            }
+        }
+        await probe.waitUntilSecondAttempted()
+        while await gate.waitingCount == 0 {
+            await Task.yield()
+        }
+        #expect(await probe.titles == ["First"])
+
+        await probe.releaseFirst()
+        #expect(try await first.value == "First")
+        #expect(try await second.value == "Second")
+        #expect(await probe.titles == ["First", "Second"])
+    }
+
+    @Test("canceled queued Timeline mutations never execute")
+    @MainActor
+    func canceledQueuedMutationDoesNotExecute() async throws {
+        let gate = TimelineMutationGate()
+        let probe = RenameInterleavingProbe()
+
+        let first = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                await probe.mutate(title: "First")
+                await probe.waitForFirstRelease()
+                return await probe.title
+            }
+        }
+        await probe.waitUntilFirstMutation()
+
+        let queued = Task { @MainActor in
+            do {
+                return try await gate.withExclusiveAccess {
+                    await probe.mutate(title: "Canceled")
+                    return await probe.title
+                }
+            } catch {
+                await probe.markQueuedCanceled()
+                throw error
+            }
+        }
+        while await gate.waitingCount == 0 {
+            await Task.yield()
+        }
+        queued.cancel()
+        var canceledBeforeRelease = false
+        for _ in 0 ..< 1_000 {
+            if await probe.queuedCanceled {
+                canceledBeforeRelease = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(canceledBeforeRelease)
+        #expect(await probe.titles == ["First"])
+        await probe.releaseFirst()
+
+        #expect(try await first.value == "First")
+        await #expect(throws: CancellationError.self) {
+            _ = try await queued.value
+        }
+        #expect(await probe.titles == ["First"])
+    }
+
+    @Test("an acquired canceled Timeline mutation releases the gate")
+    @MainActor
+    func acquiredCanceledMutationReleasesGate() async throws {
+        let gate = TimelineMutationGate()
+        let probe = RenameInterleavingProbe()
+
+        let canceled = Task { @MainActor in
+            do {
+                return try await gate.withExclusiveAccess {
+                    await probe.markCancelableOperationEntered()
+                    await probe.waitForCancelableOperationRelease()
+                    try Task.checkCancellation()
+                    return "unexpected"
+                }
+            } catch {
+                await probe.markQueuedCanceled()
+                throw error
+            }
+        }
+        await probe.waitUntilCancelableOperationEntered()
+
+        let third = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                "third"
+            }
+        }
+        while await gate.waitingCount == 0 {
+            await Task.yield()
+        }
+        canceled.cancel()
+        await probe.releaseCancelableOperation()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await canceled.value
+        }
+        #expect(try await third.value == "third")
     }
 
     @Test("accepts a valid hosted provider configuration")
@@ -206,6 +327,85 @@ struct PositronicBackendValidationTests {
     }
 }
 
+private actor RenameInterleavingProbe {
+    private(set) var titles: [String] = []
+    private(set) var title = ""
+    private(set) var queuedCanceled = false
+    private var firstMutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var secondAttemptWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancelableOperationEnteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancelableOperationReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstMutated = false
+    private var secondAttempted = false
+    private var firstReleased = false
+    private var cancelableOperationEntered = false
+    private var cancelableOperationReleased = false
+
+    func mutate(title: String) {
+        self.title = title
+        titles.append(title)
+        if title == "First" {
+            firstMutated = true
+            firstMutationWaiters.forEach { $0.resume() }
+            firstMutationWaiters.removeAll()
+        }
+    }
+
+    func markSecondAttempted() {
+        secondAttempted = true
+        secondAttemptWaiters.forEach { $0.resume() }
+        secondAttemptWaiters.removeAll()
+    }
+
+    func markQueuedCanceled() {
+        queuedCanceled = true
+    }
+
+    func markCancelableOperationEntered() {
+        cancelableOperationEntered = true
+        cancelableOperationEnteredWaiters.forEach { $0.resume() }
+        cancelableOperationEnteredWaiters.removeAll()
+    }
+
+    func waitUntilCancelableOperationEntered() async {
+        guard !cancelableOperationEntered else { return }
+        await withCheckedContinuation { cancelableOperationEnteredWaiters.append($0) }
+    }
+
+    func waitForCancelableOperationRelease() async {
+        guard !cancelableOperationReleased else { return }
+        await withCheckedContinuation { cancelableOperationReleaseWaiters.append($0) }
+    }
+
+    func releaseCancelableOperation() {
+        cancelableOperationReleased = true
+        cancelableOperationReleaseWaiters.forEach { $0.resume() }
+        cancelableOperationReleaseWaiters.removeAll()
+    }
+
+    func waitUntilFirstMutation() async {
+        guard !firstMutated else { return }
+        await withCheckedContinuation { firstMutationWaiters.append($0) }
+    }
+
+    func waitUntilSecondAttempted() async {
+        guard !secondAttempted else { return }
+        await withCheckedContinuation { secondAttemptWaiters.append($0) }
+    }
+
+    func waitForFirstRelease() async {
+        guard !firstReleased else { return }
+        await withCheckedContinuation { firstReleaseWaiters.append($0) }
+    }
+
+    func releaseFirst() {
+        firstReleased = true
+        firstReleaseWaiters.forEach { $0.resume() }
+        firstReleaseWaiters.removeAll()
+    }
+}
+
 private actor ReconstructionValidationProbe {
     private(set) var factoryCount = 0
 
@@ -274,31 +474,19 @@ private final class ReconstructionValidationBackend: AscendantBackend {
 
     func removeTimeline(id: UUID) async {}
 
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard id == timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
-        return .init(
-            id: timeline.id,
-            title: title,
-            attachedWorkspaceIDs: timeline.attachedWorkspaceIDs,
-            ascendantID: timeline.ascendantID,
-            isArchived: timeline.isArchived,
-            isPrivate: timeline.isPrivate,
-            createdAt: timeline.createdAt,
-            updatedAt: Date()
-        )
-    }
-
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard id == timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
-        return TimelineSession(id: id)
+        return TimelineSession(id: id, backend: self)
     }
 
     @MainActor
     private final class TimelineSession: AscendantBackendTimelineSession {
         let id: UUID
+        private let backend: ReconstructionValidationBackend
 
-        init(id: UUID) {
+        init(id: UUID, backend: ReconstructionValidationBackend) {
             self.id = id
+            self.backend = backend
         }
 
         func runTurn(
@@ -306,6 +494,20 @@ private final class ReconstructionValidationBackend: AscendantBackend {
             updates _: any AscendantBackendUpdateSink
         ) async throws -> String {
             throw AscendantBackendError.lifecycleUnusable(.init(message: "fixture lifecycle failure"))
+        }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            guard id == backend.timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
+            return .init(
+                id: backend.timeline.id,
+                title: title,
+                attachedWorkspaceIDs: backend.timeline.attachedWorkspaceIDs,
+                ascendantID: backend.timeline.ascendantID,
+                isArchived: backend.timeline.isArchived,
+                isPrivate: backend.timeline.isPrivate,
+                createdAt: backend.timeline.createdAt,
+                updatedAt: Date()
+            )
         }
     }
 
