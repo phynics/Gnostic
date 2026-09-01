@@ -547,6 +547,7 @@ struct BackendLifecycleTests {
         let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000358")!
         let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000359")!
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000360")!
+        let secondWorkspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000361")!
         let probe = LifecycleBackendProbe(
             failWorkspaceAttach: true,
             successfulRecovery: true,
@@ -563,7 +564,10 @@ struct BackendLifecycleTests {
                     .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
                     .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
                 ],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [
+                    .init(id: workspaceID, name: "Local", uri: "echo://local"),
+                    .init(id: secondWorkspaceID, name: "Second local", uri: "echo://second-local"),
+                ]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: probe, outcomes: [ascendantID: []])
         )
@@ -576,7 +580,7 @@ struct BackendLifecycleTests {
         try await withTestTimeout { await probe.waitUntilBlockedOperationStarted("detach") }
 
         do {
-            _ = try await runtime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: secondTimelineID))
+            _ = try await runtime.attachWorkspace(.init(workspaceID: secondWorkspaceID, timelineID: secondTimelineID))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
         } catch {}
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)

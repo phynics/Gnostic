@@ -18,6 +18,7 @@ import struct PositronicKit.Thread
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
+    private var workspaceMutationGates: [UUID: TimelineMutationGate] = [:]
     private var timelineMutationGates: [UUID: TimelineMutationGate] = [:]
 
     public init(
@@ -376,38 +377,40 @@ import struct PositronicKit.Thread
         func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
             try host.requireUsable()
             return try await host.withTimelineMutation(id: id) {
-                let nativeReference = try PositronicAscendantAdapter.positronicReference(reference)
-                let workspaceTools = try PositronicAscendantAdapter.workspaceTools(for: reference, service: self.host.workspaceService)
-                guard let thread = try await self.host.kit.threads.get(self.id) else {
-                    throw AscendantBackendError.timelineNotFound(self.id)
-                }
-                let priorNativeReference = try await self.host.kit.workspaces.get(reference.id)
-                let priorTools = self.host.workspaceToolsByID[reference.id]
-                let priorWorkspaceIDs = self.host.workspaceIDsByTimeline[self.id]
-                do {
-                    try await self.host.kit.workspaces.update(nativeReference)
-                    self.host.workspaceToolsByID[reference.id] = workspaceTools
-                    if !self.host.workspaceIDsByTimeline[self.id, default: []].contains(reference.id) {
-                        self.host.workspaceIDsByTimeline[self.id, default: []].append(reference.id)
+                try await self.host.withWorkspaceMutation(id: reference.id) {
+                    let nativeReference = try PositronicAscendantAdapter.positronicReference(reference)
+                    let workspaceTools = try PositronicAscendantAdapter.workspaceTools(for: reference, service: self.host.workspaceService)
+                    guard let thread = try await self.host.kit.threads.get(self.id) else {
+                        throw AscendantBackendError.timelineNotFound(self.id)
                     }
-                } catch {
+                    let priorNativeReference = try await self.host.kit.workspaces.get(reference.id)
+                    let priorTools = self.host.workspaceToolsByID[reference.id]
+                    let priorWorkspaceIDs = self.host.workspaceIDsByTimeline[self.id]
                     do {
-                        try await self.host.restoreWorkspaceMutation(
-                            workspaceID: reference.id,
-                            priorNativeReference: priorNativeReference,
-                            priorTools: priorTools,
-                            priorWorkspaceIDs: priorWorkspaceIDs,
-                            timelineID: self.id
-                        )
-                    } catch let restorationError {
-                        throw AscendantBackendError.lifecycleUnusable(.init(
-                            code: "workspaceMutationRollbackFailed",
-                            message: "Workspace mutation failed and could not be restored: \(restorationError.localizedDescription)"
-                        ))
+                        try await self.host.kit.workspaces.update(nativeReference)
+                        self.host.workspaceToolsByID[reference.id] = workspaceTools
+                        if !self.host.workspaceIDsByTimeline[self.id, default: []].contains(reference.id) {
+                            self.host.workspaceIDsByTimeline[self.id, default: []].append(reference.id)
+                        }
+                    } catch {
+                        do {
+                            try await self.host.restoreWorkspaceMutation(
+                                workspaceID: reference.id,
+                                priorNativeReference: priorNativeReference,
+                                priorTools: priorTools,
+                                priorWorkspaceIDs: priorWorkspaceIDs,
+                                timelineID: self.id
+                            )
+                        } catch let restorationError {
+                            throw AscendantBackendError.lifecycleUnusable(.init(
+                                code: "workspaceMutationRollbackFailed",
+                                message: "Workspace mutation failed and could not be restored: \(restorationError.localizedDescription)"
+                            ))
+                        }
+                        throw error
                     }
-                    throw error
+                    return await self.host.projection(thread)
                 }
-                return await self.host.projection(thread)
             }
         }
 
@@ -453,6 +456,21 @@ import struct PositronicKit.Thread
         } else {
             let created = TimelineMutationGate()
             timelineMutationGates[id] = created
+            gate = created
+        }
+        return try await gate.withExclusiveAccess(operation)
+    }
+
+    private func withWorkspaceMutation<T: Sendable>(
+        id: UUID,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let gate: TimelineMutationGate
+        if let existing = workspaceMutationGates[id] {
+            gate = existing
+        } else {
+            let created = TimelineMutationGate()
+            workspaceMutationGates[id] = created
             gate = created
         }
         return try await gate.withExclusiveAccess(operation)

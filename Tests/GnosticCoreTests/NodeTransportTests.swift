@@ -548,9 +548,16 @@ struct NodeTransportTests {
 
         #expect(backend.workspaceReference(timelineID: firstTimelineID, workspaceID: workspaceID) == oldBackendReference)
         #expect(backend.workspaceReference(timelineID: secondTimelineID, workspaceID: workspaceID) == oldBackendReference)
-        #expect(await registry.workspace(id: workspaceID)?.status == .available)
+        #expect(await registry.workspace(id: workspaceID)?.status == .unavailable)
         #expect(await registry.attachmentIntent(for: firstTimelineID) == [.network(workspaceID, uri: uri)])
         #expect(await registry.attachmentIntent(for: secondTimelineID) == [.network(workspaceID, uri: uri)])
+
+        backend.attachFailureTimelineID = nil
+        _ = try await service.resolveAvailableNetworkWorkspace(workspaceID)
+
+        #expect(await registry.workspace(id: workspaceID)?.status == .available)
+        #expect(backend.workspaceReference(timelineID: firstTimelineID, workspaceID: workspaceID)?.tools.map(\.id) == [newTool.id])
+        #expect(backend.workspaceReference(timelineID: secondTimelineID, workspaceID: workspaceID)?.tools.map(\.id) == [newTool.id])
     }
 }
 

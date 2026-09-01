@@ -15,6 +15,7 @@ public final class WorkspaceService {
     private let backendProvider: any BackendSessionProviding
     private let readvertiseTimeline: @MainActor (AscendantRuntimeTimeline) -> Void
     private var references: [UUID: WorkspaceReference]
+    private var workspaceOperationGates: [UUID: WorkspaceTimelineOperationGate] = [:]
     private var timelineOperationGates: [UUID: WorkspaceTimelineOperationGate] = [:]
 
     convenience init(
@@ -172,89 +173,93 @@ public final class WorkspaceService {
         timelineID: UUID,
         timeline: LeasedBackendTimelineSession
     ) async throws {
-        try await withTimelineOperation(id: timelineID) { [self] in
-            guard let workspace = timeline.workspace else {
-                throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
-            }
-            let wasAttached = await self.registry.timeline(id: timeline.id)?.timeline.attachedWorkspaceIDs.contains(workspaceID) == true
-            let priorReference = self.references[workspaceID].map { BackendWorkspaceReference(reference: $0) }
-            guard !wasAttached || priorReference != nil else {
-                throw AscendantBackendError.invalidConfiguration(
-                    "Cannot safely mutate attached Workspace \(workspaceID.uuidString): its prior reference is unavailable."
-                )
-            }
-            let projection: AscendantBackendTimeline
-            do {
-                projection = try await workspace.attachWorkspace(BackendWorkspaceReference(reference: reference))
-            } catch {
-                await self.compensateAttachment(
-                    workspace: workspace,
-                    workspaceID: workspaceID,
-                    wasAttached: wasAttached,
-                    priorReference: priorReference
-                )
-                throw error
-            }
-            do {
-                let record = try await self.registry.commitBackendTimeline(
-                    projection,
-                    context: timeline.context,
-                    upserting: Self.intent(for: reference, local: self.localWorkspaces[workspaceID] != nil)
-                )
-                self.readvertiseTimeline(record.timeline)
-            } catch {
-                await self.compensateAttachment(
-                    workspace: workspace,
-                    workspaceID: workspaceID,
-                    wasAttached: wasAttached,
-                    priorReference: priorReference
-                )
-                throw error
+        try await withWorkspaceOperation(id: workspaceID) { [self] in
+            try await self.withTimelineOperation(id: timelineID) { [self] in
+                guard let workspace = timeline.workspace else {
+                    throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
+                }
+                let wasAttached = await self.registry.timeline(id: timeline.id)?.timeline.attachedWorkspaceIDs.contains(workspaceID) == true
+                let priorReference = self.references[workspaceID].map { BackendWorkspaceReference(reference: $0) }
+                guard !wasAttached || priorReference != nil else {
+                    throw AscendantBackendError.invalidConfiguration(
+                        "Cannot safely mutate attached Workspace \(workspaceID.uuidString): its prior reference is unavailable."
+                    )
+                }
+                let projection: AscendantBackendTimeline
+                do {
+                    projection = try await workspace.attachWorkspace(BackendWorkspaceReference(reference: reference))
+                } catch {
+                    await self.compensateAttachment(
+                        workspace: workspace,
+                        workspaceID: workspaceID,
+                        wasAttached: wasAttached,
+                        priorReference: priorReference
+                    )
+                    throw error
+                }
+                do {
+                    let record = try await self.registry.commitBackendTimeline(
+                        projection,
+                        context: timeline.context,
+                        upserting: Self.intent(for: reference, local: self.localWorkspaces[workspaceID] != nil)
+                    )
+                    self.readvertiseTimeline(record.timeline)
+                } catch {
+                    await self.compensateAttachment(
+                        workspace: workspace,
+                        workspaceID: workspaceID,
+                        wasAttached: wasAttached,
+                        priorReference: priorReference
+                    )
+                    throw error
+                }
             }
         }
     }
 
     func detach(_ request: WorkspaceOpsRequest) async throws -> Bool {
         let (_, timeline) = try await operatingTimeline(for: request.timelineID)
-        try await withTimelineOperation(id: request.timelineID) { [self] in
-            guard let workspace = timeline.workspace else {
-                throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
-            }
-            let prior = self.references[request.workspaceID]
-            let priorReference = prior.map { BackendWorkspaceReference(reference: $0) }
-            let wasAttached = await self.registry.timeline(id: timeline.id)?.timeline.attachedWorkspaceIDs.contains(request.workspaceID) == true
-            guard !wasAttached || priorReference != nil else {
-                throw AscendantBackendError.invalidConfiguration(
-                    "Cannot safely mutate attached Workspace \(request.workspaceID.uuidString): its prior reference is unavailable."
-                )
-            }
-            let projection: AscendantBackendTimeline
-            do {
-                projection = try await workspace.detachWorkspace(id: request.workspaceID)
-            } catch {
-                await self.compensateDetachment(
-                    workspace: workspace,
-                    workspaceID: request.workspaceID,
-                    wasAttached: wasAttached,
-                    priorReference: priorReference
-                )
-                throw error
-            }
-            do {
-                let record = try await self.registry.commitBackendTimeline(
-                    projection,
-                    context: timeline.context,
-                    removingWorkspaceID: request.workspaceID
-                )
-                self.readvertiseTimeline(record.timeline)
-            } catch {
-                await self.compensateDetachment(
-                    workspace: workspace,
-                    workspaceID: request.workspaceID,
-                    wasAttached: wasAttached,
-                    priorReference: priorReference
-                )
-                throw error
+        try await withWorkspaceOperation(id: request.workspaceID) { [self] in
+            try await self.withTimelineOperation(id: request.timelineID) { [self] in
+                guard let workspace = timeline.workspace else {
+                    throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
+                }
+                let prior = self.references[request.workspaceID]
+                let priorReference = prior.map { BackendWorkspaceReference(reference: $0) }
+                let wasAttached = await self.registry.timeline(id: timeline.id)?.timeline.attachedWorkspaceIDs.contains(request.workspaceID) == true
+                guard !wasAttached || priorReference != nil else {
+                    throw AscendantBackendError.invalidConfiguration(
+                        "Cannot safely mutate attached Workspace \(request.workspaceID.uuidString): its prior reference is unavailable."
+                    )
+                }
+                let projection: AscendantBackendTimeline
+                do {
+                    projection = try await workspace.detachWorkspace(id: request.workspaceID)
+                } catch {
+                    await self.compensateDetachment(
+                        workspace: workspace,
+                        workspaceID: request.workspaceID,
+                        wasAttached: wasAttached,
+                        priorReference: priorReference
+                    )
+                    throw error
+                }
+                do {
+                    let record = try await self.registry.commitBackendTimeline(
+                        projection,
+                        context: timeline.context,
+                        removingWorkspaceID: request.workspaceID
+                    )
+                    self.readvertiseTimeline(record.timeline)
+                } catch {
+                    await self.compensateDetachment(
+                        workspace: workspace,
+                        workspaceID: request.workspaceID,
+                        wasAttached: wasAttached,
+                        priorReference: priorReference
+                    )
+                    throw error
+                }
             }
         }
         return true
@@ -263,6 +268,7 @@ public final class WorkspaceService {
     func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> WorkspaceReference {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
+        let previousStatus = await registry.effectiveWorkspaceStatus(id: workspaceID)
         await discovery.discover(timeout: timeout)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         let status = await discovery.attachmentStatus(id: workspaceID)
@@ -297,7 +303,7 @@ public final class WorkspaceService {
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
-        try await installResolved(reference, workspaceID: workspaceID)
+        try await installResolved(reference, workspaceID: workspaceID, previousStatus: previousStatus)
         return reference
     }
 
@@ -321,6 +327,7 @@ public final class WorkspaceService {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
+        let previousStatus = await registry.effectiveWorkspaceStatus(id: workspaceID)
         let status = await discovery.attachmentStatus(id: workspaceID)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
@@ -351,7 +358,7 @@ public final class WorkspaceService {
             }
             return nil
         }
-        try await installResolved(reference, workspaceID: workspaceID)
+        try await installResolved(reference, workspaceID: workspaceID, previousStatus: previousStatus)
         return reference
     }
 
@@ -369,7 +376,25 @@ public final class WorkspaceService {
         return (ascendantID, try await ascendant.timeline(id: timelineID))
     }
 
-    private func installResolved(_ reference: WorkspaceReference, workspaceID: UUID) async throws {
+    private func installResolved(
+        _ reference: WorkspaceReference,
+        workspaceID: UUID,
+        previousStatus: NodeRegistry.WorkspaceEffectiveStatus?
+    ) async throws {
+        try await withWorkspaceOperation(id: workspaceID) { [self] in
+            try await self.installResolvedWithinWorkspaceOperation(
+                reference,
+                workspaceID: workspaceID,
+                previousStatus: previousStatus
+            )
+        }
+    }
+
+    private func installResolvedWithinWorkspaceOperation(
+        _ reference: WorkspaceReference,
+        workspaceID: UUID,
+        previousStatus: NodeRegistry.WorkspaceEffectiveStatus?
+    ) async throws {
         let backendReference = BackendWorkspaceReference(reference: reference)
         let generation = backendProvider.lifecycleGeneration
         let priorReference = references[workspaceID].map { BackendWorkspaceReference(reference: $0) }
@@ -450,6 +475,13 @@ public final class WorkspaceService {
             references[workspaceID] = reference
             backendWorkspaceService?.update(reference: reference)
         } catch {
+            if let previousStatus {
+                _ = await registry.setWorkspaceStatus(
+                    id: workspaceID,
+                    status: previousStatus,
+                    generation: generation
+                )
+            }
             for mutation in mutations.reversed() {
                 try? await withTimelineOperation(id: mutation.timelineID) {
                     await self.compensateAttachment(
@@ -474,6 +506,21 @@ public final class WorkspaceService {
         } else {
             let created = WorkspaceTimelineOperationGate()
             timelineOperationGates[id] = created
+            gate = created
+        }
+        return try await gate.withExclusiveAccess(operation)
+    }
+
+    private func withWorkspaceOperation<T: Sendable>(
+        id: UUID,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let gate: WorkspaceTimelineOperationGate
+        if let existing = workspaceOperationGates[id] {
+            gate = existing
+        } else {
+            let created = WorkspaceTimelineOperationGate()
+            workspaceOperationGates[id] = created
             gate = created
         }
         return try await gate.withExclusiveAccess(operation)
