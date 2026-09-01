@@ -39,6 +39,9 @@ struct PositronicBackendValidationTests {
             }
         }
         await probe.waitUntilSecondAttempted()
+        while await gate.waitingCount == 0 {
+            await Task.yield()
+        }
         #expect(await probe.titles == ["First"])
 
         await probe.releaseFirst()
@@ -63,15 +66,30 @@ struct PositronicBackendValidationTests {
         await probe.waitUntilFirstMutation()
 
         let queued = Task { @MainActor in
-            try await gate.withExclusiveAccess {
-                await probe.mutate(title: "Canceled")
-                return await probe.title
+            do {
+                return try await gate.withExclusiveAccess {
+                    await probe.mutate(title: "Canceled")
+                    return await probe.title
+                }
+            } catch {
+                await probe.markQueuedCanceled()
+                throw error
             }
         }
         while await gate.waitingCount == 0 {
             await Task.yield()
         }
         queued.cancel()
+        var canceledBeforeRelease = false
+        for _ in 0 ..< 1_000 {
+            if await probe.queuedCanceled {
+                canceledBeforeRelease = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(canceledBeforeRelease)
+        #expect(await probe.titles == ["First"])
         await probe.releaseFirst()
 
         #expect(try await first.value == "First")
@@ -274,6 +292,7 @@ struct PositronicBackendValidationTests {
 private actor RenameInterleavingProbe {
     private(set) var titles: [String] = []
     private(set) var title = ""
+    private(set) var queuedCanceled = false
     private var firstMutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var secondAttemptWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstReleaseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -295,6 +314,10 @@ private actor RenameInterleavingProbe {
         secondAttempted = true
         secondAttemptWaiters.forEach { $0.resume() }
         secondAttemptWaiters.removeAll()
+    }
+
+    func markQueuedCanceled() {
+        queuedCanceled = true
     }
 
     func waitUntilFirstMutation() async {
