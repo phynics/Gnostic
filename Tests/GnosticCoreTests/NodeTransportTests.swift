@@ -386,6 +386,172 @@ struct NodeTransportTests {
         }
         #expect(failureCount == 1)
     }
+
+    @Test("Workspace mutation and registry commit remain serialized per Timeline")
+    @MainActor
+    func workspaceMutationAndCommitAreSerializedPerTimeline() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000031")!
+        let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000032")!
+        let firstWorkspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000033")!
+        let secondWorkspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000034")!
+        let firstReference = WorkspaceReference(
+            id: firstWorkspaceID,
+            uri: WorkspaceURI(parsing: "workspace://first")!,
+            location: .runtime
+        )
+        let secondReference = WorkspaceReference(
+            id: secondWorkspaceID,
+            uri: WorkspaceURI(parsing: "workspace://second")!,
+            location: .runtime
+        )
+        let control = ServiceStubAttachControl(firstWorkspaceID: firstWorkspaceID)
+        let backend = ServiceStubAscendantBackend(
+            ascendantID: ascendantID,
+            timelineID: timelineID,
+            attachControl: control
+        )
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-operation-order"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000035")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID)],
+            workspaces: [
+                .init(id: firstWorkspaceID, name: "First", uri: firstReference.uri.description, kind: "echo"),
+                .init(id: secondWorkspaceID, name: "Second", uri: secondReference.uri.description, kind: "echo"),
+            ]
+        ).compileLaunchPlan()
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await backend.operatedTimelines())
+        let lease = UUID.makeVersion4()
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: ServiceStubWorkspaceDiscovery(
+                entry: .init(
+                    objectID: firstWorkspaceID,
+                    objectType: GnosticObjectType.workspace,
+                    protocolMajor: GnosticProtocol.currentMajor,
+                    providerID: "unused",
+                    name: "unused",
+                    knownProperties: [:],
+                    dynamicProperties: [:],
+                    workspace: .init(id: firstWorkspaceID, uri: firstReference.uri.description, isAvailable: true, tools: [])
+                ),
+                status: .unavailable
+            ),
+            localWorkspaces: [
+                firstWorkspaceID: EchoWorkspace(reference: firstReference),
+                secondWorkspaceID: EchoWorkspace(reference: secondReference),
+            ],
+            references: [firstWorkspaceID: firstReference, secondWorkspaceID: secondReference],
+            isRunning: { true },
+            lifecycleGeneration: { 0 },
+            isCurrentBackend: { id, candidate, generation in
+                id == ascendantID && generation == 0 && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            adapter: { $0 == ascendantID ? backend : nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        let first = Task { try await service.attach(.init(workspaceID: firstWorkspaceID, timelineID: timelineID)) }
+        await control.waitForFirstMutation()
+        let second = Task { try await service.attach(.init(workspaceID: secondWorkspaceID, timelineID: timelineID)) }
+        await Task.yield()
+        #expect(backend.attachCalls == [firstWorkspaceID])
+
+        await control.releaseFirstMutation()
+        _ = try await first.value
+        _ = try await second.value
+
+        #expect(backend.attachCalls == [firstWorkspaceID, secondWorkspaceID])
+        #expect(backend.storedTimelines.first?.attachedWorkspaceIDs == [firstWorkspaceID, secondWorkspaceID])
+        #expect(await registry.timeline(id: timelineID)?.timeline.attachedWorkspaceIDs == [firstWorkspaceID, secondWorkspaceID])
+    }
+
+    @Test("lazy Workspace rehydration restores existing provider references after a later target fails")
+    @MainActor
+    func lazyWorkspaceRehydrationRestoresExistingReferencesAfterFailure() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000041")!
+        let firstTimelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000042")!
+        let secondTimelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000043")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000044")!
+        let uri = "gnostic://workspace/rehydrate"
+        let oldReference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: uri)!,
+            location: .attached
+        )
+        let oldBackendReference = BackendWorkspaceReference(reference: oldReference)
+        let backend = ServiceStubAscendantBackend(
+            ascendantID: ascendantID,
+            timelineID: firstTimelineID,
+            additionalTimelineIDs: [secondTimelineID],
+            initialAttachedWorkspaceIDs: [workspaceID],
+            initialWorkspaceReferences: [workspaceID: oldBackendReference],
+            attachFailureTimelineID: secondTimelineID
+        )
+        let newTool = GnosticWorkspaceTool(definition: .init(
+            id: "rehydrated_tool",
+            name: "Rehydrated tool",
+            description: "A newly discovered tool."
+        ))
+        let discovery = MutableServiceStubWorkspaceDiscovery(
+            entry: .init(
+                objectID: workspaceID,
+                objectType: GnosticObjectType.workspace,
+                providerID: "rehydration-provider",
+                name: "Rehydrated workspace",
+                knownProperties: [:],
+                dynamicProperties: [:],
+                workspace: .init(id: workspaceID, uri: uri, isAvailable: true, tools: [newTool])
+            )
+        )
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-rehydrate-rollback"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000045")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: firstTimelineID)],
+            timelines: [
+                .init(id: firstTimelineID, title: "First", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: uri)]),
+                .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: uri)]),
+            ]
+        ).compileLaunchPlan()
+        let lease = UUID.makeVersion4()
+        let registry = try NodeRegistry(
+            plan: plan,
+            operatedTimelines: try await backend.operatedTimelines(),
+            backendLeases: [ascendantID: lease]
+        )
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: discovery,
+            localWorkspaces: [:],
+            references: [workspaceID: oldReference],
+            isRunning: { true },
+            lifecycleGeneration: { 0 },
+            isCurrentBackend: { id, candidate, generation in
+                id == ascendantID && generation == 0 && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            adapter: { $0 == ascendantID ? backend : nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        await #expect(throws: ServiceStubError.attachFailed(secondTimelineID)) {
+            _ = try await service.resolveAvailableNetworkWorkspace(workspaceID)
+        }
+
+        #expect(backend.workspaceReference(timelineID: firstTimelineID, workspaceID: workspaceID) == oldBackendReference)
+        #expect(backend.workspaceReference(timelineID: secondTimelineID, workspaceID: workspaceID) == oldBackendReference)
+        #expect(await registry.workspace(id: workspaceID)?.status == .available)
+        #expect(await registry.attachmentIntent(for: firstTimelineID) == [.network(workspaceID, uri: uri)])
+        #expect(await registry.attachmentIntent(for: secondTimelineID) == [.network(workspaceID, uri: uri)])
+    }
 }
 
 @MainActor
@@ -435,12 +601,26 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
 private final class ServiceStubAscendantBackend: AscendantBackend {
     let identity: AscendantBackendIdentity
     fileprivate var storedTimelines: [AscendantBackendTimeline]
+    fileprivate var workspaceReferencesByTimeline: [UUID: [UUID: BackendWorkspaceReference]]
+    fileprivate var attachCalls: [UUID] = []
     private(set) var timelineSessionRequests = 0
     private(set) var operatedTimelinesRequests = 0
     fileprivate let returnedWorkspaceProjectionID: UUID?
+    fileprivate var attachFailureTimelineID: UUID?
+    fileprivate let attachControl: ServiceStubAttachControl?
 
-    init(ascendantID: UUID, timelineID: UUID, returnedWorkspaceProjectionID: UUID? = nil) {
+    init(
+        ascendantID: UUID,
+        timelineID: UUID,
+        returnedWorkspaceProjectionID: UUID? = nil,
+        additionalTimelineIDs: [UUID] = [],
+        initialAttachedWorkspaceIDs: [UUID] = [],
+        initialWorkspaceReferences: [UUID: BackendWorkspaceReference] = [:],
+        attachFailureTimelineID: UUID? = nil,
+        attachControl: ServiceStubAttachControl? = nil
+    ) {
         let now = Date()
+        let timelineIDs = [timelineID] + additionalTimelineIDs
         identity = .init(
             id: ascendantID,
             name: "Stub",
@@ -451,17 +631,24 @@ private final class ServiceStubAscendantBackend: AscendantBackend {
             createdAt: now,
             updatedAt: now
         )
-        storedTimelines = [.init(
-            id: timelineID,
-            title: "Before",
-            attachedWorkspaceIDs: [],
-            ascendantID: ascendantID,
-            isArchived: false,
-            isPrivate: false,
-            createdAt: now,
-            updatedAt: now
-        )]
+        storedTimelines = timelineIDs.map {
+            .init(
+                id: $0,
+                title: "Before",
+                attachedWorkspaceIDs: initialAttachedWorkspaceIDs,
+                ascendantID: ascendantID,
+                isArchived: false,
+                isPrivate: false,
+                createdAt: now,
+                updatedAt: now
+            )
+        }
+        workspaceReferencesByTimeline = Dictionary(uniqueKeysWithValues: timelineIDs.map {
+            ($0, initialWorkspaceReferences)
+        })
         self.returnedWorkspaceProjectionID = returnedWorkspaceProjectionID
+        self.attachFailureTimelineID = attachFailureTimelineID
+        self.attachControl = attachControl
     }
 
     func validateConfiguration() throws {}
@@ -485,6 +672,10 @@ private final class ServiceStubAscendantBackend: AscendantBackend {
     }
     func cancel() async {}
     func shutdown() async {}
+
+    fileprivate func workspaceReference(timelineID: UUID, workspaceID: UUID) -> BackendWorkspaceReference? {
+        workspaceReferencesByTimeline[timelineID]?[workspaceID]
+    }
 }
 
 @MainActor
@@ -524,6 +715,10 @@ private final class ServiceStubTimelineSession: AscendantBackendTimelineWorkspac
     }
 
     func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
+        backend.attachCalls.append(reference.id)
+        if backend.attachFailureTimelineID == id {
+            throw ServiceStubError.attachFailed(id)
+        }
         guard let index = backend.storedTimelines.firstIndex(where: { $0.id == id }) else {
             throw NodeRuntimeError.missingTimeline(id)
         }
@@ -540,7 +735,8 @@ private final class ServiceStubTimelineSession: AscendantBackendTimelineWorkspac
             updatedAt: Date()
         )
         backend.storedTimelines[index] = projection
-        return AscendantBackendTimeline(
+        backend.workspaceReferencesByTimeline[id, default: [:]][reference.id] = reference
+        let result = AscendantBackendTimeline(
             id: backend.returnedWorkspaceProjectionID ?? projection.id,
             title: projection.title,
             attachedWorkspaceIDs: projection.attachedWorkspaceIDs,
@@ -550,6 +746,8 @@ private final class ServiceStubTimelineSession: AscendantBackendTimelineWorkspac
             createdAt: projection.createdAt,
             updatedAt: projection.updatedAt
         )
+        await backend.attachControl?.pauseAfterMutation(reference.id)
+        return result
     }
 
     func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
@@ -568,8 +766,46 @@ private final class ServiceStubTimelineSession: AscendantBackendTimelineWorkspac
             updatedAt: Date()
         )
         backend.storedTimelines[index] = projection
+        backend.workspaceReferencesByTimeline[id]?.removeValue(forKey: workspaceID)
         return projection
     }
 
     func enabledToolIDs() async -> [String] { [] }
+}
+
+private enum ServiceStubError: Error, Sendable, Equatable {
+    case attachFailed(UUID)
+}
+
+private actor ServiceStubAttachControl {
+    private let firstWorkspaceID: UUID
+    private var firstMutationObserved = false
+    private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseFirst: CheckedContinuation<Void, Never>?
+
+    init(firstWorkspaceID: UUID) {
+        self.firstWorkspaceID = firstWorkspaceID
+    }
+
+    func waitForFirstMutation() async {
+        if firstMutationObserved { return }
+        await withCheckedContinuation { continuation in
+            mutationWaiters.append(continuation)
+        }
+    }
+
+    func pauseAfterMutation(_ workspaceID: UUID) async {
+        guard workspaceID == firstWorkspaceID, !firstMutationObserved else { return }
+        firstMutationObserved = true
+        mutationWaiters.forEach { $0.resume() }
+        mutationWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            releaseFirst = continuation
+        }
+    }
+
+    func releaseFirstMutation() {
+        releaseFirst?.resume()
+        releaseFirst = nil
+    }
 }
