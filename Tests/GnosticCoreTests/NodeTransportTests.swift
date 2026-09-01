@@ -559,6 +559,67 @@ struct NodeTransportTests {
         #expect(backend.workspaceReference(timelineID: firstTimelineID, workspaceID: workspaceID)?.tools.map(\.id) == [newTool.id])
         #expect(backend.workspaceReference(timelineID: secondTimelineID, workspaceID: workspaceID)?.tools.map(\.id) == [newTool.id])
     }
+
+    @Test("Positronic Workspace state stays coherent across concurrent Timeline sessions")
+    @MainActor
+    func positronicWorkspaceStateStaysCoherentAcrossTimelines() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000051")!
+        let firstTimelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000052")!
+        let secondTimelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000053")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000054")!
+        let reference = BackendWorkspaceReference(
+            id: workspaceID,
+            uri: "gnostic://workspace/positronic-shared",
+            status: .available,
+            tools: [.init(id: "shared_echo", name: "Shared echo", description: "Echoes input.")]
+        )
+        let ascendant = NodeManifest.Ascendant(
+            id: ascendantID,
+            name: "Positronic",
+            defaultTimelineID: firstTimelineID,
+            backend: .init(kind: "positronic")
+        )
+        let timelines = [
+            NodeManifest.Timeline(id: firstTimelineID, title: "First", operatingAscendantID: ascendantID),
+            NodeManifest.Timeline(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
+        ]
+        let services = AscendantBackendServices(
+            workspace: PositronicTestWorkspaceService(workspaceReference: reference),
+            permission: AscendantBackendServices.empty.permission
+        )
+        let adapter = try await PositronicAscendantAdapter(
+            ascendant: ascendant,
+            backend: ascendant.backend,
+            services: services,
+            timelines: timelines,
+            languageModel: UnconfiguredLLMService()
+        )
+        let firstTimeline = try await adapter.timeline(id: firstTimelineID)
+        let secondTimeline = try await adapter.timeline(id: secondTimelineID)
+        let first = try #require(firstTimeline as? any AscendantBackendTimelineWorkspaceSession)
+        let second = try #require(secondTimeline as? any AscendantBackendTimelineWorkspaceSession)
+
+        async let firstProjection = first.attachWorkspace(reference)
+        async let secondProjection = second.attachWorkspace(reference)
+        let projections = try await [firstProjection, secondProjection]
+
+        #expect(projections.map { $0.id } == [firstTimelineID, secondTimelineID])
+        #expect(try await adapter.operatedTimelines().map { $0.attachedWorkspaceIDs } == [[workspaceID], [workspaceID]])
+        #expect(await first.enabledToolIDs().count == 1)
+        #expect(await second.enabledToolIDs().count == 1)
+    }
+}
+
+private struct PositronicTestWorkspaceService: AscendantBackendWorkspaceService {
+    let workspaceReference: BackendWorkspaceReference
+
+    func reference(id: UUID) async -> BackendWorkspaceReference? {
+        id == workspaceReference.id ? workspaceReference : nil
+    }
+
+    func invoke(_ invocation: BackendWorkspaceInvocation) async throws -> BackendWorkspaceResult {
+        .init(message: "invoked \(invocation.toolID)")
+    }
 }
 
 @MainActor
