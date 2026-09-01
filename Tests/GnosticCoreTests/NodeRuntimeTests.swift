@@ -1234,9 +1234,6 @@ private final class FixtureAscendantBackend: AscendantBackend {
         storedTimelines.removeAll { $0.id == id }
         await creationProbe?.recordRemoval(id)
     }
-    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {}
-    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
-    func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard storedTimelines.contains(where: { $0.id == id }) else {
             throw AscendantBackendError.timelineNotFound(id)

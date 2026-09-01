@@ -115,8 +115,8 @@ public final class WorkspaceService {
     }
 
     func attach(_ request: WorkspaceOpsRequest) async throws -> Bool {
-        let (ascendantID, session) = try await operatingAdapter(for: request.timelineID)
-        guard let runtime = session.backend as? any AscendantBackendWorkspaceCapability else {
+        let (_, timeline) = try await operatingTimeline(for: request.timelineID)
+        guard timeline.workspace != nil else {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
         }
         let reference: WorkspaceReference
@@ -133,9 +133,7 @@ public final class WorkspaceService {
             reference: reference,
             workspaceID: request.workspaceID,
             timelineID: request.timelineID,
-            ascendantID: ascendantID,
-            session: session,
-            runtime: runtime
+            timeline: timeline
         )
         return true
     }
@@ -150,21 +148,20 @@ public final class WorkspaceService {
         ascendantID expectedAscendantID: UUID,
         backendLease expectedBackendLease: UUID
     ) async throws {
-        let (ascendantID, session) = try await operatingAdapter(for: timelineID)
-        guard ascendantID == expectedAscendantID, session.lease == expectedBackendLease else {
+        let (ascendantID, timeline) = try await operatingTimeline(for: timelineID)
+        guard ascendantID == expectedAscendantID,
+              timeline.context.lease == expectedBackendLease else {
             throw NodeRuntimeError.notRunning
         }
         let reference = try await resolveNetworkWorkspace(workspaceID: workspaceID)
-        guard let runtime = session.backend as? any AscendantBackendWorkspaceCapability else {
+        guard timeline.workspace != nil else {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
         }
         try await attach(
             reference: reference,
             workspaceID: workspaceID,
             timelineID: timelineID,
-            ascendantID: ascendantID,
-            session: session,
-            runtime: runtime
+            timeline: timeline
         )
     }
 
@@ -172,65 +169,64 @@ public final class WorkspaceService {
         reference: WorkspaceReference,
         workspaceID: UUID,
         timelineID: UUID,
-        ascendantID: UUID,
-        session: AscendantBackendSession,
-        runtime: any AscendantBackendWorkspaceCapability
+        timeline: LeasedBackendTimelineSession
     ) async throws {
-        try await runBackendOperation(session) {
-            try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: timelineID)
+        guard let workspace = timeline.workspace else {
+            throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
         }
-        if let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == timelineID }) }) {
-            do {
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                let record = try await registry.commitBackendTimeline(
-                    timeline,
-                    ascendantID: ascendantID,
-                    backendLease: backendProvider.lease(for: ascendantID, backend: session.backend),
-                    generation: session.generation,
-                    upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
-                )
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                readvertiseTimeline(record.timeline)
+        let wasAttached = await registry.timeline(id: timeline.id)?.timeline.attachedWorkspaceIDs.contains(workspaceID) == true
+        let projection: AscendantBackendTimeline
+        do {
+            projection = try await workspace.attachWorkspace(BackendWorkspaceReference(reference: reference))
+        } catch {
+            if !wasAttached {
+                _ = try? await workspace.detachWorkspace(id: workspaceID)
             }
-            catch {
-                _ = try? await runBackendOperation(session) {
-                    try await runtime.detachWorkspace(workspaceID, from: timelineID)
-                }
-                throw error
+            throw error
+        }
+        do {
+            let record = try await registry.commitBackendTimeline(
+                projection,
+                context: timeline.context,
+                upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
+            )
+            readvertiseTimeline(record.timeline)
+        } catch {
+            if !wasAttached {
+                _ = try? await workspace.detachWorkspace(id: workspaceID)
             }
+            throw error
         }
     }
 
     func detach(_ request: WorkspaceOpsRequest) async throws -> Bool {
-        let (ascendantID, session) = try await operatingAdapter(for: request.timelineID)
-        guard let runtime = session.backend as? any AscendantBackendWorkspaceCapability else {
+        let (_, timeline) = try await operatingTimeline(for: request.timelineID)
+        guard let workspace = timeline.workspace else {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
         }
         let prior = references[request.workspaceID]
-        try await runBackendOperation(session) {
-            try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
+        let wasAttached = await registry.timeline(id: timeline.id)?.timeline.attachedWorkspaceIDs.contains(request.workspaceID) == true
+        let projection: AscendantBackendTimeline
+        do {
+            projection = try await workspace.detachWorkspace(id: request.workspaceID)
+        } catch {
+            if wasAttached, let prior {
+                _ = try? await workspace.attachWorkspace(BackendWorkspaceReference(reference: prior))
+            }
+            throw error
         }
-        if let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
-            do {
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                let record = try await registry.commitBackendTimeline(
-                    timeline,
-                    ascendantID: ascendantID,
-                    backendLease: backendProvider.lease(for: ascendantID, backend: session.backend),
-                    generation: session.generation,
-                    removingWorkspaceID: request.workspaceID
-                )
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                readvertiseTimeline(record.timeline)
+        do {
+            let record = try await registry.commitBackendTimeline(
+                projection,
+                context: timeline.context,
+                removingWorkspaceID: request.workspaceID
+            )
+            readvertiseTimeline(record.timeline)
+        } catch {
+            if wasAttached, let prior {
+                _ = try? await workspace.attachWorkspace(BackendWorkspaceReference(reference: prior))
             }
-            catch {
-                if let prior {
-                    _ = try? await runBackendOperation(session) {
-                        try await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID)
-                    }
-                }
-                throw error
-            }
+            throw error
         }
         return true
     }
@@ -330,66 +326,76 @@ public final class WorkspaceService {
         return reference
     }
 
-    private func operatingAdapter(for timelineID: UUID) async throws -> (UUID, AscendantBackendSession) {
-        let ascendantID = try await registry.requireOperatingAscendant(for: timelineID)
-        guard let session = backendProvider.rawSession(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-        return (ascendantID, session)
+    func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
+        let (_, timeline) = try await operatingTimeline(for: timelineID)
+        guard let workspace = timeline.workspace else { return [] }
+        return try await workspace.enabledToolIDs()
     }
 
-    private func runBackendOperation<T>(
-        _ session: AscendantBackendSession,
-        _ operation: () async throws -> T
-    ) async throws -> T {
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-        do {
-            let result = try await operation()
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-            return result
-        } catch let error as AscendantBackendError {
-            if case let .lifecycleUnusable(failure) = error {
-                guard backendProvider.isCurrentSession(session) else { throw error }
-                await backendProvider.markLifecycleFailure(session, failure: failure)
-            }
-            throw error
+    private func operatingTimeline(for timelineID: UUID) async throws -> (ascendantID: UUID, timeline: LeasedBackendTimelineSession) {
+        let ascendantID = try await registry.requireOperatingAscendant(for: timelineID)
+        guard let ascendant = backendProvider.session(for: ascendantID) else {
+            throw NodeRuntimeError.notRunning
         }
+        return (ascendantID, try await ascendant.timeline(id: timelineID))
     }
 
     private func installResolved(_ reference: WorkspaceReference, workspaceID: UUID) async throws {
         let backendReference = BackendWorkspaceReference(reference: reference)
-        var operationContext: AscendantBackendSession?
-        for target in await registry.attachmentTargets(for: workspaceID) {
-            guard let session = backendProvider.rawSession(for: target.ascendantID),
-                  let runtime = session.backend as? any AscendantBackendWorkspaceCapability else { continue }
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-            operationContext = session
-            try await runBackendOperation(session) {
-                try await runtime.attachWorkspace(backendReference, to: target.timelineID)
-            }
-        }
-        if let session = operationContext {
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-        }
-        guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
-        guard try await registry.resolveLazyWorkspace(
-            id: workspaceID,
-            uri: reference.uri.description,
-            toolIDs: reference.tools.map(\.toolID),
-            generation: generation
-        ) else {
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+        var mutations: [(workspace: LeasedBackendTimelineWorkspaceSession, shouldCompensate: Bool)] = []
+        do {
+            for target in await registry.attachmentTargets(for: workspaceID) {
+                guard let ascendant = backendProvider.session(for: target.ascendantID) else {
+                    throw NodeRuntimeError.notRunning
+                }
+                let timeline = try await ascendant.timeline(id: target.timelineID)
+                guard let workspace = timeline.workspace else { continue }
+                let wasAttached = await registry.timeline(id: target.timelineID)?.timeline.attachedWorkspaceIDs.contains(workspaceID) == true
+                let projection: AscendantBackendTimeline
+                do {
+                    projection = try await workspace.attachWorkspace(backendReference)
+                } catch {
+                    if !wasAttached {
+                        _ = try? await workspace.detachWorkspace(id: workspaceID)
+                    }
+                    throw error
+                }
+                mutations.append((workspace, !wasAttached))
+                let record = try await registry.commitBackendTimeline(
+                    projection,
+                    context: timeline.context
+                )
+                readvertiseTimeline(record.timeline)
+            }
+            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
                 throw NodeRuntimeError.notRunning
             }
-            throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+            guard try await registry.resolveLazyWorkspace(
+                id: workspaceID,
+                uri: reference.uri.description,
+                toolIDs: reference.tools.map(\.toolID),
+                generation: generation
+            ) else {
+                guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
+                    throw NodeRuntimeError.notRunning
+                }
+                guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                    throw NodeRuntimeError.notRunning
+                }
+                throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+            }
+            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
+                throw NodeRuntimeError.notRunning
+            }
+            references[workspaceID] = reference
+            backendWorkspaceService?.update(reference: reference)
+        } catch {
+            for mutation in mutations.reversed() where mutation.shouldCompensate {
+                _ = try? await mutation.workspace.detachWorkspace(id: workspaceID)
+            }
+            throw error
         }
-        if let session = operationContext {
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-        }
-        guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-        references[workspaceID] = reference
-        backendWorkspaceService?.update(reference: reference)
     }
 
     private static func effectiveStatus(_ status: WorkspaceAttachmentStatus) -> NodeRegistry.WorkspaceEffectiveStatus {

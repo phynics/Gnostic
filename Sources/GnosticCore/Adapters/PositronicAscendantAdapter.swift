@@ -8,7 +8,7 @@ import struct PositronicKit.Thread
 /// The built-in adapter owns PositronicKit construction, tool wiring, event
 /// translation, timeline persistence, and provider shutdown. PositronicKit
 /// native values do not cross the AscendantBackend contract.
-@MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
+@MainActor public final class PositronicAscendantAdapter: AscendantBackend {
     public let identity: AscendantBackendIdentity
     private let configuration: AscendantBackendConfiguration
     private let kit: PositronicKit
@@ -264,28 +264,6 @@ import struct PositronicKit.Thread
         workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
-    public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
-        try requireUsable()
-        try await kit.workspaces.update(Self.positronicReference(reference))
-        workspaceToolsByID[reference.id] = try Self.workspaceTools(for: reference, service: workspaceService)
-        if !workspaceIDsByTimeline[timelineID, default: []].contains(reference.id) {
-            workspaceIDsByTimeline[timelineID, default: []].append(reference.id)
-        }
-    }
-
-    public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
-        try requireUsable()
-        workspaceIDsByTimeline[timelineID, default: []].removeAll { $0 == workspaceID }
-    }
-
-    public func enabledToolIDs(for timelineID: UUID) async -> [String] {
-        guard lifecycleFailure == nil else { return [] }
-        let workspaceToolIDs: [String]
-        let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
-        workspaceToolIDs = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
-        return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
-    }
-
     public func cancel() async {
         for timeline in (try? await operatedTimelines()) ?? [] {
             await kit.threads.open(timeline.id).cancel()
@@ -307,7 +285,7 @@ import struct PositronicKit.Thread
     }
 
     @MainActor
-    private final class TimelineSession: AscendantBackendTimelineSession {
+    private final class TimelineSession: AscendantBackendTimelineWorkspaceSession {
         private let handle: ThreadHandle
         private let host: PositronicAscendantAdapter
         var id: UUID { handle.id }
@@ -393,6 +371,43 @@ import struct PositronicKit.Thread
                 }
                 return await self.host.projection(thread)
             }
+        }
+
+        func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
+            try host.requireUsable()
+            return try await host.withTimelineMutation(id: id) {
+                let nativeReference = try PositronicAscendantAdapter.positronicReference(reference)
+                let workspaceTools = try PositronicAscendantAdapter.workspaceTools(for: reference, service: self.host.workspaceService)
+                guard let thread = try await self.host.kit.threads.get(self.id) else {
+                    throw AscendantBackendError.timelineNotFound(self.id)
+                }
+                try await self.host.kit.workspaces.update(nativeReference)
+                self.host.workspaceToolsByID[reference.id] = workspaceTools
+                if !self.host.workspaceIDsByTimeline[self.id, default: []].contains(reference.id) {
+                    self.host.workspaceIDsByTimeline[self.id, default: []].append(reference.id)
+                }
+                return await self.host.projection(thread)
+            }
+        }
+
+        func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
+            try host.requireUsable()
+            return try await host.withTimelineMutation(id: id) {
+                guard let thread = try await self.host.kit.threads.get(self.id) else {
+                    throw AscendantBackendError.timelineNotFound(self.id)
+                }
+                self.host.workspaceIDsByTimeline[self.id, default: []].removeAll { $0 == workspaceID }
+                return await self.host.projection(thread)
+            }
+        }
+
+        func enabledToolIDs() async -> [String] {
+            guard host.lifecycleFailure == nil else { return [] }
+            let workspaceIDs = host.workspaceIDsByTimeline[id, default: []]
+            let workspaceToolIDs = workspaceIDs.flatMap {
+                host.workspaceToolsByID[$0, default: []].map(\.callName)
+            }
+            return Array(Set(host.networkTools.map(\.callName) + workspaceToolIDs)).sorted()
         }
     }
 

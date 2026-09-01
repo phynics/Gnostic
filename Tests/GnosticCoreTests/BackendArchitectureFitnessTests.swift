@@ -67,6 +67,41 @@ struct BackendArchitectureFitnessTests {
         }
     }
 
+    @Test("Workspace operations are bound to Timeline sessions")
+    func workspaceOperationsUseTimelineSessionSeam() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let backend = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/AscendantBackend.swift"),
+            encoding: .utf8
+        )
+        #expect(backend.contains("AscendantBackendTimelineWorkspaceSession"))
+        #expect(!backend.contains("AscendantBackendWorkspaceCapability"))
+        #expect(!backend.contains("to timelineID"))
+        #expect(!backend.contains("from timelineID"))
+
+        let workspaceService = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/WorkspaceService.swift"),
+            encoding: .utf8
+        )
+        for forbidden in [
+            "rawSession(",
+            "session.backend",
+            "operatedTimelines().first",
+            "runBackendOperation",
+        ] {
+            #expect(!workspaceService.contains(forbidden), "WorkspaceService retains forbidden backend access '\(forbidden)'.")
+        }
+
+        let nodeRuntime = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntime.swift"),
+            encoding: .utf8
+        )
+        #expect(nodeRuntime.contains("workspaceService.enabledToolIDs(for: timelineID)"))
+    }
+
     @Test("generic Workspace projections do not expose PositronicKit types")
     func workspaceProjectionIsBackendNeutral() throws {
         let rootURL = URL(fileURLWithPath: #filePath)

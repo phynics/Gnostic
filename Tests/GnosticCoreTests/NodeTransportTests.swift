@@ -292,7 +292,13 @@ struct NodeTransportTests {
             ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
             timelines: [.init(id: timelineID, title: "Dynamic", operatingAscendantID: ascendantID)]
         ).compileLaunchPlan()
-        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let lease = UUID.makeVersion4()
+        let registry = try NodeRegistry(
+            plan: plan,
+            operatedTimelines: try await adapter.operatedTimelines(),
+            backendLeases: [ascendantID: lease]
+        )
+        let initialOperatedTimelinesRequests = adapter.operatedTimelinesRequests
         let backend = adapter
         let service = WorkspaceService(
             plan: plan,
@@ -301,25 +307,84 @@ struct NodeTransportTests {
             localWorkspaces: [:],
             references: [:],
             isRunning: { true },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
             adapter: { $0 == ascendantID ? backend : nil },
             readvertiseTimeline: { _ in }
         )
 
         _ = try await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
         #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
-        #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs == [workspaceID])
+        #expect(adapter.storedTimelines.first?.attachedWorkspaceIDs == [workspaceID])
+        #expect(try await service.enabledToolIDs(for: timelineID).isEmpty)
 
-        try await adapter.detachWorkspace(workspaceID, from: timelineID)
+        let timeline = try await adapter.timeline(id: timelineID)
+        let workspaceSession = try #require(timeline as? any AscendantBackendTimelineWorkspaceSession)
+        let detachedProjection = try await workspaceSession.detachWorkspace(id: workspaceID)
+        #expect(detachedProjection.id == timelineID)
+        #expect(detachedProjection.attachedWorkspaceIDs.isEmpty)
         discovery.isAvailable = false
         await registry.setWorkspaceStatus(id: workspaceID, status: .unavailable)
         await service.refreshUnresolved()
-        #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs.isEmpty == true)
+        #expect(adapter.storedTimelines.first?.attachedWorkspaceIDs.isEmpty == true)
 
         discovery.isAvailable = true
         await service.refreshUnresolved()
 
-        #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs == [workspaceID])
+        #expect(adapter.storedTimelines.first?.attachedWorkspaceIDs == [workspaceID])
         #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
+        #expect(adapter.operatedTimelinesRequests == initialOperatedTimelinesRequests)
+    }
+
+    @Test("a leased Workspace Timeline session rejects a mismatched projection")
+    @MainActor
+    func mismatchedWorkspaceProjectionIsRejected() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-0000-8000-000000000021")!
+        let timelineID = UUID(uuidString: "13100000-0000-0000-8000-000000000022")!
+        let returnedID = UUID(uuidString: "13100000-0000-0000-8000-000000000023")!
+        let workspaceID = UUID(uuidString: "13100000-0000-0000-8000-000000000024")!
+        let backend = ServiceStubAscendantBackend(
+            ascendantID: ascendantID,
+            timelineID: timelineID,
+            returnedWorkspaceProjectionID: returnedID
+        )
+        let lease = UUID.makeVersion4()
+        var failureCount = 0
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 0 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                id == ascendantID
+                    && generation == 0
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            failure: { _, _, _ in failureCount += 1 },
+            backend: { _ in backend }
+        )
+        let native = try await backend.timeline(id: timelineID)
+        let leased = LeasedBackendTimelineSession(
+            id: timelineID,
+            context: .init(ascendantID: ascendantID, lease: lease, generation: 0),
+            timeline: native,
+            provider: provider
+        )
+        let workspace = try #require(leased.workspace)
+
+        await #expect(throws: AscendantBackendError.contractViolation(
+            .projectionTimelineMismatch(expected: timelineID, actual: returnedID)
+        )) {
+            _ = try await workspace.attachWorkspace(.init(
+                id: workspaceID,
+                uri: "workspace://test",
+                status: .available
+            ))
+        }
+        #expect(failureCount == 1)
     }
 }
 
@@ -367,13 +432,14 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
 }
 
 @MainActor
-private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
+private final class ServiceStubAscendantBackend: AscendantBackend {
     let identity: AscendantBackendIdentity
     fileprivate var storedTimelines: [AscendantBackendTimeline]
     private(set) var timelineSessionRequests = 0
     private(set) var operatedTimelinesRequests = 0
+    fileprivate let returnedWorkspaceProjectionID: UUID?
 
-    init(ascendantID: UUID, timelineID: UUID) {
+    init(ascendantID: UUID, timelineID: UUID, returnedWorkspaceProjectionID: UUID? = nil) {
         let now = Date()
         identity = .init(
             id: ascendantID,
@@ -395,6 +461,7 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
             createdAt: now,
             updatedAt: now
         )]
+        self.returnedWorkspaceProjectionID = returnedWorkspaceProjectionID
     }
 
     func validateConfiguration() throws {}
@@ -409,40 +476,6 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
         return timeline
     }
     func removeTimeline(id: UUID) async { storedTimelines.removeAll { $0.id == id } }
-    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
-        guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else {
-            throw NodeRuntimeError.missingTimeline(timelineID)
-        }
-        let old = storedTimelines[index]
-        let attached = old.attachedWorkspaceIDs + (old.attachedWorkspaceIDs.contains(reference.id) ? [] : [reference.id])
-        storedTimelines[index] = AscendantBackendTimeline(
-            id: old.id,
-            title: old.title,
-            attachedWorkspaceIDs: attached,
-            ascendantID: old.ascendantID,
-            isArchived: old.isArchived,
-            isPrivate: old.isPrivate,
-            createdAt: old.createdAt,
-            updatedAt: Date()
-        )
-    }
-    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
-        guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else {
-            throw NodeRuntimeError.missingTimeline(timelineID)
-        }
-        let old = storedTimelines[index]
-        storedTimelines[index] = AscendantBackendTimeline(
-            id: old.id,
-            title: old.title,
-            attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
-            ascendantID: old.ascendantID,
-            isArchived: old.isArchived,
-            isPrivate: old.isPrivate,
-            createdAt: old.createdAt,
-            updatedAt: Date()
-        )
-    }
-    func enabledToolIDs(for _: UUID) async -> [String] { [] }
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard storedTimelines.contains(where: { $0.id == id }) else {
             throw AscendantBackendError.timelineNotFound(id)
@@ -455,7 +488,7 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
 }
 
 @MainActor
-private final class ServiceStubTimelineSession: AscendantBackendTimelineSession {
+private final class ServiceStubTimelineSession: AscendantBackendTimelineWorkspaceSession {
     let id: UUID
     private let backend: ServiceStubAscendantBackend
 
@@ -489,4 +522,54 @@ private final class ServiceStubTimelineSession: AscendantBackendTimelineSession 
         backend.storedTimelines[index] = renamed
         return renamed
     }
+
+    func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
+        guard let index = backend.storedTimelines.firstIndex(where: { $0.id == id }) else {
+            throw NodeRuntimeError.missingTimeline(id)
+        }
+        let old = backend.storedTimelines[index]
+        let attached = old.attachedWorkspaceIDs + (old.attachedWorkspaceIDs.contains(reference.id) ? [] : [reference.id])
+        let projection = AscendantBackendTimeline(
+            id: old.id,
+            title: old.title,
+            attachedWorkspaceIDs: attached,
+            ascendantID: old.ascendantID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+        backend.storedTimelines[index] = projection
+        return AscendantBackendTimeline(
+            id: backend.returnedWorkspaceProjectionID ?? projection.id,
+            title: projection.title,
+            attachedWorkspaceIDs: projection.attachedWorkspaceIDs,
+            ascendantID: projection.ascendantID,
+            isArchived: projection.isArchived,
+            isPrivate: projection.isPrivate,
+            createdAt: projection.createdAt,
+            updatedAt: projection.updatedAt
+        )
+    }
+
+    func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
+        guard let index = backend.storedTimelines.firstIndex(where: { $0.id == id }) else {
+            throw NodeRuntimeError.missingTimeline(id)
+        }
+        let old = backend.storedTimelines[index]
+        let projection = AscendantBackendTimeline(
+            id: old.id,
+            title: old.title,
+            attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
+            ascendantID: old.ascendantID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+        backend.storedTimelines[index] = projection
+        return projection
+    }
+
+    func enabledToolIDs() async -> [String] { [] }
 }

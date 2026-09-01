@@ -97,6 +97,7 @@ struct LeasedAscendantBackendSession {
 struct LeasedBackendTimelineSession {
     let id: UUID
     let context: BackendSessionContext
+    let workspace: LeasedBackendTimelineWorkspaceSession?
     private let timeline: any AscendantBackendTimelineSession
     private let provider: any BackendSessionProviding
 
@@ -110,6 +111,14 @@ struct LeasedBackendTimelineSession {
         self.context = context
         self.timeline = timeline
         self.provider = provider
+        workspace = (timeline as? any AscendantBackendTimelineWorkspaceSession).map {
+            LeasedBackendTimelineWorkspaceSession(
+                id: id,
+                context: context,
+                workspace: $0,
+                provider: provider
+            )
+        }
     }
 
     func runTurn(
@@ -177,6 +186,58 @@ struct LeasedBackendTimelineSession {
     }
 }
 
+/// Optional Workspace capability fenced by the same Timeline session and
+/// backend lease as its mandatory operations.
+@MainActor
+struct LeasedBackendTimelineWorkspaceSession {
+    let id: UUID
+    let context: BackendSessionContext
+    private let workspace: any AscendantBackendTimelineWorkspaceSession
+    private let provider: any BackendSessionProviding
+
+    init(
+        id: UUID,
+        context: BackendSessionContext,
+        workspace: any AscendantBackendTimelineWorkspaceSession,
+        provider: any BackendSessionProviding
+    ) {
+        self.id = id
+        self.context = context
+        self.workspace = workspace
+        self.provider = provider
+    }
+
+    func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
+        let projection = try await performLeasedBackendCall(context: context, provider: provider) {
+            try await workspace.attachWorkspace(reference)
+        }
+        return try await validateBackendProjection(
+            projection,
+            expectedTimelineID: id,
+            context: context,
+            provider: provider
+        )
+    }
+
+    func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
+        let projection = try await performLeasedBackendCall(context: context, provider: provider) {
+            try await workspace.detachWorkspace(id: workspaceID)
+        }
+        return try await validateBackendProjection(
+            projection,
+            expectedTimelineID: id,
+            context: context,
+            provider: provider
+        )
+    }
+
+    func enabledToolIDs() async throws -> [String] {
+        try await performLeasedBackendCall(context: context, provider: provider) {
+            await workspace.enabledToolIDs()
+        }
+    }
+}
+
 /// Drops updates after the backend lease that produced them is no longer
 /// current. A backend may continue producing events while retirement is
 /// bounded, but those events must not reach the active Turn stream.
@@ -234,7 +295,8 @@ protocol BackendSessionProviding: AnyObject, Sendable {
     func markLifecycleFailure(_ context: BackendSessionContext, failure: AscendantBackendLifecycleFailure) async
     func markContractViolation(_ context: BackendSessionContext, violation: AscendantBackendContractViolation) async
 
-    // Transitional raw-session operations remain for Workspace until PR3.
+    // Transitional raw-session operations remain only for the PR4 contract
+    // cleanup; domain services use leased sessions above.
     func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool
     func isCurrentSession(_ session: AscendantBackendSession) -> Bool
     func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID?
@@ -540,16 +602,6 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
 
     func health(for ascendantID: UUID) -> AscendantBackendHealth {
         backendHealthByID[ascendantID] ?? .unknown
-    }
-
-    func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
-        guard let ascendantID = await registry.operatorID(forTimeline: timelineID),
-              backendHealthByID[ascendantID] == .healthy,
-              let backend = ascendantAdapters[ascendantID] else {
-            throw NodeRuntimeError.noOperatingAscendant(timelineID)
-        }
-        guard let adapter = backend as? any AscendantBackendWorkspaceCapability else { return [] }
-        return await adapter.enabledToolIDs(for: timelineID)
     }
 
     func rawSession(for ascendantID: UUID, generation: UInt64? = nil) -> AscendantBackendSession? {

@@ -242,7 +242,7 @@ public final class NodeRuntime {
 
     /// Returns the tool identifiers currently available to an operated Timeline.
     public func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
-        try await backendSupervisor.enabledToolIDs(for: timelineID)
+        try await workspaceService.enabledToolIDs(for: timelineID)
     }
 
     /// Runs one Turn against the adapter selected by the

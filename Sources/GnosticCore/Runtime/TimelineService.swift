@@ -87,7 +87,7 @@ public final class TimelineService {
     }
     func rename(_ request: TimelineUpdateRequest) async throws -> TimelineStatus {
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
-        guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.notRunning }
         let previous = await registry.timeline(id: request.timelineID)?.timeline
         let timeline = try await session.timeline(id: request.timelineID)
         let projection = try await timeline.rename(to: request.title)
