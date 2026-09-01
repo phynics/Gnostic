@@ -157,9 +157,13 @@ struct LeasedBackendTimelineSession {
                   provider.isCurrentSession(context) else {
                 throw CancellationError()
             }
-            if case let .lifecycleUnusable(failure) = error,
-               provider.isCurrentSession(context) {
+            switch error {
+            case let .lifecycleUnusable(failure) where provider.isCurrentSession(context):
                 await provider.markLifecycleFailure(context, failure: failure)
+            case let .contractViolation(violation) where provider.isCurrentSession(context):
+                await provider.markContractViolation(context, violation: violation)
+            default:
+                break
             }
             throw error
         } catch {
@@ -324,8 +328,13 @@ private func performLeasedBackendCall<T>(
         guard !Task.isCancelled, provider.isCurrentSession(context) else {
             throw NodeRuntimeError.notRunning
         }
-        if case let .lifecycleUnusable(failure) = error {
+        switch error {
+        case let .lifecycleUnusable(failure):
             await provider.markLifecycleFailure(context, failure: failure)
+        case let .contractViolation(violation):
+            await provider.markContractViolation(context, violation: violation)
+        default:
+            break
         }
         throw error
     } catch {
