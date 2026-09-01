@@ -55,10 +55,11 @@ public final class TurnService {
         let admission = try backendProvider.turnAdmission()
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
-            let session: AscendantBackendSession
+            let session: LeasedAscendantBackendSession
             do {
                 session = try await self.backendProvider.sessionForTurn(
-                    ascendantID,
+                    timelineID: request.timelineID,
+                    operatedBy: ascendantID,
                     admittedUnder: admission
                 )
             } catch let error as AscendantTurnError {
@@ -72,7 +73,15 @@ public final class TurnService {
                     detail: error.localizedDescription
                 )
             }
-            let timeline = try await self.backendProvider.timeline(id: request.timelineID, in: session)
+            let timeline: LeasedBackendTimelineSession
+            do {
+                timeline = try await session.timeline(id: request.timelineID)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as NodeRuntimeError {
+                if case .notRunning = error { throw CancellationError() }
+                throw error
+            }
             let result = try await timeline.runTurn(
                 .init(message: request.message, clientTurnID: request.clientTurnID),
                 updates: sink

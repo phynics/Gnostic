@@ -267,6 +267,21 @@ public actor NodeRegistry {
         return try registerRuntimeTimeline(timeline, ascendantID: ascendantID, backendLease: backendLease)
     }
 
+    /// Registers a backend-created Timeline under one inseparable session
+    /// context. Callers cannot accidentally combine a lease from one backend
+    /// with the Ascendant or lifecycle generation from another.
+    func registerRuntimeTimeline(
+        _ timeline: AscendantRuntimeTimeline,
+        context: BackendSessionContext
+    ) throws -> TimelineRecord {
+        guard lifecycleGeneration == context.generation else { throw NodeRuntimeError.notRunning }
+        return try registerRuntimeTimeline(
+            timeline,
+            ascendantID: context.ascendantID,
+            backendLease: context.lease
+        )
+    }
+
     /// Replaces only an existing timeline's projection after the adapter has accepted a mutation.
     public func replaceTimeline(_ timeline: AscendantRuntimeTimeline) throws -> TimelineRecord {
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
@@ -321,6 +336,24 @@ public actor NodeRegistry {
             timeline,
             ascendantID: ascendantID,
             backendLease: backendLease,
+            upserting: attachment,
+            removingWorkspaceID: removingWorkspaceID
+        )
+    }
+
+    /// Commits one backend projection under the exact lease and runtime
+    /// generation that produced it.
+    func commitBackendTimeline(
+        _ timeline: AscendantRuntimeTimeline,
+        context: BackendSessionContext,
+        upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
+        removingWorkspaceID: UUID? = nil
+    ) throws -> TimelineRecord {
+        guard lifecycleGeneration == context.generation else { throw NodeRuntimeError.notRunning }
+        return try commitBackendTimeline(
+            timeline,
+            ascendantID: context.ascendantID,
+            backendLease: context.lease,
             upserting: attachment,
             removingWorkspaceID: removingWorkspaceID
         )

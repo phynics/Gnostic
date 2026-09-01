@@ -274,31 +274,19 @@ private final class ReconstructionValidationBackend: AscendantBackend {
 
     func removeTimeline(id: UUID) async {}
 
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard id == timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
-        return .init(
-            id: timeline.id,
-            title: title,
-            attachedWorkspaceIDs: timeline.attachedWorkspaceIDs,
-            ascendantID: timeline.ascendantID,
-            isArchived: timeline.isArchived,
-            isPrivate: timeline.isPrivate,
-            createdAt: timeline.createdAt,
-            updatedAt: Date()
-        )
-    }
-
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard id == timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
-        return TimelineSession(id: id)
+        return TimelineSession(id: id, backend: self)
     }
 
     @MainActor
     private final class TimelineSession: AscendantBackendTimelineSession {
         let id: UUID
+        private let backend: ReconstructionValidationBackend
 
-        init(id: UUID) {
+        init(id: UUID, backend: ReconstructionValidationBackend) {
             self.id = id
+            self.backend = backend
         }
 
         func runTurn(
@@ -306,6 +294,20 @@ private final class ReconstructionValidationBackend: AscendantBackend {
             updates _: any AscendantBackendUpdateSink
         ) async throws -> String {
             throw AscendantBackendError.lifecycleUnusable(.init(message: "fixture lifecycle failure"))
+        }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            guard id == backend.timeline.id else { throw AscendantBackendError.timelineNotFound(id) }
+            return .init(
+                id: backend.timeline.id,
+                title: title,
+                attachedWorkspaceIDs: backend.timeline.attachedWorkspaceIDs,
+                ascendantID: backend.timeline.ascendantID,
+                isArchived: backend.timeline.isArchived,
+                isPrivate: backend.timeline.isPrivate,
+                createdAt: backend.timeline.createdAt,
+                updatedAt: Date()
+            )
         }
     }
 

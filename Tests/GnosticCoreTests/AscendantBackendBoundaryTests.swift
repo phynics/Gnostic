@@ -82,6 +82,44 @@ struct AscendantBackendBoundaryTests {
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
     }
 
+    @Test("a rename projection for the wrong Ascendant is rejected before registry mutation")
+    @MainActor
+    func mismatchedRenameProjectionIsRejected() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000706")!
+        let wrongAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000707")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000708")!
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "mismatched-rename-fixture") { ascendant, configuration, services, timelines in
+            try FixtureBackend(
+                ascendant: ascendant,
+                configuration: configuration,
+                services: services,
+                timelines: timelines,
+                returnedRenameAscendantID: wrongAscendantID
+            )
+        }
+        let runtime = try await NodeRuntime(
+            plan: NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "mismatched-rename-\(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(id: ascendantID, name: "Mismatched rename", defaultTimelineID: timelineID, kind: "mismatched-rename-fixture")],
+                timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)]
+            ).compileLaunchPlan(),
+            adapters: adapters
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        do {
+            _ = try await runtime.renameTimeline(.init(timelineID: timelineID, title: "Rejected"))
+            Issue.record("The provider accepted a projection for the wrong Ascendant.")
+        } catch let error as AscendantBackendError {
+            #expect(error == .contractViolation(.projectionAscendantMismatch(expected: ascendantID, actual: wrongAscendantID)))
+        }
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+        #expect(await runtime.timeline(id: timelineID)?.title == "Before")
+    }
+
     @Test("Workspace intent remains distinct from effective availability")
     func workspaceAttachmentProjectionPreservesIntent() async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000711")!
@@ -123,13 +161,17 @@ private final class FixtureBackend: AscendantBackend {
     private var timeline: AscendantBackendTimeline
     private var isShutdown = false
     private let returnedSessionID: UUID?
+    private let returnedRenameProjectionID: UUID?
+    private let returnedRenameAscendantID: UUID?
 
     init(
         ascendant: NodeManifest.Ascendant,
         configuration: AscendantBackendConfiguration,
         services _: AscendantBackendServices,
         timelines: [NodeManifest.Timeline],
-        returnedSessionID: UUID? = nil
+        returnedSessionID: UUID? = nil,
+        returnedRenameProjectionID: UUID? = nil,
+        returnedRenameAscendantID: UUID? = nil
     ) throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
         guard let timeline = timelines.first(where: { $0.id == ascendant.defaultTimelineID }) else {
@@ -157,6 +199,8 @@ private final class FixtureBackend: AscendantBackend {
             updatedAt: now
         )
         self.returnedSessionID = returnedSessionID
+        self.returnedRenameProjectionID = returnedRenameProjectionID
+        self.returnedRenameAscendantID = returnedRenameAscendantID
     }
 
     func validateConfiguration() throws {}
@@ -170,12 +214,6 @@ private final class FixtureBackend: AscendantBackend {
     }
 
     func removeTimeline(id _: UUID) async {}
-
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
-        timeline = .init(id: timeline.id, title: title, attachedWorkspaceIDs: timeline.attachedWorkspaceIDs, ascendantID: identity.id, isArchived: timeline.isArchived, isPrivate: timeline.isPrivate, createdAt: timeline.createdAt, updatedAt: Date())
-        return timeline
-    }
 
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
@@ -204,6 +242,24 @@ private final class FixtureBackend: AscendantBackend {
             updates _: any AscendantBackendUpdateSink
         ) async throws -> String {
             try backend.runTurn(request)
+        }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            guard backend.timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
+            let projection = AscendantBackendTimeline(
+                id: backend.returnedRenameProjectionID ?? backend.timeline.id,
+                title: title,
+                attachedWorkspaceIDs: backend.timeline.attachedWorkspaceIDs,
+                ascendantID: backend.returnedRenameAscendantID ?? backend.identity.id,
+                isArchived: backend.timeline.isArchived,
+                isPrivate: backend.timeline.isPrivate,
+                createdAt: backend.timeline.createdAt,
+                updatedAt: Date()
+            )
+            if projection.id == backend.timeline.id, projection.ascendantID == backend.identity.id {
+                backend.timeline = projection
+            }
+            return projection
         }
     }
 

@@ -263,15 +263,6 @@ import struct PositronicKit.Thread
         workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
-    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        try requireUsable()
-        try await kit.threads.rename(id, title: title)
-        guard let thread = try await operatedTimelines().first(where: { $0.id == id }) else {
-            throw NodeRuntimeError.missingTimeline(id)
-        }
-        return thread
-    }
-
     public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         try requireUsable()
         try await kit.workspaces.update(Self.positronicReference(reference))
@@ -390,6 +381,15 @@ import struct PositronicKit.Thread
                 throw AscendantBackendError.terminal(.init(code: "turnFailed", message: failure))
             }
             return finalText.isEmpty ? "(empty reply)" : finalText
+        }
+
+        func rename(to title: String) async throws -> AscendantBackendTimeline {
+            try host.requireUsable()
+            try await host.kit.threads.rename(id, title: title)
+            guard let thread = try await host.kit.threads.get(id) else {
+                throw AscendantBackendError.timelineNotFound(id)
+            }
+            return await host.projection(thread)
         }
     }
 

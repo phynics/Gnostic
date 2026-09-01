@@ -48,22 +48,38 @@ struct NodeTransportTests {
         let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
         let backend = adapter
+        let lease = UUID()
+        let initialProjectionRequestCount = adapter.operatedTimelinesRequests
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 0 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                id == ascendantID
+                    && generation == 0
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            failure: { _, _, _ in },
+            backend: { id in
+                guard id == ascendantID else { throw NodeRuntimeError.unknownAscendant(id) }
+                return backend
+            }
+        )
         let timelineService = TimelineService(
             ascendantIDs: [ascendantID],
             registry: registry,
-            isClosed: { false },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: provider,
             advertise: { _, _ in }
         )
         let turnService = TurnService(
             registry: registry,
             coordinator: AscendantTurnCoordinator(),
             updates: AscendantTurnUpdateStore(),
-            isRunning: { true },
-            backend: { id in
-                guard id == ascendantID else { throw NodeRuntimeError.unknownAscendant(id) }
-                return backend
-            }
+            backendProvider: provider
         )
 
         let renamed = try await timelineService.rename(.init(timelineID: timelineID, title: "After"))
@@ -71,8 +87,58 @@ struct NodeTransportTests {
 
         #expect(renamed.title == "After")
         #expect(reply.text == "stub: hello")
-        #expect(adapter.timelineSessionRequests == 1)
+        #expect(adapter.timelineSessionRequests == 2)
+        #expect(adapter.operatedTimelinesRequests == initialProjectionRequestCount)
         #expect(try timelineService.selectAscendant(requested: nil) == ascendantID)
+    }
+
+    @Test("rename compensation uses the original Timeline session and preserves the registry error")
+    @MainActor
+    func renameCompensatesThroughOriginalSession() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000011")!
+        let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000012")!
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "rename-compensation"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000013")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)]
+        ).compileLaunchPlan()
+        let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let providerLease = UUID()
+        await registry.activateBackendLease(UUID(), for: ascendantID)
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 0 },
+            adapter: { $0 == ascendantID ? adapter : nil },
+            current: { id, candidate, generation in
+                id == ascendantID
+                    && generation == 0
+                    && (candidate as AnyObject) === (adapter as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (adapter as AnyObject) ? providerLease : nil
+            },
+            failure: { _, _, _ in },
+            backend: { _ in adapter }
+        )
+        let timelineService = TimelineService(
+            ascendantIDs: [ascendantID],
+            registry: registry,
+            backendProvider: provider,
+            advertise: { _, _ in }
+        )
+
+        do {
+            _ = try await timelineService.rename(.init(timelineID: timelineID, title: "Rejected"))
+            Issue.record("The registry rejection unexpectedly succeeded.")
+        } catch let error as NodeRuntimeError {
+            #expect(error == .notRunning)
+        }
+
+        #expect(try await adapter.operatedTimelines().first?.title == "Before")
+        #expect(await registry.timeline(id: timelineID)?.timeline.title == "Before")
+        #expect(adapter.timelineSessionRequests == 1)
     }
 
     @Test("workspace service lists remote workspaces through a discovery stub")
@@ -303,8 +369,9 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
 @MainActor
 private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
     let identity: AscendantBackendIdentity
-    private var storedTimelines: [AscendantBackendTimeline]
+    fileprivate var storedTimelines: [AscendantBackendTimeline]
     private(set) var timelineSessionRequests = 0
+    private(set) var operatedTimelinesRequests = 0
 
     init(ascendantID: UUID, timelineID: UUID) {
         let now = Date()
@@ -331,7 +398,10 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
     }
 
     func validateConfiguration() throws {}
-    func operatedTimelines() async throws -> [AscendantBackendTimeline] { storedTimelines }
+    func operatedTimelines() async throws -> [AscendantBackendTimeline] {
+        operatedTimelinesRequests += 1
+        return storedTimelines
+    }
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         let now = Date()
         let timeline = AscendantBackendTimeline(id: id, title: title, attachedWorkspaceIDs: [], ascendantID: identity.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
@@ -339,13 +409,6 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
         return timeline
     }
     func removeTimeline(id: UUID) async { storedTimelines.removeAll { $0.id == id } }
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
-        let old = storedTimelines[index]
-        let renamed = AscendantBackendTimeline(id: id, title: title, attachedWorkspaceIDs: old.attachedWorkspaceIDs, ascendantID: old.ascendantID, isArchived: old.isArchived, isPrivate: old.isPrivate, createdAt: old.createdAt, updatedAt: Date())
-        storedTimelines[index] = renamed
-        return renamed
-    }
     func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else {
             throw NodeRuntimeError.missingTimeline(timelineID)
@@ -385,7 +448,7 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
             throw AscendantBackendError.timelineNotFound(id)
         }
         timelineSessionRequests += 1
-        return ServiceStubTimelineSession(id: id)
+        return ServiceStubTimelineSession(id: id, backend: self)
     }
     func cancel() async {}
     func shutdown() async {}
@@ -394,9 +457,11 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
 @MainActor
 private final class ServiceStubTimelineSession: AscendantBackendTimelineSession {
     let id: UUID
+    private let backend: ServiceStubAscendantBackend
 
-    init(id: UUID) {
+    init(id: UUID, backend: ServiceStubAscendantBackend) {
         self.id = id
+        self.backend = backend
     }
 
     func runTurn(
@@ -404,5 +469,24 @@ private final class ServiceStubTimelineSession: AscendantBackendTimelineSession 
         updates _: any AscendantBackendUpdateSink
     ) async throws -> String {
         "stub: \(request.message)"
+    }
+
+    func rename(to title: String) async throws -> AscendantBackendTimeline {
+        guard let index = backend.storedTimelines.firstIndex(where: { $0.id == id }) else {
+            throw NodeRuntimeError.missingTimeline(id)
+        }
+        let old = backend.storedTimelines[index]
+        let renamed = AscendantBackendTimeline(
+            id: old.id,
+            title: title,
+            attachedWorkspaceIDs: old.attachedWorkspaceIDs,
+            ascendantID: old.ascendantID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+        backend.storedTimelines[index] = renamed
+        return renamed
     }
 }
