@@ -59,6 +59,56 @@ struct BackendLifecycleTests {
         #expect(await probe.runCount == 0)
     }
 
+    @Test("factory-admitted lifecycle failures use the exact current context")
+    @MainActor
+    func factoryAdmittedLifecycleFailuresUseExactContext() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000731")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000732")!
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: LifecycleBackendProbe(),
+            outcome: .success
+        )
+        let currentState = CurrentSessionState()
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { _ in nil },
+            current: { id, candidate, generation in
+                currentState.isCurrent
+                    && id == ascendantID
+                    && generation == 1
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { _, _ in nil },
+            failure: { _, _, _ in
+                currentState.failureCount += 1
+            },
+            backend: { _ in backend }
+        )
+
+        let admission = try provider.turnAdmission()
+        let session = try await provider.sessionForTurn(
+            timelineID: timelineID,
+            operatedBy: ascendantID,
+            admittedUnder: admission
+        )
+
+        await provider.markLifecycleFailure(
+            session.context,
+            failure: .init(message: "current failure")
+        )
+        #expect(currentState.failureCount == 1)
+
+        currentState.isCurrent = false
+        await provider.markLifecycleFailure(
+            session.context,
+            failure: .init(message: "retired failure")
+        )
+        #expect(currentState.failureCount == 1)
+    }
+
     @Test("late Timeline updates are discarded and their result is rejected")
     @MainActor
     func lateTimelineUpdatesAreFenced() async throws {
@@ -1118,6 +1168,7 @@ private actor ManualShutdownDeadline {
 @MainActor
 private final class CurrentSessionState: Sendable {
     var isCurrent = true
+    var failureCount = 0
 }
 
 @MainActor

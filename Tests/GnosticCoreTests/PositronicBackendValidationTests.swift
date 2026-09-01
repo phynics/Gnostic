@@ -16,6 +16,21 @@ struct PositronicBackendValidationTests {
         try adapter.validateConfiguration()
     }
 
+    @Test("concurrent Timeline renames return their own projections")
+    @MainActor
+    func concurrentRenamesReturnAtomicProjections() async throws {
+        let adapter = try await makeAdapter(backend: .init(kind: "positronic"))
+        let timeline = try await adapter.timeline(
+            id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000802")!
+        )
+
+        async let first = timeline.rename(to: "First")
+        async let second = timeline.rename(to: "Second")
+        let projections = try await [first, second]
+
+        #expect(projections.map(\.title).sorted() == ["First", "Second"])
+    }
+
     @Test("accepts a valid hosted provider configuration")
     @MainActor
     func acceptsValidConfiguration() async throws {

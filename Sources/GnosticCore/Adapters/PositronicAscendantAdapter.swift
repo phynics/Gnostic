@@ -18,6 +18,7 @@ import struct PositronicKit.Thread
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
+    private var timelineMutationGates: [UUID: TimelineMutationGate] = [:]
 
     public init(
         ascendant: NodeManifest.Ascendant,
@@ -385,12 +386,29 @@ import struct PositronicKit.Thread
 
         func rename(to title: String) async throws -> AscendantBackendTimeline {
             try host.requireUsable()
-            try await host.kit.threads.rename(id, title: title)
-            guard let thread = try await host.kit.threads.get(id) else {
-                throw AscendantBackendError.timelineNotFound(id)
+            return try await host.withTimelineMutation(id: id) {
+                try await self.host.kit.threads.rename(self.id, title: title)
+                guard let thread = try await self.host.kit.threads.get(self.id) else {
+                    throw AscendantBackendError.timelineNotFound(self.id)
+                }
+                return await self.host.projection(thread)
             }
-            return await host.projection(thread)
         }
+    }
+
+    private func withTimelineMutation<T: Sendable>(
+        id: UUID,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let gate: TimelineMutationGate
+        if let existing = timelineMutationGates[id] {
+            gate = existing
+        } else {
+            let created = TimelineMutationGate()
+            timelineMutationGates[id] = created
+            gate = created
+        }
+        return try await gate.withExclusiveAccess(operation)
     }
 
     private func requireUsable() throws {
@@ -479,6 +497,43 @@ import struct PositronicKit.Thread
         case let .object(value): return value.mapValues(anyValue)
         case let .array(value): return value.map(anyValue)
         case .null: return NSNull()
+        }
+    }
+}
+
+private actor TimelineMutationGate {
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func withExclusiveAccess<T: Sendable>(
+        _ operation: @escaping @MainActor () async throws -> T
+    ) async rethrows -> T {
+        await acquire()
+        do {
+            let result = try await operation()
+            release()
+            return result
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        guard held else {
+            held = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            held = false
+        } else {
+            waiters.removeFirst().resume()
         }
     }
 }

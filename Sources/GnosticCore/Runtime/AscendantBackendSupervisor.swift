@@ -390,10 +390,7 @@ final class ClosureBackendSessionProvider: BackendSessionProviding {
 
     func isCurrentSession(_ context: BackendSessionContext) -> Bool {
         guard running(), generation() == context.generation else { return false }
-        let backend = adapter(context.ascendantID)
-            ?? admittedBackends[context.ascendantID].flatMap { entry in
-                entry.context == context ? entry.backend : nil
-            }
+        let backend = currentBackend(for: context)
         guard let backend else { return false }
         guard current(context.ascendantID, backend, context.generation) else { return false }
         guard let lease = backendLease(context.ascendantID, backend) else { return true }
@@ -422,8 +419,18 @@ final class ClosureBackendSessionProvider: BackendSessionProviding {
         failure: AscendantBackendLifecycleFailure
     ) async {
         guard isCurrentSession(context),
-              let backend = adapter(context.ascendantID) else { return }
+              let backend = currentBackend(for: context) else { return }
         await self.failure(context.ascendantID, backend, failure)
+    }
+
+    private func currentBackend(for context: BackendSessionContext) -> (any AscendantBackend)? {
+        if let backend = adapter(context.ascendantID) {
+            return backend
+        }
+        guard let admitted = admittedBackends[context.ascendantID], admitted.context == context else {
+            return nil
+        }
+        return admitted.backend
     }
 
     func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async {
