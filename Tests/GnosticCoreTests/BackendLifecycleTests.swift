@@ -7,6 +7,169 @@ import Testing
 
 @Suite("Ascendant backend lifecycle")
 struct BackendLifecycleTests {
+    @Test("a stale leased Timeline session never enters backend execution")
+    @MainActor
+    func staleTimelineSessionRejectsBeforeExecution() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000721")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000722")!
+        let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000723")!
+        let probe = LifecycleBackendProbe()
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: probe,
+            outcome: .success
+        )
+        let owner = AscendantBackendSession(
+            ascendantID: ascendantID,
+            backend: backend,
+            lease: lease,
+            generation: 1
+        )
+        let currentState = CurrentSessionState()
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                currentState.isCurrent
+                    && id == ascendantID
+                    && generation == 1
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            failure: { _, _, _ in },
+            backend: { _ in backend }
+        )
+        let backendTimeline = try await backend.timeline(id: timelineID)
+        let timeline = LeasedBackendTimelineSession(
+            parent: owner,
+            timeline: backendTimeline,
+            provider: provider
+        )
+
+        currentState.isCurrent = false
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await timeline.runTurn(.init(message: "must not execute"), updates: NoopLifecycleUpdateSink())
+        }
+        #expect(await probe.runCount == 0)
+    }
+
+    @Test("late Timeline updates are discarded and their result is rejected")
+    @MainActor
+    func lateTimelineUpdatesAreFenced() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000724")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000725")!
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: LifecycleBackendProbe(),
+            outcome: .success
+        )
+        let currentState = CurrentSessionState()
+        let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000726")!
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                currentState.isCurrent
+                    && id == ascendantID
+                    && generation == 1
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            failure: { _, _, _ in },
+            backend: { _ in backend }
+        )
+        let parent = try #require(provider.session(for: ascendantID))
+        let timeline = LeasedBackendTimelineSession(
+            parent: parent,
+            timeline: StreamingTimelineSession(id: timelineID, state: currentState),
+            provider: provider
+        )
+        let sink = RecordingBackendUpdateSink()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await timeline.runTurn(.init(message: "stream"), updates: sink)
+        }
+        #expect(await sink.kinds == ["accepted"])
+    }
+
+    @Test("Timeline admission is cancelled when its generation changes during reconstruction")
+    @MainActor
+    func staleTimelineAdmissionIsCancelled() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000727")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000728")!
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: LifecycleBackendProbe(),
+            outcome: .success
+        )
+        let state = AdmissionGenerationState()
+        let factoryGate = AdmissionFactoryGate()
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { state.generation },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { _, _, _ in true },
+            backendLease: { _, _ in nil },
+            failure: { _, _, _ in },
+            backend: { _ in
+                await factoryGate.begin()
+                await factoryGate.waitUntilReleased()
+                return backend
+            }
+        )
+        let admission = try provider.turnAdmission()
+        let acquisition = Task { @MainActor in
+            try await provider.sessionForTurn(ascendantID, admittedUnder: admission)
+        }
+        await factoryGate.waitUntilStarted()
+        state.generation = 2
+        await factoryGate.release()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await acquisition.value
+        }
+    }
+
+    @Test("retained provider callbacks cannot publish after a Timeline Turn completes")
+    @MainActor
+    func retainedTimelineUpdatesCloseWithTurn() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000729")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000730")!
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: LifecycleBackendProbe(),
+            outcome: .success
+        )
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { _, _, _ in true },
+            backendLease: { _, _ in nil },
+            failure: { _, _, _ in },
+            backend: { _ in backend }
+        )
+        let parent = try #require(provider.session(for: ascendantID))
+        let native = RetainingTimelineSession(id: timelineID)
+        let timeline = LeasedBackendTimelineSession(parent: parent, timeline: native, provider: provider)
+        let sink = RecordingBackendUpdateSink()
+
+        #expect(try await timeline.runTurn(.init(message: "complete"), updates: sink) == "complete")
+        await native.emitLateUpdate()
+        #expect(await sink.kinds == ["accepted"])
+    }
+
     @Test("startup construction failure shuts down already-created backends")
     @MainActor
     func startupConstructionFailureRollsBackAllCreatedBackends() async throws {
@@ -941,6 +1104,101 @@ private actor ManualShutdownDeadline {
     }
 }
 
+@MainActor
+private final class CurrentSessionState: Sendable {
+    var isCurrent = true
+}
+
+@MainActor
+private final class AdmissionGenerationState: Sendable {
+    var generation: UInt64 = 1
+}
+
+@MainActor
+private final class StreamingTimelineSession: AscendantBackendTimelineSession {
+    let id: UUID
+    private let state: CurrentSessionState
+
+    init(id: UUID, state: CurrentSessionState) {
+        self.id = id
+        self.state = state
+    }
+
+    func runTurn(
+        _ request: AscendantBackendTimelineTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        await updates.append(.init(kind: "accepted"))
+        state.isCurrent = false
+        await updates.append(.init(kind: "late"))
+        return request.message
+    }
+}
+
+@MainActor
+private final class RetainingTimelineSession: AscendantBackendTimelineSession {
+    let id: UUID
+    private var updates: (any AscendantBackendUpdateSink)?
+
+    init(id: UUID) {
+        self.id = id
+    }
+
+    func runTurn(
+        _ request: AscendantBackendTimelineTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        self.updates = updates
+        await updates.append(.init(kind: "accepted"))
+        return request.message
+    }
+
+    func emitLateUpdate() async {
+        await updates?.append(.init(kind: "late"))
+    }
+}
+
+private actor RecordingBackendUpdateSink: AscendantBackendUpdateSink {
+    private(set) var kinds: [String] = []
+
+    func append(_ update: AscendantBackendUpdate) async {
+        kinds.append(update.kind)
+    }
+}
+
+private actor AdmissionFactoryGate {
+    private var started = false
+    private var released = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func begin() {
+        started = true
+        startedWaiters.forEach { $0.resume() }
+        startedWaiters.removeAll()
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startedWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilReleased() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
 private actor LifecycleBackendProbe {
     private(set) var factoryCount = 0
     private(set) var shutdownCount = 0
@@ -1421,7 +1679,14 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
 
     func enabledToolIDs(for _: UUID) async -> [String] { [] }
 
-    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+        guard timelines.contains(where: { $0.id == id }) else {
+            throw AscendantBackendError.timelineNotFound(id)
+        }
+        return TimelineSession(id: id, backend: self)
+    }
+
+    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) async throws -> String {
         await probe.recordRun()
         let outcome = outcomes.isEmpty ? .success : outcomes.removeFirst()
         await probe.waitForRunReleaseIfNeeded()
@@ -1430,6 +1695,24 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         case .success: return "ok: \(request.message)"
         case .lifecycle: throw AscendantBackendError.lifecycleUnusable(.init(message: "backend lifecycle failed"))
         case .ordinary: throw AscendantBackendError.terminal(.init(code: "ordinaryFailure", message: "ordinary failure"))
+        }
+    }
+
+    @MainActor
+    private final class TimelineSession: AscendantBackendTimelineSession {
+        let id: UUID
+        private let backend: LifecycleFixtureBackend
+
+        init(id: UUID, backend: LifecycleFixtureBackend) {
+            self.id = id
+            self.backend = backend
+        }
+
+        func runTurn(
+            _ request: AscendantBackendTimelineTurnRequest,
+            updates _: any AscendantBackendUpdateSink
+        ) async throws -> String {
+            try await backend.runTurn(request)
         }
     }
 
@@ -1445,4 +1728,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         await probe.recordShutdownStarted(factoryNumber)
         await probe.waitForShutdownReleaseIfNeeded(factoryNumber)
     }
+}
+
+private struct NoopLifecycleUpdateSink: AscendantBackendUpdateSink {
+    func append(_: AscendantBackendUpdate) async {}
 }

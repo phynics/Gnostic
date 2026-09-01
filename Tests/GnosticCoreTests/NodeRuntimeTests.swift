@@ -1235,10 +1235,36 @@ private final class FixtureAscendantBackend: AscendantBackend {
     func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {}
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
     func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
-    func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+        guard storedTimelines.contains(where: { $0.id == id }) else {
+            throw AscendantBackendError.timelineNotFound(id)
+        }
+        return TimelineSession(id: id, backend: self)
+    }
+
+    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) async throws -> String {
         if let cancellationProbe { return try await cancellationProbe.run() }
         return "fixture: \(request.message)"
     }
+
+    @MainActor
+    private final class TimelineSession: AscendantBackendTimelineSession {
+        let id: UUID
+        private let backend: FixtureAscendantBackend
+
+        init(id: UUID, backend: FixtureAscendantBackend) {
+            self.id = id
+            self.backend = backend
+        }
+
+        func runTurn(
+            _ request: AscendantBackendTimelineTurnRequest,
+            updates _: any AscendantBackendUpdateSink
+        ) async throws -> String {
+            try await backend.runTurn(request)
+        }
+    }
+
     func cancel() async { await cancellationProbe?.cancel() }
     func shutdown() async {}
 }

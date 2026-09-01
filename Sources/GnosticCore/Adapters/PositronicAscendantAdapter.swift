@@ -306,72 +306,91 @@ import struct PositronicKit.Thread
         lifecycleFailure = .init(code: "backendShutdown", message: "The Positronic backend has been shut down.")
     }
 
-    public func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
+    public func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         try requireUsable()
-        let operated = try await operatedTimelines()
-        guard operated.contains(where: { $0.id == request.timelineID }) else {
-            throw AscendantBackendError.timelineNotFound(request.timelineID)
+        guard try await kit.threads.get(id) != nil else {
+            throw AscendantBackendError.timelineNotFound(id)
         }
-        let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
-            .init(timelineID: request.timelineID, clientTurnID: $0)
-        }) {
-            let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
-            let workspaceTools = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []] }
-            let turnRequest = TurnRequest(
-                threadID: request.timelineID,
-                requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
-                message: request.message,
-                tools: workspaceTools + networkTools,
-                maxModelRounds: 5
-            )
-            return try await kit.threads.open(request.timelineID).run(turnRequest)
+        return TimelineSession(handle: kit.threads.open(id), host: self)
+    }
+
+    @MainActor
+    private final class TimelineSession: AscendantBackendTimelineSession {
+        private let handle: ThreadHandle
+        private let host: PositronicAscendantAdapter
+        var id: UUID { handle.id }
+
+        init(handle: ThreadHandle, host: PositronicAscendantAdapter) {
+            self.handle = handle
+            self.host = host
         }
-        var finalText = ""
-        var failure: String?
-        var ids: [Int: String] = [:]
-        var titles: [Int: String] = [:]
-        var announced: Set<Int> = []
-        eventLoop: for try await event in stream {
-            switch event {
-            case .delta(.generation(let text)):
-                await append(updates, kind: "assistant_text", text: text)
-            case .delta(.toolCall(let delta)):
-                let id = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? request.timelineID.uuidString):tool:\(delta.index)"
-                ids[delta.index] = id
-                if let name = delta.name { titles[delta.index, default: ""] += name }
-                await append(
-                    updates,
-                    kind: announced.insert(delta.index).inserted ? "tool_call" : "tool_state",
-                    toolState: .init(toolCallID: id, title: titles[delta.index], status: "pending")
+
+        func runTurn(
+            _ request: AscendantBackendTimelineTurnRequest,
+            updates: any AscendantBackendUpdateSink
+        ) async throws -> String {
+            try host.requireUsable()
+            let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
+                .init(timelineID: id, clientTurnID: $0)
+            }) {
+                let workspaceIDs = host.workspaceIDsByTimeline[id, default: []]
+                let workspaceTools = workspaceIDs.flatMap { host.workspaceToolsByID[$0, default: []] }
+                let turnRequest = TurnRequest(
+                    threadID: id,
+                    requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
+                    message: request.message,
+                    tools: workspaceTools + host.networkTools,
+                    maxModelRounds: 5
                 )
-            case .delta(.toolExecution(let id, let status)), .completion(.toolExecution(let id, let status)):
-                await append(updates, kind: "tool_state", toolState: state(id, status))
-            case .completion(.generationCompleted(let message, _)):
-                finalText = message.content
-                break eventLoop
-            case .completion(.completedEmpty):
-                break eventLoop
-            case .completion(.maxModelRoundsReached):
-                failure = "The model exhausted its turn budget without a final answer."
-                break eventLoop
-            case .completion(.deferredForExternalTool):
-                failure = "The turn requires external tool execution before it can complete."
-                break eventLoop
-            case .error(.error(let message, _)):
-                failure = message
-            case .error(.toolCallError(let id, let name, let error)):
-                await append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
-            case .error(.generationCancelled):
-                await append(updates, kind: "cancellation", terminal: true)
-                throw AscendantBackendError.cancelled
-            default:
-                break
+                return try await handle.run(turnRequest)
             }
+            var finalText = ""
+            var failure: String?
+            var ids: [Int: String] = [:]
+            var titles: [Int: String] = [:]
+            var announced: Set<Int> = []
+            eventLoop: for try await event in stream {
+                switch event {
+                case .delta(.generation(let text)):
+                    await host.append(updates, kind: "assistant_text", text: text)
+                case .delta(.toolCall(let delta)):
+                    let toolCallID = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? id.uuidString):tool:\(delta.index)"
+                    ids[delta.index] = toolCallID
+                    if let name = delta.name { titles[delta.index, default: ""] += name }
+                    await host.append(
+                        updates,
+                        kind: announced.insert(delta.index).inserted ? "tool_call" : "tool_state",
+                        toolState: .init(toolCallID: toolCallID, title: titles[delta.index], status: "pending")
+                    )
+                case .delta(.toolExecution(let id, let status)), .completion(.toolExecution(let id, let status)):
+                    await host.append(updates, kind: "tool_state", toolState: host.state(id, status))
+                case .completion(.generationCompleted(let message, _)):
+                    finalText = message.content
+                    break eventLoop
+                case .completion(.completedEmpty):
+                    break eventLoop
+                case .completion(.maxModelRoundsReached):
+                    failure = "The model exhausted its turn budget without a final answer."
+                    break eventLoop
+                case .completion(.deferredForExternalTool):
+                    failure = "The turn requires external tool execution before it can complete."
+                    break eventLoop
+                case .error(.error(let message, _)):
+                    failure = message
+                case .error(.toolCallError(let id, let name, let error)):
+                    await host.append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
+                case .error(.generationCancelled):
+                    await host.append(updates, kind: "cancellation", terminal: true)
+                    throw AscendantBackendError.cancelled
+                default:
+                    break
+                }
+            }
+            if let failure {
+                throw AscendantBackendError.terminal(.init(code: "turnFailed", message: failure))
+            }
+            return finalText.isEmpty ? "(empty reply)" : finalText
         }
-        if let failure {
-            throw AscendantBackendError.terminal(.init(code: "turnFailed", message: failure))
-        }
-        return finalText.isEmpty ? "(empty reply)" : finalText
     }
 
     private func requireUsable() throws {

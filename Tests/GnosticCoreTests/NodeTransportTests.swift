@@ -71,6 +71,7 @@ struct NodeTransportTests {
 
         #expect(renamed.title == "After")
         #expect(reply.text == "stub: hello")
+        #expect(adapter.timelineSessionRequests == 1)
         #expect(try timelineService.selectAscendant(requested: nil) == ascendantID)
     }
 
@@ -303,6 +304,7 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
 private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
     let identity: AscendantBackendIdentity
     private var storedTimelines: [AscendantBackendTimeline]
+    private(set) var timelineSessionRequests = 0
 
     init(ascendantID: UUID, timelineID: UUID) {
         let now = Date()
@@ -378,7 +380,29 @@ private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBack
         )
     }
     func enabledToolIDs(for _: UUID) async -> [String] { [] }
-    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String { "stub: \(request.message)" }
+    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+        guard storedTimelines.contains(where: { $0.id == id }) else {
+            throw AscendantBackendError.timelineNotFound(id)
+        }
+        timelineSessionRequests += 1
+        return ServiceStubTimelineSession(id: id)
+    }
     func cancel() async {}
     func shutdown() async {}
+}
+
+@MainActor
+private final class ServiceStubTimelineSession: AscendantBackendTimelineSession {
+    let id: UUID
+
+    init(id: UUID) {
+        self.id = id
+    }
+
+    func runTurn(
+        _ request: AscendantBackendTimelineTurnRequest,
+        updates _: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        "stub: \(request.message)"
+    }
 }

@@ -52,14 +52,19 @@ public final class TurnService {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
-        let generation = backendProvider.lifecycleGeneration
+        let admission = try backendProvider.turnAdmission()
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
             let session: AscendantBackendSession
             do {
-                session = try await self.backendProvider.sessionForTurn(ascendantID)
+                session = try await self.backendProvider.sessionForTurn(
+                    ascendantID,
+                    admittedUnder: admission
+                )
             } catch let error as AscendantTurnError {
                 throw error
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 throw AscendantTurnError.backendUnavailable(
                     timelineID: request.timelineID,
@@ -67,23 +72,12 @@ public final class TurnService {
                     detail: error.localizedDescription
                 )
             }
-            do {
-                let result = try await session.backend.runTurn(
-                    AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
-                    updates: sink
-                )
-                guard await self.backendProvider.isCurrentSession(session),
-                      await self.backendProvider.isRunning,
-                      await self.backendProvider.lifecycleGeneration == generation else {
-                    throw CancellationError()
-                }
-                return result
-            } catch let error as AscendantBackendError {
-                if case let .lifecycleUnusable(failure) = error {
-                    await self.backendProvider.markLifecycleFailure(session, failure: failure)
-                }
-                throw error
-            }
+            let timeline = try await self.backendProvider.timeline(id: request.timelineID, in: session)
+            let result = try await timeline.runTurn(
+                .init(message: request.message, clientTurnID: request.clientTurnID),
+                updates: sink
+            )
+            return result
         }
     }
 }
