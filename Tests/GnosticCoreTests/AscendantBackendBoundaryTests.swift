@@ -39,6 +39,49 @@ struct AscendantBackendBoundaryTests {
         }
     }
 
+    @Test("a Timeline session identity mismatch is a quarantined contract violation")
+    @MainActor
+    func mismatchedTimelineSessionIsRejected() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000703")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000704")!
+        let returnedID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000705")!
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "mismatched-fixture") { ascendant, configuration, services, timelines in
+            try FixtureBackend(
+                ascendant: ascendant,
+                configuration: configuration,
+                services: services,
+                timelines: timelines,
+                returnedSessionID: returnedID
+            )
+        }
+        let runtime = try await NodeRuntime(
+            plan: NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "mismatched-session-\(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(id: ascendantID, name: "Mismatched fixture", defaultTimelineID: timelineID, kind: "mismatched-fixture")],
+                timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
+            ).compileLaunchPlan(),
+            adapters: adapters
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        do {
+            _ = try await runtime.turn(.init(message: "contract", timelineID: timelineID, clientTurnID: "contract"))
+            Issue.record("The provider accepted a Timeline session with the wrong identity.")
+        } catch let error as AscendantTurnError {
+            #expect(error == .terminal(
+                timelineID: timelineID,
+                clientTurnID: "contract",
+                code: "backendContractViolation",
+                detail: "Backend returned Timeline \(returnedID.uuidString) for requested Timeline \(timelineID.uuidString).",
+                retryable: false
+            ))
+        }
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+    }
+
     @Test("Workspace intent remains distinct from effective availability")
     func workspaceAttachmentProjectionPreservesIntent() async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000711")!
@@ -79,12 +122,14 @@ private final class FixtureBackend: AscendantBackend {
     let identity: AscendantBackendIdentity
     private var timeline: AscendantBackendTimeline
     private var isShutdown = false
+    private let returnedSessionID: UUID?
 
     init(
         ascendant: NodeManifest.Ascendant,
         configuration: AscendantBackendConfiguration,
         services _: AscendantBackendServices,
-        timelines: [NodeManifest.Timeline]
+        timelines: [NodeManifest.Timeline],
+        returnedSessionID: UUID? = nil
     ) throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
         guard let timeline = timelines.first(where: { $0.id == ascendant.defaultTimelineID }) else {
@@ -111,6 +156,7 @@ private final class FixtureBackend: AscendantBackend {
             createdAt: now,
             updatedAt: now
         )
+        self.returnedSessionID = returnedSessionID
     }
 
     func validateConfiguration() throws {}
@@ -133,7 +179,7 @@ private final class FixtureBackend: AscendantBackend {
 
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
-        return TimelineSession(id: id, backend: self)
+        return TimelineSession(id: returnedSessionID ?? id, backend: self)
     }
 
     private func runTurn(_ request: AscendantBackendTimelineTurnRequest) throws -> String {

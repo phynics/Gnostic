@@ -364,9 +364,28 @@ public struct AscendantBackendLifecycleFailure: Error, Codable, Sendable, Equata
     public var errorDescription: String? { message }
 }
 
+/// Identifies a violation of the Timeline-bound backend contract.
+public enum AscendantBackendContractViolation: Error, Sendable, Equatable, LocalizedError {
+    case sessionTimelineMismatch(expected: UUID, actual: UUID)
+    case projectionTimelineMismatch(expected: UUID, actual: UUID)
+    case projectionAscendantMismatch(expected: UUID, actual: UUID?)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .sessionTimelineMismatch(expected, actual):
+            "Backend returned Timeline \(actual.uuidString) for requested Timeline \(expected.uuidString)."
+        case let .projectionTimelineMismatch(expected, actual):
+            "Backend returned projection for Timeline \(actual.uuidString) on session \(expected.uuidString)."
+        case let .projectionAscendantMismatch(expected, actual):
+            "Backend returned projection for Ascendant \(actual?.uuidString ?? "none") on Ascendant \(expected.uuidString)."
+        }
+    }
+}
+
 public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
     case invalidConfiguration(String)
     case timelineNotFound(UUID)
+    case contractViolation(AscendantBackendContractViolation)
     case terminal(AscendantBackendTerminalFailure)
     case cancelled
     case lifecycleUnusable(AscendantBackendLifecycleFailure)
@@ -375,6 +394,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case let .invalidConfiguration(detail): detail
         case let .timelineNotFound(id): "Timeline \(id.uuidString) is not operated by this backend."
+        case let .contractViolation(violation): violation.localizedDescription
         case let .terminal(failure): failure.message
         case .cancelled: "The backend turn was cancelled."
         case let .lifecycleUnusable(failure): failure.message
@@ -385,6 +405,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case .invalidConfiguration: return "invalidConfiguration"
         case .timelineNotFound: return "timelineNotFound"
+        case .contractViolation: return "backendContractViolation"
         case .terminal(let failure): return failure.code
         case .cancelled: return "cancelled"
         case .lifecycleUnusable(let failure): return failure.code
@@ -395,6 +416,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case .invalidConfiguration: return 400
         case .timelineNotFound: return 404
+        case .contractViolation: return 500
         case .terminal: return 500
         case .cancelled: return 499
         case .lifecycleUnusable: return 503

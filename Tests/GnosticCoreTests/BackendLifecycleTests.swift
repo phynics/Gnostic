@@ -26,13 +26,13 @@ struct BackendLifecycleTests {
             lease: lease,
             generation: 1
         )
-        var isCurrent = true
+        let currentState = CurrentSessionState()
         let provider = ClosureBackendSessionProvider(
             isRunning: { true },
             lifecycleGeneration: { 1 },
             adapter: { $0 == ascendantID ? backend : nil },
             current: { id, candidate, generation in
-                isCurrent
+                currentState.isCurrent
                     && id == ascendantID
                     && generation == 1
                     && (candidate as AnyObject) === (backend as AnyObject)
@@ -50,12 +50,55 @@ struct BackendLifecycleTests {
             provider: provider
         )
 
-        isCurrent = false
+        currentState.isCurrent = false
 
         await #expect(throws: CancellationError.self) {
             _ = try await timeline.runTurn(.init(message: "must not execute"), updates: NoopLifecycleUpdateSink())
         }
         #expect(await probe.runCount == 0)
+    }
+
+    @Test("late Timeline updates are discarded and their result is rejected")
+    @MainActor
+    func lateTimelineUpdatesAreFenced() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000724")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000725")!
+        let backend = LifecycleFixtureBackend(
+            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            probe: LifecycleBackendProbe(),
+            outcome: .success
+        )
+        let currentState = CurrentSessionState()
+        let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000726")!
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 1 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                currentState.isCurrent
+                    && id == ascendantID
+                    && generation == 1
+                    && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
+            },
+            failure: { _, _, _ in },
+            backend: { _ in backend }
+        )
+        let parent = try #require(provider.session(for: ascendantID))
+        let timeline = LeasedBackendTimelineSession(
+            parent: parent,
+            timeline: StreamingTimelineSession(id: timelineID, state: currentState),
+            provider: provider
+        )
+        let sink = RecordingBackendUpdateSink()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await timeline.runTurn(.init(message: "stream"), updates: sink)
+        }
+        #expect(await sink.kinds == ["accepted"])
     }
 
     @Test("startup construction failure shuts down already-created backends")
@@ -989,6 +1032,40 @@ private actor ManualShutdownDeadline {
         released = true
         waiters.forEach { $0.resume() }
         waiters.removeAll()
+    }
+}
+
+@MainActor
+private final class CurrentSessionState: Sendable {
+    var isCurrent = true
+}
+
+@MainActor
+private final class StreamingTimelineSession: AscendantBackendTimelineSession {
+    let id: UUID
+    private let state: CurrentSessionState
+
+    init(id: UUID, state: CurrentSessionState) {
+        self.id = id
+        self.state = state
+    }
+
+    func runTurn(
+        _ request: AscendantBackendTimelineTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        await updates.append(.init(kind: "accepted"))
+        state.isCurrent = false
+        await updates.append(.init(kind: "late"))
+        return request.message
+    }
+}
+
+private actor RecordingBackendUpdateSink: AscendantBackendUpdateSink {
+    private(set) var kinds: [String] = []
+
+    func append(_ update: AscendantBackendUpdate) async {
+        kinds.append(update.kind)
     }
 }
 

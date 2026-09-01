@@ -52,12 +52,15 @@ public final class TurnService {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
-        let generation = backendProvider.lifecycleGeneration
+        let admission = try backendProvider.turnAdmission()
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
             let session: AscendantBackendSession
             do {
-                session = try await self.backendProvider.sessionForTurn(ascendantID)
+                session = try await self.backendProvider.sessionForTurn(
+                    ascendantID,
+                    admittedUnder: admission
+                )
             } catch let error as AscendantTurnError {
                 throw error
             } catch {
@@ -72,10 +75,6 @@ public final class TurnService {
                 .init(message: request.message, clientTurnID: request.clientTurnID),
                 updates: sink
             )
-            guard self.backendProvider.isRunning,
-                  self.backendProvider.lifecycleGeneration == generation else {
-                throw CancellationError()
-            }
             return result
         }
     }
