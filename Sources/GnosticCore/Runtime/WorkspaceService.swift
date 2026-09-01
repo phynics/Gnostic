@@ -122,6 +122,7 @@ public final class WorkspaceService {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
         }
         try await withWorkspaceOperation(id: request.workspaceID) { [self] in
+            try self.requireCurrent(timeline.context)
             let reference: WorkspaceReference
             if localWorkspaces[request.workspaceID] != nil, let local = references[request.workspaceID] {
                 let status = await self.registry.effectiveWorkspaceStatus(id: request.workspaceID)
@@ -132,7 +133,8 @@ public final class WorkspaceService {
             } else {
                 reference = try await self.resolveNetworkWorkspaceWithinWorkspaceOperation(
                     workspaceID: request.workspaceID,
-                    timeout: .seconds(5)
+                    timeout: .seconds(5),
+                    requestContext: timeline.context
                 )
             }
             try await self.attachWithinWorkspaceOperation(
@@ -164,9 +166,11 @@ public final class WorkspaceService {
             throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
         }
         try await withWorkspaceOperation(id: workspaceID) { [self] in
+            try self.requireCurrent(timeline.context)
             let reference = try await self.resolveNetworkWorkspaceWithinWorkspaceOperation(
                 workspaceID: workspaceID,
-                timeout: .seconds(5)
+                timeout: .seconds(5),
+                requestContext: timeline.context
             )
             try await self.attachWithinWorkspaceOperation(
                 reference: reference,
@@ -184,6 +188,7 @@ public final class WorkspaceService {
         timeline: LeasedBackendTimelineSession
     ) async throws {
         try await withTimelineOperation(id: timelineID) { [self] in
+            try self.requireCurrent(timeline.context)
             guard let workspace = timeline.workspace else {
                 throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
             }
@@ -231,7 +236,9 @@ public final class WorkspaceService {
     func detach(_ request: WorkspaceOpsRequest) async throws -> Bool {
         let (_, timeline) = try await operatingTimeline(for: request.timelineID)
         try await withWorkspaceOperation(id: request.workspaceID) { [self] in
+            try self.requireCurrent(timeline.context)
             try await self.withTimelineOperation(id: request.timelineID) { [self] in
+                try self.requireCurrent(timeline.context)
                 guard let workspace = timeline.workspace else {
                     throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
                 }
@@ -284,23 +291,35 @@ public final class WorkspaceService {
         return try await withWorkspaceOperation(id: workspaceID) { [self] in
             try await self.resolveNetworkWorkspaceWithinWorkspaceOperation(
                 workspaceID: workspaceID,
-                timeout: timeout
+                timeout: timeout,
+                requestContext: nil
             )
         }
     }
 
     private func resolveNetworkWorkspaceWithinWorkspaceOperation(
         workspaceID: UUID,
-        timeout: Duration
+        timeout: Duration,
+        requestContext: BackendSessionContext?
     ) async throws -> WorkspaceReference {
+        try requireCurrent(requestContext)
         let generation = backendProvider.lifecycleGeneration
         let previousStatus = await registry.effectiveWorkspaceStatus(id: workspaceID)
+        try requireCurrent(requestContext, generation: generation)
         await discovery.discover(timeout: timeout)
+        try requireCurrent(requestContext, generation: generation)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         let status = await discovery.attachmentStatus(id: workspaceID)
+        try requireCurrent(requestContext, generation: generation)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
             throw NodeRuntimeError.notRunning
+        }
+        do {
+            try requireCurrent(requestContext, generation: generation)
+        } catch {
+            await restoreWorkspaceStatus(id: workspaceID, status: previousStatus, generation: generation)
+            throw error
         }
         guard case let .available(providerID, uri) = status else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
@@ -308,13 +327,16 @@ public final class WorkspaceService {
         if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
             await discovery.queryTools(workspaceID: workspaceID, timeout: timeout)
         }
+        try requireCurrent(requestContext, generation: generation)
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
+            try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                 throw NodeRuntimeError.notRunning
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
+        try requireCurrent(requestContext, generation: generation)
         guard let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
@@ -323,6 +345,7 @@ public final class WorkspaceService {
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         if let configured = await registry.workspace(id: workspaceID), configured.uri != uri {
+            try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                 throw NodeRuntimeError.notRunning
@@ -332,7 +355,8 @@ public final class WorkspaceService {
         try await installResolvedWithinWorkspaceOperation(
             reference,
             workspaceID: workspaceID,
-            previousStatus: previousStatus
+            previousStatus: previousStatus,
+            requestContext: requestContext
         )
         return reference
     }
@@ -356,7 +380,8 @@ public final class WorkspaceService {
     func resolveAvailableNetworkWorkspace(_ workspaceID: UUID) async throws -> WorkspaceReference? {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         return try await withWorkspaceOperation(id: workspaceID) { [self] in
-            try await self.resolveAvailableNetworkWorkspaceWithinWorkspaceOperation(workspaceID)
+            try self.requireCurrent(nil)
+            return try await self.resolveAvailableNetworkWorkspaceWithinWorkspaceOperation(workspaceID)
         }
     }
 
@@ -366,11 +391,14 @@ public final class WorkspaceService {
         let generation = backendProvider.lifecycleGeneration
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let previousStatus = await registry.effectiveWorkspaceStatus(id: workspaceID)
+        try requireCurrent(nil, generation: generation)
         let status = await discovery.attachmentStatus(id: workspaceID)
+        try requireCurrent(nil, generation: generation)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
             throw NodeRuntimeError.notRunning
         }
+        try requireCurrent(nil, generation: generation)
         guard case let .available(_, uri) = status, uri == expectedURI,
               let providerID = providerID(for: status) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
@@ -384,6 +412,7 @@ public final class WorkspaceService {
         if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
             await discovery.queryTools(workspaceID: workspaceID, timeout: .seconds(5))
         }
+        try requireCurrent(nil, generation: generation)
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation)
@@ -399,7 +428,8 @@ public final class WorkspaceService {
         try await installResolvedWithinWorkspaceOperation(
             reference,
             workspaceID: workspaceID,
-            previousStatus: previousStatus
+            previousStatus: previousStatus,
+            requestContext: nil
         )
         return reference
     }
@@ -421,8 +451,10 @@ public final class WorkspaceService {
     private func installResolvedWithinWorkspaceOperation(
         _ reference: WorkspaceReference,
         workspaceID: UUID,
-        previousStatus: NodeRegistry.WorkspaceEffectiveStatus?
+        previousStatus: NodeRegistry.WorkspaceEffectiveStatus?,
+        requestContext: BackendSessionContext?
     ) async throws {
+        try requireCurrent(requestContext)
         let backendReference = BackendWorkspaceReference(reference: reference)
         let generation = backendProvider.lifecycleGeneration
         let priorReference = references[workspaceID].map {
@@ -431,12 +463,15 @@ public final class WorkspaceService {
         var mutations: [AppliedWorkspaceMutation] = []
         do {
             for target in await registry.attachmentTargets(for: workspaceID) {
+                try requireCurrent(requestContext, generation: generation)
                 guard let ascendant = backendProvider.session(for: target.ascendantID) else {
                     throw NodeRuntimeError.notRunning
                 }
                 let timeline = try await ascendant.timeline(id: target.timelineID)
+                try requireCurrent(requestContext, generation: generation)
                 guard timeline.workspace != nil else { continue }
                 let mutation = try await withTimelineOperation(id: target.timelineID) { [self] in
+                    try self.requireCurrent(requestContext, generation: generation)
                     guard let workspace = timeline.workspace else {
                         throw NodeRuntimeError.workspaceCapabilityUnavailable(target.timelineID)
                     }
@@ -449,6 +484,7 @@ public final class WorkspaceService {
                     let projection: AscendantBackendTimeline
                     do {
                         projection = try await workspace.attachWorkspace(backendReference)
+                        try self.requireCurrent(requestContext, generation: generation)
                     } catch {
                         await self.compensateAttachment(
                             workspace: workspace,
@@ -459,10 +495,12 @@ public final class WorkspaceService {
                         throw error
                     }
                     do {
+                        try self.requireCurrent(requestContext, generation: generation)
                         let record = try await self.registry.commitBackendTimeline(
                             projection,
                             context: timeline.context
                         )
+                        try self.requireCurrent(requestContext, generation: generation)
                         self.readvertiseTimeline(record.timeline)
                     } catch {
                         await self.compensateAttachment(
@@ -482,6 +520,7 @@ public final class WorkspaceService {
                 }
                 mutations.append(mutation)
             }
+            try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
                 throw NodeRuntimeError.notRunning
             }
@@ -499,6 +538,7 @@ public final class WorkspaceService {
                 }
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
             }
+            try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
                 throw NodeRuntimeError.notRunning
             }
@@ -539,6 +579,28 @@ public final class WorkspaceService {
             gate = created
         }
         return try await gate.withExclusiveAccess(operation)
+    }
+
+    private func requireCurrent(
+        _ context: BackendSessionContext?,
+        generation: UInt64? = nil
+    ) throws {
+        guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
+        if let generation, backendProvider.lifecycleGeneration != generation {
+            throw NodeRuntimeError.notRunning
+        }
+        if let context, !backendProvider.isCurrentSession(context) {
+            throw NodeRuntimeError.notRunning
+        }
+    }
+
+    private func restoreWorkspaceStatus(
+        id workspaceID: UUID,
+        status: NodeRegistry.WorkspaceEffectiveStatus?,
+        generation: UInt64
+    ) async {
+        guard let status else { return }
+        _ = await registry.setWorkspaceStatus(id: workspaceID, status: status, generation: generation)
     }
 
     private func withWorkspaceOperation<T: Sendable>(

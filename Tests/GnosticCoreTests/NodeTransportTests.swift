@@ -608,6 +608,96 @@ struct NodeTransportTests {
         #expect(await first.enabledToolIDs().count == 1)
         #expect(await second.enabledToolIDs().count == 1)
     }
+
+    @Test("a Workspace request with a retired Timeline session cannot resolve or attach")
+    @MainActor
+    func staleTimelineSessionCannotMutateDuringWorkspaceResolution() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000061")!
+        let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000062")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000063")!
+        let uri = "gnostic://workspace/stale-resolution"
+        let oldReference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: uri)!,
+            location: .attached
+        )
+        let oldBackendReference = BackendWorkspaceReference(reference: oldReference, status: .unavailable)
+        let backend = ServiceStubAscendantBackend(
+            ascendantID: ascendantID,
+            timelineID: timelineID,
+            initialAttachedWorkspaceIDs: [workspaceID],
+            initialWorkspaceReferences: [workspaceID: oldBackendReference]
+        )
+        let control = StaleResolutionControl()
+        let discovery = BlockingServiceStubWorkspaceDiscovery(
+            entry: .init(
+                objectID: workspaceID,
+                objectType: GnosticObjectType.workspace,
+                providerID: "stale-provider",
+                name: "Stale workspace",
+                knownProperties: [:],
+                dynamicProperties: [:],
+                workspace: .init(id: workspaceID, uri: uri, isAvailable: true, tools: [])
+            ),
+            control: control
+        )
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-stale-resolution"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000064")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Stale", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: uri)])]
+        ).compileLaunchPlan()
+        let lease = UUID.makeVersion4()
+        let leaseState = TestLeaseState(lease: lease)
+        let registry = try NodeRegistry(
+            plan: plan,
+            operatedTimelines: try await backend.operatedTimelines(),
+            backendLeases: [ascendantID: lease]
+        )
+        let provider = ClosureBackendSessionProvider(
+            isRunning: { true },
+            lifecycleGeneration: { 0 },
+            adapter: { $0 == ascendantID ? backend : nil },
+            current: { id, candidate, generation in
+                id == ascendantID && generation == 0 && (candidate as AnyObject) === (backend as AnyObject)
+            },
+            backendLease: { id, candidate in
+                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? leaseState.value : nil
+            },
+            failure: { _, _, _ in },
+            backend: { _ in backend }
+        )
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: discovery,
+            localWorkspaces: [:],
+            references: [workspaceID: oldReference],
+            backendProvider: provider,
+            readvertiseTimeline: { _ in }
+        )
+
+        let attach = Task { @MainActor in
+            try? await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
+        }
+        await control.waitForDiscovery()
+        leaseState.value = UUID.makeVersion4()
+        await control.releaseDiscovery()
+
+        #expect(await attach.value == nil)
+        #expect(await registry.workspace(id: workspaceID)?.status == .unavailable)
+        #expect(backend.attachCalls.isEmpty)
+        #expect(backend.workspaceReference(timelineID: timelineID, workspaceID: workspaceID) == oldBackendReference)
+    }
+}
+
+@MainActor
+private final class TestLeaseState {
+    var value: UUID
+
+    init(lease: UUID) {
+        value = lease
+    }
 }
 
 private struct PositronicTestWorkspaceService: AscendantBackendWorkspaceService {
@@ -639,6 +729,68 @@ private final class ServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
     func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
         guard providerID == entry.providerID, workspaceID == entry.workspace?.id else { return nil }
         return entry.workspace
+    }
+}
+
+@MainActor
+private final class BlockingServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
+    private let entry: NetworkCatalogEntry
+    private let control: StaleResolutionControl
+
+    init(entry: NetworkCatalogEntry, control: StaleResolutionControl) {
+        self.entry = entry
+        self.control = control
+    }
+
+    func discover(timeout _: Duration) async {
+        await control.markDiscovery()
+        await control.waitForRelease()
+    }
+
+    func objects() async -> [NetworkCatalogEntry] { [entry] }
+
+    func attachmentStatus(id _: UUID) async -> WorkspaceAttachmentStatus {
+        .available(providerID: entry.providerID, uri: entry.workspace?.uri ?? "")
+    }
+
+    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
+
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
+        guard providerID == entry.providerID, workspaceID == entry.workspace?.id else { return nil }
+        return entry.workspace
+    }
+}
+
+private actor StaleResolutionControl {
+    private var discoveryStarted = false
+    private var released = false
+    private var discoveryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitForDiscovery() async {
+        guard !discoveryStarted else { return }
+        await withCheckedContinuation { continuation in
+            discoveryWaiters.append(continuation)
+        }
+    }
+
+    func markDiscovery() {
+        discoveryStarted = true
+        discoveryWaiters.forEach { $0.resume() }
+        discoveryWaiters.removeAll()
+    }
+
+    func waitForRelease() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func releaseDiscovery() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
     }
 }
 
