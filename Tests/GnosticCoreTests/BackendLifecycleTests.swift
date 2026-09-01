@@ -20,33 +20,18 @@ struct BackendLifecycleTests {
             probe: probe,
             outcome: .success
         )
-        let owner = AscendantBackendSession(
-            ascendantID: ascendantID,
-            backend: backend,
-            lease: lease,
-            generation: 1
-        )
         let currentState = CurrentSessionState()
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 1 },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { id, candidate, generation in
-                currentState.isCurrent
-                    && id == ascendantID
-                    && generation == 1
-                    && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            failure: { _, _, _ in },
-            backend: { _ in backend }
+        let provider = InMemoryBackendSessionProvider(
+            lifecycleGeneration: 1,
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease],
+            currentOverride: { _ in currentState.isCurrent }
         )
         let backendTimeline = try await backend.timeline(id: timelineID)
+        let parent = try #require(provider.session(for: ascendantID))
         let timeline = LeasedBackendTimelineSession(
             id: timelineID,
-            context: owner.context,
+            context: parent.context,
             timeline: backendTimeline,
             provider: provider
         )
@@ -71,21 +56,13 @@ struct BackendLifecycleTests {
             outcome: .success
         )
         let currentState = CurrentSessionState()
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 1 },
-            adapter: { _ in nil },
-            current: { id, candidate, generation in
-                currentState.isCurrent
-                    && id == ascendantID
-                    && generation == 1
-                    && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { _, _ in nil },
-            failure: { _, _, _ in
+        let provider = InMemoryBackendSessionProvider(
+            lifecycleGeneration: 1,
+            reconstruction: { _ in backend },
+            currentOverride: { _ in currentState.isCurrent },
+            onLifecycleFailure: { _, _ in
                 currentState.failureCount += 1
-            },
-            backend: { _ in backend }
+            }
         )
 
         let admission = try provider.turnAdmission()
@@ -97,14 +74,14 @@ struct BackendLifecycleTests {
 
         await provider.markLifecycleFailure(
             session.context,
-            failure: .init(message: "current failure")
+            failure: .init(code: "test", message: "current failure")
         )
         #expect(currentState.failureCount == 1)
 
         currentState.isCurrent = false
         await provider.markLifecycleFailure(
             session.context,
-            failure: .init(message: "retired failure")
+            failure: .init(code: "test", message: "retired failure")
         )
         #expect(currentState.failureCount == 1)
     }
@@ -122,21 +99,11 @@ struct BackendLifecycleTests {
         )
         let currentState = CurrentSessionState()
         let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000726")!
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 1 },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { id, candidate, generation in
-                currentState.isCurrent
-                    && id == ascendantID
-                    && generation == 1
-                    && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            failure: { _, _, _ in },
-            backend: { _ in backend }
+        let provider = InMemoryBackendSessionProvider(
+            lifecycleGeneration: 1,
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease],
+            currentOverride: { _ in currentState.isCurrent }
         )
         let parent = try #require(provider.session(for: ascendantID))
         let timeline = LeasedBackendTimelineSession(
@@ -164,16 +131,10 @@ struct BackendLifecycleTests {
             probe: LifecycleBackendProbe(),
             outcome: .success
         )
-        let state = AdmissionGenerationState()
         let factoryGate = AdmissionFactoryGate()
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { state.generation },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { _, _, _ in true },
-            backendLease: { _, _ in nil },
-            failure: { _, _, _ in },
-            backend: { _ in
+        let provider = InMemoryBackendSessionProvider(
+            lifecycleGeneration: 1,
+            reconstruction: { _ in
                 await factoryGate.begin()
                 await factoryGate.waitUntilReleased()
                 return backend
@@ -188,7 +149,7 @@ struct BackendLifecycleTests {
             )
         }
         await factoryGate.waitUntilStarted()
-        state.generation = 2
+        provider.lifecycleGeneration = 2
         await factoryGate.release()
 
         await #expect(throws: CancellationError.self) {
@@ -207,14 +168,10 @@ struct BackendLifecycleTests {
             probe: LifecycleBackendProbe(),
             outcome: .success
         )
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 1 },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { _, _, _ in true },
-            backendLease: { _, _ in nil },
-            failure: { _, _, _ in },
-            backend: { _ in backend }
+        let provider = InMemoryBackendSessionProvider(
+            lifecycleGeneration: 1,
+            backends: [ascendantID: backend],
+            leases: [ascendantID: UUID.makeVersion4()]
         )
         let parent = try #require(provider.session(for: ascendantID))
         let native = RetainingTimelineSession(id: timelineID)
@@ -1173,11 +1130,6 @@ private actor ManualShutdownDeadline {
 private final class CurrentSessionState: Sendable {
     var isCurrent = true
     var failureCount = 0
-}
-
-@MainActor
-private final class AdmissionGenerationState: Sendable {
-    var generation: UInt64 = 1
 }
 
 @MainActor

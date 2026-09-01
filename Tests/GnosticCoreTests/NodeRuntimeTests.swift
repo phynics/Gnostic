@@ -524,7 +524,7 @@ struct NodeRuntimeTests {
         #expect(await second.timeline(id: secondTimelineID)?.title == "Second renamed")
         #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
         #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
-        #expect(await second.timeline(id: secondTimelineID)?.attachedAscendantID == initialSecondTimeline.attachedAscendantID)
+        #expect(await second.timeline(id: secondTimelineID)?.ascendantID == initialSecondTimeline.ascendantID)
     }
 
     @Test("one running runtime multiplexes configured echo workspaces") @MainActor
@@ -604,7 +604,7 @@ struct NodeRuntimeTests {
         let created = try await runtime.createTimeline(title: "Scratch", ascendantID: second)
 
         #expect(await runtime.ascendantID(forTimeline: created.timelineID) == second)
-        #expect(await runtime.timeline(id: created.timelineID)?.attachedAscendantID == second)
+        #expect(await runtime.timeline(id: created.timelineID)?.ascendantID == second)
         #expect(await runtime.snapshot().timelineIDs.contains(created.timelineID))
         #expect(!(await runtime.launchPlan).timelines.contains { $0.id == created.timelineID })
     }

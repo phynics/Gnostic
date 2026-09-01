@@ -51,23 +51,9 @@ struct NodeTransportTests {
         let lease = UUID()
         let initialProjectionRequestCount = adapter.operatedTimelinesRequests
         await registry.activateBackendLease(lease, for: ascendantID)
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 0 },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { id, candidate, generation in
-                id == ascendantID
-                    && generation == 0
-                    && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            failure: { _, _, _ in },
-            backend: { id in
-                guard id == ascendantID else { throw NodeRuntimeError.unknownAscendant(id) }
-                return backend
-            }
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease]
         )
         let timelineService = TimelineService(
             ascendantIDs: [ascendantID],
@@ -107,20 +93,9 @@ struct NodeTransportTests {
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
         let providerLease = UUID()
         await registry.activateBackendLease(UUID(), for: ascendantID)
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 0 },
-            adapter: { $0 == ascendantID ? adapter : nil },
-            current: { id, candidate, generation in
-                id == ascendantID
-                    && generation == 0
-                    && (candidate as AnyObject) === (adapter as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (adapter as AnyObject) ? providerLease : nil
-            },
-            failure: { _, _, _ in },
-            backend: { _ in adapter }
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: adapter],
+            leases: [ascendantID: providerLease]
         )
         let timelineService = TimelineService(
             ascendantIDs: [ascendantID],
@@ -161,14 +136,14 @@ struct NodeTransportTests {
         let plan = try NodeManifest.empty(
             broker: .init(host: "unused", port: 1883, namespace: "workspace-service-unit")
         ).compileLaunchPlan()
+        let provider = InMemoryBackendSessionProvider()
         let service = WorkspaceService(
             plan: plan,
             registry: try NodeRegistry(plan: plan, operatedTimelines: []),
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            adapter: { _ in nil },
+            backendProvider: provider,
             readvertiseTimeline: { _ in }
         )
 
@@ -199,14 +174,14 @@ struct NodeTransportTests {
         let plan = try NodeManifest.empty(
             broker: .init(host: "unused", port: 1883, namespace: "workspace-incompatible-unit")
         ).compileLaunchPlan()
+        let provider = InMemoryBackendSessionProvider()
         let service = WorkspaceService(
             plan: plan,
             registry: try NodeRegistry(plan: plan, operatedTimelines: []),
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            adapter: { _ in nil },
+            backendProvider: provider,
             readvertiseTimeline: { _ in }
         )
 
@@ -234,6 +209,10 @@ struct NodeTransportTests {
         ).compileLaunchPlan()
         let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: adapter],
+            leases: [ascendantID: UUID.makeVersion4()]
+        )
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
@@ -252,8 +231,7 @@ struct NodeTransportTests {
             ),
             localWorkspaces: [workspaceID: EchoWorkspace(reference: reference)],
             references: [workspaceID: reference],
-            isRunning: { true },
-            adapter: { $0 == ascendantID ? adapter : nil },
+            backendProvider: provider,
             readvertiseTimeline: { _ in }
         )
 
@@ -300,17 +278,17 @@ struct NodeTransportTests {
         )
         let initialOperatedTimelinesRequests = adapter.operatedTimelinesRequests
         let backend = adapter
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease]
+        )
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: provider,
             readvertiseTimeline: { _ in }
         )
 
@@ -351,20 +329,10 @@ struct NodeTransportTests {
         )
         let lease = UUID.makeVersion4()
         var failureCount = 0
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 0 },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { id, candidate, generation in
-                id == ascendantID
-                    && generation == 0
-                    && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            failure: { _, _, _ in failureCount += 1 },
-            backend: { _ in backend }
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease],
+            onLifecycleFailure: { _, _ in failureCount += 1 }
         )
         let native = try await backend.timeline(id: timelineID)
         let leased = LeasedBackendTimelineSession(
@@ -423,6 +391,10 @@ struct NodeTransportTests {
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await backend.operatedTimelines())
         let lease = UUID.makeVersion4()
         await registry.activateBackendLease(lease, for: ascendantID)
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease]
+        )
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
@@ -444,15 +416,7 @@ struct NodeTransportTests {
                 secondWorkspaceID: EchoWorkspace(reference: secondReference),
             ],
             references: [firstWorkspaceID: firstReference, secondWorkspaceID: secondReference],
-            isRunning: { true },
-            lifecycleGeneration: { 0 },
-            isCurrentBackend: { id, candidate, generation in
-                id == ascendantID && generation == 0 && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: provider,
             readvertiseTimeline: { _ in }
         )
 
@@ -524,21 +488,17 @@ struct NodeTransportTests {
             operatedTimelines: try await backend.operatedTimelines(),
             backendLeases: [ascendantID: lease]
         )
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease]
+        )
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
             discovery: discovery,
             localWorkspaces: [:],
             references: [workspaceID: oldReference],
-            isRunning: { true },
-            lifecycleGeneration: { 0 },
-            isCurrentBackend: { id, candidate, generation in
-                id == ascendantID && generation == 0 && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? lease : nil
-            },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: provider,
             readvertiseTimeline: { _ in }
         )
 
@@ -648,24 +608,14 @@ struct NodeTransportTests {
             timelines: [.init(id: timelineID, title: "Stale", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: uri)])]
         ).compileLaunchPlan()
         let lease = UUID.makeVersion4()
-        let leaseState = TestLeaseState(lease: lease)
         let registry = try NodeRegistry(
             plan: plan,
             operatedTimelines: try await backend.operatedTimelines(),
             backendLeases: [ascendantID: lease]
         )
-        let provider = ClosureBackendSessionProvider(
-            isRunning: { true },
-            lifecycleGeneration: { 0 },
-            adapter: { $0 == ascendantID ? backend : nil },
-            current: { id, candidate, generation in
-                id == ascendantID && generation == 0 && (candidate as AnyObject) === (backend as AnyObject)
-            },
-            backendLease: { id, candidate in
-                id == ascendantID && (candidate as AnyObject) === (backend as AnyObject) ? leaseState.value : nil
-            },
-            failure: { _, _, _ in },
-            backend: { _ in backend }
+        let provider = InMemoryBackendSessionProvider(
+            backends: [ascendantID: backend],
+            leases: [ascendantID: lease]
         )
         let service = WorkspaceService(
             plan: plan,
@@ -681,22 +631,13 @@ struct NodeTransportTests {
             try? await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
         }
         await control.waitForDiscovery()
-        leaseState.value = UUID.makeVersion4()
+        provider.leases[ascendantID] = UUID.makeVersion4()
         await control.releaseDiscovery()
 
         #expect(await attach.value == nil)
         #expect(await registry.workspace(id: workspaceID)?.status == .unavailable)
         #expect(backend.attachCalls.isEmpty)
         #expect(backend.workspaceReference(timelineID: timelineID, workspaceID: workspaceID) == oldBackendReference)
-    }
-}
-
-@MainActor
-private final class TestLeaseState {
-    var value: UUID
-
-    init(lease: UUID) {
-        value = lease
     }
 }
 

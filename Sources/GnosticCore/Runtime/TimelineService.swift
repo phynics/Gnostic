@@ -10,33 +10,6 @@ public final class TimelineService {
     private let backendProvider: any BackendSessionProviding
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
 
-    convenience init(
-        ascendantIDs: Set<UUID>,
-        registry: NodeRegistry,
-        isClosed: @escaping @MainActor () -> Bool,
-        lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
-        isCurrentBackend: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool = { _, _, _ in true },
-        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID? = { _, _ in nil },
-        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
-        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
-        advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
-    ) {
-        self.init(
-            ascendantIDs: ascendantIDs,
-            registry: registry,
-            backendProvider: ClosureBackendSessionProvider(
-                isRunning: { !isClosed() },
-                lifecycleGeneration: lifecycleGeneration,
-                adapter: adapter,
-                current: isCurrentBackend,
-                backendLease: backendLease,
-                failure: lifecycleFailure,
-                backend: { _ in throw NodeRuntimeError.notRunning }
-            ),
-            advertise: advertise
-        )
-    }
-
     init(
         ascendantIDs: Set<UUID>,
         registry: NodeRegistry,
