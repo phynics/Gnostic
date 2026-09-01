@@ -501,15 +501,22 @@ import struct PositronicKit.Thread
     }
 }
 
-private actor TimelineMutationGate {
+actor TimelineMutationGate {
     private var held = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private var waiters: [Waiter] = []
+
+    var waitingCount: Int { waiters.count }
 
     func withExclusiveAccess<T: Sendable>(
         _ operation: @escaping @MainActor () async throws -> T
-    ) async rethrows -> T {
-        await acquire()
+    ) async throws -> T {
+        try await acquire()
         do {
+            try Task.checkCancellation()
             let result = try await operation()
             release()
             return result
@@ -519,21 +526,32 @@ private actor TimelineMutationGate {
         }
     }
 
-    private func acquire() async {
+    private func acquire() async throws {
+        try Task.checkCancellation()
         guard held else {
             held = true
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
-        }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                waiters.append(.init(id: waiterID, continuation: continuation))
+            }
+        }, onCancel: {
+            Task { await self.cancelWaiter(waiterID) }
+        })
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
     }
 
     private func release() {
         if waiters.isEmpty {
             held = false
         } else {
-            waiters.removeFirst().resume()
+            waiters.removeFirst().continuation.resume()
         }
     }
 }

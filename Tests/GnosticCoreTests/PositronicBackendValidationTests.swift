@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
@@ -16,19 +16,69 @@ struct PositronicBackendValidationTests {
         try adapter.validateConfiguration()
     }
 
-    @Test("concurrent Timeline renames return their own projections")
+    @Test("Timeline mutation serialization keeps mutation and projection together")
     @MainActor
-    func concurrentRenamesReturnAtomicProjections() async throws {
-        let adapter = try await makeAdapter(backend: .init(kind: "positronic"))
-        let timeline = try await adapter.timeline(
-            id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000802")!
-        )
+    func timelineMutationSerializationIsDeterministic() async throws {
+        let gate = TimelineMutationGate()
+        let probe = RenameInterleavingProbe()
 
-        async let first = timeline.rename(to: "First")
-        async let second = timeline.rename(to: "Second")
-        let projections = try await [first, second]
+        let first = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                await probe.mutate(title: "First")
+                await probe.waitForFirstRelease()
+                return await probe.title
+            }
+        }
+        await probe.waitUntilFirstMutation()
 
-        #expect(projections.map(\.title).sorted() == ["First", "Second"])
+        let second = Task { @MainActor in
+            await probe.markSecondAttempted()
+            return try await gate.withExclusiveAccess {
+                await probe.mutate(title: "Second")
+                return await probe.title
+            }
+        }
+        await probe.waitUntilSecondAttempted()
+        #expect(await probe.titles == ["First"])
+
+        await probe.releaseFirst()
+        #expect(try await first.value == "First")
+        #expect(try await second.value == "Second")
+        #expect(await probe.titles == ["First", "Second"])
+    }
+
+    @Test("canceled queued Timeline mutations never execute")
+    @MainActor
+    func canceledQueuedMutationDoesNotExecute() async throws {
+        let gate = TimelineMutationGate()
+        let probe = RenameInterleavingProbe()
+
+        let first = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                await probe.mutate(title: "First")
+                await probe.waitForFirstRelease()
+                return await probe.title
+            }
+        }
+        await probe.waitUntilFirstMutation()
+
+        let queued = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                await probe.mutate(title: "Canceled")
+                return await probe.title
+            }
+        }
+        while await gate.waitingCount == 0 {
+            await Task.yield()
+        }
+        queued.cancel()
+        await probe.releaseFirst()
+
+        #expect(try await first.value == "First")
+        await #expect(throws: CancellationError.self) {
+            _ = try await queued.value
+        }
+        #expect(await probe.titles == ["First"])
     }
 
     @Test("accepts a valid hosted provider configuration")
@@ -218,6 +268,54 @@ struct PositronicBackendValidationTests {
         var secrets: [String: ManifestJSONValue] = [:]
         if let apiKey { secrets["apiKey"] = .string(apiKey) }
         return .init(kind: "positronic", settings: settings, secrets: secrets)
+    }
+}
+
+private actor RenameInterleavingProbe {
+    private(set) var titles: [String] = []
+    private(set) var title = ""
+    private var firstMutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var secondAttemptWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstMutated = false
+    private var secondAttempted = false
+    private var firstReleased = false
+
+    func mutate(title: String) {
+        self.title = title
+        titles.append(title)
+        if title == "First" {
+            firstMutated = true
+            firstMutationWaiters.forEach { $0.resume() }
+            firstMutationWaiters.removeAll()
+        }
+    }
+
+    func markSecondAttempted() {
+        secondAttempted = true
+        secondAttemptWaiters.forEach { $0.resume() }
+        secondAttemptWaiters.removeAll()
+    }
+
+    func waitUntilFirstMutation() async {
+        guard !firstMutated else { return }
+        await withCheckedContinuation { firstMutationWaiters.append($0) }
+    }
+
+    func waitUntilSecondAttempted() async {
+        guard !secondAttempted else { return }
+        await withCheckedContinuation { secondAttemptWaiters.append($0) }
+    }
+
+    func waitForFirstRelease() async {
+        guard !firstReleased else { return }
+        await withCheckedContinuation { firstReleaseWaiters.append($0) }
+    }
+
+    func releaseFirst() {
+        firstReleased = true
+        firstReleaseWaiters.forEach { $0.resume() }
+        firstReleaseWaiters.removeAll()
     }
 }
 
