@@ -99,6 +99,44 @@ struct PositronicBackendValidationTests {
         #expect(await probe.titles == ["First"])
     }
 
+    @Test("an acquired canceled Timeline mutation releases the gate")
+    @MainActor
+    func acquiredCanceledMutationReleasesGate() async throws {
+        let gate = TimelineMutationGate()
+        let probe = RenameInterleavingProbe()
+
+        let canceled = Task { @MainActor in
+            do {
+                return try await gate.withExclusiveAccess {
+                    await probe.markCancelableOperationEntered()
+                    await probe.waitForCancelableOperationRelease()
+                    try Task.checkCancellation()
+                    return "unexpected"
+                }
+            } catch {
+                await probe.markQueuedCanceled()
+                throw error
+            }
+        }
+        await probe.waitUntilCancelableOperationEntered()
+
+        let third = Task { @MainActor in
+            try await gate.withExclusiveAccess {
+                "third"
+            }
+        }
+        while await gate.waitingCount == 0 {
+            await Task.yield()
+        }
+        canceled.cancel()
+        await probe.releaseCancelableOperation()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await canceled.value
+        }
+        #expect(try await third.value == "third")
+    }
+
     @Test("accepts a valid hosted provider configuration")
     @MainActor
     func acceptsValidConfiguration() async throws {
@@ -296,9 +334,13 @@ private actor RenameInterleavingProbe {
     private var firstMutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var secondAttemptWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancelableOperationEnteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancelableOperationReleaseWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstMutated = false
     private var secondAttempted = false
     private var firstReleased = false
+    private var cancelableOperationEntered = false
+    private var cancelableOperationReleased = false
 
     func mutate(title: String) {
         self.title = title
@@ -318,6 +360,28 @@ private actor RenameInterleavingProbe {
 
     func markQueuedCanceled() {
         queuedCanceled = true
+    }
+
+    func markCancelableOperationEntered() {
+        cancelableOperationEntered = true
+        cancelableOperationEnteredWaiters.forEach { $0.resume() }
+        cancelableOperationEnteredWaiters.removeAll()
+    }
+
+    func waitUntilCancelableOperationEntered() async {
+        guard !cancelableOperationEntered else { return }
+        await withCheckedContinuation { cancelableOperationEnteredWaiters.append($0) }
+    }
+
+    func waitForCancelableOperationRelease() async {
+        guard !cancelableOperationReleased else { return }
+        await withCheckedContinuation { cancelableOperationReleaseWaiters.append($0) }
+    }
+
+    func releaseCancelableOperation() {
+        cancelableOperationReleased = true
+        cancelableOperationReleaseWaiters.forEach { $0.resume() }
+        cancelableOperationReleaseWaiters.removeAll()
     }
 
     func waitUntilFirstMutation() async {
