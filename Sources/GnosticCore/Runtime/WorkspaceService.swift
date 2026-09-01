@@ -498,9 +498,9 @@ public final class WorkspaceService {
                         try self.requireCurrent(requestContext, generation: generation)
                         let record = try await self.registry.commitBackendTimeline(
                             projection,
-                            context: timeline.context
+                            context: timeline.context,
+                            guardedBy: requestContext
                         )
-                        try self.requireCurrent(requestContext, generation: generation)
                         self.readvertiseTimeline(record.timeline)
                     } catch {
                         await self.compensateAttachment(
@@ -528,7 +528,8 @@ public final class WorkspaceService {
                 id: workspaceID,
                 uri: reference.uri.description,
                 toolIDs: reference.tools.map(\.toolID),
-                generation: generation
+                generation: generation,
+                guardedBy: requestContext
             ) else {
                 guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
                     throw NodeRuntimeError.notRunning
@@ -538,7 +539,6 @@ public final class WorkspaceService {
                 }
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
             }
-            try requireCurrent(requestContext, generation: generation)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
                 throw NodeRuntimeError.notRunning
             }

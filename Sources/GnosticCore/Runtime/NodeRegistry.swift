@@ -204,14 +204,21 @@ public actor NodeRegistry {
         return true
     }
 
+    /// The optional origin guard is checked in the same actor turn as the
+    /// mutation. If the write wins that linearization point, a later lease
+    /// retirement cannot turn it into a partial mutation requiring rollback.
     @discardableResult
     func resolveLazyWorkspace(
         id: UUID,
         uri: String,
         toolIDs: [String],
-        generation: UInt64
+        generation: UInt64,
+        guardedBy context: BackendSessionContext? = nil
     ) throws -> Bool {
         guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        if let context {
+            try requireBackendContext(context)
+        }
         return try resolveLazyWorkspace(id: id, uri: uri, toolIDs: toolIDs)
     }
 
@@ -342,14 +349,20 @@ public actor NodeRegistry {
     }
 
     /// Commits one backend projection under the exact lease and runtime
-    /// generation that produced it.
+    /// generation that produced it. `guardedBy` additionally validates the
+    /// initiating session in the same actor turn for cross-Ascendant lazy
+    /// rehydration.
     func commitBackendTimeline(
         _ timeline: AscendantRuntimeTimeline,
         context: BackendSessionContext,
+        guardedBy guardContext: BackendSessionContext? = nil,
         upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
         removingWorkspaceID: UUID? = nil
     ) throws -> TimelineRecord {
-        guard lifecycleGeneration == context.generation else { throw NodeRuntimeError.notRunning }
+        try requireBackendContext(context)
+        if let guardContext {
+            try requireBackendContext(guardContext)
+        }
         return try commitBackendTimeline(
             timeline,
             ascendantID: context.ascendantID,
@@ -502,5 +515,10 @@ public actor NodeRegistry {
     private func requireBackendLease(_ lease: UUID?, for ascendantID: UUID) throws {
         guard let lease else { return }
         guard backendLeases[ascendantID] == lease else { throw NodeRuntimeError.notRunning }
+    }
+
+    private func requireBackendContext(_ context: BackendSessionContext) throws {
+        guard lifecycleGeneration == context.generation else { throw NodeRuntimeError.notRunning }
+        try requireBackendLease(context.lease, for: context.ascendantID)
     }
 }

@@ -84,6 +84,53 @@ struct NodeRegistryTests {
         #expect(resolved.toolIDs == ["remote_echo"])
     }
 
+    @Test("a retired origin cannot mutate canonical state in a guarded registry transaction")
+    func guardedBackendMutationRejectsRetiredOrigin() async throws {
+        let fixture = try Fixture()
+        let lease = UUID.makeVersion4()
+        let registry = try NodeRegistry(
+            plan: fixture.plan,
+            operatedTimelines: [fixture.operated],
+            backendLeases: [fixture.ascendantID: lease]
+        )
+        let context = BackendSessionContext(
+            ascendantID: fixture.ascendantID,
+            lease: lease,
+            generation: 0
+        )
+        await registry.invalidateBackendLease(for: fixture.ascendantID)
+
+        await #expect(throws: NodeRuntimeError.notRunning) {
+            try await registry.resolveLazyWorkspace(
+                id: fixture.networkWorkspaceID,
+                uri: "workspace://expected",
+                toolIDs: ["remote_echo"],
+                generation: context.generation,
+                guardedBy: context
+            )
+        }
+        #expect(await registry.workspace(id: fixture.networkWorkspaceID)?.isAvailable == false)
+
+        let projection = AscendantRuntimeTimeline(
+            id: fixture.operated.id,
+            title: "Retired rename",
+            attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
+            attachedAscendantID: fixture.operated.attachedAscendantID,
+            isArchived: fixture.operated.isArchived,
+            isPrivate: fixture.operated.isPrivate,
+            createdAt: fixture.operated.createdAt,
+            updatedAt: Date()
+        )
+        await #expect(throws: NodeRuntimeError.notRunning) {
+            try await registry.commitBackendTimeline(
+                projection,
+                context: context,
+                guardedBy: context
+            )
+        }
+        #expect(await registry.timeline(id: fixture.operated.id)?.timeline == fixture.operated)
+    }
+
     @Test("runtime attachment intent is authoritative across attach and detach")
     func runtimeAttachmentIntentTracksMutations() async throws {
         let fixture = try Fixture()
