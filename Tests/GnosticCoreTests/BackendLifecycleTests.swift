@@ -449,7 +449,7 @@ struct BackendLifecycleTests {
         }
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.renameCount == 1)
-        await #expect(throws: NodeRuntimeError.unknownAscendant(ascendantID)) {
+        await #expect(throws: NodeRuntimeError.notRunning) {
             _ = try await runtime.renameTimeline(.init(timelineID: timelineID, title: "Still rejected"))
         }
         #expect(await probe.renameCount == 1)
@@ -480,7 +480,7 @@ struct BackendLifecycleTests {
         }
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.workspaceAttachCount == 1)
-        await #expect(throws: NodeRuntimeError.unknownAscendant(ascendantID)) {
+        await #expect(throws: NodeRuntimeError.notRunning) {
             _ = try await runtime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: timelineID))
         }
         #expect(await probe.workspaceAttachCount == 1)
@@ -547,6 +547,7 @@ struct BackendLifecycleTests {
         let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000358")!
         let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000359")!
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000360")!
+        let secondWorkspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000361")!
         let probe = LifecycleBackendProbe(
             failWorkspaceAttach: true,
             successfulRecovery: true,
@@ -563,7 +564,10 @@ struct BackendLifecycleTests {
                     .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
                     .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
                 ],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [
+                    .init(id: workspaceID, name: "Local", uri: "echo://local"),
+                    .init(id: secondWorkspaceID, name: "Second local", uri: "echo://second-local"),
+                ]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: probe, outcomes: [ascendantID: []])
         )
@@ -576,7 +580,7 @@ struct BackendLifecycleTests {
         try await withTestTimeout { await probe.waitUntilBlockedOperationStarted("detach") }
 
         do {
-            _ = try await runtime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: secondTimelineID))
+            _ = try await runtime.attachWorkspace(.init(workspaceID: secondWorkspaceID, timelineID: secondTimelineID))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
         } catch {}
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
@@ -1615,7 +1619,7 @@ private actor LifecycleBackendProbe {
 }
 
 @MainActor
-private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
+private final class LifecycleFixtureBackend: AscendantBackend {
     enum Outcome: Sendable, Equatable { case success, lifecycle, ordinary }
 
     let identity: AscendantBackendIdentity
@@ -1679,53 +1683,6 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         return timeline
     }
     func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
-    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
-        await probe.recordWorkspaceAttach()
-        await probe.beginBlockedOperation("attach")
-        await probe.waitForBlockedOperationRelease("attach")
-        if probe.shouldFailWorkspaceAttach {
-            throw AscendantBackendError.lifecycleUnusable(.init(code: "workspaceLifecycle", message: "workspace backend failed"))
-        }
-        guard let index = timelines.firstIndex(where: { $0.id == timelineID }) else {
-            throw NodeRuntimeError.missingTimeline(timelineID)
-        }
-        let old = timelines[index]
-        let workspaceIDs = old.attachedWorkspaceIDs.contains(reference.id)
-            ? old.attachedWorkspaceIDs
-            : old.attachedWorkspaceIDs + [reference.id]
-        timelines[index] = AscendantBackendTimeline(
-            id: old.id,
-            title: old.title,
-            attachedWorkspaceIDs: workspaceIDs,
-            ascendantID: old.ascendantID,
-            isArchived: old.isArchived,
-            isPrivate: old.isPrivate,
-            createdAt: old.createdAt,
-            updatedAt: Date()
-        )
-    }
-
-    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
-        await probe.beginBlockedOperation("detach")
-        await probe.waitForBlockedOperationRelease("detach")
-        guard let index = timelines.firstIndex(where: { $0.id == timelineID }) else {
-            throw NodeRuntimeError.missingTimeline(timelineID)
-        }
-        let old = timelines[index]
-        timelines[index] = AscendantBackendTimeline(
-            id: old.id,
-            title: old.title,
-            attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
-            ascendantID: old.ascendantID,
-            isArchived: old.isArchived,
-            isPrivate: old.isPrivate,
-            createdAt: old.createdAt,
-            updatedAt: Date()
-        )
-    }
-
-    func enabledToolIDs(for _: UUID) async -> [String] { [] }
-
     func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
         guard timelines.contains(where: { $0.id == id }) else {
             throw AscendantBackendError.timelineNotFound(id)
@@ -1746,7 +1703,7 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     }
 
     @MainActor
-    private final class TimelineSession: AscendantBackendTimelineSession {
+    private final class TimelineSession: AscendantBackendTimelineWorkspaceSession {
         let id: UUID
         private let backend: LifecycleFixtureBackend
 
@@ -1786,6 +1743,57 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
             backend.timelines[index] = renamed
             return renamed
         }
+
+        func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
+            await backend.probe.recordWorkspaceAttach()
+            await backend.probe.beginBlockedOperation("attach")
+            await backend.probe.waitForBlockedOperationRelease("attach")
+            if backend.probe.shouldFailWorkspaceAttach {
+                throw AscendantBackendError.lifecycleUnusable(.init(code: "workspaceLifecycle", message: "workspace backend failed"))
+            }
+            guard let index = backend.timelines.firstIndex(where: { $0.id == id }) else {
+                throw NodeRuntimeError.missingTimeline(id)
+            }
+            let old = backend.timelines[index]
+            let workspaceIDs = old.attachedWorkspaceIDs.contains(reference.id)
+                ? old.attachedWorkspaceIDs
+                : old.attachedWorkspaceIDs + [reference.id]
+            let projection = AscendantBackendTimeline(
+                id: old.id,
+                title: old.title,
+                attachedWorkspaceIDs: workspaceIDs,
+                ascendantID: old.ascendantID,
+                isArchived: old.isArchived,
+                isPrivate: old.isPrivate,
+                createdAt: old.createdAt,
+                updatedAt: Date()
+            )
+            backend.timelines[index] = projection
+            return projection
+        }
+
+        func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
+            await backend.probe.beginBlockedOperation("detach")
+            await backend.probe.waitForBlockedOperationRelease("detach")
+            guard let index = backend.timelines.firstIndex(where: { $0.id == id }) else {
+                throw NodeRuntimeError.missingTimeline(id)
+            }
+            let old = backend.timelines[index]
+            let projection = AscendantBackendTimeline(
+                id: old.id,
+                title: old.title,
+                attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
+                ascendantID: old.ascendantID,
+                isArchived: old.isArchived,
+                isPrivate: old.isPrivate,
+                createdAt: old.createdAt,
+                updatedAt: Date()
+            )
+            backend.timelines[index] = projection
+            return projection
+        }
+
+        func enabledToolIDs() async -> [String] { [] }
     }
 
     func cancel() async {

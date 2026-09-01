@@ -298,14 +298,14 @@ public protocol AscendantBackendPermissionService: Sendable {
 /// backend implementation. The mandatory contract never depends on it.
 public protocol AscendantBackendOptionalCapability: Sendable {}
 
-/// Optional Workspace operations implemented only by backends that consume
-/// Gnostic's Workspace service. A backend that does not support Workspaces can
-/// satisfy the mandatory contract without manufacturing no-op operations.
+/// Optional Workspace operations bound to one Timeline session. A backend that
+/// does not support Workspaces can satisfy the mandatory Timeline contract
+/// without manufacturing no-op operations.
 @MainActor
-public protocol AscendantBackendWorkspaceCapability: AnyObject, Sendable {
-    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws
-    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
-    func enabledToolIDs(for timelineID: UUID) async -> [String]
+public protocol AscendantBackendTimelineWorkspaceSession: AscendantBackendTimelineSession {
+    func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline
+    func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline
+    func enabledToolIDs() async -> [String]
 }
 
 /// The only construction-time host values available to a backend-neutral

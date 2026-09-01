@@ -8,7 +8,7 @@ import struct PositronicKit.Thread
 /// The built-in adapter owns PositronicKit construction, tool wiring, event
 /// translation, timeline persistence, and provider shutdown. PositronicKit
 /// native values do not cross the AscendantBackend contract.
-@MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
+@MainActor public final class PositronicAscendantAdapter: AscendantBackend {
     public let identity: AscendantBackendIdentity
     private let configuration: AscendantBackendConfiguration
     private let kit: PositronicKit
@@ -18,6 +18,7 @@ import struct PositronicKit.Thread
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
+    private var workspaceMutationGates: [UUID: TimelineMutationGate] = [:]
     private var timelineMutationGates: [UUID: TimelineMutationGate] = [:]
 
     public init(
@@ -264,28 +265,6 @@ import struct PositronicKit.Thread
         workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
-    public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
-        try requireUsable()
-        try await kit.workspaces.update(Self.positronicReference(reference))
-        workspaceToolsByID[reference.id] = try Self.workspaceTools(for: reference, service: workspaceService)
-        if !workspaceIDsByTimeline[timelineID, default: []].contains(reference.id) {
-            workspaceIDsByTimeline[timelineID, default: []].append(reference.id)
-        }
-    }
-
-    public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
-        try requireUsable()
-        workspaceIDsByTimeline[timelineID, default: []].removeAll { $0 == workspaceID }
-    }
-
-    public func enabledToolIDs(for timelineID: UUID) async -> [String] {
-        guard lifecycleFailure == nil else { return [] }
-        let workspaceToolIDs: [String]
-        let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
-        workspaceToolIDs = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
-        return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
-    }
-
     public func cancel() async {
         for timeline in (try? await operatedTimelines()) ?? [] {
             await kit.threads.open(timeline.id).cancel()
@@ -307,7 +286,7 @@ import struct PositronicKit.Thread
     }
 
     @MainActor
-    private final class TimelineSession: AscendantBackendTimelineSession {
+    private final class TimelineSession: AscendantBackendTimelineWorkspaceSession {
         private let handle: ThreadHandle
         private let host: PositronicAscendantAdapter
         var id: UUID { handle.id }
@@ -394,6 +373,77 @@ import struct PositronicKit.Thread
                 return await self.host.projection(thread)
             }
         }
+
+        func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
+            try host.requireUsable()
+            return try await host.withTimelineMutation(id: id) {
+                try await self.host.withWorkspaceMutation(id: reference.id) {
+                    let nativeReference = try PositronicAscendantAdapter.positronicReference(reference)
+                    let workspaceTools = try PositronicAscendantAdapter.workspaceTools(for: reference, service: self.host.workspaceService)
+                    guard let thread = try await self.host.kit.threads.get(self.id) else {
+                        throw AscendantBackendError.timelineNotFound(self.id)
+                    }
+                    let priorNativeReference = try await self.host.kit.workspaces.get(reference.id)
+                    let priorTools = self.host.workspaceToolsByID[reference.id]
+                    let priorWorkspaceIDs = self.host.workspaceIDsByTimeline[self.id]
+                    do {
+                        try await self.host.kit.workspaces.update(nativeReference)
+                        self.host.workspaceToolsByID[reference.id] = workspaceTools
+                        if !self.host.workspaceIDsByTimeline[self.id, default: []].contains(reference.id) {
+                            self.host.workspaceIDsByTimeline[self.id, default: []].append(reference.id)
+                        }
+                    } catch {
+                        do {
+                            try await self.host.restoreWorkspaceMutation(
+                                workspaceID: reference.id,
+                                priorNativeReference: priorNativeReference,
+                                priorTools: priorTools,
+                                priorWorkspaceIDs: priorWorkspaceIDs,
+                                timelineID: self.id
+                            )
+                        } catch let restorationError {
+                            throw AscendantBackendError.lifecycleUnusable(.init(
+                                code: "workspaceMutationRollbackFailed",
+                                message: "Workspace mutation failed and could not be restored: \(restorationError.localizedDescription)"
+                            ))
+                        }
+                        throw error
+                    }
+                    return await self.host.projection(thread)
+                }
+            }
+        }
+
+        func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
+            try host.requireUsable()
+            return try await host.withTimelineMutation(id: id) {
+                let priorWorkspaceIDs = self.host.workspaceIDsByTimeline[self.id]
+                guard let thread = try await self.host.kit.threads.get(self.id) else {
+                    throw AscendantBackendError.timelineNotFound(self.id)
+                }
+                do {
+                    self.host.workspaceIDsByTimeline[self.id, default: []].removeAll { $0 == workspaceID }
+                    try Task.checkCancellation()
+                    return await self.host.projection(thread)
+                } catch {
+                    if let priorWorkspaceIDs {
+                        self.host.workspaceIDsByTimeline[self.id] = priorWorkspaceIDs
+                    } else {
+                        self.host.workspaceIDsByTimeline.removeValue(forKey: self.id)
+                    }
+                    throw error
+                }
+            }
+        }
+
+        func enabledToolIDs() async -> [String] {
+            guard host.lifecycleFailure == nil else { return [] }
+            let workspaceIDs = host.workspaceIDsByTimeline[id, default: []]
+            let workspaceToolIDs = workspaceIDs.flatMap {
+                host.workspaceToolsByID[$0, default: []].map(\.callName)
+            }
+            return Array(Set(host.networkTools.map(\.callName) + workspaceToolIDs)).sorted()
+        }
     }
 
     private func withTimelineMutation<T: Sendable>(
@@ -411,9 +461,48 @@ import struct PositronicKit.Thread
         return try await gate.withExclusiveAccess(operation)
     }
 
+    private func withWorkspaceMutation<T: Sendable>(
+        id: UUID,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let gate: TimelineMutationGate
+        if let existing = workspaceMutationGates[id] {
+            gate = existing
+        } else {
+            let created = TimelineMutationGate()
+            workspaceMutationGates[id] = created
+            gate = created
+        }
+        return try await gate.withExclusiveAccess(operation)
+    }
+
     private func requireUsable() throws {
         if let lifecycleFailure {
             throw AscendantBackendError.lifecycleUnusable(lifecycleFailure)
+        }
+    }
+
+    private func restoreWorkspaceMutation(
+        workspaceID: UUID,
+        priorNativeReference: WorkspaceReference?,
+        priorTools: [AnyTool]?,
+        priorWorkspaceIDs: [UUID]?,
+        timelineID: UUID
+    ) async throws {
+        if let priorNativeReference {
+            try await kit.workspaces.update(priorNativeReference)
+        } else {
+            try await kit.workspaces.delete(workspaceID)
+        }
+        if let priorTools {
+            workspaceToolsByID[workspaceID] = priorTools
+        } else {
+            workspaceToolsByID.removeValue(forKey: workspaceID)
+        }
+        if let priorWorkspaceIDs {
+            workspaceIDsByTimeline[timelineID] = priorWorkspaceIDs
+        } else {
+            workspaceIDsByTimeline.removeValue(forKey: timelineID)
         }
     }
 
