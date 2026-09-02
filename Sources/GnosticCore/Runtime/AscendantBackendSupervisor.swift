@@ -2,266 +2,16 @@
 
 import Foundation
 
-/// The lease and runtime lifetime captured when an Ascendant backend session
-/// was admitted. Registry writes use this value as one inseparable fence.
-struct BackendSessionContext: Sendable, Equatable {
+/// The immutable capability used by domain services when they need to call an
+/// Ascendant. A session identifies both the backend instance and the lease
+/// under which it was admitted; a replacement can never inherit an old
+/// session accidentally.
+@MainActor
+struct AscendantBackendSession {
     let ascendantID: UUID
+    let backend: any AscendantBackend
     let lease: UUID
     let generation: UInt64
-}
-
-/// The runtime generation captured before a Turn enters coordinator admission.
-/// It prevents a queued Turn from executing in a later runtime lifetime.
-struct BackendTurnAdmission: Sendable, Equatable {
-    let generation: UInt64
-}
-
-/// An operation-scoped Ascendant session. It strongly retains the native
-/// backend for the operation while exposing only lease-fenced capabilities to
-/// Gnostic services.
-@MainActor
-struct LeasedAscendantBackendSession {
-    let context: BackendSessionContext
-    private let backend: any AscendantBackend
-    private let provider: any BackendSessionProviding
-
-    init(
-        context: BackendSessionContext,
-        backend: any AscendantBackend,
-        provider: any BackendSessionProviding
-    ) {
-        self.context = context
-        self.backend = backend
-        self.provider = provider
-    }
-
-    func timeline(id: UUID) async throws -> LeasedBackendTimelineSession {
-        let native = try await performLeasedBackendCall(context: context, provider: provider) {
-            try await backend.timeline(id: id)
-        }
-        guard native.id == id else {
-            let violation = AscendantBackendContractViolation.sessionTimelineMismatch(
-                expected: id,
-                actual: native.id
-            )
-            await provider.markContractViolation(context, violation: violation)
-            throw AscendantBackendError.contractViolation(violation)
-        }
-        return LeasedBackendTimelineSession(
-            id: id,
-            context: context,
-            timeline: native,
-            provider: provider
-        )
-    }
-
-    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        let projection = try await performLeasedBackendCall(context: context, provider: provider) {
-            try await backend.createTimeline(id: id, title: title)
-        }
-        return try await validateBackendProjection(
-            projection,
-            expectedTimelineID: id,
-            context: context,
-            provider: provider
-        )
-    }
-
-    func removeTimeline(id: UUID) async throws {
-        try await performLeasedBackendCall(context: context, provider: provider) {
-            await backend.removeTimeline(id: id)
-        }
-    }
-}
-
-/// A Timeline execution session fenced by the backend lease that opened it.
-/// The wrapper keeps lifecycle policy out of TurnService while the backend's
-/// Timeline session owns provider-native execution state.
-@MainActor
-struct LeasedBackendTimelineSession {
-    let id: UUID
-    let context: BackendSessionContext
-    let workspace: LeasedBackendTimelineWorkspaceSession?
-    private let timeline: any AscendantBackendTimelineSession
-    private let provider: any BackendSessionProviding
-
-    init(
-        id: UUID,
-        context: BackendSessionContext,
-        timeline: any AscendantBackendTimelineSession,
-        provider: any BackendSessionProviding
-    ) {
-        self.id = id
-        self.context = context
-        self.timeline = timeline
-        self.provider = provider
-        workspace = (timeline as? any AscendantBackendTimelineWorkspaceSession).map {
-            LeasedBackendTimelineWorkspaceSession(
-                id: id,
-                context: context,
-                workspace: $0,
-                provider: provider
-            )
-        }
-    }
-
-    func runTurn(
-        _ request: AscendantBackendTimelineTurnRequest,
-        updates: any AscendantBackendUpdateSink
-    ) async throws -> String {
-        guard !Task.isCancelled,
-              provider.isRunning,
-              provider.isCurrentSession(context) else {
-            throw CancellationError()
-        }
-        let updateGate = LeaseFencedUpdateGate()
-        let fencedUpdates = LeaseFencedUpdateSink(
-            updates: updates,
-            context: context,
-            provider: provider,
-            gate: updateGate
-        )
-        do {
-            let result = try await withTaskCancellationHandler(operation: {
-                try await timeline.runTurn(request, updates: fencedUpdates)
-            }, onCancel: {
-                updateGate.close()
-            })
-            updateGate.close()
-            guard !Task.isCancelled,
-                  provider.isRunning,
-                  provider.isCurrentSession(context) else {
-                throw CancellationError()
-            }
-            return result
-        } catch let error as AscendantBackendError {
-            updateGate.close()
-            guard !Task.isCancelled,
-                  provider.isRunning,
-                  provider.isCurrentSession(context) else {
-                throw CancellationError()
-            }
-            switch error {
-            case let .lifecycleUnusable(failure) where provider.isCurrentSession(context):
-                await provider.markLifecycleFailure(context, failure: failure)
-            case let .contractViolation(violation) where provider.isCurrentSession(context):
-                await provider.markContractViolation(context, violation: violation)
-            default:
-                break
-            }
-            throw error
-        } catch {
-            updateGate.close()
-            guard !Task.isCancelled,
-                  provider.isRunning,
-                  provider.isCurrentSession(context) else {
-                throw CancellationError()
-            }
-            throw error
-        }
-    }
-
-    func rename(to title: String) async throws -> AscendantBackendTimeline {
-        let projection = try await performLeasedBackendCall(context: context, provider: provider) {
-            try await timeline.rename(to: title)
-        }
-        return try await validateBackendProjection(
-            projection,
-            expectedTimelineID: id,
-            context: context,
-            provider: provider
-        )
-    }
-}
-
-/// Optional Workspace capability fenced by the same Timeline session and
-/// backend lease as its mandatory operations.
-@MainActor
-struct LeasedBackendTimelineWorkspaceSession {
-    let id: UUID
-    let context: BackendSessionContext
-    private let workspace: any AscendantBackendTimelineWorkspaceSession
-    private let provider: any BackendSessionProviding
-
-    init(
-        id: UUID,
-        context: BackendSessionContext,
-        workspace: any AscendantBackendTimelineWorkspaceSession,
-        provider: any BackendSessionProviding
-    ) {
-        self.id = id
-        self.context = context
-        self.workspace = workspace
-        self.provider = provider
-    }
-
-    func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
-        let projection = try await performLeasedBackendCall(context: context, provider: provider) {
-            try await workspace.attachWorkspace(reference)
-        }
-        return try await validateBackendProjection(
-            projection,
-            expectedTimelineID: id,
-            context: context,
-            provider: provider
-        )
-    }
-
-    func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
-        let projection = try await performLeasedBackendCall(context: context, provider: provider) {
-            try await workspace.detachWorkspace(id: workspaceID)
-        }
-        return try await validateBackendProjection(
-            projection,
-            expectedTimelineID: id,
-            context: context,
-            provider: provider
-        )
-    }
-
-    func enabledToolIDs() async throws -> [String] {
-        try await performLeasedBackendCall(context: context, provider: provider) {
-            await workspace.enabledToolIDs()
-        }
-    }
-}
-
-/// Drops updates after the backend lease that produced them is no longer
-/// current. A backend may continue producing events while retirement is
-/// bounded, but those events must not reach the active Turn stream.
-private struct LeaseFencedUpdateSink: AscendantBackendUpdateSink {
-    let updates: any AscendantBackendUpdateSink
-    let context: BackendSessionContext
-    let provider: any BackendSessionProviding
-    let gate: LeaseFencedUpdateGate
-
-    func append(_ update: AscendantBackendUpdate) async {
-        guard gate.isOpen,
-              !Task.isCancelled,
-              await provider.isCurrentSession(context) else { return }
-        guard gate.isOpen, !Task.isCancelled else { return }
-        await updates.append(update)
-    }
-}
-
-/// Synchronously closes a Turn's update channel from both its owner task and
-/// its cancellation handler. The sink remains safe to retain after the native
-/// backend returns because late provider callbacks observe this closed gate.
-private final class LeaseFencedUpdateGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var open = true
-
-    var isOpen: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return open
-    }
-
-    func close() {
-        lock.lock()
-        open = false
-        lock.unlock()
-    }
 }
 
 /// Typed admission boundary shared by domain services. The supervisor owns
@@ -271,89 +21,91 @@ protocol BackendSessionProviding: AnyObject, Sendable {
     var isRunning: Bool { get }
     var isClosed: Bool { get }
     var lifecycleGeneration: UInt64 { get }
-    func turnAdmission() throws -> BackendTurnAdmission
-    func session(for ascendantID: UUID) -> LeasedAscendantBackendSession?
-    func sessionForTurn(
-        timelineID: UUID,
-        operatedBy ascendantID: UUID,
-        admittedUnder admission: BackendTurnAdmission
-    ) async throws -> LeasedAscendantBackendSession
-    func requireCurrent(
-        _ context: BackendSessionContext?,
-        generation: UInt64?
-    ) throws
-    func isCurrentSession(_ context: BackendSessionContext) -> Bool
-    func markLifecycleFailure(_ context: BackendSessionContext, failure: AscendantBackendLifecycleFailure) async
-    func markContractViolation(_ context: BackendSessionContext, violation: AscendantBackendContractViolation) async
+    func session(for ascendantID: UUID) -> AscendantBackendSession?
+    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession
+    func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool
+    func isCurrentSession(_ session: AscendantBackendSession) -> Bool
+    func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID?
+    func markLifecycleFailure(_ session: AscendantBackendSession, failure: AscendantBackendLifecycleFailure) async
+    func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async
 }
 
+/// Compatibility bridge for tests and older internal composition points that
+/// still provide the pre-supervisor callback shape.
 @MainActor
-extension BackendSessionProviding {
-    func requireCurrent(_ context: BackendSessionContext?) throws {
-        try requireCurrent(context, generation: nil)
-    }
-}
+final class ClosureBackendSessionProvider: BackendSessionProviding {
+    private let running: @MainActor () -> Bool
+    private let generation: @MainActor () -> UInt64
+    private let backend: @MainActor (UUID) async throws -> any AscendantBackend
+    private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
+    private let current: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
+    private let backendLease: @MainActor (UUID, any AscendantBackend) -> UUID?
+    private let failure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
 
-@MainActor
-private func performLeasedBackendCall<T>(
-    context: BackendSessionContext,
-    provider: any BackendSessionProviding,
-    operation: @escaping @MainActor () async throws -> T
-) async throws -> T {
-    guard !Task.isCancelled, provider.isCurrentSession(context) else {
-        throw NodeRuntimeError.notRunning
+    init(
+        isRunning: @escaping @MainActor () -> Bool,
+        lifecycleGeneration: @escaping @MainActor () -> UInt64,
+        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
+        current: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool,
+        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID?,
+        failure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void,
+        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend
+    ) {
+        self.running = isRunning
+        self.generation = lifecycleGeneration
+        self.adapter = adapter
+        self.current = current
+        self.backendLease = backendLease
+        self.failure = failure
+        self.backend = backend
     }
-    do {
-        let result = try await operation()
-        guard !Task.isCancelled, provider.isCurrentSession(context) else {
-            throw NodeRuntimeError.notRunning
-        }
-        return result
-    } catch let error as AscendantBackendError {
-        guard !Task.isCancelled, provider.isCurrentSession(context) else {
-            throw NodeRuntimeError.notRunning
-        }
-        switch error {
-        case let .lifecycleUnusable(failure):
-            await provider.markLifecycleFailure(context, failure: failure)
-        case let .contractViolation(violation):
-            await provider.markContractViolation(context, violation: violation)
-        default:
-            break
-        }
-        throw error
-    } catch {
-        guard !Task.isCancelled, provider.isCurrentSession(context) else {
-            throw NodeRuntimeError.notRunning
-        }
-        throw error
-    }
-}
 
-@MainActor
-private func validateBackendProjection(
-    _ projection: AscendantBackendTimeline,
-    expectedTimelineID: UUID,
-    context: BackendSessionContext,
-    provider: any BackendSessionProviding
-) async throws -> AscendantBackendTimeline {
-    guard projection.id == expectedTimelineID else {
-        let violation = AscendantBackendContractViolation.projectionTimelineMismatch(
-            expected: expectedTimelineID,
-            actual: projection.id
+    var isRunning: Bool { running() }
+    var isClosed: Bool { !running() }
+    var lifecycleGeneration: UInt64 { generation() }
+
+    func session(for ascendantID: UUID) -> AscendantBackendSession? {
+        guard let backend = adapter(ascendantID) else { return nil }
+        return AscendantBackendSession(
+            ascendantID: ascendantID,
+            backend: backend,
+            lease: backendLease(ascendantID, backend) ?? UUID(),
+            generation: lifecycleGeneration
         )
-        await provider.markContractViolation(context, violation: violation)
-        throw AscendantBackendError.contractViolation(violation)
     }
-    guard projection.ascendantID == context.ascendantID else {
-        let violation = AscendantBackendContractViolation.projectionAscendantMismatch(
-            expected: context.ascendantID,
-            actual: projection.ascendantID
+
+    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession {
+        let backend = try await self.backend(ascendantID)
+        return AscendantBackendSession(
+            ascendantID: ascendantID,
+            backend: backend,
+            lease: backendLease(ascendantID, backend) ?? UUID(),
+            generation: lifecycleGeneration
         )
-        await provider.markContractViolation(context, violation: violation)
-        throw AscendantBackendError.contractViolation(violation)
     }
-    return projection
+
+    func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool {
+        current(ascendantID, backend, generation)
+    }
+
+    func isCurrentSession(_ session: AscendantBackendSession) -> Bool {
+        guard current(session.ascendantID, session.backend, session.generation) else { return false }
+        guard let lease = backendLease(session.ascendantID, session.backend) else { return true }
+        return lease == session.lease
+    }
+
+    func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID? {
+        backendLease(ascendantID, backend)
+    }
+
+    func markLifecycleFailure(_ session: AscendantBackendSession, failure: AscendantBackendLifecycleFailure) async {
+        guard isCurrentSession(session) else { return }
+        await self.failure(session.ascendantID, session.backend, failure)
+    }
+
+    func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async {
+        await self.failure(ascendantID, backend, failure)
+    }
 }
 
 /// Owns backend instances, health, leases, reconstruction single-flight, and
@@ -430,11 +182,6 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     var isClosed: Bool { lifetime.state == .closed }
     var lifecycleGeneration: UInt64 { lifetime.generation }
 
-    func turnAdmission() throws -> BackendTurnAdmission {
-        guard lifetime.state == .running else { throw NodeRuntimeError.notRunning }
-        return .init(generation: lifetime.generation)
-    }
-
     func bind(attachWorkspace: @escaping (UUID, UUID, UUID, UUID) async throws -> Void) {
         backendWorkspaceAttachment = attachWorkspace
     }
@@ -443,94 +190,88 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         backendHealthByID[ascendantID] ?? .unknown
     }
 
-    func session(for ascendantID: UUID) -> LeasedAscendantBackendSession? {
+    func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
+        guard let ascendantID = await registry.operatorID(forTimeline: timelineID),
+              backendHealthByID[ascendantID] == .healthy,
+              let backend = ascendantAdapters[ascendantID] else {
+            throw NodeRuntimeError.noOperatingAscendant(timelineID)
+        }
+        guard let adapter = backend as? any AscendantBackendWorkspaceCapability else { return [] }
+        return await adapter.enabledToolIDs(for: timelineID)
+    }
+
+    func session(for ascendantID: UUID, generation: UInt64? = nil) -> AscendantBackendSession? {
         guard lifetime.state != .closed,
               backendHealthByID[ascendantID] == .healthy,
               let backend = ascendantAdapters[ascendantID],
               let lease = backendLeases[ascendantID] else { return nil }
-        let context = BackendSessionContext(
+        let currentGeneration = lifetime.generation
+        guard generation == nil || generation == currentGeneration else { return nil }
+        return AscendantBackendSession(
             ascendantID: ascendantID,
+            backend: backend,
             lease: lease,
-            generation: lifetime.generation
+            generation: currentGeneration
         )
-        return LeasedAscendantBackendSession(context: context, backend: backend, provider: self)
     }
 
-    func sessionForTurn(
-        timelineID _: UUID,
-        operatedBy ascendantID: UUID,
-        admittedUnder admission: BackendTurnAdmission
-    ) async throws -> LeasedAscendantBackendSession {
-        guard !Task.isCancelled, lifetime.state == .running else {
-            throw CancellationError()
-        }
-        guard lifetime.generation == admission.generation else {
-            throw CancellationError()
-        }
+    func session(for ascendantID: UUID) -> AscendantBackendSession? {
+        session(for: ascendantID, generation: nil)
+    }
+
+    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession {
+        guard lifetime.state == .running else { throw NodeRuntimeError.notRunning }
         guard backendSpecs[ascendantID] != nil else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
-        if let session = session(for: ascendantID), session.context.generation == admission.generation {
+        if let session = session(for: ascendantID) {
             return session
         }
-        do {
-            _ = try await reconstructBackend(for: ascendantID)
-        } catch {
-            guard !Task.isCancelled,
-                  lifetime.state == .running,
-                  lifetime.generation == admission.generation else {
-                throw CancellationError()
-            }
-            throw error
-        }
-        guard !Task.isCancelled,
-              lifetime.state == .running,
-              lifetime.generation == admission.generation,
-              let session = session(for: ascendantID),
-              session.context.generation == admission.generation else {
-            throw CancellationError()
-        }
+        _ = try await reconstructBackend(for: ascendantID)
+        guard let session = session(for: ascendantID) else { throw NodeRuntimeError.notRunning }
         return session
     }
 
-    func isCurrentSession(_ context: BackendSessionContext) -> Bool {
-        guard lifetime.state != .closed,
-              lifetime.generation == context.generation,
-              backendHealthByID[context.ascendantID] == .healthy,
-              backendLeases[context.ascendantID] == context.lease,
-              ascendantAdapters[context.ascendantID] != nil else { return false }
-        return true
+    func isCurrentBackend(
+        _ ascendantID: UUID,
+        backend: any AscendantBackend,
+        generation: UInt64
+    ) -> Bool {
+        guard let session = session(for: ascendantID, generation: generation) else { return false }
+        return (session.backend as AnyObject) === (backend as AnyObject)
     }
 
-    func requireCurrent(
-        _ context: BackendSessionContext?,
-        generation: UInt64? = nil
-    ) throws {
-        guard lifetime.state == .running else { throw NodeRuntimeError.notRunning }
-        if let generation, lifetime.generation != generation {
-            throw NodeRuntimeError.notRunning
-        }
-        if let context, !isCurrentSession(context) {
-            throw NodeRuntimeError.notRunning
-        }
+    func isCurrentSession(_ session: AscendantBackendSession) -> Bool {
+        guard let current = self.session(for: session.ascendantID, generation: session.generation) else { return false }
+        return current.lease == session.lease
+            && (current.backend as AnyObject) === (session.backend as AnyObject)
+    }
+
+    func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID? {
+        guard let session = session(for: ascendantID),
+              (session.backend as AnyObject) === (backend as AnyObject) else { return nil }
+        return session.lease
     }
 
     func markLifecycleFailure(
-        _ context: BackendSessionContext,
+        _ session: AscendantBackendSession,
         failure: AscendantBackendLifecycleFailure
     ) async {
-        guard isCurrentSession(context) else { return }
-        await quarantineBackend(context.ascendantID, failure: failure)
+        guard let current = self.session(for: session.ascendantID, generation: session.generation),
+              current.lease == session.lease,
+              (current.backend as AnyObject) === (session.backend as AnyObject) else { return }
+        await quarantineBackend(session.ascendantID, failure: failure)
     }
 
-    func markContractViolation(
-        _ context: BackendSessionContext,
-        violation: AscendantBackendContractViolation
+    func markLifecycleFailure(
+        _ ascendantID: UUID,
+        backend failedBackend: any AscendantBackend,
+        failure: AscendantBackendLifecycleFailure
     ) async {
-        await markLifecycleFailure(
-            context,
-            failure: .init(code: "backendContractViolation", message: violation.localizedDescription)
-        )
+        guard backendSpecs[ascendantID] != nil,
+              let currentBackend = ascendantAdapters[ascendantID],
+              (currentBackend as AnyObject) === (failedBackend as AnyObject) else { return }
+        await quarantineBackend(ascendantID, failure: failure)
     }
 
     private func quarantineBackend(_ ascendantID: UUID, failure _: AscendantBackendLifecycleFailure) async {
@@ -706,8 +447,8 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
             throw ReconstructionFailure(detail: "replacement omitted an operated Timeline")
         }
         for timeline in projected where expectedIDs.contains(timeline.id) {
-            guard timeline.ascendantID == spec.ascendant.id else {
-                throw NodeRuntimeError.unknownAscendant(timeline.ascendantID ?? spec.ascendant.id)
+            guard timeline.attachedAscendantID == spec.ascendant.id else {
+                throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? spec.ascendant.id)
             }
         }
     }

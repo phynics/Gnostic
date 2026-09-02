@@ -116,15 +116,40 @@ public struct AscendantBackendTimeline: Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 
+    /// Compatibility initializer for the pre-reset projection spelling.
+    public init(
+        id: UUID,
+        title: String,
+        attachedWorkspaceIDs: [UUID],
+        attachedAscendantID: UUID?,
+        isArchived: Bool,
+        isPrivate: Bool,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.init(
+            id: id,
+            title: title,
+            attachedWorkspaceIDs: attachedWorkspaceIDs,
+            ascendantID: attachedAscendantID,
+            isArchived: isArchived,
+            isPrivate: isPrivate,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+
+    public var attachedAscendantID: UUID? { ascendantID }
 }
 
-/// A turn supplied to a backend Timeline session. Timeline identity is bound
-/// when the session is opened and cannot drift between execution calls.
-public struct AscendantBackendTimelineTurnRequest: Sendable, Equatable {
+/// A Timeline-addressed operation supplied to an Ascendant Backend.
+public struct AscendantBackendTurnRequest: Sendable, Equatable {
+    public let timelineID: UUID
     public let message: String
     public let clientTurnID: String?
 
-    public init(message: String, clientTurnID: String? = nil) {
+    public init(timelineID: UUID, message: String, clientTurnID: String? = nil) {
+        self.timelineID = timelineID
         self.message = message
         self.clientTurnID = clientTurnID
     }
@@ -156,20 +181,6 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
 /// Host-owned sink for backend turn updates.
 public protocol AscendantBackendUpdateSink: Sendable {
     func append(_ update: AscendantBackendUpdate) async
-}
-
-/// Backend-owned execution context for one Gnostic Timeline.
-///
-/// Implementations may hold a provider-native thread handle, transcript, and
-/// tool context. Gnostic retains ownership of routing and Timeline identity.
-@MainActor
-public protocol AscendantBackendTimelineSession: AnyObject, Sendable {
-    var id: UUID { get }
-    func runTurn(
-        _ request: AscendantBackendTimelineTurnRequest,
-        updates: any AscendantBackendUpdateSink
-    ) async throws -> String
-    func rename(to title: String) async throws -> AscendantBackendTimeline
 }
 
 /// A generic, backend-neutral description of a Workspace capability.
@@ -274,14 +285,14 @@ public protocol AscendantBackendPermissionService: Sendable {
 /// backend implementation. The mandatory contract never depends on it.
 public protocol AscendantBackendOptionalCapability: Sendable {}
 
-/// Optional Workspace operations bound to one Timeline session. A backend that
-/// does not support Workspaces can satisfy the mandatory Timeline contract
-/// without manufacturing no-op operations.
+/// Optional Workspace operations implemented only by backends that consume
+/// Gnostic's Workspace service. A backend that does not support Workspaces can
+/// satisfy the mandatory contract without manufacturing no-op operations.
 @MainActor
-public protocol AscendantBackendTimelineWorkspaceSession: AscendantBackendTimelineSession {
-    func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline
-    func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline
-    func enabledToolIDs() async -> [String]
+public protocol AscendantBackendWorkspaceCapability: AnyObject, Sendable {
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws
+    func enabledToolIDs(for timelineID: UUID) async -> [String]
 }
 
 /// The only construction-time host values available to a backend-neutral
@@ -341,28 +352,9 @@ public struct AscendantBackendLifecycleFailure: Error, Codable, Sendable, Equata
     public var errorDescription: String? { message }
 }
 
-/// Identifies a violation of the Timeline-bound backend contract.
-public enum AscendantBackendContractViolation: Error, Sendable, Equatable, LocalizedError {
-    case sessionTimelineMismatch(expected: UUID, actual: UUID)
-    case projectionTimelineMismatch(expected: UUID, actual: UUID)
-    case projectionAscendantMismatch(expected: UUID, actual: UUID?)
-
-    public var errorDescription: String? {
-        switch self {
-        case let .sessionTimelineMismatch(expected, actual):
-            "Backend returned Timeline \(actual.uuidString) for requested Timeline \(expected.uuidString)."
-        case let .projectionTimelineMismatch(expected, actual):
-            "Backend returned projection for Timeline \(actual.uuidString) on session \(expected.uuidString)."
-        case let .projectionAscendantMismatch(expected, actual):
-            "Backend returned projection for Ascendant \(actual?.uuidString ?? "none") on Ascendant \(expected.uuidString)."
-        }
-    }
-}
-
 public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
     case invalidConfiguration(String)
     case timelineNotFound(UUID)
-    case contractViolation(AscendantBackendContractViolation)
     case terminal(AscendantBackendTerminalFailure)
     case cancelled
     case lifecycleUnusable(AscendantBackendLifecycleFailure)
@@ -371,7 +363,6 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case let .invalidConfiguration(detail): detail
         case let .timelineNotFound(id): "Timeline \(id.uuidString) is not operated by this backend."
-        case let .contractViolation(violation): violation.localizedDescription
         case let .terminal(failure): failure.message
         case .cancelled: "The backend turn was cancelled."
         case let .lifecycleUnusable(failure): failure.message
@@ -382,7 +373,6 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case .invalidConfiguration: return "invalidConfiguration"
         case .timelineNotFound: return "timelineNotFound"
-        case .contractViolation: return "backendContractViolation"
         case .terminal(let failure): return failure.code
         case .cancelled: return "cancelled"
         case .lifecycleUnusable(let failure): return failure.code
@@ -393,7 +383,6 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case .invalidConfiguration: return 400
         case .timelineNotFound: return 404
-        case .contractViolation: return 500
         case .terminal: return 500
         case .cancelled: return 499
         case .lifecycleUnusable: return 503
@@ -423,7 +412,8 @@ public protocol AscendantBackend: AnyObject, Sendable {
     func operatedTimelines() async throws -> [AscendantBackendTimeline]
     func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
     func removeTimeline(id: UUID) async
-    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
+    func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String
     func cancel() async
     func shutdown() async
 }

@@ -84,65 +84,6 @@ struct NodeRegistryTests {
         #expect(resolved.toolIDs == ["remote_echo"])
     }
 
-    @Test("a retired origin cannot mutate canonical state in a guarded registry transaction")
-    func guardedBackendMutationRejectsRetiredOrigin() async throws {
-        let fixture = try Fixture()
-        let targetLease = UUID.makeVersion4()
-        let originLease = UUID.makeVersion4()
-        let registry = try NodeRegistry(
-            plan: fixture.plan,
-            operatedTimelines: [fixture.operated],
-            backendLeases: [fixture.ascendantID: targetLease]
-        )
-        let targetContext = BackendSessionContext(
-            ascendantID: fixture.ascendantID,
-            lease: targetLease,
-            generation: 0
-        )
-        let originContext = BackendSessionContext(
-            ascendantID: fixture.ascendantID,
-            lease: originLease,
-            generation: 0
-        )
-
-        await #expect(throws: NodeRuntimeError.notRunning) {
-            try await registry.resolveLazyWorkspace(
-                id: fixture.networkWorkspaceID,
-                uri: "workspace://expected",
-                toolIDs: ["remote_echo"],
-                generation: originContext.generation,
-                guardedBy: originContext
-            )
-        }
-        #expect(await registry.workspace(id: fixture.networkWorkspaceID)?.isAvailable == false)
-        #expect(await registry.setWorkspaceStatus(
-            id: fixture.networkWorkspaceID,
-            status: .available,
-            generation: targetContext.generation,
-            guardedBy: originContext
-        ) == false)
-        #expect(await registry.workspace(id: fixture.networkWorkspaceID)?.isAvailable == false)
-
-        let projection = AscendantRuntimeTimeline(
-            id: fixture.operated.id,
-            title: "Retired rename",
-            attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            ascendantID: fixture.operated.ascendantID,
-            isArchived: fixture.operated.isArchived,
-            isPrivate: fixture.operated.isPrivate,
-            createdAt: fixture.operated.createdAt,
-            updatedAt: Date()
-        )
-        await #expect(throws: NodeRuntimeError.notRunning) {
-            try await registry.commitBackendTimeline(
-                projection,
-                context: targetContext,
-                guardedBy: originContext
-            )
-        }
-        #expect(await registry.timeline(id: fixture.operated.id)?.timeline == fixture.operated)
-    }
-
     @Test("runtime attachment intent is authoritative across attach and detach")
     func runtimeAttachmentIntentTracksMutations() async throws {
         let fixture = try Fixture()
@@ -165,7 +106,7 @@ struct NodeRegistryTests {
             id: fixture.operated.id,
             title: "Rejected rename",
             attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            ascendantID: fixture.operated.ascendantID,
+            attachedAscendantID: fixture.operated.attachedAscendantID,
             isArchived: fixture.operated.isArchived,
             isPrivate: fixture.operated.isPrivate,
             createdAt: fixture.operated.createdAt,
@@ -188,7 +129,7 @@ struct NodeRegistryTests {
             id: fixture.operated.id,
             title: "Accepted rename",
             attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            ascendantID: fixture.operated.ascendantID,
+            attachedAscendantID: fixture.operated.attachedAscendantID,
             isArchived: fixture.operated.isArchived,
             isPrivate: fixture.operated.isPrivate,
             createdAt: fixture.operated.createdAt,
@@ -216,8 +157,8 @@ struct NodeRegistryTests {
 
         init() throws {
             let now = Date(timeIntervalSince1970: 1)
-            operated = .init(id: operatedID, title: "Operated", attachedWorkspaceIDs: [networkWorkspaceID], ascendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
-            unoperated = .init(id: unoperatedID, title: "Unoperated", attachedWorkspaceIDs: [], ascendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            operated = .init(id: operatedID, title: "Operated", attachedWorkspaceIDs: [networkWorkspaceID], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            unoperated = .init(id: unoperatedID, title: "Unoperated", attachedWorkspaceIDs: [], attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
             plan = try NodeManifest(
                 broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-registry-tests"),
                 node: .init(id: UUID(uuidString: "B21D0000-0000-4000-8000-000000000005")!),

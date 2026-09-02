@@ -26,98 +26,15 @@ struct AscendantBackendBoundaryTests {
 
         #expect(fixture.identity.id == ascendantID)
         #expect(try await fixture.operatedTimelines().map(\.id) == [timelineID])
-        let timeline = try await fixture.timeline(id: timelineID)
-        #expect(timeline.id == timelineID)
-        let result = try await timeline.runTurn(
-            .init(message: "hello"),
+        let result = try await fixture.runTurn(
+            .init(timelineID: timelineID, message: "hello"),
             updates: NoopBackendUpdateSink()
         )
         #expect(result == "fixture: hello")
         await fixture.shutdown()
         await #expect(throws: AscendantBackendError.lifecycleUnusable(.init(code: "fixtureShutdown", message: "fixture is shut down"))) {
-            _ = try await timeline.runTurn(.init(message: "after shutdown"), updates: NoopBackendUpdateSink())
+            _ = try await fixture.runTurn(.init(timelineID: timelineID, message: "after shutdown"), updates: NoopBackendUpdateSink())
         }
-    }
-
-    @Test("a Timeline session identity mismatch is a quarantined contract violation")
-    @MainActor
-    func mismatchedTimelineSessionIsRejected() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000703")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000704")!
-        let returnedID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000705")!
-        var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.registerBackend(kind: "mismatched-fixture") { ascendant, configuration, services, timelines in
-            try FixtureBackend(
-                ascendant: ascendant,
-                configuration: configuration,
-                services: services,
-                timelines: timelines,
-                returnedSessionID: returnedID
-            )
-        }
-        let runtime = try await NodeRuntime(
-            plan: NodeManifest(
-                broker: .init(host: "127.0.0.1", port: 1883, namespace: "mismatched-session-\(UUID().uuidString.lowercased())"),
-                node: .init(id: UUID()),
-                ascendants: [.init(id: ascendantID, name: "Mismatched fixture", defaultTimelineID: timelineID, kind: "mismatched-fixture")],
-                timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
-            ).compileLaunchPlan(),
-            adapters: adapters
-        )
-        try await runtime.start()
-        defer { Task { @MainActor in await runtime.shutdown() } }
-
-        do {
-            _ = try await runtime.turn(.init(message: "contract", timelineID: timelineID, clientTurnID: "contract"))
-            Issue.record("The provider accepted a Timeline session with the wrong identity.")
-        } catch let error as AscendantTurnError {
-            #expect(error == .terminal(
-                timelineID: timelineID,
-                clientTurnID: "contract",
-                code: "backendContractViolation",
-                detail: "Backend returned Timeline \(returnedID.uuidString) for requested Timeline \(timelineID.uuidString).",
-                retryable: false
-            ))
-        }
-        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
-    }
-
-    @Test("a rename projection for the wrong Ascendant is rejected before registry mutation")
-    @MainActor
-    func mismatchedRenameProjectionIsRejected() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000706")!
-        let wrongAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000707")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000708")!
-        var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.registerBackend(kind: "mismatched-rename-fixture") { ascendant, configuration, services, timelines in
-            try FixtureBackend(
-                ascendant: ascendant,
-                configuration: configuration,
-                services: services,
-                timelines: timelines,
-                returnedRenameAscendantID: wrongAscendantID
-            )
-        }
-        let runtime = try await NodeRuntime(
-            plan: NodeManifest(
-                broker: .init(host: "127.0.0.1", port: 1883, namespace: "mismatched-rename-\(UUID().uuidString.lowercased())"),
-                node: .init(id: UUID()),
-                ascendants: [.init(id: ascendantID, name: "Mismatched rename", defaultTimelineID: timelineID, kind: "mismatched-rename-fixture")],
-                timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)]
-            ).compileLaunchPlan(),
-            adapters: adapters
-        )
-        try await runtime.start()
-        defer { Task { @MainActor in await runtime.shutdown() } }
-
-        do {
-            _ = try await runtime.renameTimeline(.init(timelineID: timelineID, title: "Rejected"))
-            Issue.record("The provider accepted a projection for the wrong Ascendant.")
-        } catch let error as AscendantBackendError {
-            #expect(error == .contractViolation(.projectionAscendantMismatch(expected: ascendantID, actual: wrongAscendantID)))
-        }
-        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
-        #expect(await runtime.timeline(id: timelineID)?.title == "Before")
     }
 
     @Test("Workspace intent remains distinct from effective availability")
@@ -160,18 +77,12 @@ private final class FixtureBackend: AscendantBackend {
     let identity: AscendantBackendIdentity
     private var timeline: AscendantBackendTimeline
     private var isShutdown = false
-    private let returnedSessionID: UUID?
-    private let returnedRenameProjectionID: UUID?
-    private let returnedRenameAscendantID: UUID?
 
     init(
         ascendant: NodeManifest.Ascendant,
         configuration: AscendantBackendConfiguration,
         services _: AscendantBackendServices,
-        timelines: [NodeManifest.Timeline],
-        returnedSessionID: UUID? = nil,
-        returnedRenameProjectionID: UUID? = nil,
-        returnedRenameAscendantID: UUID? = nil
+        timelines: [NodeManifest.Timeline]
     ) throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
         guard let timeline = timelines.first(where: { $0.id == ascendant.defaultTimelineID }) else {
@@ -198,9 +109,6 @@ private final class FixtureBackend: AscendantBackend {
             createdAt: now,
             updatedAt: now
         )
-        self.returnedSessionID = returnedSessionID
-        self.returnedRenameProjectionID = returnedRenameProjectionID
-        self.returnedRenameAscendantID = returnedRenameAscendantID
     }
 
     func validateConfiguration() throws {}
@@ -215,52 +123,17 @@ private final class FixtureBackend: AscendantBackend {
 
     func removeTimeline(id _: UUID) async {}
 
-    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         guard timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
-        return TimelineSession(id: returnedSessionID ?? id, backend: self)
+        timeline = .init(id: timeline.id, title: title, attachedWorkspaceIDs: timeline.attachedWorkspaceIDs, ascendantID: identity.id, isArchived: timeline.isArchived, isPrivate: timeline.isPrivate, createdAt: timeline.createdAt, updatedAt: Date())
+        return timeline
     }
 
-    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) throws -> String {
+    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
         guard !isShutdown else {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "fixtureShutdown", message: "fixture is shut down"))
         }
         return "fixture: \(request.message)"
-    }
-
-    @MainActor
-    private final class TimelineSession: AscendantBackendTimelineSession {
-        let id: UUID
-        private let backend: FixtureBackend
-
-        init(id: UUID, backend: FixtureBackend) {
-            self.id = id
-            self.backend = backend
-        }
-
-        func runTurn(
-            _ request: AscendantBackendTimelineTurnRequest,
-            updates _: any AscendantBackendUpdateSink
-        ) async throws -> String {
-            try backend.runTurn(request)
-        }
-
-        func rename(to title: String) async throws -> AscendantBackendTimeline {
-            guard backend.timeline.id == id else { throw AscendantBackendError.timelineNotFound(id) }
-            let projection = AscendantBackendTimeline(
-                id: backend.returnedRenameProjectionID ?? backend.timeline.id,
-                title: title,
-                attachedWorkspaceIDs: backend.timeline.attachedWorkspaceIDs,
-                ascendantID: backend.returnedRenameAscendantID ?? backend.identity.id,
-                isArchived: backend.timeline.isArchived,
-                isPrivate: backend.timeline.isPrivate,
-                createdAt: backend.timeline.createdAt,
-                updatedAt: Date()
-            )
-            if projection.id == backend.timeline.id, projection.ascendantID == backend.identity.id {
-                backend.timeline = projection
-            }
-            return projection
-        }
     }
 
     func cancel() async {}

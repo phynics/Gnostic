@@ -70,7 +70,7 @@ struct NodeRuntimeTests {
         }
     }
 
-    @Test("a contract-invalid adapter-created Timeline is quarantined before registry projection")
+    @Test("a rejected adapter-created Timeline is removed from adapter and registry")
     @MainActor
     func runtimeTimelineCreationCompensatesAdapterFailure() async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000218")!
@@ -88,21 +88,12 @@ struct NodeRuntimeTests {
         }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
 
-        do {
+        await #expect(throws: NodeRuntimeError.self) {
             _ = try await runtime.createTimeline(title: "Rejected", ascendantID: ascendantID)
-            Issue.record("The contract-invalid Timeline unexpectedly succeeded.")
-        } catch let error as AscendantBackendError {
-            guard case .contractViolation(.projectionTimelineMismatch) = error else {
-                Issue.record("The wrong backend error was returned: \(error).")
-                return
-            }
-        } catch {
-            Issue.record("The wrong error type was returned: \(error).")
         }
 
         #expect(await runtime.snapshot().timelineIDs == [timelineID])
-        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
-        #expect(await probe.removedIDs.isEmpty)
+        #expect(await probe.removedIDs.count == 2)
     }
 
     @Test("runtime rejects an unregistered adapter before startup")
@@ -524,7 +515,7 @@ struct NodeRuntimeTests {
         #expect(await second.timeline(id: secondTimelineID)?.title == "Second renamed")
         #expect(await first.timeline(id: firstTimelineID)?.title == initialFirstTimeline.title)
         #expect(await first.timeline(id: firstTimelineID)?.attachedWorkspaceIDs == initialFirstTimeline.attachedWorkspaceIDs)
-        #expect(await second.timeline(id: secondTimelineID)?.ascendantID == initialSecondTimeline.ascendantID)
+        #expect(await second.timeline(id: secondTimelineID)?.attachedAscendantID == initialSecondTimeline.attachedAscendantID)
     }
 
     @Test("one running runtime multiplexes configured echo workspaces") @MainActor
@@ -604,7 +595,7 @@ struct NodeRuntimeTests {
         let created = try await runtime.createTimeline(title: "Scratch", ascendantID: second)
 
         #expect(await runtime.ascendantID(forTimeline: created.timelineID) == second)
-        #expect(await runtime.timeline(id: created.timelineID)?.ascendantID == second)
+        #expect(await runtime.timeline(id: created.timelineID)?.attachedAscendantID == second)
         #expect(await runtime.snapshot().timelineIDs.contains(created.timelineID))
         #expect(!(await runtime.launchPlan).timelines.contains { $0.id == created.timelineID })
     }
@@ -1234,55 +1225,20 @@ private final class FixtureAscendantBackend: AscendantBackend {
         storedTimelines.removeAll { $0.id == id }
         await creationProbe?.recordRemoval(id)
     }
-    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
-        guard storedTimelines.contains(where: { $0.id == id }) else {
-            throw AscendantBackendError.timelineNotFound(id)
-        }
-        return TimelineSession(id: id, backend: self)
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        guard let index = storedTimelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
+        let current = storedTimelines[index]
+        let renamed = AscendantBackendTimeline(id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs, ascendantID: current.ascendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
+        storedTimelines[index] = renamed
+        return renamed
     }
-
-    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) async throws -> String {
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {}
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
+    func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
+    func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
         if let cancellationProbe { return try await cancellationProbe.run() }
         return "fixture: \(request.message)"
     }
-
-    @MainActor
-    private final class TimelineSession: AscendantBackendTimelineSession {
-        let id: UUID
-        private let backend: FixtureAscendantBackend
-
-        init(id: UUID, backend: FixtureAscendantBackend) {
-            self.id = id
-            self.backend = backend
-        }
-
-        func runTurn(
-            _ request: AscendantBackendTimelineTurnRequest,
-            updates _: any AscendantBackendUpdateSink
-        ) async throws -> String {
-            try await backend.runTurn(request)
-        }
-
-        func rename(to title: String) async throws -> AscendantBackendTimeline {
-            guard let index = backend.storedTimelines.firstIndex(where: { $0.id == id }) else {
-                throw NodeRuntimeError.missingTimeline(id)
-            }
-            let current = backend.storedTimelines[index]
-            let renamed = AscendantBackendTimeline(
-                id: current.id,
-                title: title,
-                attachedWorkspaceIDs: current.attachedWorkspaceIDs,
-                ascendantID: current.ascendantID,
-                isArchived: current.isArchived,
-                isPrivate: current.isPrivate,
-                createdAt: current.createdAt,
-                updatedAt: Date()
-            )
-            backend.storedTimelines[index] = renamed
-            return renamed
-        }
-    }
-
     func cancel() async { await cancellationProbe?.cancel() }
     func shutdown() async {}
 }

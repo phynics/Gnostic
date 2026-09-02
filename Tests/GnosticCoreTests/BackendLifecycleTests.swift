@@ -7,187 +7,6 @@ import Testing
 
 @Suite("Ascendant backend lifecycle")
 struct BackendLifecycleTests {
-    @Test("a stale leased Timeline session never enters backend execution")
-    @MainActor
-    func staleTimelineSessionRejectsBeforeExecution() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000721")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000722")!
-        let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000723")!
-        let probe = LifecycleBackendProbe()
-        let backend = LifecycleFixtureBackend(
-            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
-            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
-            probe: probe,
-            outcome: .success
-        )
-        let currentState = CurrentSessionState()
-        let provider = InMemoryBackendSessionProvider(
-            lifecycleGeneration: 1,
-            backends: [ascendantID: backend],
-            leases: [ascendantID: lease],
-            currentOverride: { _ in currentState.isCurrent }
-        )
-        let backendTimeline = try await backend.timeline(id: timelineID)
-        let parent = try #require(provider.session(for: ascendantID))
-        let timeline = LeasedBackendTimelineSession(
-            id: timelineID,
-            context: parent.context,
-            timeline: backendTimeline,
-            provider: provider
-        )
-
-        currentState.isCurrent = false
-
-        await #expect(throws: CancellationError.self) {
-            _ = try await timeline.runTurn(.init(message: "must not execute"), updates: NoopLifecycleUpdateSink())
-        }
-        #expect(await probe.runCount == 0)
-    }
-
-    @Test("factory-admitted lifecycle failures use the exact current context")
-    @MainActor
-    func factoryAdmittedLifecycleFailuresUseExactContext() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000731")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000732")!
-        let backend = LifecycleFixtureBackend(
-            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
-            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
-            probe: LifecycleBackendProbe(),
-            outcome: .success
-        )
-        let currentState = CurrentSessionState()
-        let provider = InMemoryBackendSessionProvider(
-            lifecycleGeneration: 1,
-            reconstruction: { _ in backend },
-            currentOverride: { _ in currentState.isCurrent },
-            onLifecycleFailure: { _, _ in
-                currentState.failureCount += 1
-            }
-        )
-
-        let admission = try provider.turnAdmission()
-        let session = try await provider.sessionForTurn(
-            timelineID: timelineID,
-            operatedBy: ascendantID,
-            admittedUnder: admission
-        )
-
-        await provider.markLifecycleFailure(
-            session.context,
-            failure: .init(code: "test", message: "current failure")
-        )
-        #expect(currentState.failureCount == 1)
-
-        currentState.isCurrent = false
-        await provider.markLifecycleFailure(
-            session.context,
-            failure: .init(code: "test", message: "retired failure")
-        )
-        #expect(currentState.failureCount == 1)
-    }
-
-    @Test("late Timeline updates are discarded and their result is rejected")
-    @MainActor
-    func lateTimelineUpdatesAreFenced() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000724")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000725")!
-        let backend = LifecycleFixtureBackend(
-            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
-            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
-            probe: LifecycleBackendProbe(),
-            outcome: .success
-        )
-        let currentState = CurrentSessionState()
-        let lease = UUID(uuidString: "A21D0000-0000-4000-8000-000000000726")!
-        let provider = InMemoryBackendSessionProvider(
-            lifecycleGeneration: 1,
-            backends: [ascendantID: backend],
-            leases: [ascendantID: lease],
-            currentOverride: { _ in currentState.isCurrent }
-        )
-        let parent = try #require(provider.session(for: ascendantID))
-        let timeline = LeasedBackendTimelineSession(
-            id: timelineID,
-            context: parent.context,
-            timeline: StreamingTimelineSession(id: timelineID, state: currentState),
-            provider: provider
-        )
-        let sink = RecordingBackendUpdateSink()
-
-        await #expect(throws: CancellationError.self) {
-            _ = try await timeline.runTurn(.init(message: "stream"), updates: sink)
-        }
-        #expect(await sink.kinds == ["accepted"])
-    }
-
-    @Test("Timeline admission is cancelled when its generation changes during reconstruction")
-    @MainActor
-    func staleTimelineAdmissionIsCancelled() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000727")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000728")!
-        let backend = LifecycleFixtureBackend(
-            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
-            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
-            probe: LifecycleBackendProbe(),
-            outcome: .success
-        )
-        let factoryGate = AdmissionFactoryGate()
-        let provider = InMemoryBackendSessionProvider(
-            lifecycleGeneration: 1,
-            reconstruction: { _ in
-                await factoryGate.begin()
-                await factoryGate.waitUntilReleased()
-                return backend
-            }
-        )
-        let admission = try provider.turnAdmission()
-        let acquisition = Task { @MainActor in
-            try await provider.sessionForTurn(
-                timelineID: timelineID,
-                operatedBy: ascendantID,
-                admittedUnder: admission
-            )
-        }
-        await factoryGate.waitUntilStarted()
-        provider.lifecycleGeneration = 2
-        await factoryGate.release()
-
-        await #expect(throws: CancellationError.self) {
-            _ = try await acquisition.value
-        }
-    }
-
-    @Test("retained provider callbacks cannot publish after a Timeline Turn completes")
-    @MainActor
-    func retainedTimelineUpdatesCloseWithTurn() async throws {
-        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000729")!
-        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000730")!
-        let backend = LifecycleFixtureBackend(
-            ascendant: .init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID),
-            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
-            probe: LifecycleBackendProbe(),
-            outcome: .success
-        )
-        let provider = InMemoryBackendSessionProvider(
-            lifecycleGeneration: 1,
-            backends: [ascendantID: backend],
-            leases: [ascendantID: UUID.makeVersion4()]
-        )
-        let parent = try #require(provider.session(for: ascendantID))
-        let native = RetainingTimelineSession(id: timelineID)
-        let timeline = LeasedBackendTimelineSession(
-            id: timelineID,
-            context: parent.context,
-            timeline: native,
-            provider: provider
-        )
-        let sink = RecordingBackendUpdateSink()
-
-        #expect(try await timeline.runTurn(.init(message: "complete"), updates: sink) == "complete")
-        await native.emitLateUpdate()
-        #expect(await sink.kinds == ["accepted"])
-    }
-
     @Test("startup construction failure shuts down already-created backends")
     @MainActor
     func startupConstructionFailureRollsBackAllCreatedBackends() async throws {
@@ -406,7 +225,7 @@ struct BackendLifecycleTests {
         }
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.renameCount == 1)
-        await #expect(throws: NodeRuntimeError.notRunning) {
+        await #expect(throws: NodeRuntimeError.unknownAscendant(ascendantID)) {
             _ = try await runtime.renameTimeline(.init(timelineID: timelineID, title: "Still rejected"))
         }
         #expect(await probe.renameCount == 1)
@@ -437,7 +256,7 @@ struct BackendLifecycleTests {
         }
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
         #expect(await probe.workspaceAttachCount == 1)
-        await #expect(throws: NodeRuntimeError.notRunning) {
+        await #expect(throws: NodeRuntimeError.unknownAscendant(ascendantID)) {
             _ = try await runtime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: timelineID))
         }
         #expect(await probe.workspaceAttachCount == 1)
@@ -504,7 +323,6 @@ struct BackendLifecycleTests {
         let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000358")!
         let recoveryTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000359")!
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000360")!
-        let secondWorkspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000361")!
         let probe = LifecycleBackendProbe(
             failWorkspaceAttach: true,
             successfulRecovery: true,
@@ -521,10 +339,7 @@ struct BackendLifecycleTests {
                     .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
                     .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
                 ],
-                workspaces: [
-                    .init(id: workspaceID, name: "Local", uri: "echo://local"),
-                    .init(id: secondWorkspaceID, name: "Second local", uri: "echo://second-local"),
-                ]
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: probe, outcomes: [ascendantID: []])
         )
@@ -537,7 +352,7 @@ struct BackendLifecycleTests {
         try await withTestTimeout { await probe.waitUntilBlockedOperationStarted("detach") }
 
         do {
-            _ = try await runtime.attachWorkspace(.init(workspaceID: secondWorkspaceID, timelineID: secondTimelineID))
+            _ = try await runtime.attachWorkspace(.init(workspaceID: workspaceID, timelineID: secondTimelineID))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
         } catch {}
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
@@ -1126,105 +941,6 @@ private actor ManualShutdownDeadline {
     }
 }
 
-@MainActor
-private final class CurrentSessionState: Sendable {
-    var isCurrent = true
-    var failureCount = 0
-}
-
-@MainActor
-private final class StreamingTimelineSession: AscendantBackendTimelineSession {
-    let id: UUID
-    private let state: CurrentSessionState
-
-    init(id: UUID, state: CurrentSessionState) {
-        self.id = id
-        self.state = state
-    }
-
-    func runTurn(
-        _ request: AscendantBackendTimelineTurnRequest,
-        updates: any AscendantBackendUpdateSink
-    ) async throws -> String {
-        await updates.append(.init(kind: "accepted"))
-        state.isCurrent = false
-        await updates.append(.init(kind: "late"))
-        return request.message
-    }
-
-    func rename(to _: String) async throws -> AscendantBackendTimeline {
-        throw NodeRuntimeError.notRunning
-    }
-}
-
-@MainActor
-private final class RetainingTimelineSession: AscendantBackendTimelineSession {
-    let id: UUID
-    private var updates: (any AscendantBackendUpdateSink)?
-
-    init(id: UUID) {
-        self.id = id
-    }
-
-    func runTurn(
-        _ request: AscendantBackendTimelineTurnRequest,
-        updates: any AscendantBackendUpdateSink
-    ) async throws -> String {
-        self.updates = updates
-        await updates.append(.init(kind: "accepted"))
-        return request.message
-    }
-
-    func emitLateUpdate() async {
-        await updates?.append(.init(kind: "late"))
-    }
-
-    func rename(to _: String) async throws -> AscendantBackendTimeline {
-        throw NodeRuntimeError.notRunning
-    }
-}
-
-private actor RecordingBackendUpdateSink: AscendantBackendUpdateSink {
-    private(set) var kinds: [String] = []
-
-    func append(_ update: AscendantBackendUpdate) async {
-        kinds.append(update.kind)
-    }
-}
-
-private actor AdmissionFactoryGate {
-    private var started = false
-    private var released = false
-    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
-    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
-
-    func begin() {
-        started = true
-        startedWaiters.forEach { $0.resume() }
-        startedWaiters.removeAll()
-    }
-
-    func waitUntilStarted() async {
-        guard !started else { return }
-        await withCheckedContinuation { continuation in
-            startedWaiters.append(continuation)
-        }
-    }
-
-    func waitUntilReleased() async {
-        guard !released else { return }
-        await withCheckedContinuation { continuation in
-            releaseWaiters.append(continuation)
-        }
-    }
-
-    func release() {
-        released = true
-        releaseWaiters.forEach { $0.resume() }
-        releaseWaiters.removeAll()
-    }
-}
-
 private actor LifecycleBackendProbe {
     private(set) var factoryCount = 0
     private(set) var shutdownCount = 0
@@ -1571,7 +1287,7 @@ private actor LifecycleBackendProbe {
 }
 
 @MainActor
-private final class LifecycleFixtureBackend: AscendantBackend {
+private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
     enum Outcome: Sendable, Equatable { case success, lifecycle, ordinary }
 
     let identity: AscendantBackendIdentity
@@ -1635,14 +1351,77 @@ private final class LifecycleFixtureBackend: AscendantBackend {
         return timeline
     }
     func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
-    func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
-        guard timelines.contains(where: { $0.id == id }) else {
-            throw AscendantBackendError.timelineNotFound(id)
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        await probe.recordRename()
+        await probe.beginBlockedOperation("rename")
+        await probe.waitForBlockedOperationRelease("rename")
+        if probe.shouldFailRename {
+            throw AscendantBackendError.lifecycleUnusable(.init(code: "timelineLifecycle", message: "timeline backend failed"))
         }
-        return TimelineSession(id: id, backend: self)
+        guard let index = timelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
+        let old = timelines[index]
+        let renamed = AscendantBackendTimeline(
+            id: old.id,
+            title: title,
+            attachedWorkspaceIDs: old.attachedWorkspaceIDs,
+            ascendantID: old.ascendantID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+        timelines[index] = renamed
+        return renamed
     }
 
-    private func runTurn(_ request: AscendantBackendTimelineTurnRequest) async throws -> String {
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
+        await probe.recordWorkspaceAttach()
+        await probe.beginBlockedOperation("attach")
+        await probe.waitForBlockedOperationRelease("attach")
+        if probe.shouldFailWorkspaceAttach {
+            throw AscendantBackendError.lifecycleUnusable(.init(code: "workspaceLifecycle", message: "workspace backend failed"))
+        }
+        guard let index = timelines.firstIndex(where: { $0.id == timelineID }) else {
+            throw NodeRuntimeError.missingTimeline(timelineID)
+        }
+        let old = timelines[index]
+        let workspaceIDs = old.attachedWorkspaceIDs.contains(reference.id)
+            ? old.attachedWorkspaceIDs
+            : old.attachedWorkspaceIDs + [reference.id]
+        timelines[index] = AscendantBackendTimeline(
+            id: old.id,
+            title: old.title,
+            attachedWorkspaceIDs: workspaceIDs,
+            ascendantID: old.ascendantID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+    }
+
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
+        await probe.beginBlockedOperation("detach")
+        await probe.waitForBlockedOperationRelease("detach")
+        guard let index = timelines.firstIndex(where: { $0.id == timelineID }) else {
+            throw NodeRuntimeError.missingTimeline(timelineID)
+        }
+        let old = timelines[index]
+        timelines[index] = AscendantBackendTimeline(
+            id: old.id,
+            title: old.title,
+            attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
+            ascendantID: old.ascendantID,
+            isArchived: old.isArchived,
+            isPrivate: old.isPrivate,
+            createdAt: old.createdAt,
+            updatedAt: Date()
+        )
+    }
+
+    func enabledToolIDs(for _: UUID) async -> [String] { [] }
+
+    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {
         await probe.recordRun()
         let outcome = outcomes.isEmpty ? .success : outcomes.removeFirst()
         await probe.waitForRunReleaseIfNeeded()
@@ -1652,100 +1431,6 @@ private final class LifecycleFixtureBackend: AscendantBackend {
         case .lifecycle: throw AscendantBackendError.lifecycleUnusable(.init(message: "backend lifecycle failed"))
         case .ordinary: throw AscendantBackendError.terminal(.init(code: "ordinaryFailure", message: "ordinary failure"))
         }
-    }
-
-    @MainActor
-    private final class TimelineSession: AscendantBackendTimelineWorkspaceSession {
-        let id: UUID
-        private let backend: LifecycleFixtureBackend
-
-        init(id: UUID, backend: LifecycleFixtureBackend) {
-            self.id = id
-            self.backend = backend
-        }
-
-        func runTurn(
-            _ request: AscendantBackendTimelineTurnRequest,
-            updates _: any AscendantBackendUpdateSink
-        ) async throws -> String {
-            try await backend.runTurn(request)
-        }
-
-        func rename(to title: String) async throws -> AscendantBackendTimeline {
-            await backend.probe.recordRename()
-            await backend.probe.beginBlockedOperation("rename")
-            await backend.probe.waitForBlockedOperationRelease("rename")
-            if backend.probe.shouldFailRename {
-                throw AscendantBackendError.lifecycleUnusable(.init(code: "timelineLifecycle", message: "timeline backend failed"))
-            }
-            guard let index = backend.timelines.firstIndex(where: { $0.id == id }) else {
-                throw NodeRuntimeError.missingTimeline(id)
-            }
-            let old = backend.timelines[index]
-            let renamed = AscendantBackendTimeline(
-                id: old.id,
-                title: title,
-                attachedWorkspaceIDs: old.attachedWorkspaceIDs,
-                ascendantID: old.ascendantID,
-                isArchived: old.isArchived,
-                isPrivate: old.isPrivate,
-                createdAt: old.createdAt,
-                updatedAt: Date()
-            )
-            backend.timelines[index] = renamed
-            return renamed
-        }
-
-        func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
-            await backend.probe.recordWorkspaceAttach()
-            await backend.probe.beginBlockedOperation("attach")
-            await backend.probe.waitForBlockedOperationRelease("attach")
-            if backend.probe.shouldFailWorkspaceAttach {
-                throw AscendantBackendError.lifecycleUnusable(.init(code: "workspaceLifecycle", message: "workspace backend failed"))
-            }
-            guard let index = backend.timelines.firstIndex(where: { $0.id == id }) else {
-                throw NodeRuntimeError.missingTimeline(id)
-            }
-            let old = backend.timelines[index]
-            let workspaceIDs = old.attachedWorkspaceIDs.contains(reference.id)
-                ? old.attachedWorkspaceIDs
-                : old.attachedWorkspaceIDs + [reference.id]
-            let projection = AscendantBackendTimeline(
-                id: old.id,
-                title: old.title,
-                attachedWorkspaceIDs: workspaceIDs,
-                ascendantID: old.ascendantID,
-                isArchived: old.isArchived,
-                isPrivate: old.isPrivate,
-                createdAt: old.createdAt,
-                updatedAt: Date()
-            )
-            backend.timelines[index] = projection
-            return projection
-        }
-
-        func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
-            await backend.probe.beginBlockedOperation("detach")
-            await backend.probe.waitForBlockedOperationRelease("detach")
-            guard let index = backend.timelines.firstIndex(where: { $0.id == id }) else {
-                throw NodeRuntimeError.missingTimeline(id)
-            }
-            let old = backend.timelines[index]
-            let projection = AscendantBackendTimeline(
-                id: old.id,
-                title: old.title,
-                attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
-                ascendantID: old.ascendantID,
-                isArchived: old.isArchived,
-                isPrivate: old.isPrivate,
-                createdAt: old.createdAt,
-                updatedAt: Date()
-            )
-            backend.timelines[index] = projection
-            return projection
-        }
-
-        func enabledToolIDs() async -> [String] { [] }
     }
 
     func cancel() async {
@@ -1760,8 +1445,4 @@ private final class LifecycleFixtureBackend: AscendantBackend {
         await probe.recordShutdownStarted(factoryNumber)
         await probe.waitForShutdownReleaseIfNeeded(factoryNumber)
     }
-}
-
-private struct NoopLifecycleUpdateSink: AscendantBackendUpdateSink {
-    func append(_: AscendantBackendUpdate) async {}
 }

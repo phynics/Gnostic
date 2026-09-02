@@ -8,7 +8,7 @@ import struct PositronicKit.Thread
 /// The built-in adapter owns PositronicKit construction, tool wiring, event
 /// translation, timeline persistence, and provider shutdown. PositronicKit
 /// native values do not cross the AscendantBackend contract.
-@MainActor public final class PositronicAscendantAdapter: AscendantBackend {
+@MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
     private let configuration: AscendantBackendConfiguration
     private let kit: PositronicKit
@@ -18,8 +18,6 @@ import struct PositronicKit.Thread
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
-    private var workspaceMutationGates: [UUID: TimelineMutationGate] = [:]
-    private var timelineMutationGates: [UUID: TimelineMutationGate] = [:]
 
     public init(
         ascendant: NodeManifest.Ascendant,
@@ -265,6 +263,37 @@ import struct PositronicKit.Thread
         workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
+    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        try requireUsable()
+        try await kit.threads.rename(id, title: title)
+        guard let thread = try await operatedTimelines().first(where: { $0.id == id }) else {
+            throw NodeRuntimeError.missingTimeline(id)
+        }
+        return thread
+    }
+
+    public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
+        try requireUsable()
+        try await kit.workspaces.update(Self.positronicReference(reference))
+        workspaceToolsByID[reference.id] = try Self.workspaceTools(for: reference, service: workspaceService)
+        if !workspaceIDsByTimeline[timelineID, default: []].contains(reference.id) {
+            workspaceIDsByTimeline[timelineID, default: []].append(reference.id)
+        }
+    }
+
+    public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
+        try requireUsable()
+        workspaceIDsByTimeline[timelineID, default: []].removeAll { $0 == workspaceID }
+    }
+
+    public func enabledToolIDs(for timelineID: UUID) async -> [String] {
+        guard lifecycleFailure == nil else { return [] }
+        let workspaceToolIDs: [String]
+        let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
+        workspaceToolIDs = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
+        return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
+    }
+
     public func cancel() async {
         for timeline in (try? await operatedTimelines()) ?? [] {
             await kit.threads.open(timeline.id).cancel()
@@ -277,232 +306,77 @@ import struct PositronicKit.Thread
         lifecycleFailure = .init(code: "backendShutdown", message: "The Positronic backend has been shut down.")
     }
 
-    public func timeline(id: UUID) async throws -> any AscendantBackendTimelineSession {
+    public func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
         try requireUsable()
-        guard try await kit.threads.get(id) != nil else {
-            throw AscendantBackendError.timelineNotFound(id)
+        let operated = try await operatedTimelines()
+        guard operated.contains(where: { $0.id == request.timelineID }) else {
+            throw AscendantBackendError.timelineNotFound(request.timelineID)
         }
-        return TimelineSession(handle: kit.threads.open(id), host: self)
-    }
-
-    @MainActor
-    private final class TimelineSession: AscendantBackendTimelineWorkspaceSession {
-        private let handle: ThreadHandle
-        private let host: PositronicAscendantAdapter
-        var id: UUID { handle.id }
-
-        init(handle: ThreadHandle, host: PositronicAscendantAdapter) {
-            self.handle = handle
-            self.host = host
+        let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
+            .init(timelineID: request.timelineID, clientTurnID: $0)
+        }) {
+            let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
+            let workspaceTools = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []] }
+            let turnRequest = TurnRequest(
+                threadID: request.timelineID,
+                requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
+                message: request.message,
+                tools: workspaceTools + networkTools,
+                maxModelRounds: 5
+            )
+            return try await kit.threads.open(request.timelineID).run(turnRequest)
         }
-
-        func runTurn(
-            _ request: AscendantBackendTimelineTurnRequest,
-            updates: any AscendantBackendUpdateSink
-        ) async throws -> String {
-            try host.requireUsable()
-            let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
-                .init(timelineID: id, clientTurnID: $0)
-            }) {
-                let workspaceIDs = host.workspaceIDsByTimeline[id, default: []]
-                let workspaceTools = workspaceIDs.flatMap { host.workspaceToolsByID[$0, default: []] }
-                let turnRequest = TurnRequest(
-                    threadID: id,
-                    requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
-                    message: request.message,
-                    tools: workspaceTools + host.networkTools,
-                    maxModelRounds: 5
+        var finalText = ""
+        var failure: String?
+        var ids: [Int: String] = [:]
+        var titles: [Int: String] = [:]
+        var announced: Set<Int> = []
+        eventLoop: for try await event in stream {
+            switch event {
+            case .delta(.generation(let text)):
+                await append(updates, kind: "assistant_text", text: text)
+            case .delta(.toolCall(let delta)):
+                let id = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? request.timelineID.uuidString):tool:\(delta.index)"
+                ids[delta.index] = id
+                if let name = delta.name { titles[delta.index, default: ""] += name }
+                await append(
+                    updates,
+                    kind: announced.insert(delta.index).inserted ? "tool_call" : "tool_state",
+                    toolState: .init(toolCallID: id, title: titles[delta.index], status: "pending")
                 )
-                return try await handle.run(turnRequest)
-            }
-            var finalText = ""
-            var failure: String?
-            var ids: [Int: String] = [:]
-            var titles: [Int: String] = [:]
-            var announced: Set<Int> = []
-            eventLoop: for try await event in stream {
-                switch event {
-                case .delta(.generation(let text)):
-                    await host.append(updates, kind: "assistant_text", text: text)
-                case .delta(.toolCall(let delta)):
-                    let toolCallID = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? id.uuidString):tool:\(delta.index)"
-                    ids[delta.index] = toolCallID
-                    if let name = delta.name { titles[delta.index, default: ""] += name }
-                    await host.append(
-                        updates,
-                        kind: announced.insert(delta.index).inserted ? "tool_call" : "tool_state",
-                        toolState: .init(toolCallID: toolCallID, title: titles[delta.index], status: "pending")
-                    )
-                case .delta(.toolExecution(let id, let status)), .completion(.toolExecution(let id, let status)):
-                    await host.append(updates, kind: "tool_state", toolState: host.state(id, status))
-                case .completion(.generationCompleted(let message, _)):
-                    finalText = message.content
-                    break eventLoop
-                case .completion(.completedEmpty):
-                    break eventLoop
-                case .completion(.maxModelRoundsReached):
-                    failure = "The model exhausted its turn budget without a final answer."
-                    break eventLoop
-                case .completion(.deferredForExternalTool):
-                    failure = "The turn requires external tool execution before it can complete."
-                    break eventLoop
-                case .error(.error(let message, _)):
-                    failure = message
-                case .error(.toolCallError(let id, let name, let error)):
-                    await host.append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
-                case .error(.generationCancelled):
-                    await host.append(updates, kind: "cancellation", terminal: true)
-                    throw AscendantBackendError.cancelled
-                default:
-                    break
-                }
-            }
-            if let failure {
-                throw AscendantBackendError.terminal(.init(code: "turnFailed", message: failure))
-            }
-            return finalText.isEmpty ? "(empty reply)" : finalText
-        }
-
-        func rename(to title: String) async throws -> AscendantBackendTimeline {
-            try host.requireUsable()
-            return try await host.withTimelineMutation(id: id) {
-                try await self.host.kit.threads.rename(self.id, title: title)
-                guard let thread = try await self.host.kit.threads.get(self.id) else {
-                    throw AscendantBackendError.timelineNotFound(self.id)
-                }
-                return await self.host.projection(thread)
+            case .delta(.toolExecution(let id, let status)), .completion(.toolExecution(let id, let status)):
+                await append(updates, kind: "tool_state", toolState: state(id, status))
+            case .completion(.generationCompleted(let message, _)):
+                finalText = message.content
+                break eventLoop
+            case .completion(.completedEmpty):
+                break eventLoop
+            case .completion(.maxModelRoundsReached):
+                failure = "The model exhausted its turn budget without a final answer."
+                break eventLoop
+            case .completion(.deferredForExternalTool):
+                failure = "The turn requires external tool execution before it can complete."
+                break eventLoop
+            case .error(.error(let message, _)):
+                failure = message
+            case .error(.toolCallError(let id, let name, let error)):
+                await append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
+            case .error(.generationCancelled):
+                await append(updates, kind: "cancellation", terminal: true)
+                throw AscendantBackendError.cancelled
+            default:
+                break
             }
         }
-
-        func attachWorkspace(_ reference: BackendWorkspaceReference) async throws -> AscendantBackendTimeline {
-            try host.requireUsable()
-            return try await host.withTimelineMutation(id: id) {
-                try await self.host.withWorkspaceMutation(id: reference.id) {
-                    let nativeReference = try PositronicAscendantAdapter.positronicReference(reference)
-                    let workspaceTools = try PositronicAscendantAdapter.workspaceTools(for: reference, service: self.host.workspaceService)
-                    guard let thread = try await self.host.kit.threads.get(self.id) else {
-                        throw AscendantBackendError.timelineNotFound(self.id)
-                    }
-                    let priorNativeReference = try await self.host.kit.workspaces.get(reference.id)
-                    let priorTools = self.host.workspaceToolsByID[reference.id]
-                    let priorWorkspaceIDs = self.host.workspaceIDsByTimeline[self.id]
-                    do {
-                        try await self.host.kit.workspaces.update(nativeReference)
-                        self.host.workspaceToolsByID[reference.id] = workspaceTools
-                        if !self.host.workspaceIDsByTimeline[self.id, default: []].contains(reference.id) {
-                            self.host.workspaceIDsByTimeline[self.id, default: []].append(reference.id)
-                        }
-                    } catch {
-                        do {
-                            try await self.host.restoreWorkspaceMutation(
-                                workspaceID: reference.id,
-                                priorNativeReference: priorNativeReference,
-                                priorTools: priorTools,
-                                priorWorkspaceIDs: priorWorkspaceIDs,
-                                timelineID: self.id
-                            )
-                        } catch let restorationError {
-                            throw AscendantBackendError.lifecycleUnusable(.init(
-                                code: "workspaceMutationRollbackFailed",
-                                message: "Workspace mutation failed and could not be restored: \(restorationError.localizedDescription)"
-                            ))
-                        }
-                        throw error
-                    }
-                    return await self.host.projection(thread)
-                }
-            }
+        if let failure {
+            throw AscendantBackendError.terminal(.init(code: "turnFailed", message: failure))
         }
-
-        func detachWorkspace(id workspaceID: UUID) async throws -> AscendantBackendTimeline {
-            try host.requireUsable()
-            return try await host.withTimelineMutation(id: id) {
-                let priorWorkspaceIDs = self.host.workspaceIDsByTimeline[self.id]
-                guard let thread = try await self.host.kit.threads.get(self.id) else {
-                    throw AscendantBackendError.timelineNotFound(self.id)
-                }
-                do {
-                    self.host.workspaceIDsByTimeline[self.id, default: []].removeAll { $0 == workspaceID }
-                    try Task.checkCancellation()
-                    return await self.host.projection(thread)
-                } catch {
-                    if let priorWorkspaceIDs {
-                        self.host.workspaceIDsByTimeline[self.id] = priorWorkspaceIDs
-                    } else {
-                        self.host.workspaceIDsByTimeline.removeValue(forKey: self.id)
-                    }
-                    throw error
-                }
-            }
-        }
-
-        func enabledToolIDs() async -> [String] {
-            guard host.lifecycleFailure == nil else { return [] }
-            let workspaceIDs = host.workspaceIDsByTimeline[id, default: []]
-            let workspaceToolIDs = workspaceIDs.flatMap {
-                host.workspaceToolsByID[$0, default: []].map(\.callName)
-            }
-            return Array(Set(host.networkTools.map(\.callName) + workspaceToolIDs)).sorted()
-        }
-    }
-
-    private func withTimelineMutation<T: Sendable>(
-        id: UUID,
-        operation: @escaping @MainActor () async throws -> T
-    ) async throws -> T {
-        let gate: TimelineMutationGate
-        if let existing = timelineMutationGates[id] {
-            gate = existing
-        } else {
-            let created = TimelineMutationGate()
-            timelineMutationGates[id] = created
-            gate = created
-        }
-        return try await gate.withExclusiveAccess(operation)
-    }
-
-    private func withWorkspaceMutation<T: Sendable>(
-        id: UUID,
-        operation: @escaping @MainActor () async throws -> T
-    ) async throws -> T {
-        let gate: TimelineMutationGate
-        if let existing = workspaceMutationGates[id] {
-            gate = existing
-        } else {
-            let created = TimelineMutationGate()
-            workspaceMutationGates[id] = created
-            gate = created
-        }
-        return try await gate.withExclusiveAccess(operation)
+        return finalText.isEmpty ? "(empty reply)" : finalText
     }
 
     private func requireUsable() throws {
         if let lifecycleFailure {
             throw AscendantBackendError.lifecycleUnusable(lifecycleFailure)
-        }
-    }
-
-    private func restoreWorkspaceMutation(
-        workspaceID: UUID,
-        priorNativeReference: WorkspaceReference?,
-        priorTools: [AnyTool]?,
-        priorWorkspaceIDs: [UUID]?,
-        timelineID: UUID
-    ) async throws {
-        if let priorNativeReference {
-            try await kit.workspaces.update(priorNativeReference)
-        } else {
-            try await kit.workspaces.delete(workspaceID)
-        }
-        if let priorTools {
-            workspaceToolsByID[workspaceID] = priorTools
-        } else {
-            workspaceToolsByID.removeValue(forKey: workspaceID)
-        }
-        if let priorWorkspaceIDs {
-            workspaceIDsByTimeline[timelineID] = priorWorkspaceIDs
-        } else {
-            workspaceIDsByTimeline.removeValue(forKey: timelineID)
         }
     }
 
@@ -586,61 +460,6 @@ import struct PositronicKit.Thread
         case let .object(value): return value.mapValues(anyValue)
         case let .array(value): return value.map(anyValue)
         case .null: return NSNull()
-        }
-    }
-}
-
-actor TimelineMutationGate {
-    private var held = false
-    private struct Waiter {
-        let id: UUID
-        let continuation: CheckedContinuation<Void, Error>
-    }
-    private var waiters: [Waiter] = []
-
-    var waitingCount: Int { waiters.count }
-
-    func withExclusiveAccess<T: Sendable>(
-        _ operation: @escaping @MainActor () async throws -> T
-    ) async throws -> T {
-        try await acquire()
-        do {
-            try Task.checkCancellation()
-            let result = try await operation()
-            release()
-            return result
-        } catch {
-            release()
-            throw error
-        }
-    }
-
-    private func acquire() async throws {
-        try Task.checkCancellation()
-        guard held else {
-            held = true
-            return
-        }
-        let waiterID = UUID()
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                waiters.append(.init(id: waiterID, continuation: continuation))
-            }
-        }, onCancel: {
-            Task { await self.cancelWaiter(waiterID) }
-        })
-    }
-
-    private func cancelWaiter(_ id: UUID) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
-        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
-    }
-
-    private func release() {
-        if waiters.isEmpty {
-            held = false
-        } else {
-            waiters.removeFirst().continuation.resume()
         }
     }
 }
