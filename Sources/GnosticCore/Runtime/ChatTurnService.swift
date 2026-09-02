@@ -11,6 +11,31 @@ public final class TurnService {
     private let updates: AscendantTurnUpdateStore
     private let backendProvider: any BackendSessionProviding
 
+    convenience init(
+        registry: NodeRegistry,
+        coordinator: AscendantTurnCoordinator,
+        updates: AscendantTurnUpdateStore,
+        isRunning: @escaping @MainActor () -> Bool,
+        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend,
+        lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
+        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in }
+    ) {
+        self.init(
+            registry: registry,
+            coordinator: coordinator,
+            updates: updates,
+            backendProvider: ClosureBackendSessionProvider(
+                isRunning: isRunning,
+                lifecycleGeneration: lifecycleGeneration,
+                adapter: { _ in nil as (any AscendantBackend)? },
+                current: { _, _, _ in true },
+                backendLease: { _, _ in nil as UUID? },
+                failure: lifecycleFailure,
+                backend: backend
+            )
+        )
+    }
+
     init(
         registry: NodeRegistry,
         coordinator: AscendantTurnCoordinator,
@@ -27,20 +52,14 @@ public final class TurnService {
         try GnosticProtocol.validate(request.protocolMajor)
         let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
-        let admission = try backendProvider.turnAdmission()
+        let generation = backendProvider.lifecycleGeneration
         let sink = BackendTurnUpdateSink(store: updates, request: request)
         return try await coordinator.execute(request) {
-            let session: LeasedAscendantBackendSession
+            let session: AscendantBackendSession
             do {
-                session = try await self.backendProvider.sessionForTurn(
-                    timelineID: request.timelineID,
-                    operatedBy: ascendantID,
-                    admittedUnder: admission
-                )
+                session = try await self.backendProvider.sessionForTurn(ascendantID)
             } catch let error as AscendantTurnError {
                 throw error
-            } catch is CancellationError {
-                throw CancellationError()
             } catch {
                 throw AscendantTurnError.backendUnavailable(
                     timelineID: request.timelineID,
@@ -48,20 +67,23 @@ public final class TurnService {
                     detail: error.localizedDescription
                 )
             }
-            let timeline: LeasedBackendTimelineSession
             do {
-                timeline = try await session.timeline(id: request.timelineID)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as NodeRuntimeError {
-                if case .notRunning = error { throw CancellationError() }
+                let result = try await session.backend.runTurn(
+                    AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
+                    updates: sink
+                )
+                guard await self.backendProvider.isCurrentSession(session),
+                      await self.backendProvider.isRunning,
+                      await self.backendProvider.lifecycleGeneration == generation else {
+                    throw CancellationError()
+                }
+                return result
+            } catch let error as AscendantBackendError {
+                if case let .lifecycleUnusable(failure) = error {
+                    await self.backendProvider.markLifecycleFailure(session, failure: failure)
+                }
                 throw error
             }
-            let result = try await timeline.runTurn(
-                .init(message: request.message, clientTurnID: request.clientTurnID),
-                updates: sink
-            )
-            return result
         }
     }
 }

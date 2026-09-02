@@ -128,8 +128,8 @@ public actor NodeRegistry {
                 guard ascendantIDs.contains(operatorID), let value = projected[configuration.id] else {
                     throw NodeRuntimeError.missingTimeline(configuration.id)
                 }
-                guard value.ascendantID == operatorID else {
-                    throw NodeRuntimeError.unknownAscendant(value.ascendantID ?? operatorID)
+                guard value.attachedAscendantID == operatorID else {
+                    throw NodeRuntimeError.unknownAscendant(value.attachedAscendantID ?? operatorID)
                 }
                 timeline = .init(
                     id: value.id,
@@ -143,7 +143,7 @@ public actor NodeRegistry {
                 )
             } else {
                 let now = Date()
-                timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), ascendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+                timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
             }
             timelines[configuration.id] = .init(timeline: timeline, operatorID: configuration.operatingAscendantID, provenance: .configured)
         }
@@ -204,21 +204,14 @@ public actor NodeRegistry {
         return true
     }
 
-    /// The optional origin guard is checked in the same actor turn as the
-    /// mutation. If the write wins that linearization point, a later lease
-    /// retirement cannot turn it into a partial mutation requiring rollback.
     @discardableResult
     func resolveLazyWorkspace(
         id: UUID,
         uri: String,
         toolIDs: [String],
-        generation: UInt64,
-        guardedBy context: BackendSessionContext? = nil
+        generation: UInt64
     ) throws -> Bool {
         guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-        if let context {
-            try requireBackendContext(context)
-        }
         return try resolveLazyWorkspace(id: id, uri: uri, toolIDs: toolIDs)
     }
 
@@ -229,7 +222,7 @@ public actor NodeRegistry {
     public func registerRuntimeTimeline(title: String, ascendantID: UUID) throws -> TimelineRecord {
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         let now = Date()
-        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], ascendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
@@ -255,7 +248,7 @@ public actor NodeRegistry {
         try requireBackendLease(backendLease, for: ascendantID)
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         guard timelines[timeline.id] == nil else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.ascendantID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.ascendantID ?? ascendantID) }
+        guard timeline.attachedAscendantID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? ascendantID) }
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
@@ -274,25 +267,10 @@ public actor NodeRegistry {
         return try registerRuntimeTimeline(timeline, ascendantID: ascendantID, backendLease: backendLease)
     }
 
-    /// Registers a backend-created Timeline under one inseparable session
-    /// context. Callers cannot accidentally combine a lease from one backend
-    /// with the Ascendant or lifecycle generation from another.
-    func registerRuntimeTimeline(
-        _ timeline: AscendantRuntimeTimeline,
-        context: BackendSessionContext
-    ) throws -> TimelineRecord {
-        guard lifecycleGeneration == context.generation else { throw NodeRuntimeError.notRunning }
-        return try registerRuntimeTimeline(
-            timeline,
-            ascendantID: context.ascendantID,
-            backendLease: context.lease
-        )
-    }
-
     /// Replaces only an existing timeline's projection after the adapter has accepted a mutation.
     public func replaceTimeline(_ timeline: AscendantRuntimeTimeline) throws -> TimelineRecord {
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.ascendantID == current.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
+        guard timeline.attachedAscendantID == current.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
         let record = TimelineRecord(timeline: timeline, operatorID: current.operatorID, provenance: current.provenance)
         timelines[timeline.id] = record
         if let ascendantID = current.operatorID { bumpRevision(for: ascendantID) }
@@ -312,7 +290,7 @@ public actor NodeRegistry {
         try requireBackendLease(backendLease, for: ascendantID)
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
         guard current.operatorID == ascendantID,
-              timeline.ascendantID == ascendantID else {
+              timeline.attachedAscendantID == ascendantID else {
             throw NodeRuntimeError.noOperatingAscendant(timeline.id)
         }
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: current.provenance)
@@ -348,30 +326,6 @@ public actor NodeRegistry {
         )
     }
 
-    /// Commits one backend projection under the exact lease and runtime
-    /// generation that produced it. `guardedBy` additionally validates the
-    /// initiating session in the same actor turn for cross-Ascendant lazy
-    /// rehydration.
-    func commitBackendTimeline(
-        _ timeline: AscendantRuntimeTimeline,
-        context: BackendSessionContext,
-        guardedBy guardContext: BackendSessionContext? = nil,
-        upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
-        removingWorkspaceID: UUID? = nil
-    ) throws -> TimelineRecord {
-        try requireBackendContext(context)
-        if let guardContext {
-            try requireBackendContext(guardContext)
-        }
-        return try commitBackendTimeline(
-            timeline,
-            ascendantID: context.ascendantID,
-            backendLease: context.lease,
-            upserting: attachment,
-            removingWorkspaceID: removingWorkspaceID
-        )
-    }
-
     /// Commits a Timeline replacement and emits its required projection as one
     /// actor-isolated transition. A projection failure restores the prior
     /// authoritative record before the error escapes.
@@ -380,7 +334,7 @@ public actor NodeRegistry {
         projecting: @MainActor @Sendable (TimelineRecord) throws -> Void
     ) async throws -> TimelineRecord {
         guard let previous = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.ascendantID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
+        guard timeline.attachedAscendantID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
         let record = TimelineRecord(timeline: timeline, operatorID: previous.operatorID, provenance: previous.provenance)
         timelines[timeline.id] = record
         do {
@@ -493,17 +447,13 @@ public actor NodeRegistry {
         return true
     }
 
-    /// Optionally validates an initiating backend session in the same actor
-    /// turn as the status mutation.
     @discardableResult
     func setWorkspaceStatus(
         id: UUID,
         status: WorkspaceEffectiveStatus,
-        generation: UInt64,
-        guardedBy context: BackendSessionContext? = nil
+        generation: UInt64
     ) -> Bool {
         guard lifecycleGeneration == generation else { return false }
-        if let context, !isCurrentBackendContext(context) { return false }
         _ = setWorkspaceStatus(id: id, status: status)
         return true
     }
@@ -519,14 +469,5 @@ public actor NodeRegistry {
     private func requireBackendLease(_ lease: UUID?, for ascendantID: UUID) throws {
         guard let lease else { return }
         guard backendLeases[ascendantID] == lease else { throw NodeRuntimeError.notRunning }
-    }
-
-    private func requireBackendContext(_ context: BackendSessionContext) throws {
-        guard isCurrentBackendContext(context) else { throw NodeRuntimeError.notRunning }
-    }
-
-    private func isCurrentBackendContext(_ context: BackendSessionContext) -> Bool {
-        guard lifecycleGeneration == context.generation else { return false }
-        return backendLeases[context.ascendantID] == context.lease
     }
 }

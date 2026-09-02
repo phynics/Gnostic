@@ -27,7 +27,7 @@ struct ProjectionAndCatalogTests {
             id: timelineID,
             title: "Private research",
             attachedWorkspaceIDs: [workspaceID, attachedWorkspaceID],
-            ascendantID: ascendantID,
+            attachedAscendantID: ascendantID,
             isArchived: false,
             isPrivate: true,
             createdAt: creationDate,
@@ -242,8 +242,8 @@ struct ProjectionAndCatalogTests {
             readvertise: { recorded.appendReadvertised($0) }
         )
         let agent = AscendantRuntimeIdentity(id: ascendantID, name: "Atlas", description: "Coordinates analysis.", privateTimelineID: timelineID, primaryWorkspaceID: nil, lastActiveAt: creationDate, createdAt: creationDate, updatedAt: creationDate)
-        let initialTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [], ascendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: creationDate)
-        let changedTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [workspaceID], ascendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: updateDate)
+        let initialTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: creationDate)
+        let changedTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [workspaceID], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: updateDate)
         let workspace = WorkspaceReference(
             id: workspaceID,
             uri: WorkspaceURI(parsing: "workspace://atlas")!,
