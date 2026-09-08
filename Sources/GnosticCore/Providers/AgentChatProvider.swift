@@ -170,7 +170,15 @@ public struct AscendantTurnProvider: Sendable {
             }
             let encoded = try GnosticWirePayload.encode(result, context: "ascendant.turn result")
             return .success(result: String(decoding: encoded, as: UTF8.self))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as AscendantTurnError {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
             if let replayStore, let clientTurnID = request.clientTurnID,
                !isAdmissionOnlyError(error) {
                 let replay = try await replayStore.replay(
@@ -179,7 +187,7 @@ public struct AscendantTurnProvider: Sendable {
                 )
                 guard !replay.terminal else {
                     try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-                    return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+                    return .failure(code: mapped.code, message: mapped.message)
                 }
                 let kind: String
                 switch error {
@@ -190,24 +198,35 @@ public struct AscendantTurnProvider: Sendable {
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: kind,
-                    text: error.localizedDescription,
-                    terminal: true
+                    text: error.publicMessage,
+                    terminal: true,
+                    reasonCode: error.reasonCode,
+                    statusCode: error.statusCode,
+                    retryable: error.retryable
                 )
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+            return .failure(code: mapped.code, message: mapped.message)
         } catch let error as NodeRuntimeError {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: "error",
-                    text: error.localizedDescription,
-                    terminal: true
+                    text: error.publicMessage,
+                    terminal: true,
+                    reasonCode: error.reasonCode,
+                    statusCode: error.statusCode
                 )
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+            return .failure(code: mapped.code, message: mapped.message)
         } catch let error as GnosticProtocolError {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
@@ -215,10 +234,24 @@ public struct AscendantTurnProvider: Sendable {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = try await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
+                _ = try await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: "error",
+                    text: "The ascendant turn failed.",
+                    terminal: true,
+                    reasonCode: "internalError",
+                    statusCode: 500
+                )
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
+            return .failure(code: mapped.code, message: mapped.message)
         }
     }
 
@@ -270,8 +303,16 @@ public struct AscendantTurnProvider: Sendable {
         return .success(result: String(decoding: encoded, as: UTF8.self))
     }
 
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
+    private func failure(code: Int, reasonCode: String, message: String, retryable: Bool = false) -> CallHandlerResult {
+        .failure(
+            code: code,
+            message: GnosticProtocol.failureMessage(
+                reasonCode: reasonCode,
+                message: message,
+                statusCode: code,
+                retryable: retryable
+            )
+        )
     }
 
     @MainActor

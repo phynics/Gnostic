@@ -65,6 +65,26 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
         default: 400
         }
     }
+
+    /// A stable message for public protocol failures. Associated values remain
+    /// available to local diagnostics but never cross the wire.
+    public var publicMessage: String {
+        switch self {
+        case .unsupportedAscendantKind: "The Ascendant kind is not supported."
+        case .unsupportedWorkspaceKind: "The Workspace kind is not supported."
+        case .invalidWorkspaceURI: "The Workspace URI is invalid."
+        case .missingTimeline: "The Timeline was not found."
+        case .missingWorkspace: "The Workspace was not found."
+        case .noOperatingAscendant: "The Timeline has no operating Ascendant."
+        case .unknownAscendant: "The Ascendant was not found."
+        case .noConfiguredAscendant: "The node has no configured Ascendant."
+        case .ambiguousAscendant: "The node has multiple Ascendants."
+        case .workspaceCapabilityUnavailable: "Workspace operations are unavailable."
+        case .turnFailed: "The Ascendant turn failed."
+        case .startInProgress: "The node runtime is already starting."
+        case .notRunning: "The node runtime is not running."
+        }
+    }
 }
 
 /// The observable, stable identity graph materialized by ``NodeRuntime``.

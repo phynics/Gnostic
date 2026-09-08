@@ -166,7 +166,7 @@ struct WorkspaceProviderTests {
 
     @Test("provider wraps malformed and executor failures in protocol envelopes")
     func providerHandleFailuresCarryProtocolMajor() async throws {
-        struct InjectedFailure: Error {}
+        struct InjectedFailure: Error { let detail = "sentinel-secret-workspace-provider" }
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
         let provider = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
@@ -186,6 +186,8 @@ struct WorkspaceProviderTests {
         let executorFailureEnvelope = try protocolFailure(from: executorFailure)
         #expect(executorFailureEnvelope.protocolMajor == GnosticProtocol.currentMajor)
         #expect(executorFailureEnvelope.reasonCode == "workspaceInvocationFailed")
+        #expect(executorFailureEnvelope.message == "The workspace invocation failed.")
+        #expect(!executorFailureEnvelope.message.contains("sentinel-secret-workspace-provider"))
     }
 
     @Test("provider preserves cancellation from an executor")

@@ -7,7 +7,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
     case capacityExceeded(timelineID: UUID, clientTurnID: String)
     case conflict(timelineID: UUID, clientTurnID: String)
     case failed(timelineID: UUID, clientTurnID: String, detail: String)
-    case terminal(timelineID: UUID, clientTurnID: String, code: String, detail: String, retryable: Bool)
+    case terminal(timelineID: UUID, clientTurnID: String, code: String, detail: String, retryable: Bool, statusCode: Int = 500)
     case cancelled(timelineID: UUID, clientTurnID: String)
     case lifecycleUnusable(timelineID: UUID, clientTurnID: String, detail: String)
     case backendUnavailable(timelineID: UUID, clientTurnID: String, detail: String)
@@ -21,7 +21,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
             "clientTurnID \(clientTurnID) was already used with different content on Timeline \(timelineID.uuidString.lowercased())"
         case let .failed(_, _, detail):
             detail
-        case let .terminal(_, _, _, detail, _):
+        case let .terminal(_, _, _, detail, _, _):
             detail
         case let .cancelled(_, clientTurnID):
             "ascendant.turn turn \(clientTurnID) was cancelled"
@@ -38,7 +38,8 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case .capacityExceeded: 429
         case .conflict: 409
-        case .failed, .terminal: 500
+        case .failed: 500
+        case let .terminal(_, _, _, _, _, statusCode): Self.boundedStatusCode(statusCode)
         case .cancelled: 499
         case .lifecycleUnusable, .backendUnavailable: 503
         case .replayUnavailable: 410
@@ -50,7 +51,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .capacityExceeded: "turnCapacityExceeded"
         case .conflict: "turnConflict"
         case .failed: "turnFailed"
-        case let .terminal(_, _, code, _, _): code
+        case let .terminal(_, _, code, _, _, _): code
         case .cancelled: "turnCancelled"
         case .lifecycleUnusable: "backendLifecycleUnusable"
         case .backendUnavailable: "backendUnavailable"
@@ -59,9 +60,31 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
     }
 
     public var retryable: Bool {
-        if case let .terminal(_, _, _, _, retryable) = self { return retryable }
+        if case let .terminal(_, _, _, _, retryable, _) = self { return retryable }
         return false
     }
 
-    public var publicMessage: String { localizedDescription }
+    /// A stable message for public protocol failures. Detail associated values
+    /// remain available to local diagnostics but never cross the wire.
+    public var publicMessage: String {
+        switch self {
+        case let .conflict(_, clientTurnID):
+            "clientTurnID \(clientTurnID) was already used with different content"
+        case .failed, .terminal:
+            "The ascendant turn failed."
+        case .cancelled:
+            "The ascendant turn was cancelled."
+        case .lifecycleUnusable:
+            "The ascendant backend lifecycle is unavailable."
+        case .backendUnavailable:
+            "The ascendant backend is unavailable."
+        case .replayUnavailable:
+            "The replay result for ascendant.turn is no longer retained."
+        }
+    }
+    private static func boundedStatusCode(_ value: Int) -> Int {
+        guard (100...599).contains(value) else { return 500 }
+        return value
+    }
+
 }

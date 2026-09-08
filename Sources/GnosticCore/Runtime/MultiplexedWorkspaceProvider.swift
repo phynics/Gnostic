@@ -48,16 +48,18 @@ public actor MultiplexedWorkspaceProvider {
             let encoded = try JSONSerialization.data(withJSONObject: object)
             try GnosticWirePayload.validateEvent(encoded, context: "workspace.invoke result")
             return .success(result: String(decoding: encoded, as: UTF8.self))
-        } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
-        } catch let error as NodeRuntimeError {
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-        } catch let error as DecodingError {
-            return failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: String(describing: error))
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
-            return failure(code: 500, reasonCode: "workspaceInvocationFailed", message: String(describing: error))
+        } catch is DecodingError {
+            return failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: "Invalid workspace invocation payload")
+        } catch let error {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "workspaceInvocationFailed",
+                fallbackMessage: "The workspace invocation failed."
+            )
+            return .failure(code: mapped.code, message: mapped.message)
         }
     }
 
