@@ -42,6 +42,9 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     public let permissionState: AscendantPermissionState?
     public let permissionStates: [AscendantPermissionState]
     public let terminal: Bool
+    public let reasonCode: String?
+    public let statusCode: Int?
+    public let retryable: Bool?
 
     public init(
         sequence: Int,
@@ -52,6 +55,9 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         permissionState: AscendantPermissionState? = nil,
         permissionStates: [AscendantPermissionState] = [],
         terminal: Bool = false,
+        reasonCode: String? = nil,
+        statusCode: Int? = nil,
+        retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
@@ -63,10 +69,13 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         self.permissionState = permissionState
         self.permissionStates = permissionStates
         self.terminal = terminal
+        self.reasonCode = reasonCode.map(GnosticWirePayload.boundedIdentifier)
+        self.statusCode = statusCode.map(GnosticProtocol.boundedStatusCode)
+        self.retryable = retryable
     }
 
     private enum CodingKeys: String, CodingKey {
-        case protocolMajor, sequence, kind, text, toolState, toolStates, permissionState, permissionStates, terminal
+        case protocolMajor, sequence, kind, text, toolState, toolStates, permissionState, permissionStates, terminal, reasonCode, statusCode, retryable
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +89,9 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         permissionState = try container.decodeIfPresent(AscendantPermissionState.self, forKey: .permissionState)
         permissionStates = try container.decodeIfPresent([AscendantPermissionState].self, forKey: .permissionStates) ?? []
         terminal = try container.decode(Bool.self, forKey: .terminal)
+        reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode).map(GnosticWirePayload.boundedIdentifier)
+        statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode).map(GnosticProtocol.boundedStatusCode)
+        retryable = try container.decodeIfPresent(Bool.self, forKey: .retryable)
     }
 }
 

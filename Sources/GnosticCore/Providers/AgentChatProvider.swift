@@ -172,40 +172,61 @@ public struct AscendantTurnProvider: Sendable {
             }
             let encoded = try GnosticWirePayload.encode(result, context: "ascendant.turn result")
             return .success(result: String(decoding: encoded, as: UTF8.self))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as AscendantTurnError {
-            if let replayStore, let clientTurnID = request.clientTurnID,
-               !isAdmissionOnlyError(error) {
-                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.publicMessage, terminal: true)
-            }
             let mapped = GnosticProtocol.publicFailure(
                 for: error,
                 fallbackCode: 500,
                 fallbackReasonCode: "internalError",
                 fallbackMessage: "The ascendant turn failed."
             )
+            if let replayStore, let clientTurnID = request.clientTurnID,
+               !isAdmissionOnlyError(error) {
+                _ = await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: "error",
+                    text: error.publicMessage,
+                    terminal: true,
+                    reasonCode: error.reasonCode,
+                    statusCode: error.statusCode,
+                    retryable: error.retryable
+                )
+            }
             return .failure(code: mapped.code, message: mapped.message)
         } catch let error as NodeRuntimeError {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: "error",
-                    text: error.localizedDescription,
-                    terminal: true
+                    text: error.publicMessage,
+                    terminal: true,
+                    reasonCode: error.reasonCode,
+                    statusCode: error.statusCode
                 )
             }
-            let mapped = GnosticProtocol.publicFailure(
-                for: error,
-                fallbackCode: 500,
-                fallbackReasonCode: "internalError",
-                fallbackMessage: "The ascendant turn failed."
-            )
             return .failure(code: mapped.code, message: mapped.message)
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: "The ascendant turn failed.", terminal: true)
+                _ = await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: "error",
+                    text: "The ascendant turn failed.",
+                    terminal: true,
+                    reasonCode: "internalError",
+                    statusCode: 500
+                )
             }
             let mapped = GnosticProtocol.publicFailure(
                 for: error,
@@ -265,8 +286,16 @@ public struct AscendantTurnProvider: Sendable {
         return .success(result: String(decoding: encoded, as: UTF8.self))
     }
 
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
+    private func failure(code: Int, reasonCode: String, message: String, retryable: Bool = false) -> CallHandlerResult {
+        .failure(
+            code: code,
+            message: GnosticProtocol.failureMessage(
+                reasonCode: reasonCode,
+                message: message,
+                statusCode: code,
+                retryable: retryable
+            )
+        )
     }
 
     @MainActor

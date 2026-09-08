@@ -93,6 +93,28 @@ struct ProtocolV2Tests {
         #expect(message.contains("missingProtocolMajor"))
     }
 
+    @Test("public failure mapping preserves backend status and reason code without detail")
+    func backendFailureMappingPreservesStableIdentity() throws {
+        let error = AscendantBackendError.terminal(.init(
+            code: "providerUnavailable",
+            message: "backend-secret-detail",
+            retryable: true
+        ))
+        let mapped = GnosticProtocol.publicFailure(
+            for: error,
+            fallbackCode: 500,
+            fallbackReasonCode: "internalError",
+            fallbackMessage: "fallback"
+        )
+        #expect(mapped.code == 500)
+        #expect(mapped.message.contains("providerUnavailable"))
+        #expect(mapped.message.contains("terminal failure"))
+        #expect(!mapped.message.contains("backend-secret-detail"))
+        let envelope = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(mapped.message.utf8))
+        #expect(envelope.reasonCode == "providerUnavailable")
+        #expect(envelope.message == "The Ascendant backend reported a terminal failure.")
+    }
+
     @Test("ordinary provider failures carry the protocol major envelope")
     func ordinaryProviderFailuresCarryProtocolMajor() async throws {
         let timelineID = UUID()

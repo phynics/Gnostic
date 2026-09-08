@@ -135,6 +135,8 @@ public struct TimelineManagementProvider: Sendable {
                 try GnosticProtocol.validate(status.protocolMajor)
                 let encoded = try GnosticWirePayload.encode(status, context: "timeline.create result")
                 return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 let mapped = GnosticProtocol.publicFailure(
                     for: error,
@@ -160,6 +162,8 @@ public struct TimelineManagementProvider: Sendable {
                     context: "timeline.list result"
                 )
                 return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 let mapped = GnosticProtocol.publicFailure(
                     for: error,
@@ -180,6 +184,8 @@ public struct TimelineManagementProvider: Sendable {
                 try GnosticProtocol.validate(status.protocolMajor)
                 let encoded = try GnosticWirePayload.encode(status, context: "timeline.update result")
                 return .success(result: String(decoding: encoded, as: UTF8.self))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 let mapped = GnosticProtocol.publicFailure(
                     for: error,

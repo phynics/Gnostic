@@ -92,6 +92,9 @@ public actor AscendantTurnUpdateStore {
         toolState: AscendantToolState? = nil,
         permissionState: AscendantPermissionState? = nil,
         terminal: Bool = false,
+        reasonCode: String? = nil,
+        statusCode: Int? = nil,
+        retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) -> AscendantTurnUpdate {
         guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else {
@@ -107,6 +110,9 @@ public actor AscendantTurnUpdateStore {
                 toolState: toolState,
                 permissionState: permissionState,
                 terminal: terminal,
+                reasonCode: reasonCode,
+                statusCode: statusCode,
+                retryable: retryable,
                 protocolMajor: protocolMajor
             ),
             maxBytes: min(maxBytes / 2, 1_200)
@@ -205,7 +211,9 @@ public actor AscendantTurnUpdateStore {
         candidate = AscendantTurnUpdate(
             sequence: update.sequence, kind: kind, text: text, toolState: toolState,
             toolStates: toolStates, permissionState: permissionState,
-            permissionStates: permissionStates, terminal: update.terminal
+            permissionStates: permissionStates, terminal: update.terminal,
+            reasonCode: update.reasonCode, statusCode: update.statusCode,
+            retryable: update.retryable
         )
         while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
             text = GnosticWirePayload.prefix(current, maximumBytes: max(1, current.utf8.count / 2))
@@ -216,7 +224,10 @@ public actor AscendantTurnUpdateStore {
                 toolStates: toolStates,
                 permissionState: permissionState,
                 permissionStates: permissionStates,
-                terminal: update.terminal
+                terminal: update.terminal,
+                reasonCode: update.reasonCode,
+                statusCode: update.statusCode,
+                retryable: update.retryable
             )
         }
         while encodedSize(candidate) > maxBytes, !toolStates.isEmpty {
@@ -229,7 +240,10 @@ public actor AscendantTurnUpdateStore {
                 toolStates: toolStates,
                 permissionState: permissionState,
                 permissionStates: permissionStates,
-                terminal: update.terminal
+                terminal: update.terminal,
+                reasonCode: update.reasonCode,
+                statusCode: update.statusCode,
+                retryable: update.retryable
             )
         }
         while encodedSize(candidate) > maxBytes, !permissionStates.isEmpty {
@@ -242,7 +256,10 @@ public actor AscendantTurnUpdateStore {
                 toolStates: toolStates,
                 permissionState: update.permissionState,
                 permissionStates: permissionStates,
-                terminal: update.terminal
+                terminal: update.terminal,
+                reasonCode: update.reasonCode,
+                statusCode: update.statusCode,
+                retryable: update.retryable
             )
         }
         return candidate

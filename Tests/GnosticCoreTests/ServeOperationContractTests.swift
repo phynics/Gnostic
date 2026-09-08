@@ -81,6 +81,82 @@ struct ServeOperationContractTests {
         #expect(!message.contains("sentinel-secret-turn"))
     }
 
+    @Test("ascendant.turn coordinator redacts sentinel details in replay updates")
+    func turnCoordinatorReplayFailureDoesNotLeakDetails() async throws {
+        let timelineID = UUID()
+        let store = AscendantTurnUpdateStore()
+        let coordinator = AscendantTurnCoordinator()
+        let provider = AscendantTurnProvider(
+            execute: { request in
+                try await coordinator.execute(request) {
+                    throw NodeRuntimeError.turnFailed("sentinel-secret-coordinator")
+                }
+            },
+            replayStore: store
+        )
+        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "coordinator-sentinel")
+        let response = try await provider.handle(parameters: payload(request))
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured coordinator failure")
+            return
+        }
+        #expect(code == 500)
+        #expect(message.contains("turnFailed"))
+        #expect(!message.contains("sentinel-secret-coordinator"))
+
+        let replay = await store.replay(timelineID: timelineID, clientTurnID: "coordinator-sentinel")
+        #expect(replay.updates.last?.text == "The ascendant turn failed.")
+        #expect(!replay.updates.contains { $0.text?.contains("sentinel-secret-coordinator") == true })
+    }
+
+    @Test("ascendant.turn preserves backend status, reason, retry, and safe replay metadata")
+    func turnBackendFailuresPreserveStructuredMetadata() async throws {
+        let failures: [(String, AscendantBackendError, Int, String, Bool)] = [
+            ("invalid", .invalidConfiguration("secret invalid configuration"), 400, "invalidConfiguration", false),
+            ("missing", .timelineNotFound(UUID()), 404, "timelineNotFound", false),
+            ("lifecycle", .lifecycleUnusable(.init(code: "lifecycleDown", message: "secret lifecycle detail")), 503, "backendLifecycleUnusable", false),
+            ("retryable", .terminal(.init(code: "providerUnavailable", message: "secret provider detail", retryable: true)), 500, "providerUnavailable", true)
+        ]
+        for (id, backendError, status, reason, retryable) in failures {
+            let timelineID = UUID()
+            let store = AscendantTurnUpdateStore()
+            let coordinator = AscendantTurnCoordinator()
+            let provider = AscendantTurnProvider(
+                execute: { request in
+                    try await coordinator.execute(request) { throw backendError }
+                },
+                replayStore: store
+            )
+            let request = AscendantTurnRequest(message: id, timelineID: timelineID, clientTurnID: "turn-\(id)")
+            let response = try await provider.handle(parameters: payload(request))
+            guard case let .failure(code, message, _) = response else {
+                Issue.record("expected backend failure for \(id)")
+                continue
+            }
+            #expect(code == status)
+            let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+            #expect(failure.reasonCode == reason)
+            #expect(failure.statusCode == status)
+            #expect(failure.retryable == retryable)
+            #expect(!message.contains("secret"))
+            let replay = await store.replay(timelineID: timelineID, clientTurnID: request.clientTurnID!)
+            let update = replay.updates.last
+            #expect(update?.kind == "error")
+            #expect(update?.reasonCode == reason)
+            #expect(update?.statusCode == status)
+            #expect(update?.retryable == retryable)
+            #expect(update?.text?.contains("secret") == false)
+        }
+    }
+
+    @Test("ascendant.turn preserves direct cancellation")
+    func turnCancellationIsRethrown() async throws {
+        let provider = AscendantTurnProvider { _ in throw CancellationError() }
+        await #expect(throws: CancellationError.self) {
+            _ = try await provider.handle(parameters: payload(AscendantTurnRequest(message: "hello", timelineID: UUID())))
+        }
+    }
+
     @Test("ascendant.turn conflict is a structured failure")
     func turnConflictContract() async throws {
         let coordinator = AscendantTurnCoordinator()
@@ -230,6 +306,14 @@ struct ServeOperationContractTests {
         #expect(code == 409)
     }
 
+    @Test("timeline.status preserves direct cancellation")
+    func timelineStatusCancellationIsRethrown() async throws {
+        let provider = TimelineStatusProvider { _ in throw CancellationError() }
+        await #expect(throws: CancellationError.self) {
+            _ = try await provider.handle(parameters: payload(TimelineStatusRequest(timelineID: UUID())))
+        }
+    }
+
     @Test("timeline.status hides unexpected executor details at the wire seam")
     func timelineStatusUnexpectedFailureDoesNotLeakDetails() async throws {
         struct SentinelFailure: Error { let detail = "sentinel-secret-status" }
@@ -258,6 +342,26 @@ struct ServeOperationContractTests {
         #expect(status.timelineID == timelineID)
     }
 
+    @Test("timeline management preserves direct cancellation for create, list, and update")
+    func timelineManagementCancellationIsRethrown() async throws {
+        let provider = TimelineManagementProvider(
+            create: { _, _ in throw CancellationError() },
+            list: { throw CancellationError() },
+            update: { _ in throw CancellationError() }
+        )
+        let timelineID = UUID()
+        let requests: [(String, String)] = [
+            (TimelineManagementProvider.createOperation, payload(TimelineCreateRequest(title: "Research"))),
+            (TimelineManagementProvider.listOperation, payload(TimelineListRequest())),
+            (TimelineManagementProvider.updateOperation, payload(TimelineUpdateRequest(timelineID: timelineID, title: "Updated")))
+        ]
+        for (operation, parameters) in requests {
+            await #expect(throws: CancellationError.self) {
+                _ = try await provider.handle(operation: operation, parameters: parameters)
+            }
+        }
+    }
+
     @Test("timeline management hides unexpected executor details at the wire seam")
     func timelineManagementUnexpectedFailureDoesNotLeakDetails() async throws {
         struct SentinelFailure: Error { let detail = "sentinel-secret-management" }
@@ -279,6 +383,21 @@ struct ServeOperationContractTests {
         #expect(failure.reasonCode == "internalError")
         #expect(failure.message == "The timeline operation failed.")
         #expect(!message.contains("sentinel-secret-management"))
+    }
+
+    @Test("workspace ops preserves direct cancellation for list, attach, and detach")
+    func workspaceOpsCancellationIsRethrown() async throws {
+        let provider = WorkspaceOpsProvider(
+            list: { throw CancellationError() },
+            attach: { _ in throw CancellationError() },
+            detach: { _ in throw CancellationError() }
+        )
+        let request = payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
+        for operation in [WorkspaceOpsProvider.listOperation, WorkspaceOpsProvider.attachOperation, WorkspaceOpsProvider.detachOperation] {
+            await #expect(throws: CancellationError.self) {
+                _ = try await provider.handle(operation: operation, parameters: request)
+            }
+        }
     }
 
     @Test("workspace ops route to list, attach, and detach closures")

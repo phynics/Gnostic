@@ -218,6 +218,8 @@ public struct WorkspaceOpsProvider: Sendable {
                     )
                     return .success(result: String(decoding: encoded, as: UTF8.self))
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 return failure(for: error)
             }
@@ -229,6 +231,8 @@ public struct WorkspaceOpsProvider: Sendable {
             do {
                 let ok = try await attach(request)
                 return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 return failure(for: error)
             }
@@ -240,6 +244,8 @@ public struct WorkspaceOpsProvider: Sendable {
             do {
                 let ok = try await detach(request)
                 return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 return failure(for: error)
             }

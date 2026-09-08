@@ -92,6 +92,8 @@ public struct TimelineStatusProvider: Sendable {
             try GnosticProtocol.validate(status.protocolMajor)
             let encoded = try JSONEncoder().encode(status)
             return .success(result: String(decoding: encoded, as: UTF8.self))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             let mapped = GnosticProtocol.publicFailure(
                 for: error,

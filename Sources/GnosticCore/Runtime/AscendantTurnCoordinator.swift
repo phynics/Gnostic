@@ -135,7 +135,8 @@ public actor AscendantTurnCoordinator {
                         clientTurnID: clientTurnID,
                         code: failure.code,
                         detail: failure.message,
-                        retryable: failure.retryable
+                        retryable: failure.retryable,
+                        statusCode: 500
                     )
                 }
                 throw AscendantTurnError.terminal(
@@ -143,7 +144,8 @@ public actor AscendantTurnCoordinator {
                     clientTurnID: clientTurnID,
                     code: error.reasonCode,
                     detail: error.localizedDescription,
-                    retryable: false
+                    retryable: false,
+                    statusCode: error.statusCode
                 )
             } catch let error as AscendantTurnError {
                 throw error

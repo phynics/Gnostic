@@ -214,6 +214,30 @@ struct AscendantTurnCoordinatorTests {
         }
     }
 
+    @Test("backend domain status survives coordinator caching")
+    func backendDomainStatusCodesArePreserved() async throws {
+        let failures: [(String, AscendantBackendError, Int, String)] = [
+            ("invalid", .invalidConfiguration("secret invalid configuration"), 400, "invalidConfiguration"),
+            ("missing", .timelineNotFound(UUID()), 404, "timelineNotFound"),
+            ("lifecycle", .lifecycleUnusable(.init(code: "lifecycleDown", message: "secret lifecycle detail")), 503, "backendLifecycleUnusable")
+        ]
+        for (id, backendError, status, reason) in failures {
+            let coordinator = AscendantTurnCoordinator()
+            let request = AscendantTurnRequest(message: id, timelineID: UUID(), clientTurnID: id)
+            do {
+                _ = try await coordinator.execute(request) { throw backendError }
+                Issue.record("The backend failure unexpectedly succeeded: \(id)")
+            } catch let error as AscendantTurnError {
+                #expect(error.statusCode == status)
+                #expect(error.reasonCode == reason)
+                #expect(error.statusCode == status)
+                await #expect(throws: AscendantTurnError.self) {
+                    _ = try await coordinator.execute(request) { "must not rerun" }
+                }
+            }
+        }
+    }
+
     @Test("evicted results retain a non-retryable identity tombstone")
     func evictedResultsNeverRerun() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1)
