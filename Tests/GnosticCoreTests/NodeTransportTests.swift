@@ -254,6 +254,109 @@ struct NodeTransportTests {
         #expect(try await adapter.operatedTimelines().first?.attachedWorkspaceIDs == [workspaceID])
         #expect(await registry.attachmentIntent(for: timelineID) == [.network(workspaceID, uri: uri)])
     }
+
+
+    @Test("network attachment batches roll back prior targets when a later target fails")
+    @MainActor
+    func networkAttachmentBatchRollsBackPriorTargets() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000020")!
+        let firstTimelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000021")!
+        let secondTimelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000022")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000023")!
+        let uri = "gnostic://workspace/rollback"
+        let backend = MutationProbeBackend(
+            ascendantID: ascendantID,
+            timelineIDs: [firstTimelineID, secondTimelineID],
+            failingAttachTimelineID: secondTimelineID
+        )
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-rollback-unit"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000024")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: firstTimelineID)],
+            timelines: [
+                .init(id: firstTimelineID, title: "First", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: uri)]),
+                .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: uri)]),
+            ]
+        ).compileLaunchPlan()
+        let discovery = ServiceStubWorkspaceDiscovery(
+            entry: .init(
+                objectID: workspaceID,
+                objectType: GnosticObjectType.workspace,
+                protocolMajor: GnosticProtocol.currentMajor,
+                providerID: "stub-provider",
+                name: "Rollback workspace",
+                knownProperties: [:],
+                dynamicProperties: [:],
+                workspace: .init(id: workspaceID, uri: uri, isAvailable: true, tools: [])
+            ),
+            status: .available(providerID: "stub-provider", uri: uri)
+        )
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await backend.operatedTimelines())
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: discovery,
+            localWorkspaces: [:],
+            references: [:],
+            isRunning: { true },
+            adapter: { $0 == ascendantID ? backend : nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        await #expect(throws: NodeRuntimeError.self) {
+            _ = try await service.resolveAvailableNetworkWorkspace(workspaceID)
+        }
+        #expect(backend.attachedWorkspaceIDs().isEmpty)
+        #expect(backend.detachCalls == [firstTimelineID])
+        #expect(await registry.attachmentIntent(for: firstTimelineID) == [.network(workspaceID, uri: uri)])
+        #expect(await registry.attachmentIntent(for: secondTimelineID) == [.network(workspaceID, uri: uri)])
+    }
+
+    @Test("attachment requires a projected Timeline and compensates the backend mutation")
+    @MainActor
+    func attachmentRequiresPostMutationProjection() async throws {
+        let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000025")!
+        let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000026")!
+        let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000027")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "echo://missing-projection")!,
+            location: .runtime,
+            tools: EchoWorkspace.toolDefinitions
+        )
+        let backend = MutationProbeBackend(
+            ascendantID: ascendantID,
+            timelineIDs: [timelineID],
+            dropsProjectionAfterAttach: true
+        )
+        let plan = try NodeManifest(
+            broker: .init(host: "unused", port: 1883, namespace: "workspace-missing-projection-unit"),
+            node: .init(id: UUID(uuidString: "13100000-0000-4000-8000-000000000028")!),
+            ascendants: [.init(id: ascendantID, name: "Stub", defaultTimelineID: timelineID)],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
+            workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://missing-projection", kind: "echo")]
+        ).compileLaunchPlan()
+        let registry = try NodeRegistry(plan: plan, operatedTimelines: try await backend.operatedTimelines())
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: ServiceStubWorkspaceDiscovery(
+                entry: .init(objectID: workspaceID, objectType: GnosticObjectType.workspace, providerID: "stub", name: "Local", knownProperties: [:], dynamicProperties: [:], workspace: .init(id: workspaceID, uri: reference.uri.description, isAvailable: true, tools: [])),
+                status: .available(providerID: "stub", uri: reference.uri.description)
+            ),
+            localWorkspaces: [workspaceID: EchoWorkspace(reference: reference)],
+            references: [workspaceID: reference],
+            isRunning: { true },
+            adapter: { $0 == ascendantID ? backend : nil },
+            readvertiseTimeline: { _ in }
+        )
+
+        await #expect(throws: NodeRuntimeError.missingTimeline(timelineID)) {
+            _ = try await service.attach(.init(workspaceID: workspaceID, timelineID: timelineID))
+        }
+        #expect(backend.attachedWorkspaceIDs().isEmpty)
+        #expect(backend.detachCalls == [timelineID])
+    }
 }
 
 @MainActor
@@ -297,6 +400,58 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
         guard providerID == entry.providerID, workspaceID == entry.workspace?.id else { return nil }
         return entry.workspace
     }
+}
+
+
+@MainActor
+private final class MutationProbeBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
+    let identity: AscendantBackendIdentity
+    private var storedTimelines: [AscendantBackendTimeline]
+    private let failingAttachTimelineID: UUID?
+    private let dropsProjectionAfterAttach: Bool
+    private var projectionDropped = false
+    private(set) var detachCalls: [UUID] = []
+
+    init(
+        ascendantID: UUID,
+        timelineIDs: [UUID],
+        failingAttachTimelineID: UUID? = nil,
+        dropsProjectionAfterAttach: Bool = false
+    ) {
+        let now = Date(timeIntervalSince1970: 1)
+        identity = .init(id: ascendantID, name: "Mutation probe", description: "", privateTimelineID: timelineIDs[0], primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
+        storedTimelines = timelineIDs.map {
+            .init(id: $0, title: "Timeline", attachedWorkspaceIDs: [], ascendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+        }
+        self.failingAttachTimelineID = failingAttachTimelineID
+        self.dropsProjectionAfterAttach = dropsProjectionAfterAttach
+    }
+
+    func validateConfiguration() throws {}
+    func operatedTimelines() async throws -> [AscendantBackendTimeline] {
+        projectionDropped ? [] : storedTimelines
+    }
+    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline { throw NodeRuntimeError.notRunning }
+    func removeTimeline(id: UUID) async { storedTimelines.removeAll { $0.id == id } }
+    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline { throw NodeRuntimeError.notRunning }
+    func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
+        if timelineID == failingAttachTimelineID { throw NodeRuntimeError.notRunning }
+        guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else { throw NodeRuntimeError.missingTimeline(timelineID) }
+        let current = storedTimelines[index]
+        storedTimelines[index] = .init(id: current.id, title: current.title, attachedWorkspaceIDs: current.attachedWorkspaceIDs + (current.attachedWorkspaceIDs.contains(reference.id) ? [] : [reference.id]), ascendantID: current.ascendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
+        if dropsProjectionAfterAttach { projectionDropped = true }
+    }
+    func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
+        detachCalls.append(timelineID)
+        guard let index = storedTimelines.firstIndex(where: { $0.id == timelineID }) else { throw NodeRuntimeError.missingTimeline(timelineID) }
+        let current = storedTimelines[index]
+        storedTimelines[index] = .init(id: current.id, title: current.title, attachedWorkspaceIDs: current.attachedWorkspaceIDs.filter { $0 != workspaceID }, ascendantID: current.ascendantID, isArchived: current.isArchived, isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date())
+    }
+    func enabledToolIDs(for _: UUID) async -> [String] { [] }
+    func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String { request.message }
+    func cancel() async {}
+    func shutdown() async {}
+    func attachedWorkspaceIDs() -> [UUID] { storedTimelines.flatMap(\.attachedWorkspaceIDs) }
 }
 
 @MainActor

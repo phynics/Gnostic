@@ -109,10 +109,12 @@ final class NodeRuntimeHost {
     }
 
     func shutdown() async {
-        // Interrupt the broker handshake before the coordinator waits for
-        // startup. Axoloty's transport teardown is continuation-backed and
-        // must be signalled before lifecycle cleanup can join the task.
-        resources.container.shutdown()
+        // Interrupt only a pending broker handshake before the coordinator
+        // waits for startup. A running transport must first drain its tracked
+        // deadvertisements during cleanup.
+        if lifetime.state == .starting {
+            resources.container.shutdown()
+        }
         await lifecycleCoordinator.shutdown { [weak self] cleanup in
             await self?.performCleanup(cleanup)
         }
@@ -184,7 +186,7 @@ final class NodeRuntimeHost {
         guard let registry, let backendSupervisor, let transport else { return }
         await registry.fenceBackendLeases(at: lifetime.generation)
         await permissionCoordinator.denyAll(reason: "connection_lost")
-        transport.cancel()
+        await transport.cancel()
         backendSupervisor.cancelReconstructions()
         await turnCoordinator.cancelAll(waitForCompletion: false)
         await turnUpdates.finish()
@@ -194,6 +196,6 @@ final class NodeRuntimeHost {
         cleanup.resolutionTask?.cancel()
         await cleanup.resolutionTask?.value
         resources.subscription.stop()
-        resources.container.shutdown()
+        await resources.container.shutdownAndWait()
     }
 }

@@ -398,6 +398,10 @@ public final class ObjectLifecycleController {
     }
     public func readvertiseDiscoverableObject(object: CoatyObject) { communication?.publishAdvertise(object) }
     public func deadvertiseDiscoverableObject(object: CoatyObject) { communication?.publishDeadvertise(object) }
+
+    func deadvertiseDiscoverableObjectAndWait(object: CoatyObject) async {
+        await communication?.publishDeadvertiseAndWait(object)
+    }
 }
 
 private actor CompatibilityDispatch {
@@ -659,16 +663,38 @@ public final class CommunicationManager {
 
     public func startAndWaitUntilReady() async throws { try start(); try await startTask?.value }
     public func stop() {
-        eventTasks.forEach { $0.cancel() }
-        eventTasks.removeAll()
+        let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
-        // MQTTBinding fails its pending start continuation before awaiting
-        // socket teardown. Start that cancellation independently so a broker
-        // handshake cannot hold the lifecycle owner until its deadline.
-        Task { await transport.stop() }
-        Task { await runtime.stop() }
+        // Keep this synchronous compatibility wrapper. The internal async
+        // seam lets an owner await runtime drain when it controls teardown.
+        Task { @MainActor in
+            await stopAndWait(runtimeWasReady: runtimeWasReady)
+        }
         isStarted = false
         emitState(.offline)
+    }
+
+    func stopAndWait() async {
+        let runtimeWasReady = isRuntimeReady
+        isRuntimeReady = false
+        await stopAndWait(runtimeWasReady: runtimeWasReady)
+        isStarted = false
+        emitState(.offline)
+    }
+
+    private func stopAndWait(runtimeWasReady: Bool) async {
+        // A ready runtime owns shutdown ordering: it must drain its
+        // deadvertisements before the transport disconnects. A pending start
+        // has no runtime lifecycle to drain, so cancel its transport first to
+        // release the start continuation.
+        if runtimeWasReady {
+            await runtime.stop()
+        } else {
+            await transport.stop()
+            await runtime.stop()
+        }
+        eventTasks.forEach { $0.cancel() }
+        eventTasks.removeAll()
     }
 
     public func observeCommunicationStateStream() async -> AsyncStream<CommunicationState> {
@@ -729,6 +755,13 @@ public final class CommunicationManager {
         Task { await dispatch.removeAdvertisedObject(id: object.objectId.string) }
         guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
         Task { _ = await runtime.publish(.deadvertise(payload)) }
+    }
+
+    fileprivate func publishDeadvertiseAndWait(_ object: CoatyObject) async {
+        pendingAdvertisements[object.objectId.string] = nil
+        await dispatch.removeAdvertisedObject(id: object.objectId.string)
+        guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
+        _ = await runtime.publish(.deadvertise(payload))
     }
     public func publishChannel(_ event: ChannelEvent) { guard let payload = try? channelPayload(event) else { return }; Task { _ = await runtime.publish(.channel(identifier: event.channelId, payload: payload)) } }
 
@@ -932,4 +965,5 @@ public final class Container {
     public func getController(name: String) -> ObjectLifecycleController? { name == "ObjectLifecycleController" ? lifecycleController : nil }
     public func startAndWaitUntilReady() async throws { try await communicationManager?.startAndWaitUntilReady() }
     public func shutdown() { communicationManager?.stop() }
+    func shutdownAndWait() async { await communicationManager?.stopAndWait() }
 }
