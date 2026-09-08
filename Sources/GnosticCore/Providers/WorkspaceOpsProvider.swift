@@ -79,18 +79,61 @@ public struct WorkspaceListing: Codable, Sendable {
 public struct WorkspaceListResult: Codable, Sendable {
     public let protocolMajor: Int
     public let workspaces: [WorkspaceListing]
+    /// The absolute offset for the next page, or `nil` when this result is complete.
+    public let nextOffset: Int?
 
-    public init(workspaces: [WorkspaceListing], protocolMajor: Int = GnosticProtocol.currentMajor) {
+    /// Creates a workspace-list result.
+    ///
+    /// - Parameters:
+    ///   - workspaces: The entries returned in this page.
+    ///   - nextOffset: The absolute offset of the next page, or `nil` when all entries were returned.
+    ///   - protocolMajor: The protocol major carried by this result.
+    public init(workspaces: [WorkspaceListing], nextOffset: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.workspaces = workspaces
+        self.nextOffset = nextOffset
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces, nextOffset }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         workspaces = try container.decode([WorkspaceListing].self, forKey: .workspaces)
+        nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
+    }
+}
+
+/// The protocol-bearing request for `workspace.list`.
+///
+/// Use this request for paginated results. Legacy ``WorkspaceOpsRequest``
+/// callers remain supported only when the complete result fits in one response.
+public struct WorkspaceListRequest: Codable, Sendable {
+    public let protocolMajor: Int
+    /// The zero-based absolute position of the first entry to return.
+    public let offset: Int
+    /// The maximum number of entries to request for this page.
+    public let limit: Int
+
+    /// Creates a paginated workspace-list request.
+    ///
+    /// - Parameters:
+    ///   - offset: The zero-based absolute position of the first entry.
+    ///   - limit: The maximum number of entries to request.
+    ///   - protocolMajor: The protocol major carried by this request.
+    public init(offset: Int = 0, limit: Int = GnosticWirePayload.maximumListItems, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
+        self.offset = offset
+        self.limit = limit
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, offset, limit }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? GnosticWirePayload.maximumListItems
     }
 }
 
@@ -140,11 +183,41 @@ public struct WorkspaceOpsProvider: Sendable {
         switch operation {
         case Self.listOperation:
             if let error = protocolError(parameters) { return error }
+            guard let request = decodeList(parameters) else {
+                return failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
+            }
             do {
                 let listings = try await list()
                 try listings.forEach { try GnosticProtocol.validate($0.protocolMajor) }
-                let encoded = try JSONEncoder().encode(WorkspaceListResult(workspaces: listings))
-                return .success(result: String(decoding: encoded, as: UTF8.self))
+                switch request {
+                case .legacy:
+                    // A legacy client has no way to consume nextOffset. Return
+                    // the complete result when it fits; otherwise require the
+                    // explicit paginated request instead of silently truncating.
+                    guard let encoded = try? GnosticWirePayload.encode(
+                        WorkspaceListResult(workspaces: listings),
+                        context: "workspace.list result"
+                    ) else {
+                        return failure(
+                            code: 400,
+                            reasonCode: "paginationRequired",
+                            message: "workspace.list requires WorkspaceListRequest pagination"
+                        )
+                    }
+                    return .success(result: String(decoding: encoded, as: UTF8.self))
+                case let .paged(request):
+                    guard request.offset >= 0, request.limit > 0 else {
+                        return failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
+                    }
+                    let pageLimit = min(request.limit, GnosticWirePayload.maximumListItems)
+                    let page = boundedPage(listings, offset: request.offset, limit: pageLimit)
+                    let nextOffset = request.offset + page.count < listings.count ? request.offset + page.count : nil
+                    let encoded = try GnosticWirePayload.encode(
+                        WorkspaceListResult(workspaces: page, nextOffset: nextOffset),
+                        context: "workspace.list result"
+                    )
+                    return .success(result: String(decoding: encoded, as: UTF8.self))
+                }
             } catch {
                 return failure(for: error)
             }
@@ -173,6 +246,38 @@ public struct WorkspaceOpsProvider: Sendable {
         default:
             return failure(code: 404, reasonCode: "unknownWorkspaceOperation", message: "Unknown workspace operation")
         }
+    }
+
+    private enum ListRequest: Sendable {
+        case legacy
+        case paged(WorkspaceListRequest)
+    }
+
+    private func decodeList(_ parameters: String?) -> ListRequest? {
+        guard let parameters,
+              let data = parameters.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if object["offset"] != nil || object["limit"] != nil {
+            guard let request = try? JSONDecoder().decode(WorkspaceListRequest.self, from: data) else { return nil }
+            return .paged(request)
+        }
+        guard (try? JSONDecoder().decode(WorkspaceOpsRequest.self, from: data)) != nil else { return nil }
+        return .legacy
+    }
+
+    private func boundedPage(_ values: [WorkspaceListing], offset: Int, limit: Int) -> [WorkspaceListing] {
+        guard offset < values.count else { return [] }
+        var result: [WorkspaceListing] = []
+        for value in values.dropFirst(offset).prefix(limit) {
+            let candidate = result + [value]
+            let candidateOffset = offset + candidate.count < values.count ? offset + candidate.count : nil
+            guard (try? GnosticWirePayload.encode(
+                WorkspaceListResult(workspaces: candidate, nextOffset: candidateOffset),
+                context: "workspace.list result"
+            )) != nil else { break }
+            result.append(value)
+        }
+        return result
     }
 
     private func decode(_ parameters: String?) -> WorkspaceOpsRequest? {
