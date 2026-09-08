@@ -1,13 +1,14 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Axoloty
+import AxolotyMQTT
 import AxolotyProtocol
 import AxolotyWire
 import Foundation
 
-// This file is the single compatibility boundary for the pre-0.6 API names
+// This file is the single compatibility boundary for the pre-0.7 API names
 // still used by Gnostic's public seams. The implementation is backed entirely
-// by Axoloty 0.6's bounded runtime and wire values.
+// by Axoloty 0.7's bounded runtime and wire values.
 
 public enum CoreType: String, Codable, Sendable {
     case CoatyObject
@@ -576,7 +577,7 @@ public final class CommunicationManager {
             protocolMaximumPayloadBytes: GnosticWirePayload.maximumBytes,
             protocolMaximumTopicBytes: GnosticWirePayload.maximumTopicBytes
         )
-        var builder = try RuntimeDefinition.Builder(identity: runtimeIdentity, namespace: namespace, limits: capacities)
+        var builder = try RuntimeBuilder(identity: runtimeIdentity, namespace: namespace, capacities: capacities)
         let callOperations = [
             GnosticWorkspaceProvider.invocationOperation,
             AscendantTurnProvider.turnOperation,
