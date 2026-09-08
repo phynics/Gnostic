@@ -1085,31 +1085,57 @@ struct NodeRuntimeTests {
         #expect(unresolvedReference.tools.isEmpty)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
 
-        let remote = try CommunicationManager(
-            identity: Identity(name: "late-workspace-provider"),
-            communicationOptions: .init(
-                namespace: namespace,
-                shouldEnableCrossNamespacing: false,
-                mqttClientOptions: .init(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false),
-                shouldAutoStart: false
-            ),
-            commonOptions: nil
-        )
-        try remote.start()
-        defer { remote.stop() }
-        let reference = WorkspaceReference(
-            id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://remote-late")!,
-            location: .runtime,
-            tools: [.custom(.init(id: "remote_echo", name: "Remote echo", description: "Echoes remotely."))]
-        )
-        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: reference))))
+        let consumer = makeNodeRuntimeBrokerManager("late-workspace-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
 
+        let remoteNodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000149")!
+        var remoteAdapters = NodeRuntimeAdapters.default
+        remoteAdapters.workspaces.registerProduct(kind: "remote-echo") { configuration in
+            let reference = WorkspaceReference(
+                id: configuration.id,
+                uri: WorkspaceURI(parsing: configuration.uri)!,
+                location: .runtime,
+                tools: [.custom(.init(id: "remote_echo", name: "Remote echo", description: "Echoes remotely."))]
+            )
+            return EchoWorkspace(reference: reference)
+        }
+        let remote = try await NodeRuntime(plan: NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: remoteNodeID),
+            workspaces: [.init(id: workspaceID, name: "Remote", uri: "workspace://remote-late", kind: "remote-echo")]
+        ).compileLaunchPlan(), adapters: remoteAdapters)
+        try await remote.start()
+        defer { Task { @MainActor in await remote.shutdown() } }
+
+        var discoveredProviderID: String?
+        for _ in 0..<40 {
+            discoveredProviderID = await catalog.networkObjects().first(where: { $0.objectID == workspaceID })?.providerID
+            if discoveredProviderID != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let remoteProviderID = try #require(discoveredProviderID)
+        #expect(await catalog.object(id: workspaceID, providerID: remoteProviderID) != nil)
         for _ in 0..<40 where await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == false)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo"))
+
+        await remote.shutdown()
+        for _ in 0..<40 where await catalog.object(id: workspaceID, providerID: remoteProviderID) != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await catalog.object(id: workspaceID, providerID: remoteProviderID) == nil)
+        for _ in 0..<40 where try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
+        #expect(await runtime.timeline(id: timelineID)?.attachedWorkspaceIDs.contains(workspaceID) == true)
     }
 
     @Test("an unambiguous discovered Workspace need not be predeclared in the manifest") @MainActor

@@ -288,10 +288,20 @@ import struct PositronicKit.Thread
 
     public func enabledToolIDs(for timelineID: UUID) async -> [String] {
         guard lifecycleFailure == nil else { return [] }
-        let workspaceToolIDs: [String]
         let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
-        workspaceToolIDs = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
+        let workspaceToolIDs = (await availableWorkspaceTools(for: workspaceIDs)).map(\.callName)
         return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
+    }
+
+    private func availableWorkspaceTools(for workspaceIDs: [UUID]) async -> [AnyTool] {
+        var tools: [AnyTool] = []
+        for workspaceID in workspaceIDs {
+            if let service = workspaceService {
+                guard let reference = await service.reference(id: workspaceID), reference.status == .available else { continue }
+            }
+            tools.append(contentsOf: workspaceToolsByID[workspaceID, default: []])
+        }
+        return tools
     }
 
     public func cancel() async {
@@ -316,7 +326,7 @@ import struct PositronicKit.Thread
             .init(timelineID: request.timelineID, clientTurnID: $0)
         }) {
             let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
-            let workspaceTools = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []] }
+            let workspaceTools = await availableWorkspaceTools(for: workspaceIDs)
             let turnRequest = TurnRequest(
                 threadID: request.timelineID,
                 requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),

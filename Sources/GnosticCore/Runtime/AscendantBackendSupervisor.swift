@@ -197,7 +197,25 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
             throw NodeRuntimeError.noOperatingAscendant(timelineID)
         }
         guard let adapter = backend as? any AscendantBackendWorkspaceCapability else { return [] }
-        return await adapter.enabledToolIDs(for: timelineID)
+        let enabled = await adapter.enabledToolIDs(for: timelineID)
+        let intents = await registry.attachmentIntent(for: timelineID)
+        guard !intents.isEmpty else { return enabled }
+        var unavailableToolIDs: Set<String> = []
+        for intent in intents where intent.scope == .network {
+            guard let reference = await backendWorkspaceService.reference(id: intent.workspaceID) else {
+                unavailableToolIDs.formUnion((await registry.workspace(id: intent.workspaceID)?.toolIDs) ?? [])
+                _ = await registry.setWorkspaceStatus(id: intent.workspaceID, status: .unavailable)
+                continue
+            }
+            if reference.status != .available {
+                unavailableToolIDs.formUnion(reference.tools.map(\.id))
+                _ = await registry.setWorkspaceStatus(
+                    id: intent.workspaceID,
+                    status: reference.status == .unsupported ? .unsupported : .unavailable
+                )
+            }
+        }
+        return enabled.filter { !unavailableToolIDs.contains($0) }
     }
 
     func session(for ascendantID: UUID, generation: UInt64? = nil) -> AscendantBackendSession? {
