@@ -35,25 +35,38 @@ public actor AscendantTurnCoordinator {
     }
 
     private let completedCapacity: Int
+    private let identityCapacity: Int
+    /// Every admitted identified turn remains in this ledger until serve
+    /// shutdown. A missing key therefore means that admission never occurred.
+    private var identities: [Key: UInt64] = [:]
     private var inFlight: [Key: InFlight] = [:]
     private var completed: [Key: Completed] = [:]
     private var tombstones: [Key: UInt64] = [:]
     private var completionOrder: [Key] = []
-    private var tombstoneOrder: [Key] = []
     private var timelineTails: [UUID: Lane] = [:]
 
-    internal var retainedStateCounts: (completed: Int, tombstones: Int) {
-        (completed.count, tombstones.count)
+    internal var retainedStateCounts: (identities: Int, completed: Int, tombstones: Int, completedBytes: Int) {
+        (
+            identities.count,
+            completed.count,
+            tombstones.count,
+            completed.values.reduce(0) { $0 + Self.retainedPayloadBytes($1.outcome) }
+        )
     }
+
+    internal var retainedIdentityCount: Int { identities.count }
 
     internal var retainedTimelineCount: Int { timelineTails.count }
 
     internal var inFlightCount: Int { inFlight.count }
 
-    /// - Parameter completedCapacity: Maximum number of terminal outcomes kept
-    ///   for replay. The cache is intentionally process-local and bounded.
-    public init(completedCapacity: Int = 256) {
+    /// - Parameters:
+    ///   - completedCapacity: Maximum number of terminal outcomes kept for replay.
+    ///   - identityCapacity: Maximum number of identified turns admitted during
+    ///     this serve lifetime. Admitted identities are never evicted.
+    public init(completedCapacity: Int = 256, identityCapacity: Int = 1_024) {
         self.completedCapacity = max(1, completedCapacity)
+        self.identityCapacity = max(1, identityCapacity)
     }
 
     /// Cancels admitted work during node shutdown. New requests are rejected by
@@ -97,10 +110,23 @@ public actor AscendantTurnCoordinator {
 
         let key = Key(timelineID: request.timelineID, clientTurnID: clientTurnID)
         let messageDigest = Self.messageDigest(request.message)
-        if let existing = inFlight[key] {
-            guard existing.messageDigest == messageDigest else {
+        if let admittedDigest = identities[key] {
+            guard admittedDigest == messageDigest else {
                 throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
+        } else {
+            guard identities.count < identityCapacity else {
+                throw AscendantTurnError.capacityExceeded(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID
+                )
+            }
+            // Record identity before creating the operation. This admission is
+            // permanent for the serve lifetime, even if its result is evicted.
+            identities[key] = messageDigest
+        }
+
+        if let existing = inFlight[key] {
             return try await replay(existing.task, request: canonicalRequest)
         }
 
@@ -225,12 +251,6 @@ public actor AscendantTurnCoordinator {
         guard inFlight[key] != nil else { return }
         inFlight.removeValue(forKey: key)
         let digest = Self.messageDigest(request.message)
-        if tombstones[key] == nil, tombstones.count < completedCapacity {
-            tombstones[key] = digest
-            tombstoneOrder.append(key)
-        } else if tombstones[key] != nil {
-            tombstones[key] = digest
-        }
 
         let outcome: CachedOutcome
         switch result {
@@ -256,15 +276,58 @@ public actor AscendantTurnCoordinator {
                     detail: String(describing: error)
                 )
             }
-            outcome = .failed(terminal)
+            outcome = .failed(Self.bounded(terminal))
         }
 
-        completed[key] = Completed(messageDigest: Self.messageDigest(request.message), outcome: outcome)
+        completed[key] = Completed(messageDigest: digest, outcome: outcome)
         completionOrder.removeAll { $0 == key }
         completionOrder.append(key)
         while completionOrder.count > completedCapacity {
             let oldest = completionOrder.removeFirst()
-            completed.removeValue(forKey: oldest)
+            guard let evicted = completed.removeValue(forKey: oldest) else { continue }
+            // The identity ledger prevents rerun. Retain only the digest for an
+            // evicted result so retries can still conflict or report 410.
+            tombstones[oldest] = evicted.messageDigest
+        }
+    }
+
+    private static let retainedPayloadByteLimit = GnosticWirePayload.maximumEmbeddedValueBytes
+
+    private static func bounded(_ error: AscendantTurnError) -> AscendantTurnError {
+        switch error {
+        case let .capacityExceeded(timelineID, clientTurnID):
+            return .capacityExceeded(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .conflict(timelineID, clientTurnID):
+            return .conflict(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .failed(timelineID, clientTurnID, detail):
+            return .failed(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
+        case let .terminal(timelineID, clientTurnID, code, detail, retryable):
+            return .terminal(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                code: GnosticWirePayload.boundedIdentifier(code),
+                detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200),
+                retryable: retryable
+            )
+        case let .cancelled(timelineID, clientTurnID):
+            return .cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .lifecycleUnusable(timelineID, clientTurnID, detail):
+            return .lifecycleUnusable(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
+        case let .backendUnavailable(timelineID, clientTurnID, detail):
+            return .backendUnavailable(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
+        case let .replayUnavailable(timelineID, clientTurnID):
+            return .replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+        }
+    }
+
+    private static func retainedPayloadBytes(_ outcome: CachedOutcome) -> Int {
+        switch outcome {
+        case let .succeeded(result):
+            return (try? JSONEncoder().encode(result).count) ?? retainedPayloadByteLimit
+        case let .failed(error):
+            // The fields are bounded above, and this mirrors the wire fields
+            // retained for conflict/status replay without retaining source text.
+            return error.reasonCode.utf8.count + error.localizedDescription.utf8.count + 64
         }
     }
 

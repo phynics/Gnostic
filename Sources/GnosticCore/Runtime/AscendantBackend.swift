@@ -180,7 +180,7 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
 
 /// Host-owned sink for backend turn updates.
 public protocol AscendantBackendUpdateSink: Sendable {
-    func append(_ update: AscendantBackendUpdate) async
+    func append(_ update: AscendantBackendUpdate) async throws
 }
 
 /// A generic, backend-neutral description of a Workspace capability.

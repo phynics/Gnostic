@@ -85,6 +85,59 @@ struct ServeOperationContractTests {
         #expect(message.contains("clientTurnID turn-1"))
     }
 
+    @Test("capacity rejection does not create or evict replay updates")
+    func turnCapacityDoesNotTouchReplayStore() async throws {
+        let coordinator = AscendantTurnCoordinator(completedCapacity: 1, identityCapacity: 1)
+        let store = AscendantTurnUpdateStore(maxEntries: 1)
+        let provider = AscendantTurnProvider(
+            execute: { request in
+                try await coordinator.execute(request) { "echo: \(request.message)" }
+            },
+            replayStore: store
+        )
+        let first = AscendantTurnRequest(message: "first", timelineID: UUID(), clientTurnID: "first")
+        _ = try await provider.handle(parameters: payload(first))
+
+        let rejected = AscendantTurnRequest(message: "rejected", timelineID: UUID(), clientTurnID: "rejected")
+        let response = try await provider.handle(parameters: payload(rejected))
+        guard case let .failure(code, _, _) = response else {
+            Issue.record("expected a structured capacity failure")
+            return
+        }
+        #expect(code == 429)
+        let firstReplay = try await store.replay(timelineID: first.timelineID, clientTurnID: "first")
+        #expect(firstReplay.updates.map(\.kind) == ["assistant_text", "completion"])
+        let rejectedReplay = try await store.replay(timelineID: rejected.timelineID, clientTurnID: "rejected")
+        #expect(rejectedReplay.updates.isEmpty)
+    }
+
+    @Test("active terminal updates are not evicted during completion pressure")
+    func activeTerminalUpdateSurvivesPressure() async throws {
+        let store = AscendantTurnUpdateStore(maxEntries: 2)
+        let timelineID = UUID()
+        let provider = AscendantTurnProvider(
+            execute: { request in
+                _ = try await store.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID!,
+                    kind: "cancellation",
+                    terminal: true
+                )
+                try await store.start(timelineID: UUID(), clientTurnID: "other")
+                try await store.start(timelineID: UUID(), clientTurnID: "overflow")
+                return AscendantTurnResult(clientTurnID: request.clientTurnID, text: "must not run")
+            },
+            replayStore: store
+        )
+        _ = try await provider.handle(parameters: payload(
+            AscendantTurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: "active-terminal")
+        ))
+
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: "active-terminal")
+        #expect(replay.updates.filter(\.terminal).count == 1)
+        #expect(replay.updates.first?.kind == "cancellation")
+    }
+
     @Test("ascendant.turn.replay returns bounded identified-turn updates")
     func turnReplayContract() async throws {
         let timelineID = UUID()
@@ -115,13 +168,13 @@ struct ServeOperationContractTests {
         let store = AscendantTurnUpdateStore()
         let provider = AscendantTurnProvider(
             execute: { request in
-                _ = await store.append(
+                _ = try await store.append(
                     timelineID: request.timelineID,
                     clientTurnID: request.clientTurnID!,
                     kind: "assistant_text",
                     text: "hel"
                 )
-                _ = await store.append(
+                _ = try await store.append(
                     timelineID: request.timelineID,
                     clientTurnID: request.clientTurnID!,
                     kind: "assistant_text",
@@ -135,7 +188,7 @@ struct ServeOperationContractTests {
             AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
         ))
 
-        let replay = await store.replay(timelineID: timelineID, clientTurnID: "turn-stream")
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: "turn-stream")
         #expect(replay.updates.map(\.kind) == ["assistant_text", "assistant_text", "completion"])
         #expect(replay.updates.compactMap(\.text) == ["hel", "lo", "hello"])
     }
@@ -155,7 +208,7 @@ struct ServeOperationContractTests {
             AscendantTurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: clientTurnID)
         ))
 
-        let replay = await store.replay(timelineID: timelineID, clientTurnID: clientTurnID)
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: clientTurnID)
         #expect(replay.updates.filter(\.terminal).count == 1)
         #expect(replay.updates.last?.kind == "cancellation")
     }

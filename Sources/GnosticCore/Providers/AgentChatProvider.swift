@@ -131,9 +131,6 @@ public struct AscendantTurnProvider: Sendable {
             return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         }
         do {
-            if let replayStore, let clientTurnID = request.clientTurnID {
-                await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID, message: request.message)
-            }
             let executedResult = try await executor(request)
             let result = AscendantTurnResult(
                 clientTurnID: request.clientTurnID ?? executedResult.clientTurnID,
@@ -147,7 +144,7 @@ public struct AscendantTurnProvider: Sendable {
                 return .failure(code: error.statusCode, message: error.failureMessage)
             }
             if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
-                let replay = await replayStore.replay(
+                let replay = try await replayStore.replay(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID
                 )
@@ -155,31 +152,33 @@ public struct AscendantTurnProvider: Sendable {
                     $0.kind == "assistant_text" || $0.kind == "assistant_text_snapshot"
                 }
                 if !streamed {
-                    _ = await replayStore.append(
+                    _ = try await replayStore.append(
                         timelineID: request.timelineID,
                         clientTurnID: clientTurnID,
                         kind: "assistant_text",
                         text: result.text
                     )
                 }
-                _ = await replayStore.append(
+                _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: "completion",
                     text: result.text,
                     terminal: true
                 )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
             let encoded = try GnosticWirePayload.encode(result, context: "ascendant.turn result")
             return .success(result: String(decoding: encoded, as: UTF8.self))
         } catch let error as AscendantTurnError {
             if let replayStore, let clientTurnID = request.clientTurnID,
                !isAdmissionOnlyError(error) {
-                let replay = await replayStore.replay(
+                let replay = try await replayStore.replay(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID
                 )
                 guard !replay.terminal else {
+                    try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
                     return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
                 }
                 let kind: String
@@ -187,31 +186,37 @@ public struct AscendantTurnProvider: Sendable {
                 case .cancelled: kind = "cancellation"
                 default: kind = "error"
                 }
-                _ = await replayStore.append(
+                _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: kind,
                     text: error.localizedDescription,
                     terminal: true
                 )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
             return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         } catch let error as NodeRuntimeError {
             if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = await replayStore.append(
+                _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
                     kind: "error",
                     text: error.localizedDescription,
                     terminal: true
                 )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
             return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         } catch let error as GnosticProtocolError {
+            if let replayStore, let clientTurnID = request.clientTurnID {
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
+            }
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
+                _ = try await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
             return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
         }
@@ -219,7 +224,7 @@ public struct AscendantTurnProvider: Sendable {
 
     private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
         switch error {
-        case .conflict, .replayUnavailable: return true
+        case .conflict, .replayUnavailable, .capacityExceeded: return true
         case .failed, .terminal, .cancelled, .lifecycleUnusable, .backendUnavailable: return false
         }
     }
@@ -247,7 +252,7 @@ public struct AscendantTurnProvider: Sendable {
         } catch {
             return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         }
-        let replay = await replayStore.replay(
+        let replay = try await replayStore.replay(
             timelineID: request.timelineID,
             clientTurnID: request.clientTurnID,
             message: request.message,

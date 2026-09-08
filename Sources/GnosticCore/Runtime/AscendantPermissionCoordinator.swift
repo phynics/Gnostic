@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import Logging
 import PKContracts
 
 public enum AscendantTurnPermissionContext {
@@ -66,25 +67,38 @@ public struct AscendantPermissionRequest: Sendable, Equatable {
 public actor AscendantPermissionCoordinator {
     private struct Pending {
         let request: AscendantPermissionRequest
+        let clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID
         let continuation: AsyncStream<Bool>.Continuation
     }
 
     private let updates: AscendantTurnUpdateStore
+    private let logger: Logger
     private var pending: [String: Pending] = [:]
     private var acceptingResponses = true
 
     public init(updates: AscendantTurnUpdateStore) {
         self.updates = updates
+        self.logger = ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).permission")
     }
 
     public var pendingCount: Int { pending.count }
 
     public func request(_ request: AscendantPermissionRequest) async -> Bool {
         guard acceptingResponses else { return false }
+        guard let clientTurnID = try? await updates.validatedClientTurnID(request.clientTurnID) else {
+            logger.warning("permission request rejected: invalid client turn ID")
+            return false
+        }
+        do {
+            try await updates.start(timelineID: request.timelineID, clientTurnID: clientTurnID)
+        } catch {
+            logger.warning("permission request rejected: update retention capacity is full")
+            return false
+        }
         guard pending[request.correlationID] == nil else { return false }
         let (decisions, continuation) = AsyncStream<Bool>.makeStream()
-        pending[request.correlationID] = Pending(request: request, continuation: continuation)
-        await append(request, status: "pending")
+        pending[request.correlationID] = Pending(request: request, clientTurnID: clientTurnID, continuation: continuation)
+        await append(request, clientTurnID: clientTurnID, status: "pending")
         var iterator = decisions.makeAsyncIterator()
         return await iterator.next() ?? false
     }
@@ -97,11 +111,16 @@ public actor AscendantPermissionCoordinator {
         approved: Bool
     ) async -> Bool {
         guard acceptingResponses else { return false }
+        guard let responseClientTurnID = try? await updates.validatedClientTurnID(clientTurnID) else {
+            logger.warning("permission response rejected: invalid client turn ID")
+            return false
+        }
         guard let value = pending[correlationID],
               value.request.timelineID == timelineID,
-              value.request.clientTurnID == clientTurnID else { return false }
+              value.request.clientTurnID == responseClientTurnID.rawValue else { return false }
         pending[correlationID] = nil
-        await append(value.request, status: approved ? "selected" : "denied")
+        await append(value.request, clientTurnID: value.clientTurnID, status: approved ? "selected" : "denied")
+        await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
         value.continuation.yield(approved)
         value.continuation.finish()
         return true
@@ -112,16 +131,22 @@ public actor AscendantPermissionCoordinator {
         let values = Array(pending.values)
         pending.removeAll()
         for value in values {
-            await append(value.request, status: reason)
+            await append(value.request, clientTurnID: value.clientTurnID, status: reason)
+            await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
             value.continuation.yield(false)
             value.continuation.finish()
         }
     }
 
-    private func append(_ request: AscendantPermissionRequest, status: String) async {
-        _ = await updates.append(
+    private func append(
+        _ request: AscendantPermissionRequest,
+        clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID,
+        status: String
+    ) async {
+        do {
+            _ = try await updates.append(
             timelineID: request.timelineID,
-            clientTurnID: request.clientTurnID,
+            clientTurnID: clientTurnID,
             kind: "permission_state",
             permissionState: AscendantPermissionState(
                 correlationID: request.correlationID,
@@ -130,6 +155,9 @@ public actor AscendantPermissionCoordinator {
                 status: status
             )
         )
+        } catch {
+            logger.warning("permission update rejected: update retention capacity is full")
+        }
     }
 }
 
