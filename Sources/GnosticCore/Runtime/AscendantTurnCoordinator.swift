@@ -303,13 +303,14 @@ public actor AscendantTurnCoordinator {
             return .conflict(timelineID: timelineID, clientTurnID: clientTurnID)
         case let .failed(timelineID, clientTurnID, detail):
             return .failed(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
-        case let .terminal(timelineID, clientTurnID, code, detail, retryable):
+        case let .terminal(timelineID, clientTurnID, code, detail, retryable, statusCode):
             return .terminal(
                 timelineID: timelineID,
                 clientTurnID: clientTurnID,
                 code: GnosticWirePayload.boundedIdentifier(code),
                 detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200),
-                retryable: retryable
+                retryable: retryable,
+                statusCode: statusCode
             )
         case let .cancelled(timelineID, clientTurnID):
             return .cancelled(timelineID: timelineID, clientTurnID: clientTurnID)

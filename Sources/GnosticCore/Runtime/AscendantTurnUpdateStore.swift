@@ -155,7 +155,7 @@ public actor AscendantTurnUpdateStore {
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) throws -> AscendantTurnUpdate {
         let validated = try validatedClientTurnID(clientTurnID)
-        return try append(timelineID: timelineID, clientTurnID: validated, kind: kind, text: text, toolState: toolState, permissionState: permissionState, terminal: terminal, protocolMajor: protocolMajor)
+        return try append(timelineID: timelineID, clientTurnID: validated, kind: kind, text: text, toolState: toolState, permissionState: permissionState, terminal: terminal, reasonCode: reasonCode, statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor)
     }
 
     internal func append(
@@ -166,6 +166,9 @@ public actor AscendantTurnUpdateStore {
         toolState: AscendantToolState? = nil,
         permissionState: AscendantPermissionState? = nil,
         terminal: Bool = false,
+        reasonCode: String? = nil,
+        statusCode: Int? = nil,
+        retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) throws -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)

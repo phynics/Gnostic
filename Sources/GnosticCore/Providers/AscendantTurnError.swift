@@ -68,6 +68,8 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
     /// remain available to local diagnostics but never cross the wire.
     public var publicMessage: String {
         switch self {
+        case let .capacityExceeded(_, clientTurnID):
+            "the serve has reached its identified turn capacity; turn \(clientTurnID) was not admitted"
         case let .conflict(_, clientTurnID):
             "clientTurnID \(clientTurnID) was already used with different content"
         case .failed, .terminal:

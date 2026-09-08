@@ -104,7 +104,7 @@ struct ServeOperationContractTests {
         #expect(message.contains("turnFailed"))
         #expect(!message.contains("sentinel-secret-coordinator"))
 
-        let replay = await store.replay(timelineID: timelineID, clientTurnID: "coordinator-sentinel")
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: "coordinator-sentinel")
         #expect(replay.updates.last?.text == "The ascendant turn failed.")
         #expect(!replay.updates.contains { $0.text?.contains("sentinel-secret-coordinator") == true })
     }
@@ -139,7 +139,7 @@ struct ServeOperationContractTests {
             #expect(failure.statusCode == status)
             #expect(failure.retryable == retryable)
             #expect(!message.contains("secret"))
-            let replay = await store.replay(timelineID: timelineID, clientTurnID: request.clientTurnID!)
+            let replay = try await store.replay(timelineID: timelineID, clientTurnID: request.clientTurnID!)
             let update = replay.updates.last
             #expect(update?.kind == "error")
             #expect(update?.reasonCode == reason)
