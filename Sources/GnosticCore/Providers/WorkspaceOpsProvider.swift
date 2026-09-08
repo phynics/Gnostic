@@ -79,18 +79,43 @@ public struct WorkspaceListing: Codable, Sendable {
 public struct WorkspaceListResult: Codable, Sendable {
     public let protocolMajor: Int
     public let workspaces: [WorkspaceListing]
+    public let nextOffset: Int?
 
-    public init(workspaces: [WorkspaceListing], protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(workspaces: [WorkspaceListing], nextOffset: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.workspaces = workspaces
+        self.nextOffset = nextOffset
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, workspaces, nextOffset }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         workspaces = try container.decode([WorkspaceListing].self, forKey: .workspaces)
+        nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
+    }
+}
+
+/// The protocol-bearing request for `workspace.list`.
+public struct WorkspaceListRequest: Codable, Sendable {
+    public let protocolMajor: Int
+    public let offset: Int
+    public let limit: Int
+
+    public init(offset: Int = 0, limit: Int = GnosticWirePayload.maximumListItems, protocolMajor: Int = GnosticProtocol.currentMajor) {
+        self.protocolMajor = protocolMajor
+        self.offset = offset
+        self.limit = limit
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, offset, limit }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? GnosticWirePayload.maximumListItems
     }
 }
 
@@ -140,10 +165,19 @@ public struct WorkspaceOpsProvider: Sendable {
         switch operation {
         case Self.listOperation:
             if let error = protocolError(parameters) { return error }
+            guard let request = decodeList(parameters), request.offset >= 0, request.limit > 0 else {
+                return failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
+            }
             do {
                 let listings = try await list()
                 try listings.forEach { try GnosticProtocol.validate($0.protocolMajor) }
-                let encoded = try JSONEncoder().encode(WorkspaceListResult(workspaces: listings))
+                let pageLimit = min(request.limit, GnosticWirePayload.maximumListItems)
+                let page = boundedPage(listings, offset: request.offset, limit: pageLimit)
+                let nextOffset = request.offset + page.count < listings.count ? request.offset + page.count : nil
+                let encoded = try GnosticWirePayload.encode(
+                    WorkspaceListResult(workspaces: page, nextOffset: nextOffset),
+                    context: "workspace.list result"
+                )
                 return .success(result: String(decoding: encoded, as: UTF8.self))
             } catch {
                 return failure(for: error)
@@ -173,6 +207,26 @@ public struct WorkspaceOpsProvider: Sendable {
         default:
             return failure(code: 404, reasonCode: "unknownWorkspaceOperation", message: "Unknown workspace operation")
         }
+    }
+
+    private func decodeList(_ parameters: String?) -> WorkspaceListRequest? {
+        guard let parameters else { return nil }
+        return try? JSONDecoder().decode(WorkspaceListRequest.self, from: Data(parameters.utf8))
+    }
+
+    private func boundedPage(_ values: [WorkspaceListing], offset: Int, limit: Int) -> [WorkspaceListing] {
+        guard offset < values.count else { return [] }
+        var result: [WorkspaceListing] = []
+        for value in values.dropFirst(offset).prefix(limit) {
+            let candidate = result + [value]
+            let candidateOffset = offset + candidate.count < values.count ? offset + candidate.count : nil
+            guard (try? GnosticWirePayload.encode(
+                WorkspaceListResult(workspaces: candidate, nextOffset: candidateOffset),
+                context: "workspace.list result"
+            )) != nil else { break }
+            result.append(value)
+        }
+        return result
     }
 
     private func decode(_ parameters: String?) -> WorkspaceOpsRequest? {

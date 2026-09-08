@@ -222,6 +222,50 @@ struct ServeOperationContractTests {
         #expect(await recorder.attached.isEmpty)
     }
 
+    @Test("workspace list pages oversized provider results without truncating")
+    func workspaceListBoundsOversizedResults() async throws {
+        let listings = (0..<20).map { index in
+            WorkspaceListing(id: UUID(), name: String(repeating: "workspace-\(index)-", count: 20))
+        }
+        let provider = WorkspaceOpsProvider(
+            list: { listings },
+            attach: { _ in true },
+            detach: { _ in true }
+        )
+
+        var offset = 0
+        var returnedIDs: [UUID] = []
+        var firstPageCount: Int?
+        while true {
+            let request: String
+            if offset == 0 {
+                // Older clients send WorkspaceOpsRequest. Its extra fields are
+                // ignored and the omitted pagination fields use compatibility defaults.
+                request = payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
+            } else {
+                request = payload(WorkspaceListRequest(offset: offset))
+            }
+            let response = try await provider.handle(
+                operation: WorkspaceOpsProvider.listOperation,
+                parameters: request
+            )
+            let result = try resultText(response)
+            #expect(Data(result.utf8).count <= GnosticWirePayload.maximumEmbeddedValueBytes)
+            let page = try JSONDecoder().decode(
+                WorkspaceListResult.self,
+                from: Data(result.utf8)
+            )
+            if firstPageCount == nil { firstPageCount = page.workspaces.count }
+            returnedIDs += page.workspaces.map(\.id)
+            guard let nextOffset = page.nextOffset else { break }
+            #expect(nextOffset > offset)
+            offset = nextOffset
+        }
+
+        #expect(firstPageCount != listings.count)
+        #expect(returnedIDs == listings.map(\.id))
+    }
+
     @Test("workspace ops convert domain and unexpected errors to structured failures")
     func workspaceOpsFailureContract() async throws {
         struct InjectedFailure: Error {}
