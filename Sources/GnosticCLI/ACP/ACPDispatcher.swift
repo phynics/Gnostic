@@ -190,7 +190,15 @@ final class ACPDispatcher: Sendable {
             throw JSONRPCMethodError.invalidParams("session/prompt accepts non-empty text content only")
         }
         let record = try await requireSession(id: input.sessionID, cwd: nil)
-        let turnID = input.clientTurnID ?? "acp:\(record.id):\(UUID().uuidString.lowercased())"
+        let turnID: String
+        if let clientTurnID = input.clientTurnID {
+            // ACP metadata may contain compatibility whitespace. Canonicalize
+            // once, before live-update filtering, and reuse this value for the
+            // request and every update or permission correlation.
+            turnID = try GnosticWirePayload.canonicalClientTurnID(clientTurnID)
+        } else {
+            turnID = "acp:\(record.id):\(UUID().uuidString.lowercased())"
+        }
 
         // A reconnect may retry a completed turn after the coordinator's
         // terminal-result cache has expired. The replay store is authoritative
