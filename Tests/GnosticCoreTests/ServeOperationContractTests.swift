@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Axoloty
+import AxolotyWire
 import Foundation
 import GnosticCore
 import Testing
@@ -21,6 +22,34 @@ struct ServeOperationContractTests {
             return ""
         }
         return text
+    }
+
+    /// Encodes the provider result through Axoloty's complete ReturnEvent
+    /// payload shape, rather than validating only the nested application value.
+    private func validateReturnEvent(_ result: String) throws {
+        var storage = [UInt8](repeating: 0, count: GnosticWirePayload.maximumBytes)
+        try storage.withUnsafeMutableBufferPointer { buffer in
+            var writer = WireWriter(buffer: buffer.baseAddress!, capacity: buffer.count)
+            let returnData = try OwnedReturnWireData(
+                result: Array(result.utf8),
+                executionInfo: nil,
+                error: nil
+            )
+            try returnData.encode(to: &writer)
+            try GnosticWirePayload.validateEvent(
+                Data(buffer[..<writer.position]),
+                context: "workspace.list ReturnEvent"
+            )
+        }
+    }
+
+    @Test("workspace list embedded budget survives the complete ReturnEvent envelope")
+    func workspaceListEmbeddedBudgetIncludesReturnEnvelope() throws {
+        let prefix = Array(#"{"value":""#.utf8)
+        let suffix = Array(#""}"#.utf8)
+        let inner = prefix + Array(repeating: 0x78, count: GnosticWirePayload.maximumEmbeddedValueBytes - prefix.count - suffix.count) + suffix
+        #expect(inner.count == GnosticWirePayload.maximumEmbeddedValueBytes)
+        try validateReturnEvent(String(decoding: inner, as: UTF8.self))
     }
 
     @Test("ascendant.turn decodes the request, runs the closure, and encodes the result")
@@ -211,6 +240,7 @@ struct ServeOperationContractTests {
         let list = try JSONDecoder().decode(WorkspaceListResult.self, from: Data(try resultText(listResponse).utf8))
         #expect(list.workspaces.first?.name == "Atlas")
         #expect(list.workspaces.first?.status == .available)
+        #expect(list.nextOffset == nil)
 
         let attachRequest = WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: UUID())
         let attachResponse = try await provider.handle(operation: WorkspaceOpsProvider.attachOperation, parameters: payload(attachRequest))
@@ -220,6 +250,29 @@ struct ServeOperationContractTests {
         let detachResponse = try await provider.handle(operation: WorkspaceOpsProvider.detachOperation, parameters: payload(attachRequest))
         #expect(try JSONDecoder().decode(WorkspaceMutationResult.self, from: Data(try resultText(detachResponse).utf8)).accepted)
         #expect(await recorder.attached.isEmpty)
+    }
+
+    @Test("workspace list returns a complete result to a legacy request when it fits")
+    func workspaceListLegacySmallResult() async throws {
+        let listings = [
+            WorkspaceListing(id: UUID(), name: "Atlas"),
+            WorkspaceListing(id: UUID(), name: "Borealis")
+        ]
+        let provider = WorkspaceOpsProvider(
+            list: { listings },
+            attach: { _ in true },
+            detach: { _ in true }
+        )
+
+        let response = try await provider.handle(
+            operation: WorkspaceOpsProvider.listOperation,
+            parameters: payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
+        )
+        let result = try resultText(response)
+        try validateReturnEvent(result)
+        let decoded = try JSONDecoder().decode(WorkspaceListResult.self, from: Data(result.utf8))
+        #expect(decoded.workspaces.map(\.id) == listings.map(\.id))
+        #expect(decoded.nextOffset == nil)
     }
 
     @Test("workspace list pages oversized provider results without truncating")
@@ -238,18 +291,13 @@ struct ServeOperationContractTests {
         var firstPageCount: Int?
         while true {
             let request: String
-            if offset == 0 {
-                // Older clients send WorkspaceOpsRequest. Its extra fields are
-                // ignored and the omitted pagination fields use compatibility defaults.
-                request = payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
-            } else {
-                request = payload(WorkspaceListRequest(offset: offset))
-            }
+            request = payload(WorkspaceListRequest(offset: offset))
             let response = try await provider.handle(
                 operation: WorkspaceOpsProvider.listOperation,
                 parameters: request
             )
             let result = try resultText(response)
+            try validateReturnEvent(result)
             #expect(Data(result.utf8).count <= GnosticWirePayload.maximumEmbeddedValueBytes)
             let page = try JSONDecoder().decode(
                 WorkspaceListResult.self,
@@ -264,6 +312,31 @@ struct ServeOperationContractTests {
 
         #expect(firstPageCount != listings.count)
         #expect(returnedIDs == listings.map(\.id))
+    }
+
+    @Test("workspace list rejects legacy requests when pagination is required")
+    func workspaceListLegacyOversizedResultRequiresPagination() async throws {
+        let listings = (0..<20).map { index in
+            WorkspaceListing(id: UUID(), name: String(repeating: "workspace-\(index)-", count: 20))
+        }
+        let provider = WorkspaceOpsProvider(
+            list: { listings },
+            attach: { _ in true },
+            detach: { _ in true }
+        )
+
+        let response = try await provider.handle(
+            operation: WorkspaceOpsProvider.listOperation,
+            parameters: payload(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
+        )
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected pagination-required failure")
+            return
+        }
+        #expect(code == 400)
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "paginationRequired")
+        #expect(failure.message.contains("WorkspaceListRequest"))
     }
 
     @Test("workspace ops convert domain and unexpected errors to structured failures")
