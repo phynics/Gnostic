@@ -15,17 +15,31 @@ public struct AscendantTurnRequest: Codable, Sendable {
         self.protocolMajor = protocolMajor
         self.message = message
         self.timelineID = timelineID
-        self.clientTurnID = clientTurnID
+        self.clientTurnID = clientTurnID.map {
+            (try? GnosticWirePayload.canonicalClientTurnID($0)) ?? $0
+        }
     }
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, message, timelineID, clientTurnID }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(message, forKey: .message)
+        try container.encode(timelineID, forKey: .timelineID)
+        if let clientTurnID {
+            try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
+        }
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         message = GnosticWirePayload.prefix(try container.decode(String.self, forKey: .message), maximumBytes: GnosticWirePayload.maximumLabelBytes)
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID)
+        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
+            try GnosticWirePayload.canonicalClientTurnID($0)
+        }
     }
 }
 
@@ -38,8 +52,10 @@ public struct AscendantTurnResult: Codable, Sendable {
 
     public init(clientTurnID: String? = nil, text: String, replayed: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
-        self.clientTurnID = clientTurnID.map { GnosticWirePayload.boundedIdentifier($0) }
-        self.text = GnosticWirePayload.prefix(text, maximumBytes: 1_400)
+        self.clientTurnID = clientTurnID.map {
+            (try? GnosticWirePayload.canonicalClientTurnID($0)) ?? $0
+        }
+        self.text = GnosticWirePayload.prefix(text, maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes)
         self.replayed = replayed
     }
 
@@ -50,11 +66,26 @@ public struct AscendantTurnResult: Codable, Sendable {
         case replayed
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        if let clientTurnID {
+            try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
+        }
+        try container.encode(text, forKey: .text)
+        try container.encode(replayed, forKey: .replayed)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map { GnosticWirePayload.boundedIdentifier($0) }
-        text = GnosticWirePayload.prefix(try container.decode(String.self, forKey: .text), maximumBytes: GnosticWirePayload.maximumLabelBytes)
+        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
+            try GnosticWirePayload.canonicalClientTurnID($0)
+        }
+        text = GnosticWirePayload.prefix(
+            try container.decode(String.self, forKey: .text),
+            maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes
+        )
         replayed = try container.decodeIfPresent(Bool.self, forKey: .replayed) ?? false
     }
 }
@@ -97,18 +128,25 @@ public struct AscendantTurnProvider: Sendable {
             request = try JSONDecoder().decode(AscendantTurnRequest.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch let error as GnosticWirePayload.Error {
+            if case .invalidIdentifier = error {
+                return failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+            }
+            return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         } catch {
             return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
-        }
-        if let clientTurnID = request.clientTurnID,
-           clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return failure(code: 400, reasonCode: "invalidClientTurnID", message: "clientTurnID must not be empty")
         }
         do {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID, message: request.message)
             }
-            let result = try await executor(request)
+            let executedResult = try await executor(request)
+            let result = AscendantTurnResult(
+                clientTurnID: request.clientTurnID ?? executedResult.clientTurnID,
+                text: executedResult.text,
+                replayed: executedResult.replayed,
+                protocolMajor: executedResult.protocolMajor
+            )
             do {
                 try GnosticProtocol.validate(result.protocolMajor)
             } catch let error as GnosticProtocolError {
@@ -189,11 +227,13 @@ public struct AscendantTurnProvider: Sendable {
             request = try JSONDecoder().decode(AscendantTurnReplayRequest.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch let error as GnosticWirePayload.Error {
+            if case .invalidIdentifier = error {
+                return failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+            }
+            return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         } catch {
             return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
-        }
-        guard !request.clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return failure(code: 400, reasonCode: "invalidClientTurnID", message: "Invalid ascendant.turn.replay payload")
         }
         let replay = await replayStore.replay(
             timelineID: request.timelineID,
@@ -259,18 +299,29 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
     public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.timelineID = timelineID
-        self.clientTurnID = clientTurnID
+        self.clientTurnID = (try? GnosticWirePayload.canonicalClientTurnID(clientTurnID)) ?? clientTurnID
         self.message = message.map { GnosticWirePayload.prefix($0, maximumBytes: 1_200) }
         self.afterSequence = afterSequence
     }
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID, message, afterSequence }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(timelineID, forKey: .timelineID)
+        try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
+        try container.encodeIfPresent(message, forKey: .message)
+        try container.encode(afterSequence, forKey: .afterSequence)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
+        clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
+            container.decode(String.self, forKey: .clientTurnID)
+        )
         message = try container.decodeIfPresent(String.self, forKey: .message).map { GnosticWirePayload.prefix($0, maximumBytes: 1_200) }
         afterSequence = try container.decodeIfPresent(Int.self, forKey: .afterSequence) ?? 0
     }

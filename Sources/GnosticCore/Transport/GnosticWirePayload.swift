@@ -19,6 +19,10 @@ public enum GnosticWirePayload {
     /// event envelope when an encoded value is embedded in a Call or Channel.
     public static let maximumEmbeddedValueBytes = 1_800
 
+    /// Shared bound for the text field in an Ascendant Turn result. The same
+    /// value is used while constructing and decoding results.
+    public static let maximumTurnResultTextBytes = 1_400
+
     /// Fixed bounds for values whose source is user- or provider-controlled.
     /// Lists use a separate query/page operation when their size is not fixed.
     public static let maximumLabelBytes = 256
@@ -28,11 +32,14 @@ public enum GnosticWirePayload {
 
     public enum Error: Swift.Error, Equatable, Sendable, LocalizedError {
         case tooLarge(context: String, actualBytes: Int, maximumBytes: Int)
+        case invalidIdentifier(context: String)
 
         public var errorDescription: String? {
             switch self {
             case let .tooLarge(context, actualBytes, maximumBytes):
                 "\(context) is \(actualBytes) bytes; the maximum is \(maximumBytes) bytes."
+            case let .invalidIdentifier(context):
+                context
             }
         }
     }
@@ -79,6 +86,20 @@ public enum GnosticWirePayload {
 
     public static func boundedIdentifier(_ value: String) -> String {
         prefix(value, maximumBytes: maximumIdentifierBytes)
+    }
+
+    /// Returns the one accepted representation of a client Turn ID.
+    /// Surrounding whitespace is compatibility input, not part of identity.
+    /// Invalid IDs are rejected instead of being truncated.
+    public static func canonicalClientTurnID(_ value: String) throws -> String {
+        let canonical = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !canonical.isEmpty else {
+            throw Error.invalidIdentifier(context: "clientTurnID must not be empty")
+        }
+        guard canonical.utf8.count <= maximumIdentifierBytes else {
+            throw Error.invalidIdentifier(context: "clientTurnID exceeds the maximum of \(maximumIdentifierBytes) bytes")
+        }
+        return canonical
     }
 
     public static func boundedWorkspaceIDs(_ values: [UUID]) -> [UUID] {

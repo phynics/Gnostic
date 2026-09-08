@@ -50,11 +50,23 @@ public final class TurnService {
 
     func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
-        let ascendantID = try await registry.requireOperatingAscendant(for: request.timelineID)
+        let turnRequest: AscendantTurnRequest
+        if let rawClientTurnID = request.clientTurnID {
+            let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
+            turnRequest = AscendantTurnRequest(
+                message: request.message,
+                timelineID: request.timelineID,
+                clientTurnID: clientTurnID,
+                protocolMajor: request.protocolMajor
+            )
+        } else {
+            turnRequest = request
+        }
+        let ascendantID = try await registry.requireOperatingAscendant(for: turnRequest.timelineID)
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
-        let sink = BackendTurnUpdateSink(store: updates, request: request)
-        return try await coordinator.execute(request) {
+        let sink = BackendTurnUpdateSink(store: updates, request: turnRequest)
+        return try await coordinator.execute(turnRequest) {
             let session: AscendantBackendSession
             do {
                 session = try await self.backendProvider.sessionForTurn(ascendantID)
@@ -62,14 +74,14 @@ public final class TurnService {
                 throw error
             } catch {
                 throw AscendantTurnError.backendUnavailable(
-                    timelineID: request.timelineID,
-                    clientTurnID: request.clientTurnID ?? "",
+                    timelineID: turnRequest.timelineID,
+                    clientTurnID: turnRequest.clientTurnID ?? "",
                     detail: error.localizedDescription
                 )
             }
             do {
                 let result = try await session.backend.runTurn(
-                    AscendantBackendTurnRequest(timelineID: request.timelineID, message: request.message, clientTurnID: request.clientTurnID),
+                    AscendantBackendTurnRequest(timelineID: turnRequest.timelineID, message: turnRequest.message, clientTurnID: turnRequest.clientTurnID),
                     updates: sink
                 )
                 guard await self.backendProvider.isCurrentSession(session),

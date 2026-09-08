@@ -14,17 +14,27 @@ public actor AscendantTurnUpdateStore {
         public init(protocolMajor: Int = GnosticProtocol.currentMajor, timelineID: UUID, clientTurnID: String, update: AscendantTurnUpdate) {
             self.protocolMajor = protocolMajor
             self.timelineID = timelineID
-            self.clientTurnID = clientTurnID
+            self.clientTurnID = (try? GnosticWirePayload.canonicalClientTurnID(clientTurnID)) ?? clientTurnID
             self.update = update
         }
 
         private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID, update }
 
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(protocolMajor, forKey: .protocolMajor)
+            try container.encode(timelineID, forKey: .timelineID)
+            try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
+            try container.encode(update, forKey: .update)
+        }
+
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
             timelineID = try container.decode(UUID.self, forKey: .timelineID)
-            clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
+            clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
+                container.decode(String.self, forKey: .clientTurnID)
+            )
             update = try container.decode(AscendantTurnUpdate.self, forKey: .update)
         }
     }
@@ -64,6 +74,7 @@ public actor AscendantTurnUpdateStore {
     }
 
     public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) {
+        guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else { return }
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         guard entries[key] == nil else { return }
         entries[key] = Entry(
@@ -83,6 +94,9 @@ public actor AscendantTurnUpdateStore {
         terminal: Bool = false,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) -> AscendantTurnUpdate {
+        guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else {
+            return AscendantTurnUpdate(sequence: 0, kind: GnosticWirePayload.boundedIdentifier(kind), terminal: terminal, protocolMajor: protocolMajor)
+        }
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
         let update = Self.bounded(
@@ -148,7 +162,8 @@ public actor AscendantTurnUpdateStore {
     }
 
     public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) -> AscendantTurnReplay {
-        guard let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID)] else {
+        guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID),
+              let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID)] else {
             return AscendantTurnReplay(updates: [], compacted: false, terminal: false)
         }
         if let message, let digest = entry.messageDigest, digest != Self.messageDigest(message) {
