@@ -151,6 +151,31 @@ struct NodeRuntimeTests {
         #expect(failure.reasonCode == "workspaceInvocationFailed")
     }
 
+    @Test("multiplexed Workspace provider hides unexpected executor details")
+    func multiplexedWorkspaceProviderDoesNotLeakDetails() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000142")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "echo://provider-secret")!,
+            location: .runtime,
+            tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
+        )
+        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: SentinelWorkspace(reference: reference)])
+        let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
+        let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
+
+        let response = try await provider.handle(parameters: payload)
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured workspace invocation failure")
+            return
+        }
+        #expect(code == 500)
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "workspaceInvocationFailed")
+        #expect(failure.message == "The workspace invocation failed.")
+        #expect(!message.contains("sentinel-secret-multiplexed"))
+    }
+
     @Test("multiplexed Workspace provider preserves cancellation from a workspace")
     func multiplexedWorkspaceProviderPreservesCancellation() async throws {
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000141")!
@@ -1369,6 +1394,22 @@ private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvi
 
     func listTools() async throws -> [ToolReference] { reference.tools }
     func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult { .success("ok") }
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
+}
+
+private struct SentinelWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+        struct SentinelFailure: Error { let detail = "sentinel-secret-multiplexed" }
+        throw SentinelFailure()
+    }
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }

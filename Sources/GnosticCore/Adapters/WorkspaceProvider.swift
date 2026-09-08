@@ -133,14 +133,18 @@ public actor GnosticWorkspaceProvider {
             let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
             let result = try await invoke(invocation)
             return .success(result: try Self.encodeResult(result))
-        } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
-        } catch let error as DecodingError {
-            return failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: String(describing: error))
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
-            return failure(code: 500, reasonCode: "workspaceInvocationFailed", message: String(describing: error))
+        } catch is DecodingError {
+            return failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: "Invalid workspace invocation payload")
+        } catch let error {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "workspaceInvocationFailed",
+                fallbackMessage: "The workspace invocation failed."
+            )
+            return .failure(code: mapped.code, message: mapped.message)
         }
     }
 

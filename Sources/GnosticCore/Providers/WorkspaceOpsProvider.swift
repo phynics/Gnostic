@@ -299,25 +299,13 @@ public struct WorkspaceOpsProvider: Sendable {
     }
 
     private func failure(for error: Error) -> CallHandlerResult {
-        if let error = error as? GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
-        }
-        if let error = error as? NodeRuntimeError {
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-        }
-        if let error = error as? DiscoveredWorkspaceAttachmentError {
-            switch error {
-            case .approvalRequired:
-                return failure(code: 403, reasonCode: "approvalRequired", message: "Workspace attachment requires approval.")
-            case let .unavailable(status):
-                return failure(code: 409, reasonCode: "workspaceUnavailable", message: "Workspace is not uniquely available (\(status)).")
-            case .invalidURI:
-                return failure(code: 422, reasonCode: "invalidWorkspaceURI", message: "Workspace advertised an invalid URI.")
-            case let .timelineNotOwned(id):
-                return failure(code: 404, reasonCode: "timelineNotOwned", message: "Timeline \(id.uuidString.lowercased()) is not owned by this Node.")
-            }
-        }
-        return failure(code: 500, reasonCode: "workspaceOperationFailed", message: String(describing: error))
+        let mapped = GnosticProtocol.publicFailure(
+            for: error,
+            fallbackCode: 500,
+            fallbackReasonCode: "workspaceOperationFailed",
+            fallbackMessage: "The workspace operation failed."
+        )
+        return .failure(code: mapped.code, message: mapped.message)
     }
 
     private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {

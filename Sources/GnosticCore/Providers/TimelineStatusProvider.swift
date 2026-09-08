@@ -92,12 +92,14 @@ public struct TimelineStatusProvider: Sendable {
             try GnosticProtocol.validate(status.protocolMajor)
             let encoded = try JSONEncoder().encode(status)
             return .success(result: String(decoding: encoded, as: UTF8.self))
-        } catch let error as NodeRuntimeError {
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-        } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
-            return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The timeline status operation failed."
+            )
+            return .failure(code: mapped.code, message: mapped.message)
         }
     }
 

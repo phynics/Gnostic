@@ -65,6 +65,22 @@ struct ServeOperationContractTests {
         #expect(!result.replayed)
     }
 
+    @Test("ascendant.turn hides unexpected executor details at the wire seam")
+    func turnUnexpectedFailureDoesNotLeakDetails() async throws {
+        struct SentinelFailure: Error { let detail = "sentinel-secret-turn" }
+        let provider = AscendantTurnProvider { _ in throw SentinelFailure() }
+        let response = try await provider.handle(parameters: payload(AscendantTurnRequest(message: "hello", timelineID: UUID())))
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured turn failure")
+            return
+        }
+        #expect(code == 500)
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "internalError")
+        #expect(failure.message == "The ascendant turn failed.")
+        #expect(!message.contains("sentinel-secret-turn"))
+    }
+
     @Test("ascendant.turn conflict is a structured failure")
     func turnConflictContract() async throws {
         let coordinator = AscendantTurnCoordinator()
@@ -214,6 +230,22 @@ struct ServeOperationContractTests {
         #expect(code == 409)
     }
 
+    @Test("timeline.status hides unexpected executor details at the wire seam")
+    func timelineStatusUnexpectedFailureDoesNotLeakDetails() async throws {
+        struct SentinelFailure: Error { let detail = "sentinel-secret-status" }
+        let provider = TimelineStatusProvider { _ in throw SentinelFailure() }
+        let response = try await provider.handle(parameters: payload(TimelineStatusRequest(timelineID: UUID())))
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured timeline status failure")
+            return
+        }
+        #expect(code == 500)
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "internalError")
+        #expect(failure.message == "The timeline status operation failed.")
+        #expect(!message.contains("sentinel-secret-status"))
+    }
+
     @Test("timeline.status decodes the timeline id and returns the status")
     func timelineStatusContract() async throws {
         let timelineID = UUID()
@@ -224,6 +256,29 @@ struct ServeOperationContractTests {
         let status = try JSONDecoder().decode(TimelineStatus.self, from: Data(try resultText(response).utf8))
         #expect(status.title == "Serviced timeline")
         #expect(status.timelineID == timelineID)
+    }
+
+    @Test("timeline management hides unexpected executor details at the wire seam")
+    func timelineManagementUnexpectedFailureDoesNotLeakDetails() async throws {
+        struct SentinelFailure: Error { let detail = "sentinel-secret-management" }
+        let provider = TimelineManagementProvider(
+            create: { _, _ in throw SentinelFailure() },
+            list: { throw SentinelFailure() },
+            update: { _ in throw SentinelFailure() }
+        )
+        let response = try await provider.handle(
+            operation: TimelineManagementProvider.createOperation,
+            parameters: payload(TimelineCreateRequest(title: "Research"))
+        )
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured timeline management failure")
+            return
+        }
+        #expect(code == 500)
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "internalError")
+        #expect(failure.message == "The timeline operation failed.")
+        #expect(!message.contains("sentinel-secret-management"))
     }
 
     @Test("workspace ops route to list, attach, and detach closures")
@@ -341,7 +396,7 @@ struct ServeOperationContractTests {
 
     @Test("workspace ops convert domain and unexpected errors to structured failures")
     func workspaceOpsFailureContract() async throws {
-        struct InjectedFailure: Error {}
+        struct InjectedFailure: Error { let detail = "sentinel-secret-workspace-ops" }
         let request = WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID())
         let provider = WorkspaceOpsProvider(
             list: { throw InjectedFailure() },
@@ -360,6 +415,8 @@ struct ServeOperationContractTests {
         let listFailure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(listMessage.utf8))
         #expect(listFailure.protocolMajor == GnosticProtocol.currentMajor)
         #expect(listFailure.reasonCode == "workspaceOperationFailed")
+        #expect(listFailure.message == "The workspace operation failed.")
+        #expect(!listMessage.contains("sentinel-secret-workspace-ops"))
 
         guard case let .failure(attachCode, attachMessage, _) = try await provider.handle(
             operation: WorkspaceOpsProvider.attachOperation,

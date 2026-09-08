@@ -15,6 +15,17 @@ public struct GnosticProtocolFailure: Codable, Sendable, Equatable {
     }
 }
 
+/// A safe failure ready for the Axoloty Call/Return boundary.
+public struct GnosticPublicFailure: Sendable, Equatable {
+    public let code: Int
+    public let message: String
+
+    public init(code: Int, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
 /// The single incompatible network contract implemented by this Gnostic node.
 ///
 /// The major is deliberately explicit on every Gnostic advertisement and
@@ -34,6 +45,47 @@ public enum GnosticProtocol {
             data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"payloadTooLarge","message":"The response was too large to send."}"#.utf8)
         }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Maps an error to a bounded public failure without exposing arbitrary
+    /// implementation details from an injected executor or transport.
+    ///
+    /// Structured domain failures retain their established status and reason
+    /// code. Unknown failures use the supplied safe fallback message.
+    public static func publicFailure(
+        for error: Error,
+        fallbackCode: Int,
+        fallbackReasonCode: String,
+        fallbackMessage: String
+    ) -> GnosticPublicFailure {
+        if let error = error as? GnosticProtocolError {
+            return GnosticPublicFailure(code: error.statusCode, message: error.failureMessage)
+        }
+        if let error = error as? NodeRuntimeError {
+            return GnosticPublicFailure(
+                code: error.statusCode,
+                message: failureMessage(reasonCode: error.reasonCode, message: error.localizedDescription)
+            )
+        }
+        if let error = error as? AscendantTurnError {
+            return GnosticPublicFailure(
+                code: error.statusCode,
+                message: failureMessage(reasonCode: error.reasonCode, message: error.publicMessage)
+            )
+        }
+        if let error = error as? DiscoveredWorkspaceAttachmentError {
+            switch error {
+            case .approvalRequired:
+                return GnosticPublicFailure(code: 403, message: failureMessage(reasonCode: "approvalRequired", message: "Workspace attachment requires approval."))
+            case let .unavailable(status):
+                return GnosticPublicFailure(code: 409, message: failureMessage(reasonCode: "workspaceUnavailable", message: "Workspace is not uniquely available (\(status))."))
+            case .invalidURI:
+                return GnosticPublicFailure(code: 422, message: failureMessage(reasonCode: "invalidWorkspaceURI", message: "Workspace advertised an invalid URI."))
+            case let .timelineNotOwned(id):
+                return GnosticPublicFailure(code: 404, message: failureMessage(reasonCode: "timelineNotOwned", message: "Timeline \(id.uuidString.lowercased()) is not owned by this Node."))
+            }
+        }
+        return GnosticPublicFailure(code: fallbackCode, message: failureMessage(reasonCode: fallbackReasonCode, message: fallbackMessage))
     }
 
     public static func isCompatible(_ protocolMajor: Int?) -> Bool {
