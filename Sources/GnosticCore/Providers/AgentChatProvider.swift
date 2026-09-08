@@ -175,7 +175,25 @@ public struct AscendantTurnProvider: Sendable {
         } catch let error as AscendantTurnError {
             if let replayStore, let clientTurnID = request.clientTurnID,
                !isAdmissionOnlyError(error) {
-                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
+                let replay = await replayStore.replay(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID
+                )
+                guard !replay.terminal else {
+                    return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+                }
+                let kind: String
+                switch error {
+                case .cancelled: kind = "cancellation"
+                default: kind = "error"
+                }
+                _ = await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: kind,
+                    text: error.localizedDescription,
+                    terminal: true
+                )
             }
             return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
         } catch let error as NodeRuntimeError {

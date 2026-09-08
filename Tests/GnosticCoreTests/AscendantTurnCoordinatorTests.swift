@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import Testing
 
 @Suite("Ascendant turn coordination")
@@ -240,6 +240,68 @@ struct AscendantTurnCoordinatorTests {
     }
 }
 
+
+    @Test("completed coordinator state is globally retained within its bound")
+    func completedStateIsGloballyBounded() async throws {
+        let coordinator = AscendantTurnCoordinator(completedCapacity: 2)
+        for index in 0..<8 {
+            let request = AscendantTurnRequest(message: "message-\(index)", timelineID: UUID(), clientTurnID: "turn-\(index)")
+            _ = try await coordinator.execute(request) { "answer-\(index)" }
+        }
+
+        let counts = await coordinator.retainedStateCounts
+        #expect(counts.completed <= 2)
+        #expect(counts.tombstones <= 2)
+    }
+
+    @Test("completed Timeline lanes are removed after their operation finishes")
+    func completedTimelineLanesAreCleanedUp() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        for _ in 0..<24 {
+            let request = AscendantTurnRequest(message: "lane", timelineID: UUID())
+            _ = try await coordinator.execute(request) { "done" }
+        }
+
+        #expect(await coordinator.retainedTimelineCount == 0)
+    }
+
+    @Test("cancelling queued work skips its backend operation")
+    func queuedCancellationSkipsBackend() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        let gate = TurnGate()
+        let probe = TurnProbe()
+        let timelineID = UUID()
+        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "first")
+        let queuedRequest = AscendantTurnRequest(message: "queued", timelineID: timelineID, clientTurnID: "queued")
+
+        let first = Task {
+            try await coordinator.execute(firstRequest) {
+                await probe.enter("first")
+                await gate.wait()
+                try Task.checkCancellation()
+                return "first"
+            }
+        }
+        await probe.waitForStarts(1)
+        let queued = Task {
+            try await coordinator.execute(queuedRequest) {
+                await probe.enter("queued")
+                return "must-not-run"
+            }
+        }
+        for _ in 0..<100 {
+            if await coordinator.inFlightCount == 2 { break }
+            await Task.yield()
+        }
+        #expect(await coordinator.inFlightCount == 2)
+
+        await coordinator.cancelAll(waitForCompletion: false)
+        await gate.release()
+        _ = try? await first.value
+        _ = try? await queued.value
+        #expect(await probe.order == ["first"])
+    }
+
 private enum TestTurnError: Error {
     case failed
 }
@@ -266,5 +328,21 @@ private actor TurnProbe {
             if starts >= expected { return }
             try? await Task.sleep(for: .milliseconds(5))
         }
+    }
+}
+
+
+private actor TurnGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
     }
 }

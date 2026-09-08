@@ -140,6 +140,26 @@ struct ServeOperationContractTests {
         #expect(replay.updates.compactMap(\.text) == ["hel", "lo", "hello"])
     }
 
+    @Test("cancellation emits one terminal update")
+    func cancellationEmitsOneTerminalUpdate() async throws {
+        let timelineID = UUID()
+        let clientTurnID = "turn-cancellation"
+        let store = AscendantTurnUpdateStore()
+        let provider = AscendantTurnProvider(
+            execute: { _ in
+                throw AscendantTurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+            },
+            replayStore: store
+        )
+        _ = try await provider.handle(parameters: payload(
+            AscendantTurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: clientTurnID)
+        ))
+
+        let replay = await store.replay(timelineID: timelineID, clientTurnID: clientTurnID)
+        #expect(replay.updates.filter(\.terminal).count == 1)
+        #expect(replay.updates.last?.kind == "cancellation")
+    }
+
     @Test("ascendant.turn result decoder rejects a missing protocol major")
     func turnResultRejectsMissingProtocolMajor() {
         #expect(throws: GnosticProtocolError.self) {

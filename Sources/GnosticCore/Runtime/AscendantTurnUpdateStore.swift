@@ -55,15 +55,22 @@ public actor AscendantTurnUpdateStore {
 
     private let maxEvents: Int
     private let maxBytes: Int
+    private let maxEntries: Int
     private var entries: [Key: Entry] = [:]
+    private var entryOrder: [Key] = []
+
+    internal var retainedStateCounts: (entries: Int, bytes: Int) {
+        (entries.count, entries.values.reduce(0) { $0 + $1.bytes })
+    }
     private let eventStream: AsyncStream<Event>
     private let eventContinuation: AsyncStream<Event>.Continuation
 
-    public init(maxEvents: Int = 1_024, maxBytes: Int = 1_048_576) {
+    public init(maxEvents: Int = 1_024, maxBytes: Int = 1_048_576, maxEntries: Int = 256) {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
         self.maxEvents = max(2, maxEvents)
         self.maxBytes = max(256, maxBytes)
+        self.maxEntries = max(1, maxEntries)
         (eventStream, eventContinuation) = AsyncStream<Event>.makeStream()
     }
 
@@ -81,6 +88,8 @@ public actor AscendantTurnUpdateStore {
             updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false,
             messageDigest: message.map { Self.messageDigest($0) }
         )
+        touch(key)
+        evictIfNeeded()
     }
 
     @discardableResult
@@ -99,6 +108,9 @@ public actor AscendantTurnUpdateStore {
         }
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
         var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
+        if entry.terminal, let terminalUpdate = entry.updates.last(where: \.terminal) {
+            return terminalUpdate
+        }
         let update = Self.bounded(
             AscendantTurnUpdate(
                 sequence: entry.nextSequence,
@@ -157,6 +169,8 @@ public actor AscendantTurnUpdateStore {
             }
         }
         entries[key] = entry
+        touch(key)
+        evictIfNeeded()
         eventContinuation.yield(Event(protocolMajor: protocolMajor, timelineID: timelineID, clientTurnID: clientTurnID, update: update))
         return update
     }
@@ -188,6 +202,22 @@ public actor AscendantTurnUpdateStore {
             terminal: entry.terminal,
             nextSequence: nextSequence
         )
+    }
+
+    private func touch(_ key: Key) {
+        entryOrder.removeAll { $0 == key }
+        entryOrder.append(key)
+    }
+
+    private func evictIfNeeded() {
+        while entryOrder.count > maxEntries || retainedBytes > maxBytes {
+            let oldest = entryOrder.removeFirst()
+            entries.removeValue(forKey: oldest)
+        }
+    }
+
+    private var retainedBytes: Int {
+        entries.values.reduce(0) { $0 + $1.bytes }
     }
 
     private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {

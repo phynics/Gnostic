@@ -23,6 +23,12 @@ public actor AscendantTurnCoordinator {
         let outcome: CachedOutcome
     }
 
+    private struct Lane: Sendable {
+        let id: UUID
+        let task: Task<String, Error>
+        let tail: Task<Void, Never>
+    }
+
     private enum CachedOutcome: Sendable {
         case succeeded(AscendantTurnResult)
         case failed(AscendantTurnError)
@@ -33,7 +39,16 @@ public actor AscendantTurnCoordinator {
     private var completed: [Key: Completed] = [:]
     private var tombstones: [Key: UInt64] = [:]
     private var completionOrder: [Key] = []
-    private var timelineTails: [UUID: Task<Void, Never>] = [:]
+    private var tombstoneOrder: [Key] = []
+    private var timelineTails: [UUID: Lane] = [:]
+
+    internal var retainedStateCounts: (completed: Int, tombstones: Int) {
+        (completed.count, tombstones.count)
+    }
+
+    internal var retainedTimelineCount: Int { timelineTails.count }
+
+    internal var inFlightCount: Int { inFlight.count }
 
     /// - Parameter completedCapacity: Maximum number of terminal outcomes kept
     ///   for replay. The cache is intentionally process-local and bounded.
@@ -44,12 +59,10 @@ public actor AscendantTurnCoordinator {
     /// Cancels admitted work during node shutdown. New requests are rejected by
     /// the owning NodeRuntime before reaching this coordinator.
     public func cancelAll(waitForCompletion: Bool = true) async {
-        let turns = inFlight.values.map(\.task)
-        let tails = Array(timelineTails.values)
+        let turns = inFlight.values.map(\.task) + timelineTails.values.map(\.task)
+        let tails = timelineTails.values.map(\.tail)
         turns.forEach { $0.cancel() }
         tails.forEach { $0.cancel() }
-        inFlight.removeAll()
-        timelineTails.removeAll()
         guard waitForCompletion else { return }
         for turn in turns { _ = await turn.result }
         for tail in tails { await tail.value }
@@ -64,9 +77,15 @@ public actor AscendantTurnCoordinator {
     ) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         guard let rawClientTurnID = request.clientTurnID else {
-            let task = enqueue(timelineID: request.timelineID, operation: operation)
-            let text = try await task.value
-            return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
+            let lane = enqueue(timelineID: request.timelineID, operation: operation)
+            do {
+                let text = try await lane.task.value
+                removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
+                return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
+            } catch {
+                removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
+                throw error
+            }
         }
         let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
         let canonicalRequest = AscendantTurnRequest(
@@ -107,7 +126,7 @@ public actor AscendantTurnCoordinator {
             )
         }
 
-        let task = enqueue(timelineID: request.timelineID) {
+        let lane = enqueue(timelineID: request.timelineID) {
             do {
                 return try await operation()
             } catch is CancellationError {
@@ -156,6 +175,7 @@ public actor AscendantTurnCoordinator {
             }
         }
 
+        let task = lane.task
         inFlight[key] = InFlight(messageDigest: messageDigest, task: task)
 
         // Completion is observed independently of the requesting Call/Return;
@@ -167,6 +187,7 @@ public actor AscendantTurnCoordinator {
 
         do {
             let text = try await task.value
+            removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
             recordCompletion(
                 key: key,
                 request: canonicalRequest,
@@ -174,6 +195,7 @@ public actor AscendantTurnCoordinator {
             )
             return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: false)
         } catch {
+            removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
             recordCompletion(
                 key: key,
                 request: canonicalRequest,
@@ -202,7 +224,13 @@ public actor AscendantTurnCoordinator {
     ) {
         guard inFlight[key] != nil else { return }
         inFlight.removeValue(forKey: key)
-        tombstones[key] = Self.messageDigest(request.message)
+        let digest = Self.messageDigest(request.message)
+        if tombstones[key] == nil, tombstones.count < completedCapacity {
+            tombstones[key] = digest
+            tombstoneOrder.append(key)
+        } else if tombstones[key] != nil {
+            tombstones[key] = digest
+        }
 
         let outcome: CachedOutcome
         switch result {
@@ -254,13 +282,25 @@ public actor AscendantTurnCoordinator {
     private func enqueue(
         timelineID: UUID,
         operation: @escaping TurnOperation
-    ) -> Task<String, Error> {
-        let predecessor = timelineTails[timelineID]
+    ) -> Lane {
+        let predecessor = timelineTails[timelineID]?.tail
         let task = Task<String, Error> {
             _ = await predecessor?.value
+            try Task.checkCancellation()
             return try await operation()
         }
-        timelineTails[timelineID] = Task { _ = await task.result }
-        return task
+        let laneID = UUID()
+        let tail = Task { [weak self] in
+            _ = await task.result
+            await self?.removeTimelineTail(timelineID: timelineID, laneID: laneID)
+        }
+        let lane = Lane(id: laneID, task: task, tail: tail)
+        timelineTails[timelineID] = lane
+        return lane
+    }
+
+    private func removeTimelineTail(timelineID: UUID, laneID: UUID) {
+        guard timelineTails[timelineID]?.id == laneID else { return }
+        timelineTails.removeValue(forKey: timelineID)
     }
 }

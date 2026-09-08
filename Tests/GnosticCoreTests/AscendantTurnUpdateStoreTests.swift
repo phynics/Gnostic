@@ -119,4 +119,20 @@ struct AscendantTurnUpdateStoreTests {
         #expect(replay.compacted)
         #expect(retainedBytes <= maxBytes)
     }
+
+    @Test("retention is bounded globally across many turn ids")
+    func globalRetentionBound() async {
+        let store = AscendantTurnUpdateStore(maxEvents: 8, maxBytes: 10_000, maxEntries: 2)
+        for index in 0..<8 {
+            let timelineID = UUID()
+            let clientTurnID = "turn-\(index)"
+            await store.start(timelineID: timelineID, clientTurnID: clientTurnID)
+            _ = await store.append(timelineID: timelineID, clientTurnID: clientTurnID, kind: "completion", terminal: true)
+        }
+
+        let counts = await store.retainedStateCounts
+        #expect(counts.entries <= 2)
+        #expect(counts.bytes > 0)
+    }
+
 }
