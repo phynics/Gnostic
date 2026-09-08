@@ -35,7 +35,7 @@ struct ServeOperationContractTests {
                 executionInfo: nil,
                 error: nil
             )
-            try returnData.encode(to: &writer)
+            try OwnedWireEvent.returnEvent(returnData).encode(to: &writer)
             try GnosticWirePayload.validateEvent(
                 Data(buffer[..<writer.position]),
                 context: "workspace.list ReturnEvent"
