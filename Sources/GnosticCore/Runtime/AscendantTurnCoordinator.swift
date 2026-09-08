@@ -63,12 +63,18 @@ public actor AscendantTurnCoordinator {
         operation: @escaping TurnOperation
     ) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
-        guard let clientTurnID = request.clientTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !clientTurnID.isEmpty else {
+        guard let rawClientTurnID = request.clientTurnID else {
             let task = enqueue(timelineID: request.timelineID, operation: operation)
             let text = try await task.value
             return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
         }
+        let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
+        let canonicalRequest = AscendantTurnRequest(
+            message: request.message,
+            timelineID: request.timelineID,
+            clientTurnID: clientTurnID,
+            protocolMajor: request.protocolMajor
+        )
 
         let key = Key(timelineID: request.timelineID, clientTurnID: clientTurnID)
         let messageDigest = Self.messageDigest(request.message)
@@ -76,7 +82,7 @@ public actor AscendantTurnCoordinator {
             guard existing.messageDigest == messageDigest else {
                 throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return try await replay(existing.task, request: request)
+            return try await replay(existing.task, request: canonicalRequest)
         }
 
         if let cached = completed[key] {
@@ -156,21 +162,21 @@ public actor AscendantTurnCoordinator {
         // this makes a lost caller unable to remove the dedupe record early.
         Task { [weak self] in
             let result = await task.result
-            await self?.recordCompletion(key: key, request: request, result: result)
+            await self?.recordCompletion(key: key, request: canonicalRequest, result: result)
         }
 
         do {
             let text = try await task.value
             recordCompletion(
                 key: key,
-                request: request,
+                request: canonicalRequest,
                 result: .success(text)
             )
             return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: false)
         } catch {
             recordCompletion(
                 key: key,
-                request: request,
+                request: canonicalRequest,
                 result: .failure(error)
             )
             throw error

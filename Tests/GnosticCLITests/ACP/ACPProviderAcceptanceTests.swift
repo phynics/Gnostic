@@ -281,7 +281,7 @@ struct ACPProviderAcceptanceTests {
     }
 
     @Test(
-        "legacy flat config migrates to schema v2 and completes an ACP workspace prompt",
+        "legacy flat config migrates to schema v2 and streams whitespace-compatible ACP turn IDs",
         .timeLimit(.minutes(1))
     )
     @MainActor
@@ -416,7 +416,9 @@ struct ACPProviderAcceptanceTests {
         ]))
 
         let promptText = "echo network"
-        let turnID = "legacy-smoke:turn-1"
+        // Whitespace around the ACP metadata ID is compatibility input. The
+        // update collector must still receive live events for the canonical ID.
+        let turnID = "  legacy-smoke:turn-1  "
         try session.send(JSONRPCRequest(id: .number(4), method: "session/prompt", params: .dictionary([
             "sessionId": .string(sessionID),
             "prompt": .array([.dictionary(["type": .string("text"), "text": .string(promptText)])]),
@@ -452,6 +454,8 @@ struct ACPProviderAcceptanceTests {
         let updateText = String(decoding: try JSONEncoder().encode(updates), as: UTF8.self)
         #expect(updateText.contains("workspace_echo"))
         #expect(updateText.contains("Echo received: network"))
+        #expect(updateText.contains("\"clientTurnID\":\"legacy-smoke:turn-1\""))
+        #expect(updateText.contains("\"replayed\":false"))
 
         try session.send(JSONRPCRequest(id: .number(5), method: "session/prompt", params: .dictionary([
             "sessionId": .string(sessionID),
