@@ -22,8 +22,8 @@ struct AscendantPermissionCoordinatorTests {
 
         let decision = Task { await coordinator.request(request) }
         try await waitUntil {
-            await updates.replay(timelineID: timelineID, clientTurnID: "turn-1").updates
-                .contains { $0.permissionState?.status == "pending" }
+            (try? await updates.replay(timelineID: timelineID, clientTurnID: "turn-1").updates
+                .contains { $0.permissionState?.status == "pending" }) ?? false
         }
 
         #expect(await coordinator.respond(
@@ -40,8 +40,24 @@ struct AscendantPermissionCoordinatorTests {
             approved: true
         )))
 
-        let replay = await updates.replay(timelineID: timelineID, clientTurnID: "turn-1")
+        let replay = try await updates.replay(timelineID: timelineID, clientTurnID: "turn-1")
         #expect(replay.updates.compactMap(\.permissionState?.status) == ["pending", "selected"])
+    }
+
+    @Test("invalid permission identity is rejected before pending admission")
+    func invalidPermissionIdentityIsRejected() async {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates)
+        let request = AscendantPermissionRequest(
+            correlationID: "invalid-permission",
+            timelineID: UUID(),
+            clientTurnID: "   ",
+            toolCallID: "call-1",
+            title: "Write file"
+        )
+        #expect(!(await coordinator.request(request)))
+        #expect(await coordinator.pendingCount == 0)
+        #expect((await updates.retainedStateCounts).entries == 0)
     }
 
     @Test("connection loss denies every pending permission")
@@ -62,7 +78,7 @@ struct AscendantPermissionCoordinatorTests {
         await coordinator.denyAll(reason: "connection_lost")
 
         #expect(!(await decision.value))
-        let replay = await updates.replay(timelineID: timelineID, clientTurnID: "turn-loss")
+        let replay = try await updates.replay(timelineID: timelineID, clientTurnID: "turn-loss")
         #expect(replay.updates.last?.permissionState?.status == "connection_lost")
     }
 

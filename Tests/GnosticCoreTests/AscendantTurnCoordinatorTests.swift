@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import Testing
 
 @Suite("Ascendant turn coordination")
@@ -238,6 +238,99 @@ struct AscendantTurnCoordinatorTests {
         }
     }
 
+    @Test("capacity rejects a new identity before operation admission")
+    func identityCapacityRejectsBeforeOperation() async throws {
+        let coordinator = AscendantTurnCoordinator(completedCapacity: 1, identityCapacity: 2)
+        let probe = TurnProbe()
+        for index in 0..<2 {
+            let request = AscendantTurnRequest(
+                message: "message-\(index)",
+                timelineID: UUID(),
+                clientTurnID: "admitted-\(index)"
+            )
+            _ = try await coordinator.execute(request) {
+                await probe.enter("admitted-\(index)")
+                return "answer-\(index)"
+            }
+        }
+
+        let rejected = AscendantTurnRequest(
+            message: "not admitted",
+            timelineID: UUID(),
+            clientTurnID: "rejected"
+        )
+        do {
+            _ = try await coordinator.execute(rejected) {
+                await probe.enter("rejected")
+                return "must not run"
+            }
+            Issue.record("A new identity was admitted after the identity ledger reached capacity.")
+        } catch let error as AscendantTurnError {
+            #expect(error == .capacityExceeded(timelineID: rejected.timelineID, clientTurnID: "rejected"))
+        }
+        #expect(await probe.starts == 2)
+        #expect(await coordinator.retainedIdentityCount == 2)
+    }
+
+    @Test("retained terminal errors have a bounded completed payload")
+    func retainedTerminalErrorsAreBounded() async throws {
+        let completedCapacity = 2
+        let coordinator = AscendantTurnCoordinator(completedCapacity: completedCapacity, identityCapacity: 2)
+        let huge = String(repeating: "x", count: 100_000)
+        let request = AscendantTurnRequest(message: "failure", timelineID: UUID(), clientTurnID: "huge-error")
+
+        await #expect(throws: AscendantTurnError.self) {
+            _ = try await coordinator.execute(request) {
+                throw AscendantBackendError.terminal(.init(code: huge, message: huge))
+            }
+        }
+
+        let counts = await coordinator.retainedStateCounts
+        #expect(counts.completed == 1)
+        #expect(counts.completedBytes <= completedCapacity * GnosticWirePayload.maximumEmbeddedValueBytes)
+    }
+
+    @Test("newer evicted identities remain conflict-checked and non-retryable")
+    func newerEvictedIdentitiesNeverRerun() async throws {
+        let coordinator = AscendantTurnCoordinator(completedCapacity: 1, identityCapacity: 3)
+        let probe = TurnProbe()
+        var requests: [AscendantTurnRequest] = []
+        for index in 0..<3 {
+            let request = AscendantTurnRequest(
+                message: "message-\(index)",
+                timelineID: UUID(),
+                clientTurnID: "evicted-\(index)"
+            )
+            requests.append(request)
+            _ = try await coordinator.execute(request) {
+                await probe.enter("evicted-\(index)")
+                return "answer-\(index)"
+            }
+        }
+
+        await #expect(throws: AscendantTurnError.self) {
+            _ = try await coordinator.execute(requests[1]) {
+                await probe.enter("rerun")
+                return "must not run"
+            }
+        }
+        let conflict = AscendantTurnRequest(
+            message: "different",
+            timelineID: requests[1].timelineID,
+            clientTurnID: requests[1].clientTurnID
+        )
+        do {
+            _ = try await coordinator.execute(conflict) {
+                await probe.enter("conflict")
+                return "must not run"
+            }
+            Issue.record("An evicted identity was accepted with different content.")
+        } catch let error as AscendantTurnError {
+            #expect(error == .conflict(timelineID: conflict.timelineID, clientTurnID: conflict.clientTurnID!))
+        }
+        #expect(await probe.starts == 3)
+    }
+
     @Test("evicted results retain a non-retryable identity tombstone")
     func evictedResultsNeverRerun() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1)
@@ -263,6 +356,69 @@ struct AscendantTurnCoordinatorTests {
         #expect(await probe.starts == 2)
     }
 }
+
+    @Test("completed coordinator state is globally retained within its bound")
+    func completedStateIsGloballyBounded() async throws {
+        let coordinator = AscendantTurnCoordinator(completedCapacity: 2, identityCapacity: 8)
+        for index in 0..<8 {
+            let request = AscendantTurnRequest(message: "message-\(index)", timelineID: UUID(), clientTurnID: "turn-\(index)")
+            _ = try await coordinator.execute(request) { "answer-\(index)" }
+        }
+
+        let counts = await coordinator.retainedStateCounts
+        #expect(counts.completed <= 2)
+        #expect(counts.tombstones <= 8)
+        #expect(counts.identities == 8)
+    }
+
+    @Test("completed Timeline lanes are removed after their operation finishes")
+    func completedTimelineLanesAreCleanedUp() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        for _ in 0..<24 {
+            let request = AscendantTurnRequest(message: "lane", timelineID: UUID())
+            _ = try await coordinator.execute(request) { "done" }
+        }
+
+        #expect(await coordinator.retainedTimelineCount == 0)
+    }
+
+    @Test("cancelling queued work skips its backend operation")
+    func queuedCancellationSkipsBackend() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        let gate = TurnGate()
+        let probe = TurnProbe()
+        let timelineID = UUID()
+        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "first")
+        let queuedRequest = AscendantTurnRequest(message: "queued", timelineID: timelineID, clientTurnID: "queued")
+
+        let first = Task {
+            try await coordinator.execute(firstRequest) {
+                await probe.enter("first")
+                await gate.wait()
+                try Task.checkCancellation()
+                return "first"
+            }
+        }
+        await probe.waitForStarts(1)
+        let queued = Task {
+            try await coordinator.execute(queuedRequest) {
+                await probe.enter("queued")
+                return "must-not-run"
+            }
+        }
+        for _ in 0..<100 {
+            if await coordinator.inFlightCount == 2 { break }
+            await Task.yield()
+        }
+        #expect(await coordinator.inFlightCount == 2)
+
+        await coordinator.cancelAll(waitForCompletion: false)
+        await gate.release()
+        _ = try? await first.value
+        _ = try? await queued.value
+        #expect(await probe.order == ["first"])
+    }
+
 
 private enum TestTurnError: Error {
     case failed
@@ -290,5 +446,21 @@ private actor TurnProbe {
             if starts >= expected { return }
             try? await Task.sleep(for: .milliseconds(5))
         }
+    }
+}
+
+
+private actor TurnGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
     }
 }

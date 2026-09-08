@@ -288,10 +288,20 @@ import struct PositronicKit.Thread
 
     public func enabledToolIDs(for timelineID: UUID) async -> [String] {
         guard lifecycleFailure == nil else { return [] }
-        let workspaceToolIDs: [String]
         let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
-        workspaceToolIDs = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []].map(\.callName) }
+        let workspaceToolIDs = (await availableWorkspaceTools(for: workspaceIDs)).map(\.callName)
         return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
+    }
+
+    private func availableWorkspaceTools(for workspaceIDs: [UUID]) async -> [AnyTool] {
+        var tools: [AnyTool] = []
+        for workspaceID in workspaceIDs {
+            if let service = workspaceService {
+                guard let reference = await service.reference(id: workspaceID), reference.status == .available else { continue }
+            }
+            tools.append(contentsOf: workspaceToolsByID[workspaceID, default: []])
+        }
+        return tools
     }
 
     public func cancel() async {
@@ -316,7 +326,7 @@ import struct PositronicKit.Thread
             .init(timelineID: request.timelineID, clientTurnID: $0)
         }) {
             let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
-            let workspaceTools = workspaceIDs.flatMap { workspaceToolsByID[$0, default: []] }
+            let workspaceTools = await availableWorkspaceTools(for: workspaceIDs)
             let turnRequest = TurnRequest(
                 threadID: request.timelineID,
                 requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
@@ -334,18 +344,18 @@ import struct PositronicKit.Thread
         eventLoop: for try await event in stream {
             switch event {
             case .delta(.generation(let text)):
-                await append(updates, kind: "assistant_text", text: text)
+                try await append(updates, kind: "assistant_text", text: text)
             case .delta(.toolCall(let delta)):
                 let id = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? request.timelineID.uuidString):tool:\(delta.index)"
                 ids[delta.index] = id
                 if let name = delta.name { titles[delta.index, default: ""] += name }
-                await append(
+                try await append(
                     updates,
                     kind: announced.insert(delta.index).inserted ? "tool_call" : "tool_state",
                     toolState: .init(toolCallID: id, title: titles[delta.index], status: "pending")
                 )
             case .delta(.toolExecution(let id, let status)), .completion(.toolExecution(let id, let status)):
-                await append(updates, kind: "tool_state", toolState: state(id, status))
+                try await append(updates, kind: "tool_state", toolState: state(id, status))
             case .completion(.generationCompleted(let message, _)):
                 finalText = message.content
                 break eventLoop
@@ -360,9 +370,9 @@ import struct PositronicKit.Thread
             case .error(.error(let message, _)):
                 failure = message
             case .error(.toolCallError(let id, let name, let error)):
-                await append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
+                try await append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
             case .error(.generationCancelled):
-                await append(updates, kind: "cancellation", terminal: true)
+                try await append(updates, kind: "cancellation", terminal: true)
                 throw AscendantBackendError.cancelled
             default:
                 break
@@ -400,8 +410,8 @@ import struct PositronicKit.Thread
         text: String? = nil,
         toolState: AscendantToolState? = nil,
         terminal: Bool = false
-    ) async {
-        await updates.append(.init(kind: kind, text: text, toolState: toolState, terminal: terminal))
+    ) async throws {
+        try await updates.append(.init(kind: kind, text: text, toolState: toolState, terminal: terminal))
     }
 
     private func state(_ id: String, _ status: ToolExecutionStatus) -> AscendantToolState {

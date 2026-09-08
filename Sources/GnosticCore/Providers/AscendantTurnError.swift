@@ -4,6 +4,7 @@ import Foundation
 
 /// Terminal failures retained by the serve-lifetime turn coordinator.
 public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
+    case capacityExceeded(timelineID: UUID, clientTurnID: String)
     case conflict(timelineID: UUID, clientTurnID: String)
     case failed(timelineID: UUID, clientTurnID: String, detail: String)
     case terminal(timelineID: UUID, clientTurnID: String, code: String, detail: String, retryable: Bool, statusCode: Int = 500)
@@ -14,6 +15,8 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case let .capacityExceeded(_, clientTurnID):
+            "the serve has reached its identified turn capacity; turn \(clientTurnID) was not admitted"
         case let .conflict(timelineID, clientTurnID):
             "clientTurnID \(clientTurnID) was already used with different content on Timeline \(timelineID.uuidString.lowercased())"
         case let .failed(_, _, detail):
@@ -33,6 +36,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
 
     public var statusCode: Int {
         switch self {
+        case .capacityExceeded: 429
         case .conflict: 409
         case .failed: 500
         case let .terminal(_, _, _, _, _, statusCode): Self.boundedStatusCode(statusCode)
@@ -44,6 +48,7 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
 
     public var reasonCode: String {
         switch self {
+        case .capacityExceeded: "turnCapacityExceeded"
         case .conflict: "turnConflict"
         case .failed: "turnFailed"
         case let .terminal(_, _, code, _, _, _): code

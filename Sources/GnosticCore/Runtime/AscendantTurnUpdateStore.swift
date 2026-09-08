@@ -4,7 +4,16 @@ import Foundation
 
 /// Keeps bounded identified-turn updates for one serve lifetime. It never
 /// stores prompt text or tool arguments beyond the bounded update payload.
+/// Live events use a bounded best-effort buffer; replay is authoritative recovery.
 public actor AscendantTurnUpdateStore {
+    public enum Error: Swift.Error, Sendable, Equatable, LocalizedError {
+        case capacityExceeded
+
+        public var errorDescription: String? {
+            "identified turn update retention capacity is full of active turns"
+        }
+    }
+
     public struct Event: Codable, Sendable, Equatable {
         public let protocolMajor: Int
         public let timelineID: UUID
@@ -44,27 +53,50 @@ public actor AscendantTurnUpdateStore {
         let clientTurnID: String
     }
 
+    /// An ID that has passed the wire validator. Internal update producers use
+    /// this seam so an impossible validation failure cannot be swallowed.
+    internal struct ValidatedClientTurnID: Sendable, Hashable {
+        let rawValue: String
+    }
+
     private struct Entry: Sendable {
         var updates: [AscendantTurnUpdate]
         var nextSequence: Int
         var bytes: Int
         var terminal: Bool
+        var finished: Bool
         var compacted: Bool
         var messageDigest: UInt64?
     }
 
     private let maxEvents: Int
     private let maxBytes: Int
+    private let maxEntries: Int
+    private let eventBufferCapacity: Int
     private var entries: [Key: Entry] = [:]
+    private var entryOrder: [Key] = []
+
+    internal var retainedStateCounts: (entries: Int, bytes: Int) {
+        (entries.count, entries.values.reduce(0) { $0 + $1.bytes })
+    }
     private let eventStream: AsyncStream<Event>
     private let eventContinuation: AsyncStream<Event>.Continuation
 
-    public init(maxEvents: Int = 1_024, maxBytes: Int = 1_048_576) {
+    public init(
+        maxEvents: Int = 1_024,
+        maxBytes: Int = 1_048_576,
+        maxEntries: Int = 256,
+        eventBufferCapacity: Int = 256
+    ) {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
         self.maxEvents = max(2, maxEvents)
         self.maxBytes = max(256, maxBytes)
-        (eventStream, eventContinuation) = AsyncStream<Event>.makeStream()
+        self.maxEntries = max(1, maxEntries)
+        self.eventBufferCapacity = max(1, eventBufferCapacity)
+        (eventStream, eventContinuation) = AsyncStream<Event>.makeStream(
+            bufferingPolicy: .bufferingNewest(self.eventBufferCapacity)
+        )
     }
 
     func events() -> AsyncStream<Event> { eventStream }
@@ -73,14 +105,39 @@ public actor AscendantTurnUpdateStore {
         eventContinuation.finish()
     }
 
-    public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) {
-        guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else { return }
-        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
+    public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) throws {
+        let validated = try validatedClientTurnID(clientTurnID)
+        try start(timelineID: timelineID, clientTurnID: validated, message: message)
+    }
+
+    internal func validatedClientTurnID(_ value: String) throws -> ValidatedClientTurnID {
+        ValidatedClientTurnID(rawValue: try GnosticWirePayload.canonicalClientTurnID(value))
+    }
+
+    internal func start(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String? = nil) throws {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard entries[key] == nil else { return }
+        evictFinishedEntriesIfNeeded(for: key)
+        guard entries.count < maxEntries else { throw Error.capacityExceeded }
         entries[key] = Entry(
-            updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false,
+            updates: [], nextSequence: 1, bytes: 0, terminal: false, finished: false, compacted: false,
             messageDigest: message.map { Self.messageDigest($0) }
         )
+        touch(key)
+        evictIfNeeded()
+    }
+
+    public func finish(timelineID: UUID, clientTurnID: String) throws {
+        let validated = try validatedClientTurnID(clientTurnID)
+        finish(timelineID: timelineID, clientTurnID: validated)
+    }
+
+    internal func finish(timelineID: UUID, clientTurnID: ValidatedClientTurnID) {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        guard var entry = entries[key] else { return }
+        entry.finished = true
+        entries[key] = entry
+        evictIfNeeded()
     }
 
     @discardableResult
@@ -96,12 +153,30 @@ public actor AscendantTurnUpdateStore {
         statusCode: Int? = nil,
         retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
-    ) -> AscendantTurnUpdate {
-        guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else {
-            return AscendantTurnUpdate(sequence: 0, kind: GnosticWirePayload.boundedIdentifier(kind), terminal: terminal, protocolMajor: protocolMajor)
+    ) throws -> AscendantTurnUpdate {
+        let validated = try validatedClientTurnID(clientTurnID)
+        return try append(timelineID: timelineID, clientTurnID: validated, kind: kind, text: text, toolState: toolState, permissionState: permissionState, terminal: terminal, protocolMajor: protocolMajor)
+    }
+
+    internal func append(
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID,
+        kind: String,
+        text: String? = nil,
+        toolState: AscendantToolState? = nil,
+        permissionState: AscendantPermissionState? = nil,
+        terminal: Bool = false,
+        protocolMajor: Int = GnosticProtocol.currentMajor
+    ) throws -> AscendantTurnUpdate {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        if entries[key] == nil {
+            evictFinishedEntriesIfNeeded(for: key)
+            guard entries.count < maxEntries else { throw Error.capacityExceeded }
         }
-        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
-        var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, compacted: false, messageDigest: nil)
+        var entry = entries[key] ?? Entry(updates: [], nextSequence: 1, bytes: 0, terminal: false, finished: false, compacted: false, messageDigest: nil)
+        if entry.terminal, let terminalUpdate = entry.updates.last(where: \.terminal) {
+            return terminalUpdate
+        }
         let update = Self.bounded(
             AscendantTurnUpdate(
                 sequence: entry.nextSequence,
@@ -163,13 +238,19 @@ public actor AscendantTurnUpdateStore {
             }
         }
         entries[key] = entry
-        eventContinuation.yield(Event(protocolMajor: protocolMajor, timelineID: timelineID, clientTurnID: clientTurnID, update: update))
+        touch(key)
+        evictIfNeeded()
+        eventContinuation.yield(Event(protocolMajor: protocolMajor, timelineID: timelineID, clientTurnID: clientTurnID.rawValue, update: update))
         return update
     }
 
-    public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) -> AscendantTurnReplay {
-        guard let clientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID),
-              let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID)] else {
+    public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) throws -> AscendantTurnReplay {
+        let validated = try validatedClientTurnID(clientTurnID)
+        return replay(timelineID: timelineID, clientTurnID: validated, message: message, afterSequence: afterSequence)
+    }
+
+    internal func replay(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String? = nil, afterSequence: Int = 0) -> AscendantTurnReplay {
+        guard let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)] else {
             return AscendantTurnReplay(updates: [], compacted: false, terminal: false)
         }
         if let message, let digest = entry.messageDigest, digest != Self.messageDigest(message) {
@@ -194,6 +275,33 @@ public actor AscendantTurnUpdateStore {
             terminal: entry.terminal,
             nextSequence: nextSequence
         )
+    }
+
+    private func touch(_ key: Key) {
+        entryOrder.removeAll { $0 == key }
+        entryOrder.append(key)
+    }
+
+    private func evictFinishedEntriesIfNeeded(for incoming: Key) {
+        while entries.count >= maxEntries {
+            guard let oldest = entryOrder.first(where: { key in
+                key != incoming && entries[key]?.finished == true
+            }) else { return }
+            entryOrder.removeAll { $0 == oldest }
+            entries.removeValue(forKey: oldest)
+        }
+    }
+
+    private func evictIfNeeded() {
+        while entryOrder.count > maxEntries || retainedBytes > maxBytes {
+            guard let oldest = entryOrder.first(where: { entries[$0]?.finished == true }) else { return }
+            entryOrder.removeAll { $0 == oldest }
+            entries.removeValue(forKey: oldest)
+        }
+    }
+
+    private var retainedBytes: Int {
+        entries.values.reduce(0) { $0 + $1.bytes }
     }
 
     private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {
