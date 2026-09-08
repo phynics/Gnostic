@@ -15,9 +15,7 @@ public struct AscendantTurnRequest: Codable, Sendable {
         self.protocolMajor = protocolMajor
         self.message = message
         self.timelineID = timelineID
-        self.clientTurnID = clientTurnID.map {
-            (try? GnosticWirePayload.canonicalClientTurnID($0)) ?? $0
-        }
+        self.clientTurnID = clientTurnID
     }
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, message, timelineID, clientTurnID }
@@ -27,9 +25,7 @@ public struct AscendantTurnRequest: Codable, Sendable {
         try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(message, forKey: .message)
         try container.encode(timelineID, forKey: .timelineID)
-        if let clientTurnID {
-            try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
-        }
+        try container.encodeIfPresent(clientTurnID, forKey: .clientTurnID)
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,9 +48,7 @@ public struct AscendantTurnResult: Codable, Sendable {
 
     public init(clientTurnID: String? = nil, text: String, replayed: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
-        self.clientTurnID = clientTurnID.map {
-            (try? GnosticWirePayload.canonicalClientTurnID($0)) ?? $0
-        }
+        self.clientTurnID = clientTurnID
         self.text = GnosticWirePayload.prefix(text, maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes)
         self.replayed = replayed
     }
@@ -299,7 +293,7 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
     public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.timelineID = timelineID
-        self.clientTurnID = (try? GnosticWirePayload.canonicalClientTurnID(clientTurnID)) ?? clientTurnID
+        self.clientTurnID = clientTurnID
         self.message = message.map { GnosticWirePayload.prefix($0, maximumBytes: 1_200) }
         self.afterSequence = afterSequence
     }
@@ -310,7 +304,7 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(timelineID, forKey: .timelineID)
-        try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
+        try container.encode(clientTurnID, forKey: .clientTurnID)
         try container.encodeIfPresent(message, forKey: .message)
         try container.encode(afterSequence, forKey: .afterSequence)
     }

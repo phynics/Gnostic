@@ -14,7 +14,7 @@ public actor AscendantTurnUpdateStore {
         public init(protocolMajor: Int = GnosticProtocol.currentMajor, timelineID: UUID, clientTurnID: String, update: AscendantTurnUpdate) {
             self.protocolMajor = protocolMajor
             self.timelineID = timelineID
-            self.clientTurnID = (try? GnosticWirePayload.canonicalClientTurnID(clientTurnID)) ?? clientTurnID
+            self.clientTurnID = clientTurnID
             self.update = update
         }
 

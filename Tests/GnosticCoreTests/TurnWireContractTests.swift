@@ -82,6 +82,21 @@ struct TurnWireContractTests {
         #expect(await counter.value == 1)
     }
 
+    @Test("Replay requests preserve invalid IDs until the provider boundary")
+    func replayRequestRejectsBlankIDAtProviderBoundary() async throws {
+        let provider = AscendantTurnProvider(execute: { _ in AscendantTurnResult(text: "unused") }, replayStore: AscendantTurnUpdateStore())
+        let request = AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: "   ")
+        let parameters = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+
+        let response = try await provider.handleReplay(parameters: parameters)
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("Invalid replay client ID unexpectedly succeeded")
+            return
+        }
+        #expect(code == 400)
+        #expect(message.contains("invalidClientTurnID"))
+    }
+
     @Test("Turn provider rejects blank and oversized client IDs")
     func invalidClientIDsAreRejected() async throws {
         let provider = AscendantTurnProvider { request in
