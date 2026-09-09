@@ -16,7 +16,7 @@ test -x "$binary" || {
 
 container_args=""
 if [ -d "$HOME/.gnostic" ]; then
-    container_args="$container_args -v $HOME/.gnostic:/root/.gnostic:ro"
+    container_args="$container_args -v $HOME/.gnostic:/root/.gnostic"
 fi
 
 mkdir -p "$HOME/.local/state/gnostic"
