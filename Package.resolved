@@ -1,5 +1,5 @@
 {
-  "originHash" : "df2f7505a0196cfc637f883302ca59c0c1205e0b285840c181e5ae8effebb7d3",
+  "originHash" : "1bdb13ae6ea6c7e8e912df005bfd23a09f20f61b7859e160afb209b27119717b",
   "pins" : [
     {
       "identity" : "axoloty",
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/phynics/PositronicKit.git",
       "state" : {
-        "revision" : "d4f87df4626906fb02420b321a86159d2c19bd59",
-        "version" : "5.0.0"
+        "revision" : "f6b6e65539e5e06a296d0afd10767ebcb2743d8d",
+        "version" : "5.1.0"
       }
     },
     {
@@ -132,8 +132,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-log.git",
       "state" : {
-        "revision" : "3ffafb9722d5d918c614feb496c8789a3b59d222",
-        "version" : "1.15.0"
+        "revision" : "9c6fb14227f55d8f711ce3847dc2f419fb0ecacb",
+        "version" : "1.15.1"
       }
     },
     {
