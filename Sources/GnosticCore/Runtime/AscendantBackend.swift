@@ -277,8 +277,34 @@ public struct BackendPermissionRequest: Sendable, Equatable {
     }
 }
 
+/// The outcome of a mediated permission request.
+///
+/// ``unavailable(reason:)`` is deliberately distinct from ``denied``: the
+/// client was never shown a choice, so reporting it as a denial would
+/// misattribute a host failure to the user.
+public enum AscendantPermissionDecision: Sendable, Equatable {
+    /// The client approved the request.
+    case approved
+    /// The client was asked and refused.
+    case denied
+    /// The host could not put the request to the client.
+    ///
+    /// - Parameter reason: A stable, low-cardinality reason code. It carries
+    ///   no user content.
+    case unavailable(reason: String)
+
+    /// Whether the tool call may proceed.
+    public var isApproved: Bool { self == .approved }
+}
+
+/// Host-owned mediation for tool calls that require client approval.
 public protocol AscendantBackendPermissionService: Sendable {
-    func request(_ request: BackendPermissionRequest) async -> Bool
+    /// Puts one permission request to the client and awaits its decision.
+    ///
+    /// - Parameter request: The correlated request to mediate.
+    /// - Returns: The client's decision, or ``AscendantPermissionDecision/unavailable(reason:)``
+    ///   when the host could not ask.
+    func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision
 }
 
 /// Optional capability marker for services that are meaningful only to one
@@ -313,6 +339,9 @@ public struct AscendantBackendServices: Sendable {
         self.optionalCapabilities = optionalCapabilities
     }
 
+    /// Services for a backend that consumes no Workspace and has no host
+    /// permission mediation. Every permission request reports
+    /// ``AscendantPermissionDecision/unavailable(reason:)``.
     @MainActor
     public static var empty: Self {
         .init(permission: EmptyBackendPermissionService())
@@ -419,5 +448,7 @@ public protocol AscendantBackend: AnyObject, Sendable {
 }
 
 private struct EmptyBackendPermissionService: AscendantBackendPermissionService {
-    func request(_: BackendPermissionRequest) async -> Bool { false }
+    func requestApproval(for _: BackendPermissionRequest) async -> AscendantPermissionDecision {
+        .unavailable(reason: "permissionMediationUnavailable")
+    }
 }

@@ -341,14 +341,14 @@ struct ServeOperationContractTests {
         let coordinator = AscendantPermissionCoordinator(updates: updates)
         let provider = AscendantPermissionProvider(coordinator: coordinator)
         let timelineID = UUID()
-        let request = AscendantPermissionRequest(
+        let request = BackendPermissionRequest(
             correlationID: "permission-contract",
             timelineID: timelineID,
             clientTurnID: "turn-contract",
             toolCallID: "call-contract",
             title: "Write file"
         )
-        let decision = Task { await coordinator.request(request) }
+        let decision = Task { await coordinator.requestApproval(for: request) }
         for _ in 0..<100 {
             if await coordinator.pendingCount == 1 { break }
             try await Task.sleep(for: .milliseconds(5))
@@ -364,7 +364,7 @@ struct ServeOperationContractTests {
             Issue.record("expected permission response acceptance")
             return
         }
-        #expect(await decision.value)
+        #expect(await decision.value == .approved)
 
         let duplicate = try await provider.handle(parameters: payload(AscendantPermissionResponse(
             correlationID: request.correlationID,
