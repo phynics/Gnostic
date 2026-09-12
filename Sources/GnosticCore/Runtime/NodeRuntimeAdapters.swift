@@ -16,11 +16,27 @@ public struct AscendantAdapterRegistry: Sendable {
     public typealias BackendFactory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline]) async throws -> any AscendantBackend
 
     private var factories: [String: BackendFactory]
+    private var schemas: [String: AscendantBackendSettingsSchema]
 
     public init() {
         factories = [Self.positronicKind: { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: UnconfiguredLLMService())
         }]
+        schemas = [Self.positronicKind: PositronicAscendantAdapter.settingsSchema]
+    }
+
+    /// Every backend kind this registry can build.
+    public var registeredKinds: Set<String> { Set(factories.keys) }
+
+    /// The configuration keys one registered kind understands.
+    ///
+    /// - Parameter kind: The manifest `backend.kind` to look up.
+    /// - Returns: The kind's schema, ``AscendantBackendSettingsSchema/unspecified``
+    ///   when it was registered without one, or `nil` when the kind is not
+    ///   registered at all.
+    public func settingsSchema(for kind: String) -> AscendantBackendSettingsSchema? {
+        guard factories[kind] != nil else { return nil }
+        return schemas[kind] ?? .unspecified
     }
 
     /// Registers a backend factory for one manifest `kind`.
@@ -30,9 +46,16 @@ public struct AscendantAdapterRegistry: Sendable {
     ///
     /// - Parameters:
     ///   - kind: The manifest `backend.kind` this factory serves.
+    ///   - settings: The configuration keys this kind understands, so a
+    ///     composition root can list and check them without knowing the kind.
     ///   - factory: Builds the backend for one Ascendant.
-    public mutating func registerBackend(kind: String, factory: @escaping BackendFactory) {
+    public mutating func registerBackend(
+        kind: String,
+        settings: AscendantBackendSettingsSchema = .unspecified,
+        factory: @escaping BackendFactory
+    ) {
         factories[kind] = factory
+        schemas[kind] = settings
     }
 
     /// Registers the bundled Positronic backend with a caller-supplied
@@ -49,6 +72,7 @@ public struct AscendantAdapterRegistry: Sendable {
         factories[Self.positronicKind] = { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: factory(ascendant, backend))
         }
+        schemas[Self.positronicKind] = PositronicAscendantAdapter.settingsSchema
     }
 
     /// The kind served by the bundled Positronic backend.
@@ -126,6 +150,9 @@ public struct WorkspaceAdapterRegistry: Sendable {
         productFactories[kind] = factory
         factories.removeValue(forKey: kind)
     }
+
+    /// Every Workspace kind this registry can build, through either seam.
+    public var registeredKinds: Set<String> { Set(factories.keys).union(productFactories.keys) }
 
     @MainActor
     func makeWorkspace(for configuration: NodeManifest.Workspace) throws -> any WorkspaceProvider {
