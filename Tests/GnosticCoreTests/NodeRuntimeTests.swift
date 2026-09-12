@@ -900,7 +900,7 @@ struct NodeRuntimeTests {
         #expect(workspace.tools.allSatisfy { $0.requiresPermission })
     }
 
-    @Test("legacy Workspace factories retain compatibility tool metadata")
+    @Test("legacy Workspace factories advertise the tools their adapter owns")
     @available(*, deprecated, message: "This test intentionally exercises the legacy factory seam.")
     @MainActor
     func legacyWorkspaceFactoryRetainsCompatibilityTools() async throws {
@@ -919,7 +919,34 @@ struct NodeRuntimeTests {
 
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+        // EchoWorkspace declares this itself; the runtime no longer injects it.
         #expect(reference.tools.map(\.toolID) == [EchoWorkspace.toolID])
+    }
+
+    @Test("legacy Workspace adapters do not advertise tools they cannot execute")
+    @available(*, deprecated, message: "This test intentionally exercises the legacy factory seam.")
+    @MainActor
+    func legacyWorkspaceAdapterDoesNotAdvertiseForeignTools() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000231")!
+        let manifest = try makeManifest(
+            namespace: "node-runtime-legacy-foreign",
+            ascendantID: "A21D0000-0000-4000-8000-000000000232",
+            timelineID: "A21D0000-0000-4000-8000-000000000233",
+            workspaceIDs: [workspaceID.uuidString],
+            workspaceKind: "legacy-ledger"
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.register(kind: "legacy-ledger") { _, reference in
+            LegacyLedgerWorkspace(reference: reference)
+        }
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+
+        #expect(!reference.tools.map(\.toolID).contains(EchoWorkspace.toolID))
+        // The adapter projected the reference it was handed and declared no
+        // tools of its own, so it advertises none.
+        #expect(reference.tools.isEmpty)
     }
 
     @Test("product Workspace adapters own their reference and tool projection")
@@ -1398,6 +1425,31 @@ private final class NodeToolCaptureLanguageModel: LLMStreamClient, @unchecked Se
             names = Set(tools.map(\.name))
         }
     }
+}
+
+/// A legacy-seam adapter that follows the pattern `EchoWorkspace` demonstrates:
+/// it stores the `WorkspaceReference` the runtime hands it and projects that
+/// reference's tools. It can only execute `ledger_append`.
+private struct LegacyLedgerWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
+    static let toolID = "ledger_append"
+
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    init(reference: WorkspaceReference) { self.reference = reference }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+
+    func executeTool(id: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+        guard id == Self.toolID else { throw WorkspaceError.toolExecutionNotSupported }
+        return .success("appended")
+    }
+
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
 }
 
 private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {

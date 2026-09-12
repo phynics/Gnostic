@@ -104,24 +104,20 @@ public struct WorkspaceAdapterRegistry: Sendable {
         guard let uri = WorkspaceURI(parsing: configuration.uri) else {
             throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
         }
+        // The runtime cannot know a legacy adapter's tools, so it must not
+        // invent any. An adapter that projects the reference it is handed
+        // would otherwise advertise tools belonging to another implementation.
+        // NodeAssembly derives the advertised reference from `listTools()`.
         return try factory(configuration, WorkspaceReference(
             id: configuration.id,
             uri: uri,
             location: .runtime,
-            tools: EchoWorkspace.toolDefinitions
+            tools: []
         ))
     }
 
     func usesProductFactory(kind: String) -> Bool {
         productFactories[kind] != nil
-    }
-
-    func makeWorkspace(for configuration: NodeManifest.Workspace, reference: WorkspaceReference) throws -> any WorkspaceProvider {
-        if let factory = productFactories[configuration.kind] {
-            return try factory(configuration)
-        }
-        guard let factory = factories[configuration.kind] else { throw NodeRuntimeError.unsupportedWorkspaceKind(configuration.kind) }
-        return try factory(configuration, reference)
     }
 
     func validate(kinds: some Sequence<String>) throws {
@@ -199,7 +195,10 @@ public struct EchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Senda
 
     public init(reference: WorkspaceReference) { self.reference = reference }
 
-    public func listTools() async throws -> [ToolReference] { reference.tools }
+    /// Echo owns its tool projection rather than trusting the reference it
+    /// was constructed with, so it advertises the same tools through both the
+    /// product and the legacy registration seams.
+    public func listTools() async throws -> [ToolReference] { Self.toolDefinitions }
 
     public func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
         guard id == Self.toolID else { throw WorkspaceError.toolExecutionNotSupported }
