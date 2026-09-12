@@ -80,7 +80,7 @@ public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
         toolsComplete = includeTools && projectedTools.isEmpty
         createdAt = workspace.createdAt
         super.init(
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: workspace.id.uuidString)!,
             name: GnosticWirePayload.boundedLabel(workspace.uri)

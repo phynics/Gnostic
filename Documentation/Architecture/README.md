@@ -20,7 +20,9 @@ The delivered 0.3 compatibility declaration is [documented here](../Compatibilit
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. It is empty in the delivered 0.3 baseline. Every future
+exception registry. It records one accepted exception, `GNO-EXC-0001`, for the
+Coaty vocabulary that `GnosticCore` still publishes through
+`Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift`. Every
 exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,

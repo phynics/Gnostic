@@ -194,7 +194,7 @@ struct ProtocolV2Tests {
         """
         let snapshot = CoatyObjectSnapshot(
             objectId: objectID,
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: GnosticObjectType.ascendant,
             name: "Old",
             payload: payload
@@ -212,8 +212,8 @@ struct ProtocolV2Tests {
         let fullPayload = """
         {"protocolMajor":2,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.ascendant)","name":"Current","ascendantDescription":"current","privateTimelineID":"\(timelineID.uuidString.lowercased())","lastActiveAt":"2023-11-14T22:13:20Z","createdAt":"2023-11-14T22:13:20Z","updatedAt":"2023-11-14T22:13:20Z"}
         """
-        let full = CoatyObjectSnapshot(objectId: objectID, coreType: .CoatyObject, objectType: GnosticObjectType.ascendant, name: "Current", payload: fullPayload)
-        let metadata = CoatyObjectSnapshot(objectId: objectID, coreType: .CoatyObject, objectType: GnosticObjectType.ascendant, name: "Current")
+        let full = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.ascendant, name: "Current", payload: fullPayload)
+        let metadata = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.ascendant, name: "Current")
         let catalog = NetworkCatalog()
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider", object: full))
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider", object: metadata))

@@ -45,7 +45,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
         createdAt = timeline.createdAt
         updatedAt = timeline.updatedAt
         super.init(
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: timeline.id.uuidString)!,
             name: GnosticWirePayload.boundedLabel(timeline.title)

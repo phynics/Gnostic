@@ -126,7 +126,7 @@ public struct AscendantPermissionProvider: Sendable {
             throw CocoaError(.coderInvalidValue)
         }
         let marker = CoatyObject(
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: CoatyObject.objectType,
             objectId: CoatyUUID(),
             name: "Gnostic ascendant permission response"

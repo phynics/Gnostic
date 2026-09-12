@@ -46,7 +46,7 @@ struct RunnerFixtureE2ETests {
         }
         let registration = try await fixture.register(on: provider)
         defer { registration.cancel() }
-        let lifecycle = try #require(providerContainer.getController(name: "ObjectLifecycleController") as ObjectLifecycleController?)
+        let lifecycle = try #require(providerContainer.controller(named: "ObjectLifecycleController") as ObjectLifecycleController?)
         lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(
             workspace: WorkspaceReferenceProjection.networkReference(from: fixtureReference(id: workspaceID))
         ))

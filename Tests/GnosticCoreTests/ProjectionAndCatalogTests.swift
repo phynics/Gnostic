@@ -153,7 +153,7 @@ struct ProjectionAndCatalogTests {
         let catalog = NetworkCatalog()
         let snapshot = CoatyObjectSnapshot(
             objectId: workspaceID.uuidString.lowercased(),
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: GnosticObjectType.workspace,
             name: "Unsupported workspace",
             payload: try payload([
@@ -180,7 +180,7 @@ struct ProjectionAndCatalogTests {
         let catalog = NetworkCatalog()
         let snapshot = CoatyObjectSnapshot(
             objectId: workspaceID.uuidString.lowercased(),
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: GnosticObjectType.workspace,
             name: "Future workspace",
             payload: try payload([
@@ -308,7 +308,7 @@ struct ProjectionAndCatalogTests {
         let catalog = NetworkCatalog()
         let advertised = CoatyObjectSnapshot(
             objectId: ascendantID.uuidString.lowercased(),
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: GnosticObjectType.ascendant,
             name: "Remote Ascendant"
         )
@@ -345,7 +345,7 @@ struct ProjectionAndCatalogTests {
         let catalog = NetworkCatalog()
         let snapshot = CoatyObjectSnapshot(
             objectId: workspaceID.uuidString.lowercased(),
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: "me.atkn.gnostic.Workspace",
             name: "Remote workspace",
             payload: try payload([
@@ -372,7 +372,7 @@ struct ProjectionAndCatalogTests {
     @Test("catalog retains exact signed and unsigned dynamic integers")
     func catalogRetainsExactDynamicIntegers() async throws {
         let snapshot = CoatyObjectSnapshot(
-            objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject,
+            objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject,
             objectType: GnosticObjectType.workspace, name: "Exact values",
             payload: #"{"uri":"workspace://exact","isAvailable":true,"tools":[],"signed":-9223372036854775808,"unsigned":18446744073709551615}"#
         )
@@ -389,7 +389,7 @@ struct ProjectionAndCatalogTests {
         let catalog = NetworkCatalog()
         let malformed = CoatyObjectSnapshot(
             objectId: workspaceID.uuidString.lowercased(),
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: "me.atkn.gnostic.Workspace",
             name: "Malformed workspace",
             payload: try payload([
@@ -505,7 +505,7 @@ struct ProjectionAndCatalogTests {
             sourceId: sourceID,
             object: CoatyObjectSnapshot(
                 objectId: workspaceID.uuidString.lowercased(),
-                coreType: .CoatyObject,
+                coreType: .coatyObject,
                 objectType: "me.atkn.gnostic.Workspace",
                 name: "Remote workspace",
                 payload: try! payload([
@@ -529,7 +529,7 @@ struct ProjectionAndCatalogTests {
             sourceId: sourceID,
             object: CoatyObjectSnapshot(
                 objectId: ascendantID.uuidString.lowercased(),
-                coreType: .CoatyObject,
+                coreType: .coatyObject,
                 objectType: GnosticObjectType.ascendant,
                 name: "Remote Ascendant",
                 payload: try payload([
