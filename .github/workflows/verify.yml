@@ -18,13 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The build directory is the expensive part to recreate. The container
       # image is rebuilt by the first `make` target below and then served from
       # the runner's local layer cache for the rest of the job.
       - name: Restore SwiftPM and build caches
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /tmp/gnostic-swift-build
@@ -51,9 +51,12 @@ jobs:
 
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: testing-logs
           path: .testing/
+          # .testing is a dot-directory; without this the upload silently
+          # finds nothing and a failed run has no diagnosable output.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
