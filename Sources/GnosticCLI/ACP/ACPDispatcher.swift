@@ -210,9 +210,7 @@ final class ACPDispatcher: Sendable {
             if existing.conflict {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
             }
-            if let error = existing.updates.last(where: {
-                $0.kind == "error" || $0.kind == "cancelled" || $0.kind == "cancellation"
-            }) {
+            if let error = existing.updates.last(where: \.isTerminalFailure) {
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             for update in existing.updates {
@@ -254,7 +252,7 @@ final class ACPDispatcher: Sendable {
             publishUpdate(
                 sessionID: record.id,
                 turnID: turnID,
-                update: AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: result.text),
+                update: AscendantTurnUpdate(sequence: 1, kind: .assistantText, text: result.text),
                 replayed: result.replayed
             )
         } else {

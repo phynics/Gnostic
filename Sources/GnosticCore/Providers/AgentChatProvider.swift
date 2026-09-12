@@ -148,21 +148,19 @@ public struct AscendantTurnProvider: Sendable {
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID
                 )
-                let streamed = replay.updates.contains {
-                    $0.kind == "assistant_text" || $0.kind == "assistant_text_snapshot"
-                }
+                let streamed = replay.updates.contains(where: \.carriesAssistantText)
                 if !streamed {
                     _ = try await replayStore.append(
                         timelineID: request.timelineID,
                         clientTurnID: clientTurnID,
-                        kind: "assistant_text",
+                        kind: AscendantTurnUpdateKind.assistantText.rawValue,
                         text: result.text
                     )
                 }
                 _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    kind: "completion",
+                    kind: AscendantTurnUpdateKind.completion.rawValue,
                     text: result.text,
                     terminal: true
                 )
@@ -189,15 +187,11 @@ public struct AscendantTurnProvider: Sendable {
                     try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
                     return .failure(code: mapped.code, message: mapped.message)
                 }
-                let kind: String
-                switch error {
-                case .cancelled: kind = "cancellation"
-                default: kind = "error"
-                }
+                let kind: AscendantTurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
                 _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    kind: kind,
+                    kind: kind.rawValue,
                     text: error.publicMessage,
                     terminal: true,
                     reasonCode: error.reasonCode,
@@ -218,7 +212,7 @@ public struct AscendantTurnProvider: Sendable {
                 _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    kind: "error",
+                    kind: AscendantTurnUpdateKind.error.rawValue,
                     text: error.publicMessage,
                     terminal: true,
                     reasonCode: error.reasonCode,
@@ -237,7 +231,7 @@ public struct AscendantTurnProvider: Sendable {
                 _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    kind: "error",
+                    kind: AscendantTurnUpdateKind.error.rawValue,
                     text: "The ascendant turn failed.",
                     terminal: true,
                     reasonCode: "internalError",

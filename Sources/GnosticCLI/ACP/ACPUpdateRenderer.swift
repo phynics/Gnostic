@@ -23,8 +23,7 @@ enum ACPUpdateRenderer {
         ]
 
         var payloads: [AnyCodable] = []
-        if update.kind == "assistant_text" || update.kind == "assistant_text_snapshot",
-           let text = update.text {
+        if update.carriesAssistantText, let text = update.text {
             payloads.append(.dictionary([
                 "sessionUpdate": .string("agent_message_chunk"),
                 "content": .dictionary(["type": .string("text"), "text": .string(text)]),
@@ -32,7 +31,7 @@ enum ACPUpdateRenderer {
             ]))
         }
         if let toolState = update.toolState {
-            payloads.append(toolPayload(toolState, initial: update.kind == "tool_call", metadata: metadata))
+            payloads.append(toolPayload(toolState, initial: update.updateKind == .toolCall, metadata: metadata))
         }
         for toolState in update.toolStates {
             metadata["compacted"] = .boolean(true)
