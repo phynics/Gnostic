@@ -411,4 +411,50 @@ struct BackendArchitectureFitnessTests {
             """
         )
     }
+
+    @Test("the extension guides only name types that exist")
+    func extensionGuidesNameRealTypes() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sources = try Self.swiftSourceText(under: rootURL.appendingPathComponent("Sources"))
+
+        var missing: [String] = []
+        for guide in ["ascendant-backends.md", "workspace-adapters.md"] {
+            let url = rootURL
+                .appendingPathComponent("Documentation/Extending")
+                .appendingPathComponent(guide)
+            let text = try String(contentsOf: url, encoding: .utf8)
+
+            // Backtick-quoted UpperCamelCase tokens are Swift type names. A
+            // guide that names a type which no longer exists is worse than no
+            // guide, so this fails rather than warns.
+            for match in text.split(separator: "`") .enumerated()
+                .filter({ $0.offset % 2 == 1 })
+                .map({ String($0.element) }) {
+                let token = match.split(separator: ".").first.map(String.init) ?? match
+                let bare = token.split(separator: "(").first.map(String.init) ?? token
+                guard bare.count > 2,
+                      let first = bare.first, first.isUppercase,
+                      bare.allSatisfy({ $0.isLetter || $0.isNumber })
+                else { continue }
+                if !sources.contains(bare) {
+                    missing.append("\(guide): '\(bare)'")
+                }
+            }
+        }
+
+        #expect(missing.isEmpty, "Extension guides name types absent from Sources:\n\(missing.joined(separator: "\n"))")
+    }
+
+    private static func swiftSourceText(under directory: URL) throws -> String {
+        var combined = ""
+        let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            combined += try String(contentsOf: url, encoding: .utf8)
+        }
+        return combined
+    }
 }
