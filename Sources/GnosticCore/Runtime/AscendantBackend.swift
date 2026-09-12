@@ -563,6 +563,68 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
     }
 }
 
+/// The configuration keys one backend kind understands.
+///
+/// A backend advertises this so a composition root -- notably the CLI -- can
+/// list and check keys without knowing the kind at compile time. It describes
+/// *which keys exist*, not what values are valid: semantic validation stays in
+/// ``AscendantBackend/validateConfiguration()``.
+public struct AscendantBackendSettingsSchema: Sendable, Equatable {
+    /// One configuration key a backend understands.
+    public struct Key: Sendable, Equatable {
+        /// The key as it appears in ``AscendantBackendConfiguration/settings``
+        /// or ``AscendantBackendConfiguration/secrets``.
+        public let name: String
+        /// A one-line description, suitable for CLI help output.
+        public let summary: String
+        /// Whether the value belongs in `secrets` and must be redacted.
+        public let isSecret: Bool
+
+        /// Creates one configuration key description.
+        ///
+        /// - Parameters:
+        ///   - name: The key as stored in the backend envelope.
+        ///   - summary: A one-line description for help output.
+        ///   - isSecret: Whether the value belongs in `secrets`.
+        public init(name: String, summary: String, isSecret: Bool = false) {
+            self.name = name
+            self.summary = summary
+            self.isSecret = isSecret
+        }
+    }
+
+    /// Every key this backend kind understands, in presentation order.
+    public let keys: [Key]
+
+    /// Creates a schema from an ordered key list.
+    ///
+    /// - Parameter keys: The keys, in the order help output should show them.
+    public init(keys: [Key] = []) {
+        self.keys = keys
+    }
+
+    /// A schema for a backend that advertises no keys.
+    ///
+    /// This is distinct from a kind that is not registered at all: the kind
+    /// exists, but a caller cannot be told which keys it accepts.
+    public static var unspecified: Self { .init() }
+
+    /// Whether the backend advertises no keys.
+    public var isUnspecified: Bool { keys.isEmpty }
+
+    /// The names of keys stored in `settings`.
+    public var settingNames: [String] { keys.filter { !$0.isSecret }.map(\.name) }
+
+    /// The names of keys stored in `secrets`.
+    public var secretNames: [String] { keys.filter(\.isSecret).map(\.name) }
+
+    /// Looks up one advertised key.
+    ///
+    /// - Parameter name: The key name to find.
+    /// - Returns: The key, or `nil` when this kind does not advertise it.
+    public func key(named name: String) -> Key? { keys.first { $0.name == name } }
+}
+
 /// Structural validation common to every backend envelope. Semantic settings
 /// remain owned by the selected backend implementation.
 public enum AscendantBackendConfigurationValidator {

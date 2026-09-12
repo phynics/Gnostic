@@ -164,6 +164,20 @@ import struct PositronicKit.Thread
     /// three model slots, so utility and fast models are validated as well. An
     /// empty envelope is the explicit unconfigured state used by deterministic
     /// hosts and test runtimes.
+    /// The configuration keys the bundled Positronic backend understands.
+    ///
+    /// This is the single source of truth for those key names: the registry
+    /// advertises it and ``validateConfiguration()`` checks against it, so the
+    /// two cannot drift.
+    public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
+        .init(name: "provider", summary: "LLM provider name, for example openai or anthropic."),
+        .init(name: "endpoint", summary: "Provider endpoint URL. Defaults to the provider's own."),
+        .init(name: "model", summary: "Primary model name."),
+        .init(name: "utilityModel", summary: "Model used for utility work."),
+        .init(name: "fastModel", summary: "Model used where latency matters more than quality."),
+        .init(name: "apiKey", summary: "Provider API key.", isSecret: true),
+    ])
+
     public func validateConfiguration() throws {
         try Self.validateConfiguration(configuration)
     }
@@ -173,9 +187,9 @@ import struct PositronicKit.Thread
             throw invalidConfiguration("backend kind")
         }
 
-        let knownSettings = ["provider", "endpoint", "model", "utilityModel", "fastModel"]
-        let hasKnownValue = knownSettings.contains { configuration.settings[$0] != nil }
-            || configuration.secrets["apiKey"] != nil
+        let schema = Self.settingsSchema
+        let hasKnownValue = schema.settingNames.contains { configuration.settings[$0] != nil }
+            || schema.secretNames.contains { configuration.secrets[$0] != nil }
         guard hasKnownValue else { return }
 
         let providerName = try stringValue(for: "provider", in: configuration.settings)
