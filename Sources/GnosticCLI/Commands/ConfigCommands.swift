@@ -2,15 +2,26 @@
 
 import ArgumentParser
 import Foundation
+import GnosticCore
 
 /// gnostic config — create and manage the versioned Node resource graph.
 struct ConfigCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "config",
         abstract: "Create and manage the Gnostic Node configuration.",
+        discussion: """
+        Resources are addressed by UUID. Run `config show` to list them.
+
+        Example:
+          gnostic config init
+          gnostic config ascendant add "Atlas" --kind positronic
+          gnostic config backend keys <ascendant-id>
+          gnostic config backend set <ascendant-id> provider openai
+          gnostic config backend set-secret <ascendant-id> apiKey   # reads stdin
+        """,
         subcommands: [
-            Init.self, Show.self, Validate.self, Path.self, Broker.self, Positronic.self,
-            Ascendant.self, Timeline.self, Workspace.self,
+            Init.self, Show.self, Validate.self, Path.self, Broker.self, Backend.self,
+            Positronic.self, Ascendant.self, Timeline.self, Workspace.self,
         ]
     )
 
@@ -115,10 +126,111 @@ struct ConfigCommand: AsyncParsableCommand {
         }
     }
 
+    /// gnostic config backend — configure any registered backend kind.
+    struct Backend: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "backend",
+            abstract: "Configure an Ascendant's backend, whatever its kind.",
+            discussion: """
+            Keys are those the Ascendant's backend kind advertises. Run \
+            `config backend keys <ascendant-id>` to list them.
+
+            Secrets are written with `set-secret`, which reads the value from \
+            standard input so it never appears in shell history, and are \
+            redacted by `config show`.
+            """,
+            subcommands: [Set.self, SetSecret.self, Keys.self, Clear.self]
+        )
+
+        struct Set: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "set",
+                abstract: "Set one non-secret backend setting."
+            )
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Existing Ascendant UUID.")
+            var ascendantID: String
+            @Argument(help: "Setting key advertised by the Ascendant's backend kind.")
+            var key: String
+            @Argument(help: "Value to store.")
+            var value: String
+
+            func run() async throws {
+                try ConfigCommandLogic.setBackendValue(
+                    ascendantID: ascendantID, key: key, value: value,
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct SetSecret: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "set-secret",
+                abstract: "Read one backend secret from standard input."
+            )
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Existing Ascendant UUID.")
+            var ascendantID: String
+            @Argument(help: "Secret key advertised by the Ascendant's backend kind.")
+            var key: String
+
+            func run() async throws {
+                try ConfigCommandLogic.setBackendSecret(
+                    ascendantID: ascendantID, key: key, value: ConfigCommandLogic.readSecret(),
+                    store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct Keys: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "keys",
+                abstract: "List the keys this Ascendant's backend kind accepts."
+            )
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Existing Ascendant UUID.")
+            var ascendantID: String
+
+            func run() async throws {
+                try ConfigCommandLogic.listBackendKeys(
+                    ascendantID: ascendantID, store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+
+        struct Clear: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "clear",
+                abstract: "Clear the backend envelope, preserving its kind."
+            )
+            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
+            var configPath: String?
+            @Argument(help: "Existing Ascendant UUID.")
+            var ascendantID: String
+
+            func run() async throws {
+                try ConfigCommandLogic.clearBackend(
+                    ascendantID: ascendantID, store: ConfigCommandLogic.store(for: configPath)
+                )
+            }
+        }
+    }
+
     struct Positronic: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "positronic",
-            abstract: "Configure one Positronic Ascendant backend.",
+            abstract: "Deprecated. Use 'config backend' instead.",
+            discussion: """
+            These commands remain for compatibility and only ever worked for the \
+            bundled Positronic backend. `config backend` works for every \
+            registered kind and is the supported surface.
+
+              gnostic config backend set <ascendant-id> provider openai
+              gnostic config backend set-secret <ascendant-id> apiKey
+            """,
             subcommands: [Set.self, SetAPIKey.self, Clear.self]
         )
 
@@ -179,7 +291,14 @@ struct ConfigCommand: AsyncParsableCommand {
     struct Ascendant: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "ascendant",
-            abstract: "Manage local Positronic Ascendants.",
+            abstract: "Manage Ascendants and their backend kind.",
+            discussion: """
+            Adding an Ascendant also creates the Timeline it operates, atomically.
+
+              gnostic config ascendant add "Atlas"
+              gnostic config ascendant add "Atlas" --kind positronic
+              gnostic config ascendant update <id> --name "Atlas II"
+            """,
             subcommands: [AscendantAdd.self, AscendantUpdate.self, AscendantRemove.self]
         )
 
@@ -187,13 +306,19 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "add", abstract: "Add an Ascendant and its operated default Timeline atomically.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument(help: "Ascendant name (also accepted as --name).")
+            @Argument(help: "Ascendant name. Takes precedence over --name if both are given.")
             var nameArgument: String?
-            @Option(name: .long) var name: String?
-            @Option(name: .long) var description: String = ""
+            @Option(name: .long, help: "Ascendant name. Equivalent to the positional argument.")
+            var name: String?
+            @Option(name: .long, help: "Ascendant description.")
+            var description: String = ""
+            @Option(name: .long, help: "Backend kind. Must be registered; see 'config backend keys'.")
+            var kind: String = AscendantAdapterRegistry.positronicKind
             func run() async throws {
+                // The positional wins so that `add "Atlas" --name Other` is not
+                // silently resolved in favour of the less visible spelling.
                 try ConfigCommandLogic.addAscendant(
-                    name: name ?? nameArgument, description: description,
+                    name: nameArgument ?? name, description: description, kind: kind,
                     store: ConfigCommandLogic.store(for: configPath)
                 )
             }
@@ -203,9 +328,12 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "update", abstract: "Update an Ascendant without changing its ID or kind.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument var id: String
-            @Option(name: .long) var name: String?
-            @Option(name: .long) var description: String?
+            @Argument(help: "Existing Ascendant UUID.")
+            var id: String
+            @Option(name: .long, help: "New Ascendant name.")
+            var name: String?
+            @Option(name: .long, help: "New Ascendant description.")
+            var description: String?
             @Option(name: .customLong("default-timeline"), help: "Existing Timeline operated by this Ascendant.")
             var defaultTimeline: String?
 
@@ -221,7 +349,8 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove an Ascendant and clear its operator from every Timeline.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument var id: String
+            @Argument(help: "Existing resource UUID.")
+            var id: String
 
             func run() async throws {
                 try ConfigCommandLogic.removeAscendant(id: id, store: ConfigCommandLogic.store(for: configPath))
@@ -233,6 +362,14 @@ struct ConfigCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "timeline",
             abstract: "Manage independent Timelines and Workspace attachments.",
+            discussion: """
+            A Timeline may be operated by an Ascendant and may have Workspaces \
+            attached. Network attachments carry a URI and resolve lazily.
+
+              gnostic config timeline add "Notes"
+              gnostic config timeline attach-workspace <timeline-id> <workspace-id>
+              gnostic config timeline detach-workspace <timeline-id> <workspace-id>
+            """,
             subcommands: [TimelineAdd.self, TimelineUpdate.self, TimelineRemove.self, AttachWorkspace.self, DetachWorkspace.self]
         )
 
@@ -242,7 +379,8 @@ struct ConfigCommand: AsyncParsableCommand {
             var configPath: String?
             @Argument(help: "Timeline title (also accepted as --title).")
             var titleArgument: String?
-            @Option(name: .long) var title: String?
+            @Option(name: .long, help: "Timeline title. Equivalent to the positional argument.")
+            var title: String?
             @Option(name: .customLong("operating-ascendant"), help: "Existing Ascendant UUID.")
             var operatingAscendant: String?
 
@@ -258,9 +396,12 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "update", abstract: "Update a Timeline without changing its ID or kind.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument var id: String
-            @Option(name: .long) var title: String?
-            @Option(name: .customLong("operating-ascendant")) var operatingAscendant: String?
+            @Argument(help: "Existing Timeline UUID.")
+            var id: String
+            @Option(name: .long, help: "New Timeline title.")
+            var title: String?
+            @Option(name: .customLong("operating-ascendant"), help: "Ascendant UUID that operates this Timeline.")
+            var operatingAscendant: String?
             @Flag(name: .customLong("clear-operating-ascendant"), help: "Leave this Timeline without an operating Ascendant.")
             var clearOperatingAscendant = false
 
@@ -280,7 +421,8 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove a Timeline that is not an Ascendant default.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument var id: String
+            @Argument(help: "Existing resource UUID.")
+            var id: String
 
             func run() async throws {
                 try ConfigCommandLogic.removeTimeline(id: id, store: ConfigCommandLogic.store(for: configPath))
@@ -341,17 +483,25 @@ struct ConfigCommand: AsyncParsableCommand {
     struct Workspace: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "workspace",
-            abstract: "Manage local echo Workspaces.",
+            abstract: "Manage local Workspaces.",
+            discussion: """
+            Local Workspaces are addressed by URI. Attach them to a Timeline \
+            with `config timeline attach-workspace`.
+
+              gnostic config workspace add "Scratch" --uri echo://scratch
+              gnostic config workspace update <id> --name "Scratch II"
+            """,
             subcommands: [WorkspaceAdd.self, WorkspaceUpdate.self, WorkspaceRemove.self]
         )
 
         struct WorkspaceAdd: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add an echo Workspace.")
+            static let configuration = CommandConfiguration(commandName: "add", abstract: "Add a local Workspace.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
             @Argument(help: "Workspace name (also accepted as --name).")
             var nameArgument: String?
-            @Option(name: .long) var name: String?
+            @Option(name: .long, help: "Workspace name. Equivalent to the positional argument.")
+            var name: String?
             @Option(name: .long, help: "Workspace URI.")
             var uri: String
 
@@ -367,9 +517,12 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "update", abstract: "Update a Workspace without changing its ID or kind.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument var id: String
-            @Option(name: .long) var name: String?
-            @Option(name: .long) var uri: String?
+            @Argument(help: "Existing Workspace UUID.")
+            var id: String
+            @Option(name: .long, help: "New Workspace name.")
+            var name: String?
+            @Option(name: .long, help: "New Workspace URI.")
+            var uri: String?
 
             func run() async throws {
                 try ConfigCommandLogic.updateWorkspace(
@@ -383,7 +536,8 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove a Workspace that has no local attachments.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
-            @Argument var id: String
+            @Argument(help: "Existing resource UUID.")
+            var id: String
 
             func run() async throws {
                 try ConfigCommandLogic.removeWorkspace(id: id, store: ConfigCommandLogic.store(for: configPath))
@@ -449,6 +603,119 @@ public enum ConfigCommandLogic {
         _ = try store.mutateManifest { $0.broker.password = password }
     }
 
+    /// The registry the CLI consults for backend kinds and their keys.
+    ///
+    /// Configuration commands never construct a backend, so this carries the
+    /// default registrations only. A kind registered solely inside a running
+    /// host is deliberately not configurable here.
+    static var backendRegistry: AscendantAdapterRegistry { AscendantAdapterRegistry() }
+
+    /// Resolves the Ascendant at `ascendantID` and the schema of its kind.
+    private static func backendTarget(
+        _ ascendantID: String,
+        in manifest: NodeManifest
+    ) throws -> (index: Int, kind: String, schema: AscendantBackendSettingsSchema) {
+        let id = try parseID(ascendantID, kind: "ascendant")
+        guard let index = manifest.ascendants.firstIndex(where: { $0.id == id }) else {
+            throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
+        }
+        let kind = manifest.ascendants[index].backend.kind
+        guard let schema = backendRegistry.settingsSchema(for: kind) else {
+            throw CLIConfigurationError.invalidArgument(
+                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList())."
+            )
+        }
+        return (index, kind, schema)
+    }
+
+    private static func knownKindList() -> String {
+        backendRegistry.registeredKinds.sorted().joined(separator: ", ")
+    }
+
+    /// Validates one key against the kind's advertised schema.
+    ///
+    /// A kind that advertises no keys accepts any key: it can be built but
+    /// cannot describe itself, so the CLI must not pretend to know better.
+    private static func validatedKey(
+        _ key: String,
+        wantsSecret: Bool,
+        kind: String,
+        schema: AscendantBackendSettingsSchema
+    ) throws {
+        guard !key.isEmpty else {
+            throw CLIConfigurationError.invalidArgument("A backend key cannot be empty.")
+        }
+        guard !schema.isUnspecified else { return }
+        guard let declared = schema.key(named: key) else {
+            let known = schema.keys.map(\.name).joined(separator: ", ")
+            throw CLIConfigurationError.invalidArgument(
+                "Backend kind '\(kind)' does not accept key '\(key)'. Accepted keys: \(known)."
+            )
+        }
+        if declared.isSecret != wantsSecret {
+            throw CLIConfigurationError.invalidArgument(
+                declared.isSecret
+                    ? "Key '\(key)' is a secret. Use 'config backend set-secret', which reads the value from standard input."
+                    : "Key '\(key)' is not a secret. Use 'config backend set'."
+            )
+        }
+    }
+
+    /// Sets one non-secret backend setting.
+    public static func setBackendValue(
+        ascendantID: String,
+        key: String,
+        value: String,
+        store: CLIConfigurationStore
+    ) throws {
+        _ = try store.mutateManifest { manifest in
+            let target = try backendTarget(ascendantID, in: manifest)
+            try validatedKey(key, wantsSecret: false, kind: target.kind, schema: target.schema)
+            manifest.ascendants[target.index].backend.settings[key] = .string(value)
+        }
+    }
+
+    /// Sets one backend secret, read from standard input by the command layer.
+    public static func setBackendSecret(
+        ascendantID: String,
+        key: String,
+        value: String,
+        store: CLIConfigurationStore
+    ) throws {
+        _ = try store.mutateManifest { manifest in
+            let target = try backendTarget(ascendantID, in: manifest)
+            try validatedKey(key, wantsSecret: true, kind: target.kind, schema: target.schema)
+            manifest.ascendants[target.index].backend.secrets[key] = .string(value)
+        }
+    }
+
+    /// Clears one Ascendant's backend envelope, preserving its kind.
+    public static func clearBackend(ascendantID: String, store: CLIConfigurationStore) throws {
+        _ = try store.mutateManifest { manifest in
+            let target = try backendTarget(ascendantID, in: manifest)
+            manifest.ascendants[target.index].backend = .init(kind: target.kind)
+        }
+    }
+
+    /// Prints the keys one Ascendant's backend kind accepts.
+    public static func listBackendKeys(
+        ascendantID: String,
+        store: CLIConfigurationStore,
+        writeOutput: (String) -> Void = { print($0) }
+    ) throws {
+        let manifest = try store.loadManifest()
+        let target = try backendTarget(ascendantID, in: manifest)
+        guard !target.schema.isUnspecified else {
+            writeOutput("Backend kind '\(target.kind)' does not advertise its configuration keys.")
+            return
+        }
+        writeOutput("kind: \(target.kind)")
+        for key in target.schema.keys {
+            let marker = key.isSecret ? " [secret]" : ""
+            writeOutput("  \(key.name)\(marker) — \(key.summary)")
+        }
+    }
+
     public static func configurePositronic(
         ascendantID: String,
         provider: String?,
@@ -492,12 +759,22 @@ public enum ConfigCommandLogic {
         }
     }
 
-    public static func addAscendant(name: String?, description: String, store: CLIConfigurationStore) throws {
+    public static func addAscendant(
+        name: String?,
+        description: String,
+        kind: String = AscendantAdapterRegistry.positronicKind,
+        store: CLIConfigurationStore
+    ) throws {
         guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("An Ascendant name is required.") }
+        guard backendRegistry.registeredKinds.contains(kind) else {
+            throw CLIConfigurationError.invalidArgument(
+                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList())."
+            )
+        }
         let ascendantID = UUID.makeVersion4()
         let timelineID = UUID.makeVersion4()
         _ = try store.mutateManifest { manifest in
-            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, backend: .init(kind: "positronic")))
+            manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, backend: .init(kind: kind)))
             manifest.timelines.append(.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID))
         }
         printID("Added ascendant", ascendantID)
@@ -677,14 +954,15 @@ public enum ConfigCommandLogic {
             lines.append("ascendant \(ascendant.id.uuidString.lowercased()) = \(ascendant.name) default=\(ascendant.defaultTimelineID.uuidString.lowercased())")
             if !ascendant.description.isEmpty { lines.append("  description = \(ascendant.description)") }
             lines.append("  backend.kind = \(ascendant.backend.kind)")
-            if ascendant.backend.kind == "positronic" {
-                let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
-                if let provider = configuration.provider { lines.append("  backend.provider = \(provider)") }
-                if let endpoint = configuration.endpoint { lines.append("  backend.endpoint = \(endpoint)") }
-                if let model = configuration.model { lines.append("  backend.model = \(model)") }
-                if let utilityModel = configuration.utilityModel { lines.append("  backend.utilityModel = \(utilityModel)") }
-                if let fastModel = configuration.fastModel { lines.append("  backend.fastModel = \(fastModel)") }
-                if configuration.apiKey != nil { lines.append("  backend.apiKey = <redacted>") }
+            // Redaction is structural: anything in `secrets` is hidden, whatever
+            // its name and whatever kind declared it. A new backend's secret is
+            // therefore redacted without a CLI change.
+            for key in ascendant.backend.settings.keys.sorted() {
+                let value = ascendant.backend.settings[key]?.stringValue ?? ""
+                lines.append("  backend.\(key) = \(value)")
+            }
+            for key in ascendant.backend.secrets.keys.sorted() {
+                lines.append("  backend.\(key) = <redacted>")
             }
         }
         for timeline in manifest.timelines {
