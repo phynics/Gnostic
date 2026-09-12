@@ -98,7 +98,7 @@ public actor AscendantPermissionCoordinator {
         guard pending[request.correlationID] == nil else { return false }
         let (decisions, continuation) = AsyncStream<Bool>.makeStream()
         pending[request.correlationID] = Pending(request: request, clientTurnID: clientTurnID, continuation: continuation)
-        await append(request, clientTurnID: clientTurnID, status: "pending")
+        await append(request, clientTurnID: clientTurnID, status: .pending)
         var iterator = decisions.makeAsyncIterator()
         return await iterator.next() ?? false
     }
@@ -119,14 +119,14 @@ public actor AscendantPermissionCoordinator {
               value.request.timelineID == timelineID,
               value.request.clientTurnID == responseClientTurnID.rawValue else { return false }
         pending[correlationID] = nil
-        await append(value.request, clientTurnID: value.clientTurnID, status: approved ? "selected" : "denied")
+        await append(value.request, clientTurnID: value.clientTurnID, status: approved ? .selected : .denied)
         await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
         value.continuation.yield(approved)
         value.continuation.finish()
         return true
     }
 
-    public func denyAll(reason: String) async {
+    public func denyAll(reason: AscendantPermissionStatus) async {
         acceptingResponses = false
         let values = Array(pending.values)
         pending.removeAll()
@@ -141,13 +141,13 @@ public actor AscendantPermissionCoordinator {
     private func append(
         _ request: AscendantPermissionRequest,
         clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID,
-        status: String
+        status: AscendantPermissionStatus
     ) async {
         do {
             _ = try await updates.append(
             timelineID: request.timelineID,
             clientTurnID: clientTurnID,
-            kind: "permission_state",
+            kind: AscendantTurnUpdateKind.permissionState.rawValue,
             permissionState: AscendantPermissionState(
                 correlationID: request.correlationID,
                 toolCallID: request.toolCallID,

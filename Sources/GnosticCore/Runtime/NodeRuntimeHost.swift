@@ -185,7 +185,7 @@ final class NodeRuntimeHost {
     private func performCleanup(_ cleanup: NodeRuntimeLifetime.CleanupTasks) async {
         guard let registry, let backendSupervisor, let transport else { return }
         await registry.fenceBackendLeases(at: lifetime.generation)
-        await permissionCoordinator.denyAll(reason: "connection_lost")
+        await permissionCoordinator.denyAll(reason: .connectionLost)
         await transport.cancel()
         backendSupervisor.cancelReconstructions()
         await turnCoordinator.cancelAll(waitForCompletion: false)

@@ -344,18 +344,18 @@ import struct PositronicKit.Thread
         eventLoop: for try await event in stream {
             switch event {
             case .delta(.generation(let text)):
-                try await append(updates, kind: "assistant_text", text: text)
+                try await append(updates, kind: .assistantText, text: text)
             case .delta(.toolCall(let delta)):
                 let id = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? request.timelineID.uuidString):tool:\(delta.index)"
                 ids[delta.index] = id
                 if let name = delta.name { titles[delta.index, default: ""] += name }
                 try await append(
                     updates,
-                    kind: announced.insert(delta.index).inserted ? "tool_call" : "tool_state",
-                    toolState: .init(toolCallID: id, title: titles[delta.index], status: "pending")
+                    kind: announced.insert(delta.index).inserted ? .toolCall : .toolState,
+                    toolState: .init(toolCallID: id, title: titles[delta.index], status: .pending)
                 )
             case .delta(.toolExecution(let id, let status)), .completion(.toolExecution(let id, let status)):
-                try await append(updates, kind: "tool_state", toolState: state(id, status))
+                try await append(updates, kind: .toolState, toolState: state(id, status))
             case .completion(.generationCompleted(let message, _)):
                 finalText = message.content
                 break eventLoop
@@ -370,9 +370,9 @@ import struct PositronicKit.Thread
             case .error(.error(let message, _)):
                 failure = message
             case .error(.toolCallError(let id, let name, let error)):
-                try await append(updates, kind: "tool_state", toolState: .init(toolCallID: id, title: name, status: "failed", content: error))
+                try await append(updates, kind: .toolState, toolState: .init(toolCallID: id, title: name, status: .failed, content: error))
             case .error(.generationCancelled):
-                try await append(updates, kind: "cancellation", terminal: true)
+                try await append(updates, kind: .cancellation, terminal: true)
                 throw AscendantBackendError.cancelled
             default:
                 break
@@ -406,18 +406,18 @@ import struct PositronicKit.Thread
 
     private func append(
         _ updates: any AscendantBackendUpdateSink,
-        kind: String,
+        kind: AscendantTurnUpdateKind,
         text: String? = nil,
         toolState: AscendantToolState? = nil,
         terminal: Bool = false
     ) async throws {
-        try await updates.append(.init(kind: kind, text: text, toolState: toolState, terminal: terminal))
+        try await updates.append(.init(kind: kind.rawValue, text: text, toolState: toolState, terminal: terminal))
     }
 
     private func state(_ id: String, _ status: ToolExecutionStatus) -> AscendantToolState {
         switch status {
         case .attempting(let name, _):
-            return .init(toolCallID: id, title: name, status: "in_progress")
+            return .init(toolCallID: id, title: name, status: .inProgress)
         case .success(let result):
             return .init(toolCallID: id, status: "completed", content: String(describing: result))
         case .failed(_, let error), .workspaceFailed(_, let error, _, _),

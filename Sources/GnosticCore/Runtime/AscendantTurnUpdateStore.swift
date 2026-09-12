@@ -211,7 +211,7 @@ public actor AscendantTurnUpdateStore {
                 let removed = entry.updates.removeFirst()
                 entry.bytes -= Self.encodedSize(removed)
                 snapshotSequence = max(snapshotSequence, removed.sequence)
-                if removed.kind == "assistant_text" || removed.kind == "assistant_text_snapshot" {
+                if removed.carriesAssistantText {
                     snapshotText += removed.text ?? ""
                 }
                 if let toolState = removed.toolState {
@@ -231,7 +231,7 @@ public actor AscendantTurnUpdateStore {
             if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty {
                 let snapshot = Self.bounded(AscendantTurnUpdate(
                     sequence: snapshotSequence,
-                    kind: "assistant_text_snapshot",
+                    kind: AscendantTurnUpdateKind.assistantTextSnapshot.rawValue,
                     text: snapshotText.isEmpty ? nil : snapshotText,
                     toolStates: snapshotToolStates,
                     permissionStates: snapshotPermissionStates

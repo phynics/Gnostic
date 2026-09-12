@@ -75,7 +75,7 @@ struct AscendantPermissionCoordinatorTests {
 
         let decision = Task { await coordinator.request(request) }
         try await waitUntil { await coordinator.pendingCount == 1 }
-        await coordinator.denyAll(reason: "connection_lost")
+        await coordinator.denyAll(reason: .connectionLost)
 
         #expect(!(await decision.value))
         let replay = try await updates.replay(timelineID: timelineID, clientTurnID: "turn-loss")
@@ -97,7 +97,7 @@ struct AscendantPermissionCoordinatorTests {
 
         let decision = Task { await coordinator.request(request) }
         try await waitUntil { await coordinator.pendingCount == 1 }
-        await coordinator.denyAll(reason: "connection_lost")
+        await coordinator.denyAll(reason: .connectionLost)
 
         #expect(!(await coordinator.request(request)))
         #expect(!(await coordinator.respond(
