@@ -1,0 +1,59 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: validation matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build directory is the expensive part to recreate. The container
+      # image is rebuilt by the first `make` target below and then served from
+      # the runner's local layer cache for the rest of the job.
+      - name: Restore SwiftPM and build caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/gnostic-swift-build
+            ~/.cache/gnostic/swiftpm
+          key: swift-6.3.3-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            swift-6.3.3-${{ hashFiles('Package.resolved') }}-
+            swift-6.3.3-
+
+      # Every target below builds the image from .devcontainer/Dockerfile via
+      # the Makefile, so CI and local development share one dependency list.
+      # Restating the apt packages here would let the two drift.
+      - name: make container-smoke
+        run: make container-smoke
+
+      - name: make verify
+        run: make verify
+
+      - name: make runner-smoke
+        run: make runner-smoke
+
+      - name: make acp-smoke
+        run: make acp-smoke
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testing-logs
+          path: .testing/
+          if-no-files-found: ignore
+          retention-days: 7

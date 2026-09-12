@@ -71,6 +71,18 @@ fail when no tests execute. Broker-backed tests use the container's
 deterministic Mosquitto service. Run additional focused checks when the owning
 issue or reviewer identifies a risk.
 
+The `verify` workflow runs `make container-smoke`, `make verify`,
+`make runner-smoke`, and `make acp-smoke` on every pull request and on pushes
+to `main`, from the same `.devcontainer/Dockerfile` image used locally. It
+builds no separate dependency list, so a green run means the same commands
+passed that a contributor runs by hand.
+
+Automation does not replace local validation. Run the narrowest applicable
+checks before opening a pull request: the workflow is a backstop against a
+forgotten command, not a substitute for knowing the change is correct. These
+checks are not yet required for merge; branch protection is a separate
+decision.
+
 ## Dependencies and exceptions
 
 Committed manifests use released semantic-version pins by default. A merged
