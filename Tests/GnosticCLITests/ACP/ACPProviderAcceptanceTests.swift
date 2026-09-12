@@ -310,7 +310,7 @@ struct ACPProviderAcceptanceTests {
         #expect(plan.timelines.first?.attachments == [.local(workspaceID)])
 
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, _ in LegacyMigrationToolLanguageModel() }
+        adapters.ascendants.registerPositronicBackend { _, _ in LegacyMigrationToolLanguageModel() }
         adapters.workspaces.registerProduct(kind: "echo") { configuration in
             let tool = WorkspaceToolDefinition(
                 id: EchoWorkspace.toolID,
@@ -501,7 +501,7 @@ struct ACPProviderAcceptanceTests {
 
 private func acceptanceAdapters() -> NodeRuntimeAdapters {
     var adapters = NodeRuntimeAdapters.default
-    adapters.ascendants.register(kind: "positronic") { _, _ in AcceptanceFinalLanguageModel() }
+    adapters.ascendants.registerPositronicBackend { _, _ in AcceptanceFinalLanguageModel() }
     return adapters
 }
 
