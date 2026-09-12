@@ -5,38 +5,72 @@ import Foundation
 import PKContracts
 import PositronicKit
 
+/// A registry of Ascendant backend factories keyed by the manifest's
+/// `backend.kind` field.
+///
+/// ``init()`` pre-registers one kind, `"positronic"`, bound to an
+/// unconfigured language model. A composition root that can supply a
+/// configured model re-registers the same kind through
+/// ``registerBackend(kind:factory:)``.
 public struct AscendantAdapterRegistry: Sendable {
     public typealias BackendFactory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline]) async throws -> any AscendantBackend
 
     private var factories: [String: BackendFactory]
 
     public init() {
-        factories = ["positronic": { ascendant, backend, services, timelines in
+        factories = [Self.positronicKind: { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: UnconfiguredLLMService())
         }]
     }
 
-    /// Registers the backend-neutral contract. This is the only supported
-    /// selection point for a backend kind in new code.
-    public mutating func registerBackend<B: AscendantBackend>(
-        kind: String,
-        factory: @escaping @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline]) async throws -> B
-    ) {
-        factories[kind] = { ascendant, backend, services, timelines in
-            try await factory(ascendant, backend, services, timelines)
-        }
-    }
-
+    /// Registers a backend factory for one manifest `kind`.
+    ///
+    /// This is the only supported selection point for a backend kind.
+    /// Registering a kind that is already present replaces it.
+    ///
+    /// - Parameters:
+    ///   - kind: The manifest `backend.kind` this factory serves.
+    ///   - factory: Builds the backend for one Ascendant.
     public mutating func registerBackend(kind: String, factory: @escaping BackendFactory) {
         factories[kind] = factory
     }
 
-    /// Transitional composition seam for the CLI. Backend semantics remain
-    /// outside Core; the closure receives only the opaque envelope.
-    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient) {
-        factories[kind] = { ascendant, backend, services, timelines in
+    /// Registers the bundled Positronic backend with a caller-supplied
+    /// language model.
+    ///
+    /// The kind is fixed to `"positronic"` because this seam always builds a
+    /// ``PositronicAscendantAdapter``. Use ``registerBackend(kind:factory:)``
+    /// for any other backend.
+    ///
+    /// - Parameter factory: Supplies the language model for one Ascendant.
+    public mutating func registerPositronicBackend(
+        languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient
+    ) {
+        factories[Self.positronicKind] = { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: factory(ascendant, backend))
         }
+    }
+
+    /// The kind served by the bundled Positronic backend.
+    public static let positronicKind = "positronic"
+
+    /// Registers a Positronic language model under an arbitrary kind.
+    ///
+    /// This seam accepted any `kind` but only ever built a
+    /// ``PositronicAscendantAdapter``, so a foreign kind produced a backend
+    /// that failed semantic validation at startup with a message that did not
+    /// name the mistake.
+    @available(*, deprecated, message: "Use registerPositronicBackend(languageModel:) for the bundled backend, or registerBackend(kind:factory:) for any other kind.")
+    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient) {
+        guard kind == Self.positronicKind else {
+            factories[kind] = { _, _, _, _ in
+                throw AscendantBackendError.invalidConfiguration(
+                    "Backend kind '\(kind)' cannot be registered through the Positronic language-model seam, which only builds a Positronic backend. Use registerBackend(kind:factory:) instead."
+                )
+            }
+            return
+        }
+        registerPositronicBackend(languageModel: factory)
     }
 
     @MainActor

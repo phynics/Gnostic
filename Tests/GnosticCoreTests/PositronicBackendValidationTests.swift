@@ -127,6 +127,41 @@ struct PositronicBackendValidationTests {
         }
     }
 
+    @Test("the Positronic language-model seam cannot register a foreign backend kind")
+    @available(*, deprecated, message: "This test intentionally exercises the deprecated language-model seam.")
+    @MainActor
+    func languageModelSeamRejectsForeignKind() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000811")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000812")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "positronic-foreign-kind"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000813")!),
+            ascendants: [.init(
+                id: ascendantID,
+                name: "Foreign",
+                defaultTimelineID: timelineID,
+                backend: .init(kind: "anthropic")
+            )],
+            timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        // The deprecated seam accepts any kind but only ever built a Positronic
+        // adapter. Startup must say so rather than fail on "backend kind".
+        adapters.ascendants.register(kind: "anthropic") { _, _ in UnconfiguredLLMService() }
+
+        do {
+            _ = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+            Issue.record("A foreign kind was accepted by the Positronic language-model seam.")
+        } catch let error as AscendantBackendError {
+            guard case let .invalidConfiguration(detail) = error else {
+                Issue.record("Unexpected backend error: \(error)")
+                return
+            }
+            #expect(detail.contains("registerBackend"))
+            #expect(detail.contains("anthropic"))
+        }
+    }
+
     @Test("reconstruction rejects a backend whose semantic validation fails")
     @MainActor
     func reconstructionValidatesBeforeActivation() async throws {

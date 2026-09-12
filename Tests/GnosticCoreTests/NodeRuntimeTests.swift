@@ -327,7 +327,7 @@ struct NodeRuntimeTests {
         let firstModel = ProviderIsolationLanguageModel(response: "first-model-response")
         let secondModel = ProviderIsolationLanguageModel(response: "second-model-response")
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, backend in
+        adapters.ascendants.registerPositronicBackend { _, backend in
             switch backend.settings["model"]?.stringValue {
             case "first-model": return firstModel
             case "second-model": return secondModel
@@ -809,7 +809,7 @@ struct NodeRuntimeTests {
         )
         let languageModel = NodeToolCaptureLanguageModel()
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, _ in languageModel }
+        adapters.ascendants.registerPositronicBackend { _, _ in languageModel }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         defer { Task { @MainActor in await runtime.shutdown() } }
         try await runtime.start()
