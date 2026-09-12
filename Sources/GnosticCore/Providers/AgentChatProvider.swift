@@ -330,7 +330,7 @@ public struct AscendantTurnProvider: Sendable {
         }
         return try ChannelEvent.with(
             object: CoatyObject(
-                coreType: .CoatyObject,
+                coreType: .coatyObject,
                 objectType: CoatyObject.objectType,
                 objectId: CoatyUUID(),
                 name: "Gnostic Ascendant turn update"

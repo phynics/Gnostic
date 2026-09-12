@@ -53,7 +53,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
         self.requiresPermission = requiresPermission
         self.page = page
         super.init(
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(),
             name: GnosticWirePayload.boundedLabel(toolName)
