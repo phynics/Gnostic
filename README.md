@@ -54,6 +54,11 @@ The pre-1.0 0.2 network and schema-v1 contracts are intentionally not
 interoperable with 0.3. Use the Ascendant/Turn and manifest-v2 contracts, and
 use `gnostic acp` with a standard ACP client.
 
+## Extending Gnostic
+
+- [Implementing an Ascendant backend](Documentation/Extending/ascendant-backends.md)
+- [Implementing a Workspace adapter](Documentation/Extending/workspace-adapters.md)
+
 ## Development
 
 Canonical development uses the repository container:
