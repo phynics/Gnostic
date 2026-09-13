@@ -76,6 +76,26 @@ make worktree-bootstrap
 make verify
 ```
 
+## Local ACP test stack
+
+For manual ACP testing with pi-acp-client, start an isolated stack:
+
+```sh
+make dev-up
+make dev-status
+make dev-down
+```
+
+`make dev-up` builds Gnostic and starts a dedicated, non-persistent Mosquitto
+broker on `127.0.0.1:1884` (`DEV_BROKER_PORT` changes it). It copies
+`~/.gnostic/config.json` into a scratch manifest, or creates a default one, and
+starts `gnostic serve` on a fresh namespace. It then writes a pi-acp-client
+profile config and prints the `PI_ACP_CONFIG=… pi` launch line once profile
+discovery succeeds. State lives in `~/.gnostic/dev/stack`. The generated profile
+runs `gnostic` from `PATH`, which should link to `Scripts/gnostic-container.sh`.
+Relaunch pi after restarting serve, because provider IDs change with every
+serve process.
+
 ## Runner smoke path
 
 The development container includes a local, anonymous Mosquitto listener at

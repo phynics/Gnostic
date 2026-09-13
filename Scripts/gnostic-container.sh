@@ -6,7 +6,14 @@ script_path=$(readlink -f "$0")
 repo_root=$(CDPATH= cd -- "$(dirname "$script_path")/.." && pwd)
 runtime=${CONTAINER_RUNTIME:-podman}
 image=${GNOSTIC_IMAGE:-gnostic-dev}
-build_root=${GNOSTIC_BUILD_ROOT:-/tmp/gnostic-swift-build/.git/swift-6.3.3-linux/debug}
+# Match the Makefile's build cache, which is shared by the main checkout and
+# all of its worktrees.
+if common_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+    repository_name=$(basename "${common_dir%/.git}")
+else
+    repository_name=$(basename "$repo_root")
+fi
+build_root=${GNOSTIC_BUILD_ROOT:-/tmp/gnostic-swift-build/$repository_name/swift-6.3.3-linux/debug}
 binary="$build_root/x86_64-unknown-linux-gnu/debug/gnostic"
 
 test -x "$binary" || {

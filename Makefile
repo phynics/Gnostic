@@ -3,7 +3,10 @@ IMAGE ?= gnostic-dev
 CONTAINER_RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 WORKDIR := /workspace
 CACHE_NAMESPACE ?= swift-6.3.3-linux
-REPOSITORY_NAME ?= $(shell git rev-parse --git-common-dir 2>/dev/null | sed 's|/.git$$||' | xargs basename 2>/dev/null || basename "$(CURDIR)")
+# An absolute common dir names the same cache from the main checkout and
+# from every worktree; Scripts/gnostic-container.sh derives the same path.
+GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+REPOSITORY_NAME ?= $(if $(GIT_COMMON_DIR),$(notdir $(patsubst %/.git,%,$(GIT_COMMON_DIR))),$(notdir $(CURDIR)))
 BUILD_CACHE_ROOT ?= /tmp/gnostic-swift-build/$(REPOSITORY_NAME)/$(CACHE_NAMESPACE)
 BUILD_DIR ?= $(BUILD_CACHE_ROOT)/debug
 BUILD_LOCK ?= 1
@@ -13,10 +16,13 @@ SWIFT_CACHE_ARGS := --cache-path /workspace/.swiftpm-cache
 SWIFT_LOCKED_ARGS := $(SWIFT_CACHE_ARGS) --disable-automatic-resolution
 SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 
-.PHONY: help image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean
+DEV_BROKER_PORT ?= 1884
+DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
+
+.PHONY: help image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -55,6 +61,15 @@ verify: docs-check test
 
 shell: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash
+
+dev-up: build
+	@$(DEV_STACK_ENV) ./Scripts/dev-stack.sh up
+
+dev-status:
+	@$(DEV_STACK_ENV) ./Scripts/dev-stack.sh status
+
+dev-down:
+	@$(DEV_STACK_ENV) ./Scripts/dev-stack.sh down
 
 clean:
 	@rm -rf "$(BUILD_CACHE_ROOT)" .swiftpm-cache .testing
