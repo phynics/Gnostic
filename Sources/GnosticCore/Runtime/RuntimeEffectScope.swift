@@ -92,6 +92,7 @@ struct RuntimeEffectHandle: Sendable {
 private struct RuntimeEffectTaskContextValue: Sendable {
     let activeScopes: Set<UUID>
     let transactionID: UUID?
+    let transactionScope: UUID?
     let settlement: RuntimeEffectCompletion?
 }
 
@@ -282,10 +283,10 @@ actor RuntimeEffectScope {
     private(set) var state: State = .active
 
     private var nextEffectID: UInt64 = 0
+    private var nextAcquisitionOrder: Int = 0
     private var effectOrder: [UInt64] = []
     private var effects: [UInt64: RuntimeEffectRecord] = [:]
     private var activeTransactions: Set<UUID> = []
-    private var pendingAcquisitions: Set<UInt64> = []
     private var deferredEffectDisposals: Set<UInt64> = []
     private var deferredEffectCleanupTasks: [UInt64: Task<Void, Never>] = [:]
     private var cleanupFailures: [RuntimeEffectCleanupFailure] = []
@@ -332,6 +333,7 @@ actor RuntimeEffectScope {
         let context = RuntimeEffectTaskContextValue(
             activeScopes: currentActiveScopesIncludingSelf,
             transactionID: currentTransactionID,
+            transactionScope: nil,
             settlement: settlement
         )
         let task = Task {
@@ -339,6 +341,7 @@ actor RuntimeEffectScope {
                 await operation()
             }
             settlement.complete()
+            self.completeTaskEffect(id: registration.handle.effectID)
         }
         taskBox.install(task)
         return registration.handle
@@ -361,10 +364,10 @@ actor RuntimeEffectScope {
             try await cleanup(value)
         }
         let settlement = RuntimeEffectCompletion()
-        pendingAcquisitions.insert(registration.handle.effectID)
         let context = RuntimeEffectTaskContextValue(
             activeScopes: currentActiveScopesIncludingSelf,
             transactionID: currentTransactionID,
+            transactionScope: currentTransactionScope,
             settlement: settlement
         )
 
@@ -374,15 +377,13 @@ actor RuntimeEffectScope {
             }
             cell.acquired(value)
             settlement.complete()
-            pendingAcquisitions.remove(registration.handle.effectID)
-            if state != .active {
+            if state != .active, !isCurrentScopeActive {
                 await registration.completion.wait()
             }
             return RuntimeEffectAcquisition(value: value, handle: registration.handle)
         } catch {
             cell.failed()
             settlement.complete()
-            pendingAcquisitions.remove(registration.handle.effectID)
             _ = await Task.detached { await registration.handle.dispose() }.value
             throw error
         }
@@ -399,12 +400,13 @@ actor RuntimeEffectScope {
             let context = RuntimeEffectTaskContextValue(
                 activeScopes: currentActiveScopesIncludingSelf,
                 transactionID: transactionID,
+                transactionScope: token,
                 settlement: nil
             )
             let value = try await RuntimeEffectTaskContext.$value.withValue(context) {
                 try await operation(self)
             }
-            if state != .active {
+            if state != .active, !isCurrentScopeActive {
                 _ = await disposalTask?.value
             }
             activeTransactions.remove(transactionID)
@@ -486,8 +488,13 @@ actor RuntimeEffectScope {
            await runtimeEffectAdoptionRegistry.areRelated(token, context.activeScopes) {
             if let settlement = context.settlement {
                 deferEffectDisposal(id: id, after: settlement)
+                return makeReport(attemptedEffects: [info], isComplete: false)
             }
-            return makeReport(attemptedEffects: [info], isComplete: false)
+            if effects[id]?.cleanupTask != nil {
+                return makeReport(attemptedEffects: [info], isComplete: false)
+            }
+            _ = await cleanupEffect(id: id)
+            return makeReport(attemptedEffects: [info], isComplete: true)
         }
         _ = await cleanupEffect(id: id)
         return makeReport(attemptedEffects: [info], isComplete: true)
@@ -516,8 +523,9 @@ actor RuntimeEffectScope {
             id: id,
             label: label,
             originScope: originScope,
-            acquisitionOrder: effectOrder.count
+            acquisitionOrder: nextAcquisitionOrder
         )
+        nextAcquisitionOrder &+= 1
         let completion = RuntimeEffectCompletion()
         effects[id] = RuntimeEffectRecord(
             info: info,
@@ -558,6 +566,7 @@ actor RuntimeEffectScope {
             let context = RuntimeEffectTaskContextValue(
                 activeScopes: inheritedScopes.union([token]),
                 transactionID: nil,
+                transactionScope: nil,
                 settlement: nil
             )
             let created = Task.detached {
@@ -585,6 +594,7 @@ actor RuntimeEffectScope {
 
         if effects[id] != nil {
             effects.removeValue(forKey: id)
+            effectOrder.removeAll { $0 == id }
             deferredEffectDisposals.remove(id)
             deferredEffectCleanupTasks.removeValue(forKey: id)
             if let failure {
@@ -593,6 +603,14 @@ actor RuntimeEffectScope {
             record.completion.complete()
         }
         return failure
+    }
+
+    private func completeTaskEffect(id: UInt64) {
+        guard let record = effects.removeValue(forKey: id) else { return }
+        effectOrder.removeAll { $0 == id }
+        deferredEffectDisposals.remove(id)
+        deferredEffectCleanupTasks.removeValue(forKey: id)
+        record.completion.complete()
     }
 
     private func makeReport(isComplete: Bool) -> RuntimeEffectCleanupReport {
@@ -614,8 +632,18 @@ actor RuntimeEffectScope {
 
     private var currentTransactionID: UUID? {
         guard let context = RuntimeEffectTaskContext.value,
-              context.activeScopes.contains(token) else { return nil }
+              context.transactionScope == token else { return nil }
         return context.transactionID
+    }
+
+    private var currentTransactionScope: UUID? {
+        guard let context = RuntimeEffectTaskContext.value,
+              context.transactionScope == token else { return nil }
+        return token
+    }
+
+    private var isCurrentScopeActive: Bool {
+        RuntimeEffectTaskContext.value?.activeScopes.contains(token) == true
     }
 
     private func shouldReturnBeforeDisposalCompletes() async -> Bool {
@@ -623,7 +651,6 @@ actor RuntimeEffectScope {
            context.activeScopes.contains(token) {
             return true
         }
-        if !pendingAcquisitions.isEmpty { return true }
         if let activeScopes = RuntimeEffectTaskContext.value?.activeScopes {
             return await runtimeEffectAdoptionRegistry.areRelated(token, activeScopes)
         }

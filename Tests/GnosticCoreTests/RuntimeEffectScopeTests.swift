@@ -112,24 +112,32 @@ struct RuntimeEffectScopeTests {
         #expect((await scope.snapshot()).state == .disposed)
     }
 
-    @Test("detached disposal during acquisition cannot strand the reserved resource")
-    func detachedDisposalDuringAcquisitionCannotStrandReservedResource() async throws {
-        let scope = try RuntimeEffectScope(name: "detached-acquisition")
+    @Test("unrelated disposal waits for a pending acquisition")
+    func unrelatedDisposalWaitsForAPendingAcquisition() async throws {
+        let scope = try RuntimeEffectScope(name: "pending-acquisition")
         let events = EventLog()
+        let gate = AsyncGate()
 
-        let acquired = try await scope.acquire(
-            label: "resource",
-            acquire: {
-                let request = Task.detached { await scope.dispose() }
-                let report = await request.value
-                #expect(!report.isComplete)
-                return "resource"
-            },
-            cleanup: { _ in await events.record("cleaned") }
-        )
+        let acquisition = Task {
+            try await scope.acquire(
+                label: "resource",
+                acquire: {
+                    await events.record("started")
+                    await gate.wait()
+                    return "resource"
+                },
+                cleanup: { _ in await events.record("cleaned") }
+            )
+        }
+        await events.waitFor("started")
+        let disposal = Task { await scope.dispose() }
+        await gate.open()
+        let report = await disposal.value
+        let acquired = try await acquisition.value
 
         #expect(acquired.value == "resource")
-        #expect(await events.values == ["cleaned"])
+        #expect(report.isComplete)
+        #expect(await events.values == ["started", "cleaned"])
         #expect((await scope.snapshot()).state == .disposed)
     }
 
@@ -263,6 +271,51 @@ struct RuntimeEffectScopeTests {
         await events.waitFor("rejected")
         #expect(await events.values == ["rejected"])
         #expect((await scope.snapshot()).liveEffects.isEmpty)
+    }
+
+    @Test("a committed transaction task can register later effects")
+    func aCommittedTransactionTaskCanRegisterLaterEffects() async throws {
+        let scope = try RuntimeEffectScope(name: "transaction-committed")
+        let gate = AsyncGate()
+        let events = EventLog()
+
+        _ = try await scope.withAcquisition { scope in
+            _ = try await scope.task(label: "worker") {
+                await gate.wait()
+                do {
+                    _ = try await scope.add(label: "late") {}
+                    await events.record("accepted")
+                } catch {
+                    await events.record("rejected")
+                }
+            }
+            return ()
+        }
+
+        await gate.open()
+        await events.waitFor("accepted")
+        #expect((await scope.snapshot()).liveEffects.map(\.label) == ["late"])
+        _ = await scope.dispose()
+    }
+
+    @Test("nested transactions do not label outer registrations with inner ownership")
+    func nestedTransactionsDoNotLabelOuterRegistrationsWithInnerOwnership() async throws {
+        let outer = try RuntimeEffectScope(name: "outer-transaction")
+        let inner = try RuntimeEffectScope(name: "inner-transaction")
+        let events = EventLog()
+
+        _ = try await outer.task(label: "worker") {
+            _ = try? await inner.withAcquisition { _ in
+                _ = try await outer.add(label: "outer-resource") {}
+                return ()
+            }
+            await events.record("settled")
+        }
+
+        await events.waitFor("settled")
+        #expect((await outer.snapshot()).liveEffects.map(\.label) == ["outer-resource"])
+        _ = await outer.dispose()
+        _ = await inner.dispose()
     }
 
     @Test("ownership is reserved before acquisition can request reentrant disposal")
@@ -442,6 +495,20 @@ struct RuntimeEffectScopeTests {
         #expect(report.attemptedEffects.map(\.label) == ["owned"])
         #expect(repeated.attemptedEffects.isEmpty)
         _ = await scope.dispose()
+    }
+
+    @Test("a handle disposed inside acquisition removes the effect immediately")
+    func aHandleDisposedInsideAcquisitionRemovesTheEffectImmediately() async throws {
+        let scope = try RuntimeEffectScope(name: "inline-handle")
+
+        _ = try await scope.withAcquisition { scope in
+            let handle = try await scope.add(label: "owned") {}
+            let report = await handle.dispose()
+            #expect(report.isComplete)
+            return ()
+        }
+
+        #expect((await scope.snapshot()).liveEffects.isEmpty)
     }
 
     @Test("labels reject dynamic or unsafe diagnostic content")
