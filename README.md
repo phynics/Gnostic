@@ -1,84 +1,107 @@
 # Gnostic
 
-Gnostic 0.3.0 bridges PositronicKit orchestration with Axoloty networking.
+Gnostic 0.3.0 hosts Ascendant backends and exposes them over Axoloty. The
+bundled Ascendant backend is `positronic`. The bundled local Workspace backend
+is `echo`.
 
-## Delivered baseline
+The [0.3.0 compatibility declaration](Documentation/Compatibility/0.3.0.md)
+lists the protocol, manifest, migration, and intentional 0.2 breaks.
 
-The 0.3 package delivers the protocol-major-2 Ascendant/Turn contract,
-manifest-v2 persistence with v1 migration, lifecycle-safe multi-backend hosting,
-and authoritative Timeline/Workspace discovery and attachment. The bundled
-Ascendant backend is `positronic`; the local Workspace backend is `echo`.
+## Start a Node
 
-`GnosticPositronicAtlas` is an optional scaffold for future Positronic-specific
-continuity work. It has no Atlas behavior in this release and is not a
-dependency of `GnosticCore`. Narrative has been removed from Core and is
-superseded by Atlas as recorded in [ADR 0004](Documentation/Architecture/ADRs/0004-atlas-supersedes-narrative.md).
+Build the package with the repository targets:
 
-See the [0.3.0 compatibility declaration](Documentation/Compatibility/0.3.0.md)
-for the protocol, migration, bundled implementation, and intentional 0.2
-break details.
+```sh
+make resolve
+make build
+```
 
-## Discovered workspaces
+Create and validate a Node manifest:
 
-Gnostic can inspect advertised network objects with `list_network_objects` and
-`inspect_network_object`. A discovered workspace is imported only when one
-available, well-formed provider advertises it. `attach_workspace` requires user
-approval and routes through Gnostic's authoritative Workspace service. Gnostic
-records attachment intent in `NodeRegistry`, projects it into the Positronic
-backend, and readvertises the changed Timeline.
+```sh
+gnostic config init
+gnostic config validate
+gnostic config show --json
+```
 
-Attached workspaces expose only their advertised custom tool definitions. Tool
-calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` Call/Return
-operation; direct file APIs are intentionally unsupported. Deadvertised,
-malformed, or ambiguous advertisements cannot be attached or executed.
+The default manifest lives at `~/.gnostic/config.json`. Use `--config PATH` or
+`GNOSTIC_CONFIG` to select another file. `GNOSTIC_MQTT_HOST`,
+`GNOSTIC_MQTT_PORT`, and `GNOSTIC_MQTT_NAMESPACE` override the broker values
+when a command reads the manifest.
 
-## ACP frontend
+Start the Node after configuring an LLM provider and model:
 
-`gnostic acp` is the supported stable ACP v1 stdio agent and the sole
-user-facing interface for running Turns. There is no direct interactive
-`gnostic turn` command. ACP projects one Gnostic Ascendant and maps its sessions
-to authoritative Gnostic Timelines,
-represented privately as PositronicKit Threads inside the built-in adapter. The process owns one Axoloty/MQTT connection and accepts text
-prompts, Timeline resume/list/close, cancellation, and replay metadata.
+```sh
+gnostic config positronic set <ASCENDANT_UUID> --provider <PROVIDER> --model <MODEL>
+gnostic serve
+```
 
-Discover profiles for the generic [`pi-acp-client`](https://github.com/phynics/pi-acp-client)
-extension with:
+Use `--host`, `--port`, and `--namespace` for one serve process without
+changing the manifest. Use `--approve-mode deny` to reject Workspace
+attachment requests.
+
+## Manage resources
+
+The CLI manages Ascendants, Timelines, and Workspaces in the manifest. Resource
+updates preserve existing IDs and validate references before writing:
+
+```sh
+gnostic config ascendant add --name "Research"
+gnostic config timeline add --title "Research notes"
+gnostic config workspace add --name "Echo" --uri "echo://local"
+```
+
+Inspect the objects that a running Node advertises:
+
+```sh
+gnostic inspect list
+gnostic inspect list --type ascendant
+gnostic inspect object 00000000-0000-0000-0000-000000000000
+```
+
+The object inspection command requires an advertised object UUID. Workspace
+tool calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` operation.
+Gnostic does not expose direct file APIs for remote Workspaces.
+
+## Use ACP
+
+`gnostic acp` is the supported ACP v1 stdio interface. It maps ACP sessions to
+Gnostic Timelines and keeps backend transcript state private to the selected
+Ascendant backend.
+
+To create profiles for the generic
+[`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running
+Node:
 
 ```sh
 gnostic acp profiles --json
 ```
 
-## Compatibility
+Run `gnostic acp` as the stdio process for an ACP client. Pass `--ascendant`
+and `--provider` when a broker advertises more than one matching object.
 
-The pre-1.0 0.2 network and schema-v1 contracts are intentionally not
-interoperable with 0.3. Use the Ascendant/Turn and manifest-v2 contracts, and
-use `gnostic acp` with a standard ACP client.
+## Extend Gnostic
 
-## Extending Gnostic
+- [Implement an Ascendant backend](Documentation/Extending/ascendant-backends.md)
+- [Implement a Workspace adapter](Documentation/Extending/workspace-adapters.md)
 
-- [Implementing an Ascendant backend](Documentation/Extending/ascendant-backends.md)
-- [Implementing a Workspace adapter](Documentation/Extending/workspace-adapters.md)
+## Develop and validate
 
-## Development
-
-Canonical development uses the repository container:
-
-```sh
-make container-smoke
-make shell
-make docs-check
-```
-
-For package development:
+Use the repository container for package development and validation:
 
 ```sh
 make worktree-bootstrap
 make verify
+make docs-check
+make container-smoke
 ```
 
-## Local ACP test stack
+`make verify` runs the documentation check and Swift test suite. The smoke
+targets exercise the standalone runner, ACP clients, and container setup.
 
-For manual ACP testing with pi-acp-client, start an isolated stack:
+## Run the local ACP stack
+
+Start an isolated stack for manual testing with pi-acp-client:
 
 ```sh
 make dev-up
@@ -86,31 +109,36 @@ make dev-status
 make dev-down
 ```
 
-`make dev-up` builds Gnostic and starts a dedicated, non-persistent Mosquitto
-broker on `127.0.0.1:1884` (`DEV_BROKER_PORT` changes it). It copies
-`~/.gnostic/config.json` into a scratch manifest, or creates a default one, and
-starts `gnostic serve` on a fresh namespace. It then writes a pi-acp-client
-profile config and prints the `PI_ACP_CONFIG=… pi` launch line once profile
-discovery succeeds. State lives in `~/.gnostic/dev/stack`. The generated profile
-runs `gnostic` from `PATH`, which should link to `Scripts/gnostic-container.sh`.
-Relaunch pi after restarting serve, because provider IDs change with every
-serve process.
+`make dev-up` builds Gnostic and starts a non-persistent Mosquitto broker on
+`127.0.0.1:1884`. Set `DEV_BROKER_PORT` to use another port. The command copies
+`~/.gnostic/config.json` into a scratch manifest or creates a default manifest.
+It starts `gnostic serve` on a fresh namespace, writes a pi-acp-client profile,
+and prints the `PI_ACP_CONFIG=... pi` command after profile discovery succeeds.
 
-## Runner smoke path
+Stack state lives in `~/.gnostic/dev/stack`. The generated profile runs
+`gnostic` from `PATH`, which should link to `Scripts/gnostic-container.sh`.
+Restart pi after restarting the server because each server process has a new
+provider ID.
 
-The development container includes a local, anonymous Mosquitto listener at
-`127.0.0.1:1883`. No repository, LLM, or broker credentials are required.
+## Run the standalone runner
 
-Build and inspect the shipped runner command:
+`gnostic-runner` is a development smoke-test executable. It advertises generic
+Gnostic objects and stays online until you stop it. The development container
+provides an anonymous Mosquitto listener at `127.0.0.1:1883`. This path needs no
+repository, LLM, or broker credentials.
+
+Build and exercise the runner:
 
 ```sh
 make resolve
 make runner-smoke
 ```
 
-Broker settings may be supplied with command-line arguments (`--host`, `--port`,
-and `--namespace`) or `GNOSTIC_HOST`, `GNOSTIC_PORT`, and `GNOSTIC_NAMESPACE`.
-The runner starts an online Axoloty host when invoked without `--help`; it does
-not ship the former fixture scenario. `make test` runs the test-only consumer
+The runner accepts `--host`, `--port`, and `--namespace`. Each missing option
+falls back to `GNOSTIC_HOST`, `GNOSTIC_PORT`, or `GNOSTIC_NAMESPACE`, then to
+`127.0.0.1`, `1883`, or `gnostic`.
+
+The runner starts an online Axoloty host when invoked without `--help`. It does
+not ship the former fixture scenario. `make test` verifies test-only consumer
 discovery, approved attachment, tool invocation, and Timeline readvertisement
-verification against the same local Mosquitto service.
+against the same Mosquitto service.

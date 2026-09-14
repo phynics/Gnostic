@@ -239,6 +239,22 @@ function validateCLI(root, cliPath, failures, cliArgs = [], cliRunner = null) {
   const runHelp = (chain) => cliRunner
     ? cliRunner({ cliPath, cliArgs, chain })
     : spawnSync(cliPath, [...cliArgs, ...chain, "--help"], { encoding: "utf8" });
+  const compatibility = readText(root, "Documentation/Compatibility/0.3.0.md");
+  const declaredVersion = compatibility.match(/^[-*]\s*Package version:\s*`([^`]+)`\./m)?.[1];
+  if (!declaredVersion) {
+    failures.push("Documentation/Compatibility/0.3.0.md: package version is missing");
+  } else {
+    const versionResult = cliRunner
+      ? cliRunner({ cliPath, cliArgs, chain: [], action: "version" })
+      : spawnSync(cliPath, [...cliArgs, "--version"], { encoding: "utf8" });
+    const actualVersion = `${versionResult.stdout ?? ""}`.trim();
+    if (versionResult.error || versionResult.status !== 0) {
+      const detail = versionResult.error?.message ?? (versionResult.stderr || actualVersion || `exit ${versionResult.status}`).trim();
+      failures.push(`gnostic --version failed (${detail})`);
+    } else if (actualVersion !== declaredVersion) {
+      failures.push(`gnostic --version '${actualVersion}' does not match declared package version '${declaredVersion}'`);
+    }
+  }
   const rootHelp = runHelp([]);
   if (rootHelp.error || rootHelp.status !== 0) {
     const detail = rootHelp.error?.message ?? (rootHelp.stderr || rootHelp.stdout || `exit ${rootHelp.status}`).trim();
@@ -316,6 +332,9 @@ export function checkRepository({ root = process.cwd(), cliPath = null, cliArgs 
   try {
     const readme = readText(root, "README.md");
     const source = sourceText(root);
+    for (const phrase of ["list_network_objects", "inspect_network_object", "gnostic chat", "gnostic turn"]) {
+      if (readme.includes(phrase)) failures.push(`README.md: removed command or operation '${phrase}' is still documented`);
+    }
     for (const identifier of new Set([...readme.matchAll(/\bme\.atkn\.gnostic\.[A-Za-z0-9_.-]+/g)].map((match) => match[0]))) {
       if (!source.includes(identifier)) failures.push(`README.md: protocol identifier '${identifier}' does not occur in Sources`);
     }
@@ -359,7 +378,7 @@ function writeFixture(root) {
     ]
 )
 `,
-    "Documentation/Compatibility/0.3.0.md": "# Compatibility\n\nPackage 0.3.0 uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n",
+    "Documentation/Compatibility/0.3.0.md": "# Compatibility\n\n- Package version: `0.3.0`.\n\nPackage 0.3.0 uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n",
     "Sources/GnosticCore/Core.swift": "let core = true\n",
     "Sources/Protocol.swift": "let route = \"me.atkn.gnostic.workspace.invoke\"\n",
     "Documentation/Architecture/README.md": "# Architecture\n\n[ADR 0001](ADRs/0001-axoloty-native-multi-backend-host.md) [ADR 0002](ADRs/0002-gnostic-identity-vs-backend-state.md) [ADR 0003](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md) [ADR 0004](ADRs/0004-atlas-supersedes-narrative.md)\n",
@@ -411,13 +430,23 @@ function selfTest() {
     writeFixture(root);
     const options = {
       cliPath: "fixture-gnostic",
-      cliRunner: ({ chain }) => {
+      cliRunner: ({ chain, action }) => {
+        if (action === "version") return { status: 0, stdout: "0.3.0\n" };
         if (chain.length === 0) return { status: 0, stdout: "SUBCOMMANDS:\n  acp  Run ACP\n" };
         if (chain.includes("turn") || chain.includes("does-not-exist")) return { status: 1, stderr: "unknown command" };
         return { status: 0, stdout: "help" };
       },
     };
     assert.deepEqual(checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
+    writeFixture(root);
+    expectFailure(
+      root,
+      { ...options, cliRunner: ({ chain, action }) => action === "version"
+        ? { status: 0, stdout: "0.2.0\n" }
+        : options.cliRunner({ chain, action }) },
+      () => {},
+      "does not match declared package version"
+    );
     expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Compatibility/0.3.0.md"), "# Compatibility\n"), "must mention '0.3.0'");
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n', "")), "Atlas target must depend on GnosticCore");
@@ -435,6 +464,8 @@ function selfTest() {
     expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), ".package(path: \"../local\")"), "local-path dependencies");
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "gnostic does-not-exist\n"), "documented CLI command 'gnostic does-not-exist'");
+    writeFixture(root);
+    expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "list_network_objects\n"), "removed command or operation 'list_network_objects'");
     writeFixture(root);
     assert.throws(
       () => checkRepository({
