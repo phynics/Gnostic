@@ -46,7 +46,11 @@ public struct TerminalTurnRecord: Sendable, Equatable {
     }
 }
 
-/// Receives each original terminal Turn once. Implementations must not assume
+/// Receives each original terminal Turn once. Implementations must be low-cost
+/// and non-blocking: append or enqueue the immutable record locally rather
+/// than performing model calls, network I/O, or semantic integration inline.
+/// Shutdown drains pending deliveries before disposing the observation scope,
+/// so a blocking observer delays shutdown. Implementations must not assume
 /// that observation succeeds; the coordinator contains every thrown failure.
 public protocol TerminalTurnObserving: Sendable {
     func observe(_ record: TerminalTurnRecord) async throws

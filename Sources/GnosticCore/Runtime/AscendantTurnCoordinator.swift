@@ -14,9 +14,7 @@ public actor AscendantTurnCoordinator {
     }
 
     private struct InFlight: Sendable {
-        let messageDigest: UInt64
         let operationID: String
-        let ascendantID: UUID
         let task: Task<String, Error>
     }
 
@@ -284,9 +282,7 @@ public actor AscendantTurnCoordinator {
 
         let task = lane.task
         inFlight[key] = InFlight(
-            messageDigest: messageDigest,
             operationID: admittedIdentity.operationID,
-            ascendantID: ascendantID,
             task: task
         )
 
