@@ -590,17 +590,21 @@ struct AscendantTurnCoordinatorTests {
         let ascendantID = UUID()
         let request = AscendantTurnRequest(message: "applied", timelineID: UUID(), clientTurnID: "applied")
 
+        let cancelObserved = CompletionFlag()
         let turn = Task {
             try await coordinator.execute(request, ascendantID: ascendantID) {
                 await probe.enter("original")
-                // Deliberately ignore cancellation: no check, no throwing.
+                // Observe cancellation only to synchronize the test; the
+                // backend still applies the Turn instead of throwing.
+                while !Task.isCancelled { await Task.yield() }
+                await cancelObserved.mark()
                 await gate.wait()
                 return "applied"
             }
         }
         await probe.waitForStarts(1)
         let shutdown = Task { await coordinator.cancelAll() }
-        await Task.yield()
+        while !(await cancelObserved.value) { await Task.yield() }
         await gate.release()
         let result = try await turn.value
         await shutdown.value
@@ -618,7 +622,10 @@ struct AscendantTurnCoordinatorTests {
 
     @Test("unidentified turns in flight at bounded shutdown are still observed")
     func unidentifiedTurnsObservedAfterBoundedShutdown() async throws {
-        let observer = TerminalTurnObservationProbe()
+        // sleepsFirst exercises cancellable observer work: the late delivery
+        // runs in the cancelled lane task, so inheriting cancellation would
+        // abort the sleep and drop the record.
+        let observer = TerminalTurnObservationProbe(sleepsFirst: true)
         let coordinator = AscendantTurnCoordinator(observers: [observer])
         let gate = TurnGate()
         let probe = TurnProbe()
@@ -649,8 +656,32 @@ struct AscendantTurnCoordinatorTests {
         #expect(records[0].clientTurnID == nil)
     }
 
+    @Test("bounded shutdown does not wait for a contract-violating stuck observer")
+    func boundedShutdownReleasesStuckObserver() async throws {
+        // stuckSleep suspends in *cancellable* Task.sleep: the drain bound
+        // (50ms here) cuts the wait, then scope disposal cancels the stuck
+        // delivery and shutdown completes. The bound only limits test
+        // duration; the test asserts post-conditions, never elapsed time.
+        // A non-cancellable infinite wait would hang disposal itself, which
+        // the observer contract forbids.
+        let observer = TerminalTurnObservationProbe(stuckSleep: .seconds(3_600))
+        let coordinator = AscendantTurnCoordinator(
+            observers: [observer],
+            observationDrainTimeout: .milliseconds(50)
+        )
+        let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "stuck-observer")
+
+        _ = try await coordinator.execute(request, ascendantID: UUID()) { "answer" }
+        await observer.waitForRecords(1)
+        await coordinator.cancelAll()
+
+        #expect(await observer.records.count == 1)
+        #expect((await coordinator.observationSnapshot()).state == .disposed)
+    }
+
     @Test("shutdown awaits owned observation work before returning")
-    func shutdownReachesObservationQuiescence() async throws {        let gate = TurnGate()
+    func shutdownReachesObservationQuiescence() async throws {
+        let gate = TurnGate()
         let observer = TerminalTurnObservationProbe(gate: gate)
         let coordinator = AscendantTurnCoordinator(observers: [observer])
         let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "shutdown")
@@ -785,14 +816,18 @@ private actor TerminalTurnObservationProbe: TerminalTurnObserving {
     let order: ObservationOrder?
     let fails: Bool
     let gate: TurnGate?
+    let sleepsFirst: Bool
+    let stuckSleep: Duration?
     private(set) var records: [TerminalTurnRecord] = []
     private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
 
-    init(label: String? = nil, order: ObservationOrder? = nil, fails: Bool = false, gate: TurnGate? = nil) {
+    init(label: String? = nil, order: ObservationOrder? = nil, fails: Bool = false, gate: TurnGate? = nil, sleepsFirst: Bool = false, stuckSleep: Duration? = nil) {
         self.label = label
         self.order = order
         self.fails = fails
         self.gate = gate
+        self.sleepsFirst = sleepsFirst
+        self.stuckSleep = stuckSleep
         self.onObserve = nil
     }
 
@@ -801,15 +836,22 @@ private actor TerminalTurnObservationProbe: TerminalTurnObserving {
         order = nil
         fails = false
         gate = nil
+        sleepsFirst = false
+        stuckSleep = nil
         self.onObserve = onObserve
     }
 
     private var onObserve: (@Sendable (TerminalTurnRecord) async -> Void)?
 
     func observe(_ record: TerminalTurnRecord) async throws {
+        // Cancellable work: aborts immediately when the observer inherits a
+        // cancelled task context, which is exactly what the late-delivery
+        // isolation must prevent.
+        if sleepsFirst { try await Task.sleep(for: .milliseconds(10)) }
         records.append(record)
         let continuations = waiters.removeValue(forKey: records.count) ?? []
         continuations.forEach { $0.resume() }
+        if let stuckSleep { try await Task.sleep(for: stuckSleep) }
         if let label, let order { await order.append(label) }
         if let onObserve { await onObserve(record) }
         if let gate { await gate.wait() }

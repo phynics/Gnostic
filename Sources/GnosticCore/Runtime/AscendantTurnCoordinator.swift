@@ -42,6 +42,7 @@ public actor AscendantTurnCoordinator {
     private let completedCapacity: Int
     private let identityCapacity: Int
     private let observers: [any TerminalTurnObserving]
+    private let observationDrainTimeout: Duration
     private let observationScope: RuntimeEffectScope
     /// Every admitted identified turn remains in this ledger until serve
     /// shutdown. A missing key therefore means that admission never occurred.
@@ -82,14 +83,21 @@ public actor AscendantTurnCoordinator {
     ///   - completedCapacity: Maximum number of terminal outcomes kept for replay.
     ///   - identityCapacity: Maximum number of identified turns admitted during
     ///     this serve lifetime. Admitted identities are never evicted.
+    ///   - observers: Ordered observers, each receiving one terminal record.
+    ///   - observationDrainTimeout: Bound on waiting for committed observer
+    ///     deliveries during shutdown. Conforming observers are non-blocking,
+    ///     so the drain normally completes immediately; a stuck delivery is
+    ///     cut off at this bound when the scope disposes.
     public init(
         completedCapacity: Int = 256,
         identityCapacity: Int = 1_024,
-        observers: [any TerminalTurnObserving] = []
+        observers: [any TerminalTurnObserving] = [],
+        observationDrainTimeout: Duration = .seconds(1)
     ) {
         self.completedCapacity = max(1, completedCapacity)
         self.identityCapacity = max(1, identityCapacity)
         self.observers = observers
+        self.observationDrainTimeout = observationDrainTimeout
         // This static label is validated by RuntimeEffectScope at construction.
         self.observationScope = try! RuntimeEffectScope(name: "turn-observation")
     }
@@ -99,9 +107,9 @@ public actor AscendantTurnCoordinator {
     /// Turn-task completions terminalize a Turn: shutdown never fabricates an
     /// outcome, so a backend that ignores cancellation still commits and
     /// observes its real result. The bounded `false` path does not await
-    /// noncooperative Turn or lane tasks, but it always drains already-committed
-    /// observer deliveries before disposing the scope; `true` additionally
-    /// awaits Turn and lane settlement.
+    /// noncooperative Turn or lane tasks. Both paths drain committed observer
+    /// deliveries up to `observationDrainTimeout`, then dispose the scope;
+    /// `true` additionally awaits Turn and lane settlement first.
     public func cancelAll(waitForCompletion: Bool = true) async {
         acceptingTurns = false
         let turns = inFlight.values.map(\.task) + timelineTails.values.map(\.task)
@@ -117,12 +125,42 @@ public actor AscendantTurnCoordinator {
         // this point run inline in their settling Turn task. Draining first
         // guarantees dispose never cancels a live observer delivery.
         observationClosed = true
-        while observationPending > 0 {
+        await drainObservations(timeout: observationDrainTimeout)
+        _ = await observationScope.dispose()
+    }
+
+    /// Waits for committed observer deliveries up to `timeout`, so a
+    /// contract-violating stuck observer cannot hold shutdown open.
+    private func drainObservations(timeout: Duration) async {
+        guard observationPending > 0 else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await withTaskCancellationHandler(operation: {
+                    await self.awaitObservationDrain()
+                }, onCancel: {
+                    Task { await self.abortObservationDrain() }
+                })
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func awaitObservationDrain() async {
+        while observationPending > 0, !Task.isCancelled {
             await withCheckedContinuation { continuation in
                 observationWaiters.append(continuation)
             }
         }
-        _ = await observationScope.dispose()
+    }
+
+    private func abortObservationDrain() {
+        let waiters = observationWaiters
+        observationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     /// Admits one turn. Requests without a client id use the compatibility path
@@ -380,7 +418,7 @@ public actor AscendantTurnCoordinator {
         // settling Turn task: no new scope work may be admitted, but the
         // record must still reach observers exactly once.
         guard !observationClosed else {
-            await deliverObservation(record)
+            await isolatedObservation(record)
             return
         }
         observationPending += 1
@@ -394,9 +432,18 @@ public actor AscendantTurnCoordinator {
         } catch {
             // The scope closed concurrently with shutdown; fall back to
             // inline delivery so the committed record is not dropped.
-            await deliverObservation(record)
+            await isolatedObservation(record)
             completeObservation()
         }
+    }
+
+    /// Delivers one record outside the caller's cancellation context. Late
+    /// completions run in the lane task `cancelAll` just cancelled, so
+    /// inheriting cancellation would abort observers doing cancellable work
+    /// and drop the committed record. The unstructured task is awaited
+    /// inline: it escapes neither shutdown nor the settling Turn.
+    private func isolatedObservation(_ record: TerminalTurnRecord) async {
+        await Task { await self.deliverObservation(record) }.value
     }
 
     private func deliverObservation(_ record: TerminalTurnRecord) async {
