@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
@@ -490,6 +490,99 @@ struct ProjectionAndCatalogTests {
         ])
     }
 
+    @Test("subscription startup failure rolls back every owned observation loop") @MainActor
+    func subscriptionStartupFailureRollsBackEveryOwnedObservationLoop() async throws {
+        let attempts = SubscriptionAttempts()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            if await attempts.shouldFail(for: objectType) { throw SubscriptionTestError.failed }
+            return AsyncStream { _ in }
+        } observeDeadvertise: {
+            AsyncStream { _ in }
+        }
+
+        await #expect(throws: SubscriptionTestError.self) { try await subscription.start() }
+
+        let snapshot = await subscription.effectSnapshot()
+        #expect(snapshot.state == .active)
+        #expect(snapshot.liveEffects.isEmpty)
+    }
+
+    @Test("subscription stop awaits and joins component scope disposal") @MainActor
+    func subscriptionStopAwaitsAndJoinsComponentScopeDisposal() async throws {
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
+            AsyncStream { _ in }
+        } observeDeadvertise: {
+            AsyncStream { _ in }
+        }
+        try await subscription.start()
+
+        async let first = subscription.stopAndWait()
+        async let second = subscription.stopAndWait()
+        _ = await (first, second)
+
+        let snapshot = await subscription.effectSnapshot()
+        #expect(snapshot.state == .disposed)
+        #expect(snapshot.liveEffects.isEmpty)
+    }
+
+    @Test("subscription can restart after awaited stop") @MainActor
+    func subscriptionCanRestartAfterAwaitedStop() async throws {
+        let probe = SubscriptionStartProbe()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            await probe.record(objectType)
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: {
+            AsyncStream { $0.finish() }
+        }
+
+        try await subscription.start()
+        await subscription.stopAndWait()
+        try await subscription.start()
+
+        #expect(await probe.filters == [
+            GnosticObjectType.ascendant,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
+            GnosticObjectType.ascendant,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
+        ])
+    }
+
+    @Test("concurrent subscription starts register one observation set") @MainActor
+    func concurrentSubscriptionStartsRegisterOneObservationSet() async throws {
+        let probe = SubscriptionStartProbe()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            await probe.record(objectType)
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: {
+            AsyncStream { $0.finish() }
+        }
+
+        async let first = subscription.start()
+        async let second = subscription.start()
+        _ = try await (first, second)
+
+        #expect(await probe.filters == [
+            GnosticObjectType.ascendant,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
+        ])
+    }
+
+    @Test("synchronous subscription stop eventually completes scope cleanup") @MainActor
+    func synchronousSubscriptionStopEventuallyCompletesScopeCleanup() async throws {
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
+            AsyncStream { _ in }
+        } observeDeadvertise: {
+            AsyncStream { _ in }
+        }
+        try await subscription.start()
+
+        subscription.stop()
+        try await waitForDisposed(subscription)
+    }
+
     @Test("catalog marks a workspace claimed by two providers as ambiguous")
     func catalogMarksWorkspaceClaimedByTwoProvidersAsAmbiguous() async {
         let catalog = NetworkCatalog()
@@ -604,4 +697,20 @@ private actor SubscriptionAttempts {
         hasFailed = true
         return true
     }
+}
+
+private actor SubscriptionStartProbe {
+    private(set) var filters: [String] = []
+
+    func record(_ filter: String) {
+        filters.append(filter)
+    }
+}
+
+private func waitForDisposed(_ subscription: GnosticSubscription) async throws {
+    for _ in 0..<20 {
+        if await subscription.effectSnapshot().state == .disposed { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw CancellationError()
 }

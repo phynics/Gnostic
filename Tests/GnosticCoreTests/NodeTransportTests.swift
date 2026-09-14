@@ -34,6 +34,83 @@ struct NodeTransportTests {
         #expect(handled)
     }
 
+    @Test("transport registration failure disposes every earlier owned resource")
+    @MainActor
+    func transportRegistrationFailureDisposesEveryEarlierOwnedResource() async throws {
+        let communication = try makeTransportCommunication()
+        defer { communication.stop() }
+        let transport = makeTransport(
+            communication: communication,
+            hooks: .init(beforeRegistration: { label in
+                if label == "timeline-status" { throw TransportFault.failed }
+            })
+        )
+
+        await #expect(throws: TransportFault.self) {
+            try await transport.registerOperations(
+                turnUpdates: AscendantTurnUpdateStore(),
+                permissionCoordinator: AscendantPermissionCoordinator(updates: AscendantTurnUpdateStore())
+            )
+        }
+
+        let snapshots = await transport.effectSnapshots()
+        #expect(snapshots.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
+    }
+
+    @Test("discover responder acquisition failure rolls back registered handlers")
+    @MainActor
+    func discoverResponderAcquisitionFailureRollsBackRegisteredHandlers() async throws {
+        let communication = try makeTransportCommunication()
+        defer { communication.stop() }
+        let updates = AscendantTurnUpdateStore()
+        let transport = makeTransport(
+            communication: communication,
+            hooks: .init(beforeDiscoverResponder: { throw TransportFault.failed })
+        )
+
+        try await transport.registerOperations(
+            turnUpdates: updates,
+            permissionCoordinator: AscendantPermissionCoordinator(updates: updates)
+        )
+        await #expect(throws: TransportFault.self) {
+            try await transport.registerDiscoverResponder()
+        }
+
+        let snapshots = await transport.effectSnapshots()
+        #expect(snapshots.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
+    }
+
+    @Test("transport snapshots show adopted component ownership and empty disposal")
+    @MainActor
+    func transportSnapshotsShowAdoptedComponentOwnershipAndEmptyDisposal() async throws {
+        let communication = try makeTransportCommunication()
+        defer { communication.stop() }
+        let updates = AscendantTurnUpdateStore()
+        let transport = makeTransport(communication: communication)
+
+        try await transport.registerOperations(
+            turnUpdates: updates,
+            permissionCoordinator: AscendantPermissionCoordinator(updates: updates)
+        )
+        try await transport.registerDiscoverResponder()
+
+        let active = await transport.effectSnapshots()
+        #expect(active[0].liveEffects.map(\.label) == [
+            "advertisements",
+            "permission",
+            "registrations",
+            "responders",
+        ])
+        #expect(active[2].liveEffects.map(\.label) == ["permission-observation"])
+        #expect(active[3].liveEffects.isEmpty == false)
+        #expect(active[4].liveEffects.map(\.label) == ["discover-responder"])
+
+        await transport.cancel()
+
+        let disposed = await transport.effectSnapshots()
+        #expect(disposed.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
+    }
+
     @Test("turn and timeline services run against an adapter stub without transport")
     @MainActor
     func servicesUseAdapterBoundaryWithoutBroker() async throws {
@@ -357,6 +434,45 @@ struct NodeTransportTests {
         #expect(backend.attachedWorkspaceIDs().isEmpty)
         #expect(backend.detachCalls == [timelineID])
     }
+}
+
+private enum TransportFault: Error, Sendable {
+    case failed
+}
+
+@MainActor
+private func makeTransportCommunication() throws -> CommunicationManager {
+    try CommunicationManager(
+        identity: Identity(name: "transport-test"),
+        communicationOptions: .init(
+            namespace: "transport-scope-\(UUID().uuidString.lowercased())",
+            shouldEnableCrossNamespacing: false,
+            mqttClientOptions: .init(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false),
+            shouldAutoStart: false
+        ),
+        commonOptions: nil
+    )
+}
+
+@MainActor
+private func makeTransport(
+    communication: CommunicationManager,
+    hooks: NodeTransport.TestHooks = .none
+) -> NodeTransport {
+    NodeTransport(
+        communication: communication,
+        isAvailable: { true },
+        turn: { _ in fatalError("not used") },
+        timelineStatus: { _ in fatalError("not used") },
+        selectAscendant: { _ in fatalError("not used") },
+        createTimeline: { _, _ in fatalError("not used") },
+        listTimelines: { fatalError("not used") },
+        renameTimeline: { _ in fatalError("not used") },
+        listWorkspaces: { [] },
+        attachWorkspace: { _ in fatalError("not used") },
+        detachWorkspace: { _ in fatalError("not used") },
+        hooks: hooks
+    )
 }
 
 @MainActor
