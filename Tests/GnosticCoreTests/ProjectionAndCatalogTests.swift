@@ -549,6 +549,27 @@ struct ProjectionAndCatalogTests {
         ])
     }
 
+    @Test("concurrent subscription starts register one observation set") @MainActor
+    func concurrentSubscriptionStartsRegisterOneObservationSet() async throws {
+        let probe = SubscriptionStartProbe()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            await probe.record(objectType)
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: {
+            AsyncStream { $0.finish() }
+        }
+
+        async let first = subscription.start()
+        async let second = subscription.start()
+        _ = try await (first, second)
+
+        #expect(await probe.filters == [
+            GnosticObjectType.ascendant,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
+        ])
+    }
+
     @Test("synchronous subscription stop eventually completes scope cleanup") @MainActor
     func synchronousSubscriptionStopEventuallyCompletesScopeCleanup() async throws {
         let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in

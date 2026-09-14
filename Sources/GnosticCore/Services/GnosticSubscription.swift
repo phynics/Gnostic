@@ -43,10 +43,10 @@ public final class GnosticSubscription {
     /// Starts one scoped subscription for each canonical Gnostic object type.
     public func start() async throws {
         guard !started else { return }
+        started = true
         if await scope.snapshot().state == .disposed {
             scope = try! RuntimeEffectScope(name: "gnostic-subscription")
         }
-        started = true
         do {
             let observe = self.observe
             let observeDeadvertise = self.observeDeadvertise
@@ -146,7 +146,8 @@ public final class GnosticSubscription {
     }
 
     /// Starts asynchronous cleanup while preserving the historical synchronous
-    /// stop entry point for standalone consumers.
+    /// stop entry point for standalone consumers. Use ``stopAndWait()`` when
+    /// shutdown ordering must be observed by the caller.
     public func stop() {
         Task { @MainActor [self] in await self.stopAndWait() }
     }
