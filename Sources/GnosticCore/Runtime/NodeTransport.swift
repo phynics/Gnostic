@@ -127,7 +127,7 @@ public final class NodeTransport {
             let context = communication.identity
             if let workspaceProvider {
                 try hooks.beforeRegistration("workspace-handler")
-                _ = try await responderScope.acquire(
+                _ = try await registrationScope.acquire(
                     label: "workspace-handler",
                     acquire: { try await workspaceProvider.register(on: communication) },
                     cleanup: { registration in registration.cancel() }

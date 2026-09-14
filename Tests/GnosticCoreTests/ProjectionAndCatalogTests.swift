@@ -525,6 +525,43 @@ struct ProjectionAndCatalogTests {
         #expect(snapshot.liveEffects.isEmpty)
     }
 
+    @Test("subscription can restart after awaited stop") @MainActor
+    func subscriptionCanRestartAfterAwaitedStop() async throws {
+        let probe = SubscriptionStartProbe()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            await probe.record(objectType)
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: {
+            AsyncStream { $0.finish() }
+        }
+
+        try await subscription.start()
+        await subscription.stopAndWait()
+        try await subscription.start()
+
+        #expect(await probe.filters == [
+            GnosticObjectType.ascendant,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
+            GnosticObjectType.ascendant,
+            GnosticObjectType.timeline,
+            GnosticObjectType.workspace,
+        ])
+    }
+
+    @Test("synchronous subscription stop eventually completes scope cleanup") @MainActor
+    func synchronousSubscriptionStopEventuallyCompletesScopeCleanup() async throws {
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
+            AsyncStream { _ in }
+        } observeDeadvertise: {
+            AsyncStream { _ in }
+        }
+        try await subscription.start()
+
+        subscription.stop()
+        try await waitForDisposed(subscription)
+    }
+
     @Test("catalog marks a workspace claimed by two providers as ambiguous")
     func catalogMarksWorkspaceClaimedByTwoProvidersAsAmbiguous() async {
         let catalog = NetworkCatalog()
@@ -639,4 +676,20 @@ private actor SubscriptionAttempts {
         hasFailed = true
         return true
     }
+}
+
+private actor SubscriptionStartProbe {
+    private(set) var filters: [String] = []
+
+    func record(_ filter: String) {
+        filters.append(filter)
+    }
+}
+
+private func waitForDisposed(_ subscription: GnosticSubscription) async throws {
+    for _ in 0..<20 {
+        if await subscription.effectSnapshot().state == .disposed { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw CancellationError()
 }
