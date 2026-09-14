@@ -148,12 +148,12 @@ final class NodeRuntimeHost {
             try requireActiveStart()
             try adapters.lifecycle.afterRegistration()
             try await adapters.lifecycle.beforeDiscoverResponder()
-            await transport.registerDiscoverResponder()
+            try await transport.registerDiscoverResponder()
             try await adapters.lifecycle.afterDiscoverResponder()
             try requireActiveStart()
             try adapters.lifecycle.beforeAdvertisement()
             lifetime.markRunning()
-            await transport.advertiseAll()
+            try await transport.advertiseAll()
             try await adapters.lifecycle.afterAdvertisement()
             try requireActiveRunningStart()
         } catch {
@@ -195,7 +195,7 @@ final class NodeRuntimeHost {
         await cleanup.publishTask?.value
         cleanup.resolutionTask?.cancel()
         await cleanup.resolutionTask?.value
-        resources.subscription.stop()
+        await resources.subscription.stopAndWait()
         await resources.container.shutdownAndWait()
     }
 }

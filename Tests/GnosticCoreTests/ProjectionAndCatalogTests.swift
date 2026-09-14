@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
@@ -488,6 +488,41 @@ struct ProjectionAndCatalogTests {
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
+    }
+
+    @Test("subscription startup failure rolls back every owned observation loop") @MainActor
+    func subscriptionStartupFailureRollsBackEveryOwnedObservationLoop() async throws {
+        let attempts = SubscriptionAttempts()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            if await attempts.shouldFail(for: objectType) { throw SubscriptionTestError.failed }
+            return AsyncStream { _ in }
+        } observeDeadvertise: {
+            AsyncStream { _ in }
+        }
+
+        await #expect(throws: SubscriptionTestError.self) { try await subscription.start() }
+
+        let snapshot = await subscription.effectSnapshot()
+        #expect(snapshot.state == .active)
+        #expect(snapshot.liveEffects.isEmpty)
+    }
+
+    @Test("subscription stop awaits and joins component scope disposal") @MainActor
+    func subscriptionStopAwaitsAndJoinsComponentScopeDisposal() async throws {
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
+            AsyncStream { _ in }
+        } observeDeadvertise: {
+            AsyncStream { _ in }
+        }
+        try await subscription.start()
+
+        async let first = subscription.stopAndWait()
+        async let second = subscription.stopAndWait()
+        _ = await (first, second)
+
+        let snapshot = await subscription.effectSnapshot()
+        #expect(snapshot.state == .disposed)
+        #expect(snapshot.liveEffects.isEmpty)
     }
 
     @Test("catalog marks a workspace claimed by two providers as ambiguous")

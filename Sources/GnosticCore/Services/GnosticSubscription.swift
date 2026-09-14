@@ -16,7 +16,8 @@ public final class GnosticSubscription {
     private let catalog: NetworkCatalog
     private let observe: @MainActor @Sendable (String) async throws -> AsyncStream<AdvertiseEventSnapshot>
     private let observeDeadvertise: @MainActor @Sendable () async -> AsyncStream<DeadvertiseEventSnapshot>
-    private var tasks: [Task<Void, Never>] = []
+    private let scope: RuntimeEffectScope
+    private var started = false
 
     /// Creates a subscription owner using a scoped Axoloty observation operation.
     public init(
@@ -27,6 +28,7 @@ public final class GnosticSubscription {
         self.catalog = catalog
         self.observe = observe
         self.observeDeadvertise = observeDeadvertise
+        scope = try! RuntimeEffectScope(name: "gnostic-subscription")
     }
 
     /// Creates a subscription owner backed by an Axoloty communication manager.
@@ -38,20 +40,37 @@ public final class GnosticSubscription {
         })
     }
 
-    deinit { tasks.forEach { $0.cancel() } }
-
     /// Starts one scoped subscription for each canonical Gnostic object type.
     public func start() async throws {
-        guard tasks.isEmpty else { return }
+        guard !started else { return }
+        started = true
         do {
-            for objectType in Self.objectTypes {
-                let stream = try await observe(objectType)
-                tasks.append(Task { [catalog] in for await event in stream { await catalog.ingest(event) } })
+            let observe = self.observe
+            let observeDeadvertise = self.observeDeadvertise
+            let catalog = self.catalog
+            try await scope.withAcquisition { owner in
+                let ascendant = try await observe(GnosticObjectType.ascendant)
+                _ = try await owner.task(label: "observe-ascendant") {
+                    for await event in ascendant { await catalog.ingest(event) }
+                }
+
+                let timeline = try await observe(GnosticObjectType.timeline)
+                _ = try await owner.task(label: "observe-timeline") {
+                    for await event in timeline { await catalog.ingest(event) }
+                }
+
+                let workspace = try await observe(GnosticObjectType.workspace)
+                _ = try await owner.task(label: "observe-workspace") {
+                    for await event in workspace { await catalog.ingest(event) }
+                }
+
+                let deadvertise = await observeDeadvertise()
+                _ = try await owner.task(label: "observe-deadvertise") {
+                    for await event in deadvertise { await catalog.ingest(event) }
+                }
             }
-            let stream = await observeDeadvertise()
-            tasks.append(Task { [catalog] in for await event in stream { await catalog.ingest(event) } })
         } catch {
-            stop()
+            started = false
             throw error
         }
     }
@@ -69,19 +88,25 @@ public final class GnosticSubscription {
         let stream = await communicationManager.publishDiscover(
             DiscoverEvent.with(objectTypes: Self.objectTypes)
         )
-
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [catalog] in
-                for await response in stream {
-                    await catalog.ingest(response)
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-            }
-            _ = await group.next()
-            group.cancelAll()
+        let (completion, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let observer = try? await scope.task(label: "discover-observation", operation: { [catalog] in
+            for await response in stream { await catalog.ingest(response) }
+            continuation.yield(())
+            continuation.finish()
+        })
+        guard let observer else { return }
+        let deadline = try? await scope.task(label: "discover-timeout", operation: {
+            try? await Task.sleep(for: timeout)
+            continuation.yield(())
+            continuation.finish()
+        })
+        guard let deadline else {
+            _ = await observer.dispose()
+            return
         }
+        for await _ in completion { break }
+        _ = await deadline.dispose()
+        _ = await observer.dispose()
     }
 
     /// Retrieves one public Workspace tool object per bounded query page.
@@ -106,27 +131,51 @@ public final class GnosticSubscription {
     }
 
     private func receiveOne(from stream: AsyncStream<ResponseEventSnapshot>, timeout: Duration) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { [catalog] in
-                for await response in stream {
-                    await catalog.ingest(response)
-                    return true
-                }
-                return false
+        let (resultStream, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let observer = try? await scope.task(label: "query-observation", operation: { [catalog] in
+            for await response in stream {
+                await catalog.ingest(response)
+                continuation.yield(true)
+                continuation.finish()
+                return
             }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return false
-            }
-            let result = await group.next() ?? false
-            group.cancelAll()
-            return result
+            continuation.yield(false)
+            continuation.finish()
+        })
+        guard let observer else { return false }
+        let deadline = try? await scope.task(label: "query-timeout", operation: {
+            try? await Task.sleep(for: timeout)
+            continuation.yield(false)
+            continuation.finish()
+        })
+        guard let deadline else {
+            _ = await observer.dispose()
+            return false
         }
+        var result = false
+        for await value in resultStream {
+            result = value
+            break
+        }
+        _ = await deadline.dispose()
+        _ = await observer.dispose()
+        return result
     }
 
-    /// Cancels all active subscriptions and releases their Axoloty stream lifetimes.
+    /// Starts asynchronous cleanup while preserving the historical synchronous
+    /// stop entry point for standalone consumers.
     public func stop() {
-        tasks.forEach { $0.cancel() }
-        tasks.removeAll()
+        Task { @MainActor [weak self] in await self?.stopAndWait() }
+    }
+
+    /// Cancels all active subscriptions and awaits their scope cleanup.
+    public func stopAndWait() async {
+        _ = await scope.dispose()
+    }
+
+    /// Returns local, safe ownership diagnostics. This is not a wire or
+    /// ``NodeRuntime`` API.
+    func effectSnapshot() async -> RuntimeEffectSnapshot {
+        await scope.snapshot()
     }
 }
