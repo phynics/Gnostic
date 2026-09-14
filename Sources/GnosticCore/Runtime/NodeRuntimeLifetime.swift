@@ -11,11 +11,6 @@ final class NodeRuntimeLifetime {
         case closed
     }
 
-    struct CleanupTasks {
-        let publishTask: Task<Void, Never>?
-        let resolutionTask: Task<Void, Never>?
-    }
-
     struct ShutdownState {
         let startupTask: Task<Void, Error>?
     }
@@ -26,8 +21,6 @@ final class NodeRuntimeLifetime {
     var startupTask: Task<Void, Error>?
     var shutdownTask: Task<Void, Never>?
     var cleanupTask: Task<Void, Never>?
-    var turnUpdatePublishTask: Task<Void, Never>?
-    var networkResolutionTask: Task<Void, Never>?
 
     var isRunning: Bool { state == .running }
 
@@ -62,17 +55,12 @@ final class NodeRuntimeLifetime {
         return ShutdownState(startupTask: startup)
     }
 
-    func beginCleanup(close: Bool) -> CleanupTasks? {
-        guard !cleanupCompleted else { return nil }
+    @discardableResult
+    func beginCleanup(close: Bool) -> Bool {
+        guard !cleanupCompleted else { return false }
         generation &+= 1
-        let tasks = CleanupTasks(
-            publishTask: turnUpdatePublishTask,
-            resolutionTask: networkResolutionTask
-        )
-        turnUpdatePublishTask = nil
-        networkResolutionTask = nil
         state = close ? .closed : .stopped
-        return tasks
+        return true
     }
 
     func markCleanupCompleted() {

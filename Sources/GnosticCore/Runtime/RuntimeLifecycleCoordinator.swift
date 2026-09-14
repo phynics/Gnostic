@@ -32,7 +32,7 @@ final class RuntimeLifecycleCoordinator {
         }
     }
 
-    func shutdown(cleanup: @escaping @MainActor (NodeRuntimeLifetime.CleanupTasks) async -> Void) async {
+    func shutdown(cleanup: @escaping @MainActor () async -> Void) async {
         if let shutdownTask = lifetime.shutdownTask {
             await shutdownTask.value
             return
@@ -59,14 +59,14 @@ final class RuntimeLifecycleCoordinator {
         lifetime.shutdownTask = nil
     }
 
-    func rollback(close: Bool, cleanup: @escaping @MainActor (NodeRuntimeLifetime.CleanupTasks) async -> Void) async {
+    func rollback(close: Bool, cleanup: @escaping @MainActor () async -> Void) async {
         if let cleanupTask = lifetime.cleanupTask {
             await cleanupTask.value
             return
         }
-        guard let tasks = lifetime.beginCleanup(close: close) else { return }
+        guard lifetime.beginCleanup(close: close) else { return }
         let cleanupTask = Task { @MainActor in
-            await cleanup(tasks)
+            await cleanup()
         }
         lifetime.cleanupTask = cleanupTask
         await cleanupTask.value

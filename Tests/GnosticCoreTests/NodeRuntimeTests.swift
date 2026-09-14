@@ -656,9 +656,60 @@ struct NodeRuntimeTests {
             try await runtime.start()
         }
         #expect(runtime.isRunning == false)
+        let snapshots = await runtime.effectSnapshots()
+        #expect(snapshots.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
         await #expect(throws: NodeRuntimeError.notRunning) {
             _ = try await runtime.createTimeline(title: "not published", ascendantID: UUID())
         }
+    }
+
+    @Test("host snapshots identify live background effects by component")
+    @MainActor
+    func hostSnapshotsIdentifyBackgroundEffects() async throws {
+        let manifest = NodeManifest.empty(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-host-effects")
+        )
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+
+        try await runtime.start()
+        let active = await runtime.effectSnapshots()
+
+        #expect(active.map(\.name) == ["node-runtime-host", "turn-update-publisher", "network-resolution"])
+        let host = try #require(active.first)
+        #expect(host.liveEffects.map(\.originScope).sorted() == ["network-resolution", "turn-update-publisher"])
+        #expect(active[1].liveEffects.map(\.label) == ["turn-update-publisher"])
+        #expect(active[2].liveEffects.map(\.label) == ["network-resolution"])
+
+        await runtime.shutdown()
+
+        let disposed = await runtime.effectSnapshots()
+        #expect(disposed.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
+    }
+
+    @Test("shutdown immediately after running publication disposes host effects")
+    @MainActor
+    func shutdownImmediatelyAfterRunningPublicationDisposesHostEffects() async throws {
+        let gate = LifecycleGate()
+        var adapters = NodeRuntimeAdapters.default
+        adapters.lifecycle.afterAdvertisement = { await gate.hold() }
+        let runtime = try await NodeRuntime(
+            plan: NodeManifest.empty(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-published-shutdown")
+            ).compileLaunchPlan(),
+            adapters: adapters
+        )
+
+        let startup = Task { @MainActor in try await runtime.start() }
+        await gate.waitUntilOpened()
+
+        let shutdown = Task { @MainActor in await runtime.shutdown() }
+        await gate.release()
+
+        _ = await startup.result
+        await shutdown.value
+
+        let snapshots = await runtime.effectSnapshots()
+        #expect(snapshots.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
     }
 
     @Test("startup is fenced when shutdown wins while preparation is suspended")
@@ -666,6 +717,7 @@ struct NodeRuntimeTests {
     func startupDoesNotResumeAfterConcurrentShutdown() async throws {
         let coordinator = RuntimeLifecycleCoordinator()
         let gate = LifecycleGate()
+        let initialGeneration = coordinator.lifetime.generation
         var operationRan = false
         let startup = Task { @MainActor in
             try await coordinator.start(
@@ -675,7 +727,9 @@ struct NodeRuntimeTests {
         }
 
         await gate.waitUntilOpened()
-        await coordinator.shutdown { _ in }
+        #expect(coordinator.lifetime.generation == initialGeneration + 1)
+        await coordinator.shutdown {}
+        #expect(coordinator.lifetime.generation == initialGeneration + 3)
         await gate.release()
 
         await #expect(throws: NodeRuntimeError.notRunning) {

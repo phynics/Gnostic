@@ -209,6 +209,10 @@ public final class NodeRuntime {
         await registry.snapshot()
     }
 
+    func effectSnapshots() async -> [RuntimeEffectSnapshot] {
+        await runtimeHost.effectSnapshots()
+    }
+
     public func advertisedWorkspaceIDs() -> [UUID] {
         plan.workspaces
             .map(\.id)
