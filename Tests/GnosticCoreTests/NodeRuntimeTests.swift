@@ -729,6 +729,7 @@ struct NodeRuntimeTests {
         await gate.waitUntilOpened()
         #expect(coordinator.lifetime.generation == initialGeneration + 1)
         await coordinator.shutdown {}
+        // The transition sequence is beginStart, beginShutdown, beginCleanup.
         #expect(coordinator.lifetime.generation == initialGeneration + 3)
         await gate.release()
 
@@ -804,15 +805,12 @@ struct NodeRuntimeTests {
         await runtime.shutdown()
         await gate.release()
 
-        let startupResult = await startup.result
-        let startupFailed: Bool
-        switch startupResult {
+        switch await startup.result {
         case .success:
-            startupFailed = false
-        case .failure:
-            startupFailed = true
+            Issue.record("startup unexpectedly completed after shutdown")
+        case let .failure(error):
+            #expect(error as? NodeRuntimeError == .notRunning)
         }
-        #expect(startupFailed)
         #expect(runtime.isRunning == false)
 
         await subscription.discover(using: consumer, timeout: Duration.milliseconds(300))

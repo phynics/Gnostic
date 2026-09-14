@@ -103,7 +103,6 @@ final class NodeRuntimeHost {
         guard registry != nil, backendSupervisor != nil, transport != nil else {
             throw NodeRuntimeError.notRunning
         }
-        try await adoptComponentScopes()
         try await lifecycleCoordinator.start(
             prepare: { [weak self] generation in
                 guard let self, let registry = self.registry else { return }
@@ -133,6 +132,7 @@ final class NodeRuntimeHost {
             throw NodeRuntimeError.notRunning
         }
         do {
+            try await adoptComponentScopes()
             projectionRelay.bind(transport)
             try await resources.container.startAndWaitUntilReady()
             try requireActiveStart()
@@ -167,8 +167,12 @@ final class NodeRuntimeHost {
             try await adapters.lifecycle.afterAdvertisement()
             try requireActiveRunningStart()
         } catch {
+            let shutdownWon = lifetime.state == .closed
             await lifecycleCoordinator.rollback(close: true) { [weak self] in
                 await self?.performCleanup()
+            }
+            if shutdownWon || error is RuntimeEffectScopeError {
+                throw NodeRuntimeError.notRunning
             }
             throw error
         }
@@ -209,6 +213,7 @@ final class NodeRuntimeHost {
         await resources.container.shutdownAndWait()
     }
 
+    /// Returns internal ownership diagnostics with static labels and no payloads.
     func effectSnapshots() async -> [RuntimeEffectSnapshot] {
         await [scope.snapshot(), publisherScope.snapshot(), resolutionScope.snapshot()]
     }
