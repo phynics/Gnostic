@@ -110,7 +110,7 @@ struct NodeAssembly {
             )
         )
         guard let communication = resolvedContainer.communicationManager,
-              let lifecycle = resolvedContainer.getController(name: "ObjectLifecycleController") else {
+              let lifecycle = resolvedContainer.controller(named: "ObjectLifecycleController") else {
             resolvedContainer.shutdown()
             throw NodeRuntimeError.notRunning
         }

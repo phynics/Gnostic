@@ -1,0 +1,135 @@
+# Implementing an Ascendant backend
+
+An Ascendant backend is the component that actually runs a Turn. Gnostic owns
+identity, routing, Timelines, and replay; the backend owns model and tool work.
+This guide covers the contract you implement and how to register it.
+
+The complete worked example is
+[`Tests/GnosticCoreTests/ExampleBackendTests.swift`](../../Tests/GnosticCoreTests/ExampleBackendTests.swift).
+It lives in the test target so it cannot drift from the API.
+
+## The mandatory contract
+
+Conform to `AscendantBackend`. It is `@MainActor` and deliberately contains no
+transport, provider-native identity, or Coaty types.
+
+| Member | Called when |
+| --- | --- |
+| `identity` | Read whenever Gnostic projects the Ascendant. |
+| `validateConfiguration()` | After Gnostic checks the envelope shape, before the backend is published. |
+| `operatedTimelines()` | During assembly and whenever Gnostic reconciles Timelines. |
+| `createTimeline(id:title:)` | When Gnostic adopts a new Timeline. Adopt the identifier it supplies. |
+| `removeTimeline(id:)` | When a Timeline is removed. Removing an unknown Timeline is not an error. |
+| `renameTimeline(id:title:)` | When a Timeline title changes. |
+| `runTurn(_:updates:)` | Once per admitted Turn. |
+| `cancel()` | When the running Turn should stop. Return once cancellation is requested. |
+| `shutdown()` | Once, and not concurrently with a Turn. |
+
+## `runTurn` delivers output twice, for two audiences
+
+This is the part most easily got wrong. Incremental output goes to the
+`updates` sink as it is produced, and the **final assistant text** is the
+return value. It is not an identifier.
+
+```swift
+let reply = "echo: \(request.message)"
+try await updates.append(
+    AscendantBackendUpdate(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: reply)
+)
+try await updates.append(
+    AscendantBackendUpdate(kind: AscendantTurnUpdateKind.completion.rawValue, terminal: true)
+)
+return reply
+```
+
+A client watching the live stream reads the sink; a caller that only awaits the
+result reads the return value. A Turn that completes without producing text
+returns an empty string.
+
+Update kinds are declared by `AscendantTurnUpdateKind`; tool and permission
+statuses by `AscendantToolStatus` and `AscendantPermissionStatus`. Use them
+rather than string literals.
+
+## Failing correctly
+
+The distinction Gnostic acts on is whether your backend can still serve.
+
+- `AscendantBackendError.terminal(_:)` wraps `AscendantBackendTerminalFailure`.
+  The Turn failed; the backend is still usable. This is the ordinary case for
+  model and tool failures.
+- `AscendantBackendError.cancelled` for a cancelled Turn.
+- `AscendantBackendError.timelineNotFound(_:)` when the Timeline is not yours.
+- `AscendantBackendError.lifecycleUnusable(_:)` wraps
+  `AscendantBackendLifecycleFailure` and means the backend can no longer serve
+  its Ascendant at all. `AscendantBackendSupervisor` responds by quarantining
+  it and attempting one bounded reconstruction. Do not use it for ordinary
+  failures.
+
+## Optional capabilities
+
+The mandatory contract never depends on these. Implement them only if they
+apply.
+
+- `AscendantBackendWorkspaceService` — tool-call access to attached Workspaces.
+  Supplied through `AscendantBackendServices`.
+- `AscendantBackendWorkspaceFileService` — direct file access. Separate,
+  because a remote capability Workspace need not be a filesystem.
+- `AscendantBackendWorkspaceCapability` — attach, detach, and enumerate tools.
+- `AscendantBackendPermissionService` — host mediation for tool approval.
+  Returns `AscendantPermissionDecision`, which distinguishes a denial from a
+  host failure.
+- `AscendantBackendOptionalCapability` — marker for services meaningful to one
+  implementation only, resolved with `AscendantBackendServices.capability(_:)`.
+
+A backend that consumes none of these can take `AscendantBackendServices.empty`
+without manufacturing no-op services.
+
+## Registering the kind
+
+Register against the manifest's `backend.kind`:
+
+```swift
+var adapters = NodeRuntimeAdapters.default
+adapters.ascendants.registerBackend(
+    kind: "example-echo",
+    settings: AscendantBackendSettingsSchema(keys: [
+        .init(name: "greeting", summary: "Text prefixed to every reply."),
+        .init(name: "apiKey", summary: "Upstream credential.", isSecret: true),
+    ])
+) { ascendant, backend, services, timelines in
+    EchoAscendantBackend(ascendant: ascendant, timelines: timelines)
+}
+```
+
+`registerBackend(kind:settings:factory:)` is the only supported selection
+point. The `settings` schema is optional but strongly recommended: it is what
+lets `gnostic config backend keys <ascendant-id>` list your keys and reject a
+mistyped one at write time instead of at startup.
+
+`AscendantAdapterRegistry.registeredKinds` enumerates what a registry can
+build, and `settingsSchema(for:)` returns a kind's keys.
+
+## How `kind` reaches your factory
+
+1. `gnostic config ascendant add "Name" --kind example-echo` writes
+   `backend.kind` into the manifest. The kind must already be registered.
+2. `gnostic config backend set <ascendant-id> greeting "hi"` writes settings;
+   `set-secret` writes secrets, reading the value from standard input.
+3. At startup `NodeAssembly` validates every configured kind against the
+   registry, then calls your factory with the Ascendant, the envelope, the host
+   services, and the Timelines it operates.
+4. Gnostic calls `validateConfiguration()` before publishing the backend.
+
+Configuration commands consult the default registrations only. A kind
+registered solely inside a running host can be built but not configured
+through the CLI.
+
+## What stays Gnostic's
+
+Do not reimplement these. Gnostic remains authoritative for Ascendant and
+Timeline identity, Workspace attachment intent, Turn admission and
+serialization, idempotency and replay, permission correlation, and
+advertisement. Your backend sees a Timeline identifier and a message.
+
+See also [ADR 0002 — Gnostic identity versus backend state](../Architecture/ADRs/0002-gnostic-identity-vs-backend-state.md)
+and [ADR 0005 — Core PositronicKit dependency boundary](../Architecture/ADRs/0005-core-positronic-dependency-boundary.md).

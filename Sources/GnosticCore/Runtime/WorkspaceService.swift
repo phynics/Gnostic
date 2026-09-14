@@ -179,25 +179,29 @@ public final class WorkspaceService {
         try await runBackendOperation(session) {
             try await runtime.attachWorkspace(BackendWorkspaceReference(reference: reference), to: timelineID)
         }
-        if let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == timelineID }) }) {
-            do {
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                let record = try await registry.commitBackendTimeline(
-                    timeline,
-                    ascendantID: ascendantID,
-                    backendLease: backendProvider.lease(for: ascendantID, backend: session.backend),
-                    generation: session.generation,
-                    upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
-                )
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                readvertiseTimeline(record.timeline)
+        do {
+            guard let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == timelineID }) }) else {
+                throw NodeRuntimeError.missingTimeline(timelineID)
             }
-            catch {
-                _ = try? await runBackendOperation(session) {
-                    try await runtime.detachWorkspace(workspaceID, from: timelineID)
-                }
-                throw error
+            guard timeline.attachedWorkspaceIDs.contains(workspaceID) else {
+                throw NodeRuntimeError.missingTimeline(timelineID)
             }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            let record = try await registry.commitBackendTimeline(
+                timeline,
+                ascendantID: ascendantID,
+                backendLease: backendProvider.lease(for: ascendantID, backend: session.backend),
+                generation: session.generation,
+                upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
+            )
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            readvertiseTimeline(record.timeline)
+        }
+        catch {
+            _ = try? await runBackendOperation(session) {
+                try await runtime.detachWorkspace(workspaceID, from: timelineID)
+            }
+            throw error
         }
     }
 
@@ -210,27 +214,31 @@ public final class WorkspaceService {
         try await runBackendOperation(session) {
             try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
         }
-        if let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) {
-            do {
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                let record = try await registry.commitBackendTimeline(
-                    timeline,
-                    ascendantID: ascendantID,
-                    backendLease: backendProvider.lease(for: ascendantID, backend: session.backend),
-                    generation: session.generation,
-                    removingWorkspaceID: request.workspaceID
-                )
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-                readvertiseTimeline(record.timeline)
+        do {
+            guard let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == request.timelineID }) }) else {
+                throw NodeRuntimeError.missingTimeline(request.timelineID)
             }
-            catch {
-                if let prior {
-                    _ = try? await runBackendOperation(session) {
-                        try await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID)
-                    }
+            guard !timeline.attachedWorkspaceIDs.contains(request.workspaceID) else {
+                throw NodeRuntimeError.missingTimeline(request.timelineID)
+            }
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            let record = try await registry.commitBackendTimeline(
+                timeline,
+                ascendantID: ascendantID,
+                backendLease: backendProvider.lease(for: ascendantID, backend: session.backend),
+                generation: session.generation,
+                removingWorkspaceID: request.workspaceID
+            )
+            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            readvertiseTimeline(record.timeline)
+        }
+        catch {
+            if let prior {
+                _ = try? await runBackendOperation(session) {
+                    try await runtime.attachWorkspace(BackendWorkspaceReference(reference: prior), to: request.timelineID)
                 }
-                throw error
             }
+            throw error
         }
         return true
     }
@@ -358,14 +366,29 @@ public final class WorkspaceService {
     private func installResolved(_ reference: WorkspaceReference, workspaceID: UUID) async throws {
         let backendReference = BackendWorkspaceReference(reference: reference)
         var operationContext: AscendantBackendSession?
-        for target in await registry.attachmentTargets(for: workspaceID) {
-            guard let session = backendProvider.session(for: target.ascendantID),
-                  let runtime = session.backend as? any AscendantBackendWorkspaceCapability else { continue }
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
-            operationContext = session
-            try await runBackendOperation(session) {
-                try await runtime.attachWorkspace(backendReference, to: target.timelineID)
+        var attachedTargets: [(session: AscendantBackendSession, runtime: any AscendantBackendWorkspaceCapability, timelineID: UUID)] = []
+        do {
+            for target in await registry.attachmentTargets(for: workspaceID) {
+                guard let session = backendProvider.session(for: target.ascendantID),
+                      let runtime = session.backend as? any AscendantBackendWorkspaceCapability else { continue }
+                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+                operationContext = session
+                try await runBackendOperation(session) {
+                    try await runtime.attachWorkspace(backendReference, to: target.timelineID)
+                }
+                attachedTargets.append((session, runtime, target.timelineID))
+                guard let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == target.timelineID }) }),
+                      timeline.attachedWorkspaceIDs.contains(workspaceID) else {
+                    throw NodeRuntimeError.missingTimeline(target.timelineID)
+                }
             }
+        } catch {
+            for attached in attachedTargets.reversed() {
+                _ = try? await runBackendOperation(attached.session) {
+                    try await attached.runtime.detachWorkspace(workspaceID, from: attached.timelineID)
+                }
+            }
+            throw error
         }
         if let session = operationContext {
             guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }

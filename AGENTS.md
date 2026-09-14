@@ -65,6 +65,12 @@ must fail when no tests execute. Broker-backed tests use the container's
 deterministic Mosquitto service. Add focused checks for risks named by the issue
 or reviewer.
 
+The `verify` workflow runs `make container-smoke`, `make verify`,
+`make runner-smoke`, and `make acp-smoke` for pull requests and pushes to
+`main`. It uses the same `.devcontainer/Dockerfile` image as local validation.
+Run local checks before opening a pull request. Treat the workflow as a
+backstop, not as a substitute for local evidence.
+
 ## Manage dependencies and exceptions
 
 Pin committed dependencies to released semantic versions. A merged upstream

@@ -79,7 +79,7 @@ struct WorkspaceProviderTests {
         let payload = """
         {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
         """
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
         let runtimeRepository = InMemoryThreadRuntimeRepository()
         let kit = PositronicKit(configuration: .init(
@@ -115,7 +115,7 @@ struct WorkspaceProviderTests {
         let payload = """
         {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote-authority","isAvailable":true,"tools":[]}
         """
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
 
         let kit = PositronicKit()
         let timeline = try await kit.threads.create(title: "Timeline")
@@ -166,7 +166,7 @@ struct WorkspaceProviderTests {
 
     @Test("provider wraps malformed and executor failures in protocol envelopes")
     func providerHandleFailuresCarryProtocolMajor() async throws {
-        struct InjectedFailure: Error {}
+        struct InjectedFailure: Error { let detail = "sentinel-secret-workspace-provider" }
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
         let provider = GnosticWorkspaceProvider(
             workspaceID: workspaceID,
@@ -186,6 +186,8 @@ struct WorkspaceProviderTests {
         let executorFailureEnvelope = try protocolFailure(from: executorFailure)
         #expect(executorFailureEnvelope.protocolMajor == GnosticProtocol.currentMajor)
         #expect(executorFailureEnvelope.reasonCode == "workspaceInvocationFailed")
+        #expect(executorFailureEnvelope.message == "The workspace invocation failed.")
+        #expect(!executorFailureEnvelope.message.contains("sentinel-secret-workspace-provider"))
     }
 
     @Test("provider preserves cancellation from an executor")
@@ -228,7 +230,7 @@ struct WorkspaceProviderTests {
         let payload = """
         {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
         """
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let called = InvocationRecorder()
         let reference = WorkspaceReference(id: id, uri: WorkspaceURI(parsing: "workspace://remote")!, location: .runtime, tools: [.custom(WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote"))])
         let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in await called.record(); return .success("unexpected") }
@@ -245,7 +247,7 @@ struct WorkspaceProviderTests {
     func unsafeCatalogStatesRefuseExecution() async throws {
         let id = UUID(uuidString: "B31D0000-0000-4000-8000-000000000005")!
         let catalog = NetworkCatalog()
-        let malformed = CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Bad", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"uri\":\"workspace://bad\",\"isAvailable\":true,\"tools\":[{\"name\":\"missing\"}]}")
+        let malformed = CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Bad", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"uri\":\"workspace://bad\",\"isAvailable\":true,\"tools\":[{\"name\":\"missing\"}]}")
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "a", object: malformed))
         let recorder = InvocationRecorder()
         let reference = WorkspaceReference(id: id, uri: WorkspaceURI(parsing: "workspace://bad")!, location: .runtime, tools: [.custom(WorkspaceToolDefinition(id: "x", name: "X", description: "X"))])
@@ -253,8 +255,8 @@ struct WorkspaceProviderTests {
         let malformedHealth = await proxy.healthCheck()
         #expect(!malformedHealth)
         await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "x", parameters: [:]) }
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "a", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "b", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "a", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "b", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
         let ambiguousHealth = await proxy.healthCheck()
         #expect(!ambiguousHealth)
         await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "x", parameters: [:]) }
@@ -415,7 +417,7 @@ private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: St
     let payload = """
     {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
     """
-    await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .CoatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+    await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
     return WorkspaceReference(
         id: id,
         uri: WorkspaceURI(parsing: "workspace://remote")!,

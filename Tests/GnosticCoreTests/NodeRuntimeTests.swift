@@ -151,6 +151,31 @@ struct NodeRuntimeTests {
         #expect(failure.reasonCode == "workspaceInvocationFailed")
     }
 
+    @Test("multiplexed Workspace provider hides unexpected executor details")
+    func multiplexedWorkspaceProviderDoesNotLeakDetails() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000142")!
+        let reference = WorkspaceReference(
+            id: workspaceID,
+            uri: WorkspaceURI(parsing: "echo://provider-secret")!,
+            location: .runtime,
+            tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
+        )
+        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: SentinelWorkspace(reference: reference)])
+        let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
+        let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
+
+        let response = try await provider.handle(parameters: payload)
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("expected a structured workspace invocation failure")
+            return
+        }
+        #expect(code == 500)
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "workspaceInvocationFailed")
+        #expect(failure.message == "The workspace invocation failed.")
+        #expect(!message.contains("sentinel-secret-multiplexed"))
+    }
+
     @Test("multiplexed Workspace provider preserves cancellation from a workspace")
     func multiplexedWorkspaceProviderPreservesCancellation() async throws {
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000141")!
@@ -302,7 +327,7 @@ struct NodeRuntimeTests {
         let firstModel = ProviderIsolationLanguageModel(response: "first-model-response")
         let secondModel = ProviderIsolationLanguageModel(response: "second-model-response")
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, backend in
+        adapters.ascendants.registerPositronicBackend { _, backend in
             switch backend.settings["model"]?.stringValue {
             case "first-model": return firstModel
             case "second-model": return secondModel
@@ -784,7 +809,7 @@ struct NodeRuntimeTests {
         )
         let languageModel = NodeToolCaptureLanguageModel()
         var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants.register(kind: "positronic") { _, _ in languageModel }
+        adapters.ascendants.registerPositronicBackend { _, _ in languageModel }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         defer { Task { @MainActor in await runtime.shutdown() } }
         try await runtime.start()
@@ -875,7 +900,7 @@ struct NodeRuntimeTests {
         #expect(workspace.tools.allSatisfy { $0.requiresPermission })
     }
 
-    @Test("legacy Workspace factories retain compatibility tool metadata")
+    @Test("legacy Workspace factories advertise the tools their adapter owns")
     @available(*, deprecated, message: "This test intentionally exercises the legacy factory seam.")
     @MainActor
     func legacyWorkspaceFactoryRetainsCompatibilityTools() async throws {
@@ -894,7 +919,34 @@ struct NodeRuntimeTests {
 
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+        // EchoWorkspace declares this itself; the runtime no longer injects it.
         #expect(reference.tools.map(\.toolID) == [EchoWorkspace.toolID])
+    }
+
+    @Test("legacy Workspace adapters do not advertise tools they cannot execute")
+    @available(*, deprecated, message: "This test intentionally exercises the legacy factory seam.")
+    @MainActor
+    func legacyWorkspaceAdapterDoesNotAdvertiseForeignTools() async throws {
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000231")!
+        let manifest = try makeManifest(
+            namespace: "node-runtime-legacy-foreign",
+            ascendantID: "A21D0000-0000-4000-8000-000000000232",
+            timelineID: "A21D0000-0000-4000-8000-000000000233",
+            workspaceIDs: [workspaceID.uuidString],
+            workspaceKind: "legacy-ledger"
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.register(kind: "legacy-ledger") { _, reference in
+            LegacyLedgerWorkspace(reference: reference)
+        }
+
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        let reference = try #require(await runtime.workspaceReference(id: workspaceID))
+
+        #expect(!reference.tools.map(\.toolID).contains(EchoWorkspace.toolID))
+        // The adapter projected the reference it was handed and declared no
+        // tools of its own, so it advertises none.
+        #expect(reference.tools.isEmpty)
     }
 
     @Test("product Workspace adapters own their reference and tool projection")
@@ -1085,31 +1137,57 @@ struct NodeRuntimeTests {
         #expect(unresolvedReference.tools.isEmpty)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
 
-        let remote = try CommunicationManager(
-            identity: Identity(name: "late-workspace-provider"),
-            communicationOptions: .init(
-                namespace: namespace,
-                shouldEnableCrossNamespacing: false,
-                mqttClientOptions: .init(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false),
-                shouldAutoStart: false
-            ),
-            commonOptions: nil
-        )
-        try remote.start()
-        defer { remote.stop() }
-        let reference = WorkspaceReference(
-            id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://remote-late")!,
-            location: .runtime,
-            tools: [.custom(.init(id: "remote_echo", name: "Remote echo", description: "Echoes remotely."))]
-        )
-        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: reference))))
+        let consumer = makeNodeRuntimeBrokerManager("late-workspace-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stop() }
 
+        let remoteNodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000149")!
+        var remoteAdapters = NodeRuntimeAdapters.default
+        remoteAdapters.workspaces.registerProduct(kind: "remote-echo") { configuration in
+            let reference = WorkspaceReference(
+                id: configuration.id,
+                uri: WorkspaceURI(parsing: configuration.uri)!,
+                location: .runtime,
+                tools: [.custom(.init(id: "remote_echo", name: "Remote echo", description: "Echoes remotely."))]
+            )
+            return EchoWorkspace(reference: reference)
+        }
+        let remote = try await NodeRuntime(plan: NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: remoteNodeID),
+            workspaces: [.init(id: workspaceID, name: "Remote", uri: "workspace://remote-late", kind: "remote-echo")]
+        ).compileLaunchPlan(), adapters: remoteAdapters)
+        try await remote.start()
+        defer { Task { @MainActor in await remote.shutdown() } }
+
+        var discoveredProviderID: String?
+        for _ in 0..<40 {
+            discoveredProviderID = await catalog.networkObjects().first(where: { $0.objectID == workspaceID })?.providerID
+            if discoveredProviderID != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let remoteProviderID = try #require(discoveredProviderID)
+        #expect(await catalog.object(id: workspaceID, providerID: remoteProviderID) != nil)
         for _ in 0..<40 where await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty != false {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(await runtime.workspaceReference(id: workspaceID)?.tools.isEmpty == false)
         #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo"))
+
+        await remote.shutdown()
+        for _ in 0..<40 where await catalog.object(id: workspaceID, providerID: remoteProviderID) != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await catalog.object(id: workspaceID, providerID: remoteProviderID) == nil)
+        for _ in 0..<40 where try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try await runtime.enabledToolIDs(for: timelineID).contains("remote_echo") == false)
+        #expect(await runtime.timeline(id: timelineID)?.attachedWorkspaceIDs.contains(workspaceID) == true)
     }
 
     @Test("an unambiguous discovered Workspace need not be predeclared in the manifest") @MainActor
@@ -1349,6 +1427,31 @@ private final class NodeToolCaptureLanguageModel: LLMStreamClient, @unchecked Se
     }
 }
 
+/// A legacy-seam adapter that follows the pattern `EchoWorkspace` demonstrates:
+/// it stores the `WorkspaceReference` the runtime hands it and projects that
+/// reference's tools. It can only execute `ledger_append`.
+private struct LegacyLedgerWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
+    static let toolID = "ledger_append"
+
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    init(reference: WorkspaceReference) { self.reference = reference }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+
+    func executeTool(id: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+        guard id == Self.toolID else { throw WorkspaceError.toolExecutionNotSupported }
+        return .success("appended")
+    }
+
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
+}
+
 private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
     var id: UUID { reference.id }
@@ -1369,6 +1472,22 @@ private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvi
 
     func listTools() async throws -> [ToolReference] { reference.tools }
     func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult { .success("ok") }
+    func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
+    func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
+    func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
+    func healthCheck() async -> Bool { true }
+}
+
+private struct SentinelWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
+    let reference: WorkspaceReference
+    var id: UUID { reference.id }
+
+    func listTools() async throws -> [ToolReference] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+        struct SentinelFailure: Error { let detail = "sentinel-secret-multiplexed" }
+        throw SentinelFailure()
+    }
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }

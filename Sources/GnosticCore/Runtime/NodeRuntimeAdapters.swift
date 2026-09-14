@@ -5,38 +5,96 @@ import Foundation
 import PKContracts
 import PositronicKit
 
+/// A registry of Ascendant backend factories keyed by the manifest's
+/// `backend.kind` field.
+///
+/// ``init()`` pre-registers one kind, `"positronic"`, bound to an
+/// unconfigured language model. A composition root that can supply a
+/// configured model re-registers the same kind through
+/// ``registerBackend(kind:factory:)``.
 public struct AscendantAdapterRegistry: Sendable {
     public typealias BackendFactory = @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline]) async throws -> any AscendantBackend
 
     private var factories: [String: BackendFactory]
+    private var schemas: [String: AscendantBackendSettingsSchema]
 
     public init() {
-        factories = ["positronic": { ascendant, backend, services, timelines in
+        factories = [Self.positronicKind: { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: UnconfiguredLLMService())
         }]
+        schemas = [Self.positronicKind: PositronicAscendantAdapter.settingsSchema]
     }
 
-    /// Registers the backend-neutral contract. This is the only supported
-    /// selection point for a backend kind in new code.
-    public mutating func registerBackend<B: AscendantBackend>(
+    /// Every backend kind this registry can build.
+    public var registeredKinds: Set<String> { Set(factories.keys) }
+
+    /// The configuration keys one registered kind understands.
+    ///
+    /// - Parameter kind: The manifest `backend.kind` to look up.
+    /// - Returns: The kind's schema, ``AscendantBackendSettingsSchema/unspecified``
+    ///   when it was registered without one, or `nil` when the kind is not
+    ///   registered at all.
+    public func settingsSchema(for kind: String) -> AscendantBackendSettingsSchema? {
+        guard factories[kind] != nil else { return nil }
+        return schemas[kind] ?? .unspecified
+    }
+
+    /// Registers a backend factory for one manifest `kind`.
+    ///
+    /// This is the only supported selection point for a backend kind.
+    /// Registering a kind that is already present replaces it.
+    ///
+    /// - Parameters:
+    ///   - kind: The manifest `backend.kind` this factory serves.
+    ///   - settings: The configuration keys this kind understands, so a
+    ///     composition root can list and check them without knowing the kind.
+    ///   - factory: Builds the backend for one Ascendant.
+    public mutating func registerBackend(
         kind: String,
-        factory: @escaping @MainActor @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration, _ services: AscendantBackendServices, _ timelines: [NodeManifest.Timeline]) async throws -> B
+        settings: AscendantBackendSettingsSchema = .unspecified,
+        factory: @escaping BackendFactory
     ) {
-        factories[kind] = { ascendant, backend, services, timelines in
-            try await factory(ascendant, backend, services, timelines)
-        }
-    }
-
-    public mutating func registerBackend(kind: String, factory: @escaping BackendFactory) {
         factories[kind] = factory
+        schemas[kind] = settings
     }
 
-    /// Transitional composition seam for the CLI. Backend semantics remain
-    /// outside Core; the closure receives only the opaque envelope.
-    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient) {
-        factories[kind] = { ascendant, backend, services, timelines in
+    /// Registers the bundled Positronic backend with a caller-supplied
+    /// language model.
+    ///
+    /// The kind is fixed to `"positronic"` because this seam always builds a
+    /// ``PositronicAscendantAdapter``. Use ``registerBackend(kind:factory:)``
+    /// for any other backend.
+    ///
+    /// - Parameter factory: Supplies the language model for one Ascendant.
+    public mutating func registerPositronicBackend(
+        languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient
+    ) {
+        factories[Self.positronicKind] = { ascendant, backend, services, timelines in
             try await PositronicAscendantAdapter(ascendant: ascendant, backend: backend, services: services, timelines: timelines, languageModel: factory(ascendant, backend))
         }
+        schemas[Self.positronicKind] = PositronicAscendantAdapter.settingsSchema
+    }
+
+    /// The kind served by the bundled Positronic backend.
+    public static let positronicKind = "positronic"
+
+    /// Registers a Positronic language model under an arbitrary kind.
+    ///
+    /// This seam accepted any `kind` but only ever built a
+    /// ``PositronicAscendantAdapter``, so a foreign kind produced a backend
+    /// that failed semantic validation at startup with a message that did not
+    /// name the mistake.
+    @available(*, deprecated, message: "Use registerPositronicBackend(languageModel:) for the bundled backend, or registerBackend(kind:factory:) for any other kind.")
+    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient) {
+        guard kind == Self.positronicKind else {
+            factories[kind] = { _, _, _, _ in
+                throw AscendantBackendError.invalidConfiguration(
+                    "Backend kind '\(kind)' cannot be registered through the Positronic language-model seam, which only builds a Positronic backend. Use registerBackend(kind:factory:) instead."
+                )
+            }
+            return
+        }
+        registerPositronicBackend(languageModel: factory)
     }
 
     @MainActor
@@ -93,6 +151,9 @@ public struct WorkspaceAdapterRegistry: Sendable {
         factories.removeValue(forKey: kind)
     }
 
+    /// Every Workspace kind this registry can build, through either seam.
+    public var registeredKinds: Set<String> { Set(factories.keys).union(productFactories.keys) }
+
     @MainActor
     func makeWorkspace(for configuration: NodeManifest.Workspace) throws -> any WorkspaceProvider {
         if let factory = productFactories[configuration.kind] {
@@ -104,24 +165,20 @@ public struct WorkspaceAdapterRegistry: Sendable {
         guard let uri = WorkspaceURI(parsing: configuration.uri) else {
             throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
         }
+        // The runtime cannot know a legacy adapter's tools, so it must not
+        // invent any. An adapter that projects the reference it is handed
+        // would otherwise advertise tools belonging to another implementation.
+        // NodeAssembly derives the advertised reference from `listTools()`.
         return try factory(configuration, WorkspaceReference(
             id: configuration.id,
             uri: uri,
             location: .runtime,
-            tools: EchoWorkspace.toolDefinitions
+            tools: []
         ))
     }
 
     func usesProductFactory(kind: String) -> Bool {
         productFactories[kind] != nil
-    }
-
-    func makeWorkspace(for configuration: NodeManifest.Workspace, reference: WorkspaceReference) throws -> any WorkspaceProvider {
-        if let factory = productFactories[configuration.kind] {
-            return try factory(configuration)
-        }
-        guard let factory = factories[configuration.kind] else { throw NodeRuntimeError.unsupportedWorkspaceKind(configuration.kind) }
-        return try factory(configuration, reference)
     }
 
     func validate(kinds: some Sequence<String>) throws {
@@ -199,7 +256,10 @@ public struct EchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Senda
 
     public init(reference: WorkspaceReference) { self.reference = reference }
 
-    public func listTools() async throws -> [ToolReference] { reference.tools }
+    /// Echo owns its tool projection rather than trusting the reference it
+    /// was constructed with, so it advertises the same tools through both the
+    /// product and the legacy registration seams.
+    public func listTools() async throws -> [ToolReference] { Self.toolDefinitions }
 
     public func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
         guard id == Self.toolID else { throw WorkspaceError.toolExecutionNotSupported }

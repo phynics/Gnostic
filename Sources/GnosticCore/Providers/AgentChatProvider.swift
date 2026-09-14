@@ -20,12 +20,22 @@ public struct AscendantTurnRequest: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, message, timelineID, clientTurnID }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(message, forKey: .message)
+        try container.encode(timelineID, forKey: .timelineID)
+        try container.encodeIfPresent(clientTurnID, forKey: .clientTurnID)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         message = GnosticWirePayload.prefix(try container.decode(String.self, forKey: .message), maximumBytes: GnosticWirePayload.maximumLabelBytes)
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID)
+        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
+            try GnosticWirePayload.canonicalClientTurnID($0)
+        }
     }
 }
 
@@ -38,8 +48,8 @@ public struct AscendantTurnResult: Codable, Sendable {
 
     public init(clientTurnID: String? = nil, text: String, replayed: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
-        self.clientTurnID = clientTurnID.map { GnosticWirePayload.boundedIdentifier($0) }
-        self.text = GnosticWirePayload.prefix(text, maximumBytes: 1_400)
+        self.clientTurnID = clientTurnID
+        self.text = GnosticWirePayload.prefix(text, maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes)
         self.replayed = replayed
     }
 
@@ -50,11 +60,26 @@ public struct AscendantTurnResult: Codable, Sendable {
         case replayed
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        if let clientTurnID {
+            try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
+        }
+        try container.encode(text, forKey: .text)
+        try container.encode(replayed, forKey: .replayed)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map { GnosticWirePayload.boundedIdentifier($0) }
-        text = GnosticWirePayload.prefix(try container.decode(String.self, forKey: .text), maximumBytes: GnosticWirePayload.maximumLabelBytes)
+        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
+            try GnosticWirePayload.canonicalClientTurnID($0)
+        }
+        text = GnosticWirePayload.prefix(
+            try container.decode(String.self, forKey: .text),
+            maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes
+        )
         replayed = try container.decodeIfPresent(Bool.self, forKey: .replayed) ?? false
     }
 }
@@ -97,79 +122,136 @@ public struct AscendantTurnProvider: Sendable {
             request = try JSONDecoder().decode(AscendantTurnRequest.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch let error as GnosticWirePayload.Error {
+            if case .invalidIdentifier = error {
+                return failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+            }
+            return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         } catch {
             return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         }
-        if let clientTurnID = request.clientTurnID,
-           clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return failure(code: 400, reasonCode: "invalidClientTurnID", message: "clientTurnID must not be empty")
-        }
         do {
-            if let replayStore, let clientTurnID = request.clientTurnID {
-                await replayStore.start(timelineID: request.timelineID, clientTurnID: clientTurnID, message: request.message)
-            }
-            let result = try await executor(request)
+            let executedResult = try await executor(request)
+            let result = AscendantTurnResult(
+                clientTurnID: request.clientTurnID ?? executedResult.clientTurnID,
+                text: executedResult.text,
+                replayed: executedResult.replayed,
+                protocolMajor: executedResult.protocolMajor
+            )
             do {
                 try GnosticProtocol.validate(result.protocolMajor)
             } catch let error as GnosticProtocolError {
                 return .failure(code: error.statusCode, message: error.failureMessage)
             }
             if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
-                let replay = await replayStore.replay(
+                let replay = try await replayStore.replay(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID
                 )
-                let streamed = replay.updates.contains {
-                    $0.kind == "assistant_text" || $0.kind == "assistant_text_snapshot"
-                }
+                let streamed = replay.updates.contains(where: \.carriesAssistantText)
                 if !streamed {
-                    _ = await replayStore.append(
+                    _ = try await replayStore.append(
                         timelineID: request.timelineID,
                         clientTurnID: clientTurnID,
-                        kind: "assistant_text",
+                        kind: AscendantTurnUpdateKind.assistantText.rawValue,
                         text: result.text
                     )
                 }
-                _ = await replayStore.append(
+                _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    kind: "completion",
+                    kind: AscendantTurnUpdateKind.completion.rawValue,
                     text: result.text,
                     terminal: true
                 )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
             let encoded = try GnosticWirePayload.encode(result, context: "ascendant.turn result")
             return .success(result: String(decoding: encoded, as: UTF8.self))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as AscendantTurnError {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
             if let replayStore, let clientTurnID = request.clientTurnID,
                !isAdmissionOnlyError(error) {
-                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: error.localizedDescription, terminal: true)
-            }
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-        } catch let error as NodeRuntimeError {
-            if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = await replayStore.append(
+                let replay = try await replayStore.replay(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID
+                )
+                guard !replay.terminal else {
+                    try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
+                    return .failure(code: mapped.code, message: mapped.message)
+                }
+                let kind: AscendantTurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
+                _ = try await replayStore.append(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID,
-                    kind: "error",
-                    text: error.localizedDescription,
-                    terminal: true
+                    kind: kind.rawValue,
+                    text: error.publicMessage,
+                    terminal: true,
+                    reasonCode: error.reasonCode,
+                    statusCode: error.statusCode,
+                    retryable: error.retryable
                 )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
+            return .failure(code: mapped.code, message: mapped.message)
+        } catch let error as NodeRuntimeError {
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
+            if let replayStore, let clientTurnID = request.clientTurnID {
+                _ = try await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: AscendantTurnUpdateKind.error.rawValue,
+                    text: error.publicMessage,
+                    terminal: true,
+                    reasonCode: error.reasonCode,
+                    statusCode: error.statusCode
+                )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
+            }
+            return .failure(code: mapped.code, message: mapped.message)
         } catch let error as GnosticProtocolError {
+            if let replayStore, let clientTurnID = request.clientTurnID {
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
+            }
             return .failure(code: error.statusCode, message: error.failureMessage)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = await replayStore.append(timelineID: request.timelineID, clientTurnID: clientTurnID, kind: "error", text: String(describing: error), terminal: true)
+                _ = try await replayStore.append(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: AscendantTurnUpdateKind.error.rawValue,
+                    text: "The ascendant turn failed.",
+                    terminal: true,
+                    reasonCode: "internalError",
+                    statusCode: 500
+                )
+                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
+            let mapped = GnosticProtocol.publicFailure(
+                for: error,
+                fallbackCode: 500,
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            )
+            return .failure(code: mapped.code, message: mapped.message)
         }
     }
 
     private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
         switch error {
-        case .conflict, .replayUnavailable: return true
+        case .conflict, .replayUnavailable, .capacityExceeded: return true
         case .failed, .terminal, .cancelled, .lifecycleUnusable, .backendUnavailable: return false
         }
     }
@@ -189,13 +271,15 @@ public struct AscendantTurnProvider: Sendable {
             request = try JSONDecoder().decode(AscendantTurnReplayRequest.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
             return .failure(code: error.statusCode, message: error.failureMessage)
+        } catch let error as GnosticWirePayload.Error {
+            if case .invalidIdentifier = error {
+                return failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+            }
+            return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         } catch {
             return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         }
-        guard !request.clientTurnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return failure(code: 400, reasonCode: "invalidClientTurnID", message: "Invalid ascendant.turn.replay payload")
-        }
-        let replay = await replayStore.replay(
+        let replay = try await replayStore.replay(
             timelineID: request.timelineID,
             clientTurnID: request.clientTurnID,
             message: request.message,
@@ -213,8 +297,16 @@ public struct AscendantTurnProvider: Sendable {
         return .success(result: String(decoding: encoded, as: UTF8.self))
     }
 
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
+    private func failure(code: Int, reasonCode: String, message: String, retryable: Bool = false) -> CallHandlerResult {
+        .failure(
+            code: code,
+            message: GnosticProtocol.failureMessage(
+                reasonCode: reasonCode,
+                message: message,
+                statusCode: code,
+                retryable: retryable
+            )
+        )
     }
 
     @MainActor
@@ -238,7 +330,7 @@ public struct AscendantTurnProvider: Sendable {
         }
         return try ChannelEvent.with(
             object: CoatyObject(
-                coreType: .CoatyObject,
+                coreType: .coatyObject,
                 objectType: CoatyObject.objectType,
                 objectId: CoatyUUID(),
                 name: "Gnostic Ascendant turn update"
@@ -266,11 +358,22 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID, message, afterSequence }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(timelineID, forKey: .timelineID)
+        try container.encode(clientTurnID, forKey: .clientTurnID)
+        try container.encodeIfPresent(message, forKey: .message)
+        try container.encode(afterSequence, forKey: .afterSequence)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
+        clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
+            container.decode(String.self, forKey: .clientTurnID)
+        )
         message = try container.decodeIfPresent(String.self, forKey: .message).map { GnosticWirePayload.prefix($0, maximumBytes: 1_200) }
         afterSequence = try container.decodeIfPresent(Int.self, forKey: .afterSequence) ?? 0
     }

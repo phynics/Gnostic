@@ -495,7 +495,7 @@ private func makeACPNode(
         workspaces: workspaces
     )
     var adapters = NodeRuntimeAdapters.default
-    adapters.ascendants.register(kind: "positronic") { _, _ in RepeatingToolLanguageModel() }
+    adapters.ascendants.registerPositronicBackend { _, _ in RepeatingToolLanguageModel() }
     adapters.workspaces.registerProduct(kind: "permissioned-echo") { configuration in
         let tool = WorkspaceToolDefinition(
             id: EchoWorkspace.toolID,

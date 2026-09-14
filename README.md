@@ -80,19 +80,10 @@ gnostic acp profiles --json
 Run `gnostic acp` as the stdio process for an ACP client. Pass `--ascendant`
 and `--provider` when a broker advertises more than one matching object.
 
-## Run the standalone runner
+## Extend Gnostic
 
-`gnostic-runner` is a development smoke-test executable. It advertises the
-generic Gnostic objects and stays online until you stop it. The development
-container provides an anonymous Mosquitto listener at `127.0.0.1:1883`.
-
-```sh
-make runner-smoke
-```
-
-The runner accepts `--host`, `--port`, and `--namespace`. When a flag is absent,
-it reads `GNOSTIC_HOST`, `GNOSTIC_PORT`, and `GNOSTIC_NAMESPACE`, then uses
-`127.0.0.1`, `1883`, and `gnostic` as defaults.
+- [Implement an Ascendant backend](Documentation/Extending/ascendant-backends.md)
+- [Implement a Workspace adapter](Documentation/Extending/workspace-adapters.md)
 
 ## Develop and validate
 
@@ -105,5 +96,49 @@ make docs-check
 make container-smoke
 ```
 
-`make verify` runs the documentation check and the Swift test suite. The smoke
+`make verify` runs the documentation check and Swift test suite. The smoke
 targets exercise the standalone runner, ACP clients, and container setup.
+
+## Run the local ACP stack
+
+Start an isolated stack for manual testing with pi-acp-client:
+
+```sh
+make dev-up
+make dev-status
+make dev-down
+```
+
+`make dev-up` builds Gnostic and starts a non-persistent Mosquitto broker on
+`127.0.0.1:1884`. Set `DEV_BROKER_PORT` to use another port. The command copies
+`~/.gnostic/config.json` into a scratch manifest or creates a default manifest.
+It starts `gnostic serve` on a fresh namespace, writes a pi-acp-client profile,
+and prints the `PI_ACP_CONFIG=... pi` command after profile discovery succeeds.
+
+Stack state lives in `~/.gnostic/dev/stack`. The generated profile runs
+`gnostic` from `PATH`, which should link to `Scripts/gnostic-container.sh`.
+Restart pi after restarting the server because each server process has a new
+provider ID.
+
+## Run the standalone runner
+
+`gnostic-runner` is a development smoke-test executable. It advertises generic
+Gnostic objects and stays online until you stop it. The development container
+provides an anonymous Mosquitto listener at `127.0.0.1:1883`. This path needs no
+repository, LLM, or broker credentials.
+
+Build and exercise the runner:
+
+```sh
+make resolve
+make runner-smoke
+```
+
+The runner accepts `--host`, `--port`, and `--namespace`. Each missing option
+falls back to `GNOSTIC_HOST`, `GNOSTIC_PORT`, or `GNOSTIC_NAMESPACE`, then to
+`127.0.0.1`, `1883`, or `gnostic`.
+
+The runner starts an online Axoloty host when invoked without `--help`. It does
+not ship the former fixture scenario. `make test` verifies test-only consumer
+discovery, approved attachment, tool invocation, and Timeline readvertisement
+against the same Mosquitto service.

@@ -7,11 +7,46 @@ public struct GnosticProtocolFailure: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let reasonCode: String
     public let message: String
+    public let statusCode: Int
+    public let retryable: Bool
 
-    public init(reasonCode: String, message: String, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(
+        reasonCode: String,
+        message: String,
+        statusCode: Int = 500,
+        retryable: Bool = false,
+        protocolMajor: Int = GnosticProtocol.currentMajor
+    ) {
         self.protocolMajor = protocolMajor
         self.reasonCode = reasonCode
         self.message = message
+        self.statusCode = GnosticProtocol.boundedStatusCode(statusCode)
+        self.retryable = retryable
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolMajor, reasonCode, message, statusCode, retryable }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolMajor = try container.decode(Int.self, forKey: .protocolMajor)
+        reasonCode = try container.decode(String.self, forKey: .reasonCode)
+        message = try container.decode(String.self, forKey: .message)
+        statusCode = GnosticProtocol.boundedStatusCode(try container.decodeIfPresent(Int.self, forKey: .statusCode) ?? 500)
+        retryable = try container.decodeIfPresent(Bool.self, forKey: .retryable) ?? false
+    }
+}
+
+/// A safe failure ready for the Axoloty Call/Return boundary.
+public struct GnosticPublicFailure: Sendable, Equatable {
+    public let code: Int
+    public let message: String
+
+    public let retryable: Bool
+
+    public init(code: Int, message: String, retryable: Bool = false) {
+        self.code = code
+        self.message = message
+        self.retryable = retryable
     }
 }
 
@@ -23,10 +58,17 @@ public struct GnosticProtocolFailure: Codable, Sendable, Equatable {
 public enum GnosticProtocol {
     public static let currentMajor = 2
 
-    public static func failureMessage(reasonCode: String, message: String) -> String {
+    public static func failureMessage(
+        reasonCode: String,
+        message: String,
+        statusCode: Int = 500,
+        retryable: Bool = false
+    ) -> String {
         var envelope = GnosticProtocolFailure(
             reasonCode: GnosticWirePayload.boundedIdentifier(reasonCode),
-            message: GnosticWirePayload.boundedLabel(message)
+            message: GnosticWirePayload.boundedLabel(message),
+            statusCode: statusCode,
+            retryable: retryable
         )
         var data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"internalError","message":"Internal error"}"#.utf8)
         if data.count > GnosticWirePayload.maximumEmbeddedValueBytes {
@@ -34,6 +76,76 @@ public enum GnosticProtocol {
             data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"payloadTooLarge","message":"The response was too large to send."}"#.utf8)
         }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Maps an error to a bounded public failure without exposing arbitrary
+    /// implementation details from an injected executor or transport.
+    ///
+    /// Structured domain failures retain their established status and reason
+    /// code. Unknown failures use the supplied safe fallback message.
+    public static func publicFailure(
+        for error: Error,
+        fallbackCode: Int,
+        fallbackReasonCode: String,
+        fallbackMessage: String
+    ) -> GnosticPublicFailure {
+        if let error = error as? GnosticProtocolError {
+            return GnosticPublicFailure(code: error.statusCode, message: error.failureMessage)
+        }
+        if let error = error as? NodeRuntimeError {
+            return GnosticPublicFailure(
+                code: error.statusCode,
+                message: failureMessage(reasonCode: error.reasonCode, message: error.publicMessage, statusCode: error.statusCode),
+                retryable: false
+            )
+        }
+        if let error = error as? AscendantTurnError {
+            return GnosticPublicFailure(
+                code: error.statusCode,
+                message: failureMessage(reasonCode: error.reasonCode, message: error.publicMessage, statusCode: error.statusCode, retryable: error.retryable),
+                retryable: error.retryable
+            )
+        }
+        if let error = error as? AscendantBackendError {
+            return GnosticPublicFailure(
+                code: error.statusCode,
+                message: failureMessage(reasonCode: error.reasonCode, message: backendPublicMessage(for: error), statusCode: error.statusCode),
+                retryable: false
+            )
+        }
+        if let error = error as? DiscoveredWorkspaceAttachmentError {
+            switch error {
+            case .approvalRequired:
+                return GnosticPublicFailure(code: 403, message: failureMessage(reasonCode: "approvalRequired", message: "Workspace attachment requires approval."))
+            case let .unavailable(status):
+                return GnosticPublicFailure(code: 409, message: failureMessage(reasonCode: "workspaceUnavailable", message: "Workspace is not uniquely available (\(status))."))
+            case .invalidURI:
+                return GnosticPublicFailure(code: 422, message: failureMessage(reasonCode: "invalidWorkspaceURI", message: "Workspace advertised an invalid URI."))
+            case let .timelineNotOwned(id):
+                return GnosticPublicFailure(code: 404, message: failureMessage(reasonCode: "timelineNotOwned", message: "Timeline \(id.uuidString.lowercased()) is not owned by this Node."))
+            }
+        }
+        return GnosticPublicFailure(code: fallbackCode, message: failureMessage(reasonCode: fallbackReasonCode, message: fallbackMessage, statusCode: fallbackCode))
+    }
+
+    private static func backendPublicMessage(for error: AscendantBackendError) -> String {
+        switch error {
+        case .invalidConfiguration:
+            "The Ascendant backend configuration is invalid."
+        case .timelineNotFound:
+            "The Timeline was not found."
+        case .terminal:
+            "The Ascendant backend reported a terminal failure."
+        case .cancelled:
+            "The Ascendant turn was cancelled."
+        case .lifecycleUnusable:
+            "The Ascendant backend lifecycle is unavailable."
+        }
+    }
+
+    static func boundedStatusCode(_ value: Int) -> Int {
+        guard (100...599).contains(value) else { return 500 }
+        return value
     }
 
     public static func isCompatible(_ protocolMajor: Int?) -> Bool {
@@ -123,7 +235,7 @@ public enum GnosticProtocolError: Error, Codable, Sendable, Equatable, Localized
     /// A deterministic message for Axoloty's string-only Call/Return failure
     /// surface.  The response still carries the current major for clients that
     /// need to recover without guessing.
-    public var failureMessage: String { GnosticProtocol.failureMessage(reasonCode: reasonCode, message: errorDescription ?? reasonCode) }
+    public var failureMessage: String { GnosticProtocol.failureMessage(reasonCode: reasonCode, message: errorDescription ?? reasonCode, statusCode: statusCode) }
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, reasonCode, message }
 

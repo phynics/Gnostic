@@ -28,6 +28,7 @@ final class ACPBrokerProbe: Sendable {
         case providerUnavailable(String)
         case missingCapability(String)
         case providerMismatch
+        case invalidWorkspaceListPagination
     }
 
     private let manager: CommunicationManager
@@ -138,13 +139,21 @@ final class ACPBrokerProbe: Sendable {
     }
 
     func listWorkspaces(providerID: String) async throws -> [WorkspaceListing] {
-        let payload = try JSONEncoder().encode(WorkspaceOpsRequest(workspaceID: UUID(), timelineID: UUID()))
-        let response = try await call(
-            operation: WorkspaceOpsProvider.listOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: providerID
-        )
-        return try JSONDecoder().decode(WorkspaceListResult.self, from: Data(response.result.utf8)).workspaces
+        var offset = 0
+        var listings: [WorkspaceListing] = []
+        while true {
+            let payload = try JSONEncoder().encode(WorkspaceListRequest(offset: offset))
+            let response = try await call(
+                operation: WorkspaceOpsProvider.listOperation,
+                parameters: String(decoding: payload, as: UTF8.self),
+                providerID: providerID
+            )
+            let result = try JSONDecoder().decode(WorkspaceListResult.self, from: Data(response.result.utf8))
+            listings += result.workspaces
+            guard let nextOffset = result.nextOffset else { return listings }
+            guard nextOffset > offset else { throw Error.invalidWorkspaceListPagination }
+            offset = nextOffset
+        }
     }
 
     func attach(workspaceID: UUID, timelineID: UUID, providerID: String) async throws -> Bool {

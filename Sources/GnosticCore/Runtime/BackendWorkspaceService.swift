@@ -51,9 +51,12 @@ extension BackendWorkspaceReference {
     }
 }
 
-/// Optional file operations exposed by a Workspace host. They are kept out of
-/// the mandatory backend contract because remote capability Workspaces need
-/// not be filesystems.
+/// Direct file access to attached Workspaces.
+///
+/// Distinct from ``AscendantBackendWorkspaceService``, which is the tool-call
+/// surface every Workspace-consuming backend gets. This protocol is optional
+/// and kept out of the mandatory backend contract because a remote capability
+/// Workspace need not be a filesystem at all.
 @MainActor
 public protocol AscendantBackendWorkspaceFileService: Sendable {
     func readFile(workspaceID: UUID, path: String) async throws -> String

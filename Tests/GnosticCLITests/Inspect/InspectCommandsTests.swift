@@ -72,7 +72,7 @@ struct InspectCommandsTests {
         defer { provider.shutdown() }
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
         let lifecycle = try #require(
-            provider.getController(name: "ObjectLifecycleController") as ObjectLifecycleController?
+            provider.controller(named: "ObjectLifecycleController") as ObjectLifecycleController?
         )
         let object = GnosticWorkspaceObject(workspace: GnosticWorkspaceReference(
             id: workspaceID,

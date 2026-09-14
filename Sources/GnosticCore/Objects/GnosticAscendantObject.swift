@@ -85,7 +85,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
         createdAt = identity.createdAt
         updatedAt = identity.updatedAt
         super.init(
-            coreType: .CoatyObject,
+            coreType: .coatyObject,
             objectType: Self.objectType,
             objectId: CoatyUUID(uuidString: identity.id.uuidString)!,
             name: GnosticWirePayload.boundedLabel(identity.name)

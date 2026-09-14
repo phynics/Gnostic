@@ -323,4 +323,138 @@ struct BackendArchitectureFitnessTests {
         }
         return String(package[targetStart..<targetEnd.upperBound])
     }
+
+    @Test("the mandatory backend contract documents every declaration")
+    func mandatoryContractIsDocumented() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/AscendantBackend.swift")
+        let lines = try String(contentsOf: sourceURL, encoding: .utf8).components(separatedBy: "\n")
+
+        var undocumented: [String] = []
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard Self.isDocumentableDeclaration(trimmed) else { continue }
+            var previous = index - 1
+            while previous >= 0, lines[previous].trimmingCharacters(in: .whitespaces).hasPrefix("@") {
+                previous -= 1
+            }
+            let preceding = previous >= 0 ? lines[previous].trimmingCharacters(in: .whitespaces) : ""
+            if !preceding.hasPrefix("///") {
+                undocumented.append("line \(index + 1): \(trimmed)")
+            }
+        }
+
+        #expect(
+            undocumented.isEmpty,
+            """
+            The mandatory backend contract is the surface a third party implements, \
+            so every declaration in it carries a summary. Undocumented:
+            \(undocumented.joined(separator: "\n"))
+            """
+        )
+    }
+
+    /// Recognises declarations that need a doc comment, while excluding
+    /// `switch` cases, which share the `case` keyword with enum elements.
+    private static func isDocumentableDeclaration(_ trimmed: String) -> Bool {
+        guard !trimmed.hasPrefix("//") else { return false }
+        if trimmed.hasPrefix("case ") {
+            return !trimmed.contains(":")
+                && !trimmed.hasPrefix("case let")
+                && !trimmed.hasPrefix("case .")
+        }
+        return [
+            "public struct ", "public enum ", "public protocol ", "public final class ",
+            "public func ", "public var ", "public let ", "public init", "public static ",
+            "public typealias ", "func ", "var ",
+        ].contains { trimmed.hasPrefix($0) }
+    }
+
+    @Test("value-returning declarations in the backend contract document their result")
+    func mandatoryContractDocumentsReturns() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/AscendantBackend.swift")
+        let lines = try String(contentsOf: sourceURL, encoding: .utf8).components(separatedBy: "\n")
+
+        var missingReturns: [String] = []
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Only single-line function signatures that declare a result.
+            guard trimmed.hasPrefix("func ") || trimmed.hasPrefix("public func ") else { continue }
+            guard trimmed.contains(" -> ") else { continue }
+
+            var cursor = index - 1
+            var block: [String] = []
+            while cursor >= 0 {
+                let previous = lines[cursor].trimmingCharacters(in: .whitespaces)
+                if previous.hasPrefix("@") { cursor -= 1; continue }
+                guard previous.hasPrefix("///") else { break }
+                block.append(previous)
+                cursor -= 1
+            }
+            if !block.contains(where: { $0.contains("- Returns:") }) {
+                missingReturns.append("line \(index + 1): \(trimmed)")
+            }
+        }
+
+        #expect(
+            missingReturns.isEmpty,
+            """
+            A backend author cannot infer what these return from the signature alone:
+            \(missingReturns.joined(separator: "\n"))
+            """
+        )
+    }
+
+    @Test("the extension guides only name types that exist")
+    func extensionGuidesNameRealTypes() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sources = try Self.swiftSourceText(under: rootURL.appendingPathComponent("Sources"))
+
+        var missing: [String] = []
+        for guide in ["ascendant-backends.md", "workspace-adapters.md"] {
+            let url = rootURL
+                .appendingPathComponent("Documentation/Extending")
+                .appendingPathComponent(guide)
+            let text = try String(contentsOf: url, encoding: .utf8)
+
+            // Backtick-quoted UpperCamelCase tokens are Swift type names. A
+            // guide that names a type which no longer exists is worse than no
+            // guide, so this fails rather than warns.
+            for match in text.split(separator: "`") .enumerated()
+                .filter({ $0.offset % 2 == 1 })
+                .map({ String($0.element) }) {
+                let token = match.split(separator: ".").first.map(String.init) ?? match
+                let bare = token.split(separator: "(").first.map(String.init) ?? token
+                guard bare.count > 2,
+                      let first = bare.first, first.isUppercase,
+                      bare.allSatisfy({ $0.isLetter || $0.isNumber })
+                else { continue }
+                if !sources.contains(bare) {
+                    missing.append("\(guide): '\(bare)'")
+                }
+            }
+        }
+
+        #expect(missing.isEmpty, "Extension guides name types absent from Sources:\n\(missing.joined(separator: "\n"))")
+    }
+
+    private static func swiftSourceText(under directory: URL) throws -> String {
+        var combined = ""
+        let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            combined += try String(contentsOf: url, encoding: .utf8)
+        }
+        return combined
+    }
 }

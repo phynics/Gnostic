@@ -135,12 +135,16 @@ public struct TimelineManagementProvider: Sendable {
                 try GnosticProtocol.validate(status.protocolMajor)
                 let encoded = try GnosticWirePayload.encode(status, context: "timeline.create result")
                 return .success(result: String(decoding: encoded, as: UTF8.self))
-            } catch let error as NodeRuntimeError {
-                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-            } catch let error as GnosticProtocolError {
-                return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
+                let mapped = GnosticProtocol.publicFailure(
+                    for: error,
+                    fallbackCode: 500,
+                    fallbackReasonCode: "internalError",
+                    fallbackMessage: "The timeline operation failed."
+                )
+                return .failure(code: mapped.code, message: mapped.message)
             }
         case Self.listOperation:
             if let error = protocolError(parameters) { return error }
@@ -158,12 +162,16 @@ public struct TimelineManagementProvider: Sendable {
                     context: "timeline.list result"
                 )
                 return .success(result: String(decoding: encoded, as: UTF8.self))
-            } catch let error as NodeRuntimeError {
-                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-            } catch let error as GnosticProtocolError {
-                return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
+                let mapped = GnosticProtocol.publicFailure(
+                    for: error,
+                    fallbackCode: 500,
+                    fallbackReasonCode: "internalError",
+                    fallbackMessage: "The timeline operation failed."
+                )
+                return .failure(code: mapped.code, message: mapped.message)
             }
         case Self.updateOperation:
             if let error = protocolError(parameters) { return error }
@@ -176,12 +184,16 @@ public struct TimelineManagementProvider: Sendable {
                 try GnosticProtocol.validate(status.protocolMajor)
                 let encoded = try GnosticWirePayload.encode(status, context: "timeline.update result")
                 return .success(result: String(decoding: encoded, as: UTF8.self))
-            } catch let error as NodeRuntimeError {
-                return failure(code: error.statusCode, reasonCode: error.reasonCode, message: error.localizedDescription)
-            } catch let error as GnosticProtocolError {
-                return .failure(code: error.statusCode, message: error.failureMessage)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                return failure(code: 500, reasonCode: "internalError", message: String(describing: error))
+                let mapped = GnosticProtocol.publicFailure(
+                    for: error,
+                    fallbackCode: 500,
+                    fallbackReasonCode: "internalError",
+                    fallbackMessage: "The timeline operation failed."
+                )
+                return .failure(code: mapped.code, message: mapped.message)
             }
         default:
             return failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")

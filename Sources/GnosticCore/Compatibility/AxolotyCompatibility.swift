@@ -1,17 +1,26 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Axoloty
+import AxolotyMQTT
 import AxolotyProtocol
 import AxolotyWire
 import Foundation
 
-// This file is the single compatibility boundary for the pre-0.6 API names
+// This file is the single compatibility boundary for the pre-0.7 API names
 // still used by Gnostic's public seams. The implementation is backed entirely
-// by Axoloty 0.6's bounded runtime and wire values.
+// by Axoloty 0.7's bounded runtime and wire values.
+//
+// Nothing here is part of Gnostic's intended API. These declarations are
+// `public` only because GnosticCLI, GnosticRunner, and the test targets
+// consume them across the module boundary, and because the Gnostic*Object
+// types inherit CoatyObject. Retiring the Coaty object model is recorded as
+// an architecture exception in Documentation/Architecture/exceptions.json
+// rather than attempted piecemeal here.
 
 public enum CoreType: String, Codable, Sendable {
-    case CoatyObject
-    case Identity
+    // Raw values are on the wire; the case names follow Swift convention.
+    case coatyObject = "CoatyObject"
+    case identity = "Identity"
 }
 
 public struct CoatyUUID: Codable, CustomStringConvertible, Hashable, Sendable {
@@ -234,12 +243,11 @@ public struct ChannelEventSnapshot: Codable, Equatable, Sendable {
 }
 
 public enum CommunicationState: Sendable, Equatable { case offline, online }
-public enum OperatingState: Sendable, Equatable { case stopped, started }
 
 public final class Identity: CoatyObject, @unchecked Sendable {
     override public class var objectType: String { "coaty.Identity" }
     public init(name: String = "IdentityObject", objectType: String = Identity.objectType, objectId: CoatyUUID = .init()) {
-        super.init(coreType: .Identity, objectType: objectType, objectId: objectId, name: name)
+        super.init(coreType: .identity, objectType: objectType, objectId: objectId, name: name)
     }
     public required init(from decoder: Decoder) throws { try super.init(from: decoder) }
 }
@@ -397,6 +405,10 @@ public final class ObjectLifecycleController {
     }
     public func readvertiseDiscoverableObject(object: CoatyObject) { communication?.publishAdvertise(object) }
     public func deadvertiseDiscoverableObject(object: CoatyObject) { communication?.publishDeadvertise(object) }
+
+    func deadvertiseDiscoverableObjectAndWait(object: CoatyObject) async {
+        await communication?.publishDeadvertiseAndWait(object)
+    }
 }
 
 private actor CompatibilityDispatch {
@@ -576,7 +588,7 @@ public final class CommunicationManager {
             protocolMaximumPayloadBytes: GnosticWirePayload.maximumBytes,
             protocolMaximumTopicBytes: GnosticWirePayload.maximumTopicBytes
         )
-        var builder = try RuntimeDefinition.Builder(identity: runtimeIdentity, namespace: namespace, limits: capacities)
+        var builder = try RuntimeBuilder(identity: runtimeIdentity, namespace: namespace, capacities: capacities)
         let callOperations = [
             GnosticWorkspaceProvider.invocationOperation,
             AscendantTurnProvider.turnOperation,
@@ -658,16 +670,38 @@ public final class CommunicationManager {
 
     public func startAndWaitUntilReady() async throws { try start(); try await startTask?.value }
     public func stop() {
-        eventTasks.forEach { $0.cancel() }
-        eventTasks.removeAll()
+        let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
-        // MQTTBinding fails its pending start continuation before awaiting
-        // socket teardown. Start that cancellation independently so a broker
-        // handshake cannot hold the lifecycle owner until its deadline.
-        Task { await transport.stop() }
-        Task { await runtime.stop() }
+        // Keep this synchronous compatibility wrapper. The internal async
+        // seam lets an owner await runtime drain when it controls teardown.
+        Task { @MainActor in
+            await stopAndWait(runtimeWasReady: runtimeWasReady)
+        }
         isStarted = false
         emitState(.offline)
+    }
+
+    func stopAndWait() async {
+        let runtimeWasReady = isRuntimeReady
+        isRuntimeReady = false
+        await stopAndWait(runtimeWasReady: runtimeWasReady)
+        isStarted = false
+        emitState(.offline)
+    }
+
+    private func stopAndWait(runtimeWasReady: Bool) async {
+        // A ready runtime owns shutdown ordering: it must drain its
+        // deadvertisements before the transport disconnects. A pending start
+        // has no runtime lifecycle to drain, so cancel its transport first to
+        // release the start continuation.
+        if runtimeWasReady {
+            await runtime.stop()
+        } else {
+            await transport.stop()
+            await runtime.stop()
+        }
+        eventTasks.forEach { $0.cancel() }
+        eventTasks.removeAll()
     }
 
     public func observeCommunicationStateStream() async -> AsyncStream<CommunicationState> {
@@ -728,6 +762,13 @@ public final class CommunicationManager {
         Task { await dispatch.removeAdvertisedObject(id: object.objectId.string) }
         guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
         Task { _ = await runtime.publish(.deadvertise(payload)) }
+    }
+
+    fileprivate func publishDeadvertiseAndWait(_ object: CoatyObject) async {
+        pendingAdvertisements[object.objectId.string] = nil
+        await dispatch.removeAdvertisedObject(id: object.objectId.string)
+        guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
+        _ = await runtime.publish(.deadvertise(payload))
     }
     public func publishChannel(_ event: ChannelEvent) { guard let payload = try? channelPayload(event) else { return }; Task { _ = await runtime.publish(.channel(identifier: event.channelId, payload: payload)) } }
 
@@ -825,7 +866,7 @@ public final class CommunicationManager {
     private func objectSnapshot(_ bytes: [UInt8]) -> CoatyObjectSnapshot? { guard let envelope = try? JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any], let raw = envelope["object"] else { return nil }; return snapshotObject(raw) }
     private func snapshotObject(_ raw: Any?) -> CoatyObjectSnapshot? {
         guard let raw, let data = try? JSONSerialization.data(withJSONObject: raw), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let id = json["objectId"] as? String, let type = json["objectType"] as? String, let name = json["name"] as? String else { return nil }
-        return .init(objectId: id, coreType: CoreType(rawValue: json["coreType"] as? String ?? "CoatyObject") ?? .CoatyObject, objectType: type, name: name, externalId: json["externalId"] as? String, parentObjectId: json["parentObjectId"] as? String, locationId: json["locationId"] as? String, isDeactivated: json["isDeactivated"] as? Bool, payload: String(decoding: data, as: UTF8.self))
+        return .init(objectId: id, coreType: CoreType(rawValue: json["coreType"] as? String ?? "CoatyObject") ?? .coatyObject, objectType: type, name: name, externalId: json["externalId"] as? String, parentObjectId: json["parentObjectId"] as? String, locationId: json["locationId"] as? String, isDeactivated: json["isDeactivated"] as? Bool, payload: String(decoding: data, as: UTF8.self))
     }
 }
 
@@ -928,7 +969,14 @@ public final class Container {
         let name = configuration.common?.agentIdentity?["name"] as? String ?? "IdentityObject"
         let identity = Identity(name: name); let communication = try CommunicationManager(identity: identity, communicationOptions: configuration.communication, commonOptions: configuration.common); let lifecycle = ObjectLifecycleController(communication: communication); return Container(identity: identity, communication: communication, lifecycle: lifecycle)
     }
-    public func getController(name: String) -> ObjectLifecycleController? { name == "ObjectLifecycleController" ? lifecycleController : nil }
+    /// Resolves a lifecycle controller by its registered name.
+    ///
+    /// - Parameter name: The controller name, as registered in ``Components``.
+    /// - Returns: The controller, or `nil` when no controller has that name.
+    public func controller(named name: String) -> ObjectLifecycleController? {
+        name == "ObjectLifecycleController" ? lifecycleController : nil
+    }
     public func startAndWaitUntilReady() async throws { try await communicationManager?.startAndWaitUntilReady() }
     public func shutdown() { communicationManager?.stop() }
+    func shutdownAndWait() async { await communicationManager?.stopAndWait() }
 }

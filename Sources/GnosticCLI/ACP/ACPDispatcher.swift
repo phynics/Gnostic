@@ -190,7 +190,15 @@ final class ACPDispatcher: Sendable {
             throw JSONRPCMethodError.invalidParams("session/prompt accepts non-empty text content only")
         }
         let record = try await requireSession(id: input.sessionID, cwd: nil)
-        let turnID = input.clientTurnID ?? "acp:\(record.id):\(UUID().uuidString.lowercased())"
+        let turnID: String
+        if let clientTurnID = input.clientTurnID {
+            // ACP metadata may contain compatibility whitespace. Canonicalize
+            // once, before live-update filtering, and reuse this value for the
+            // request and every update or permission correlation.
+            turnID = try GnosticWirePayload.canonicalClientTurnID(clientTurnID)
+        } else {
+            turnID = "acp:\(record.id):\(UUID().uuidString.lowercased())"
+        }
 
         // A reconnect may retry a completed turn after the coordinator's
         // terminal-result cache has expired. The replay store is authoritative
@@ -202,9 +210,7 @@ final class ACPDispatcher: Sendable {
             if existing.conflict {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
             }
-            if let error = existing.updates.last(where: {
-                $0.kind == "error" || $0.kind == "cancelled" || $0.kind == "cancellation"
-            }) {
+            if let error = existing.updates.last(where: \.isTerminalFailure) {
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             for update in existing.updates {
@@ -246,7 +252,7 @@ final class ACPDispatcher: Sendable {
             publishUpdate(
                 sessionID: record.id,
                 turnID: turnID,
-                update: AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: result.text),
+                update: AscendantTurnUpdate(sequence: 1, kind: .assistantText, text: result.text),
                 replayed: result.replayed
             )
         } else {

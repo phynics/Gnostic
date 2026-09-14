@@ -17,10 +17,17 @@ whether its decision is delivered or remains a target.
 
 The delivered 0.3 compatibility declaration is [documented here](../Compatibility/0.3.0.md).
 
+## Extension guides
+
+- [Implementing an Ascendant backend](../Extending/ascendant-backends.md)
+- [Implementing a Workspace adapter](../Extending/workspace-adapters.md)
+
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. It is empty in the delivered 0.3 baseline. Every future
+exception registry. It records one accepted exception, `GNO-EXC-0001`, for the
+Coaty vocabulary that `GnosticCore` still publishes through
+`Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift`. Every
 exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,

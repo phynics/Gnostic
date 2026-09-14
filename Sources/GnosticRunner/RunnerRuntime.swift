@@ -19,7 +19,7 @@ final class RunnerRuntime {
             )
         )
         communication = try container.communicationManager.unwrap()
-        lifecycle = try container.getController(name: "ObjectLifecycleController").unwrap()
+        lifecycle = try container.controller(named: "ObjectLifecycleController").unwrap()
     }
 
     func start() async throws { try await container.startAndWaitUntilReady() }

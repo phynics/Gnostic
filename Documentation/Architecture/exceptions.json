@@ -1,4 +1,14 @@
 {
   "schemaVersion": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "id": "GNO-EXC-0001",
+      "rule": "Gnostic's public API does not expose Coaty or pre-0.7 Axoloty vocabulary.",
+      "scope": "Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift",
+      "rationale": "The file publishes roughly forty Coaty-era declarations from GnosticCore. They are load-bearing rather than a removable shim: GnosticAscendantObject, GnosticTimelineObject, GnosticWorkspaceObject, and GnosticWorkspaceToolObject inherit CoatyObject, thirteen public provider register(on:context:) methods take CommunicationManager and CoatyObject, and GnosticCLI, GnosticRunner, and the test targets consume Container, Components, Configuration, MQTTClientOptions, ObjectFilter, Identity, and UnaryCallResult across the module boundary. Making them internal is therefore not available without redesigning the object model and provider registration.",
+      "issue": "https://github.com/phynics/Gnostic/issues/227",
+      "owner": "phynics",
+      "reconsiderWhen": "An accepted ADR defines the replacement for the Coaty object model, or the Gnostic*Object types stop inheriting CoatyObject. Retiring this surface is an architecture decision that needs its own ADR and epic, not incremental deletion."
+    }
+  ]
 }

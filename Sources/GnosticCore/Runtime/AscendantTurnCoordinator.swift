@@ -23,33 +23,59 @@ public actor AscendantTurnCoordinator {
         let outcome: CachedOutcome
     }
 
+    private struct Lane: Sendable {
+        let id: UUID
+        let task: Task<String, Error>
+        let tail: Task<Void, Never>
+    }
+
     private enum CachedOutcome: Sendable {
         case succeeded(AscendantTurnResult)
         case failed(AscendantTurnError)
     }
 
     private let completedCapacity: Int
+    private let identityCapacity: Int
+    /// Every admitted identified turn remains in this ledger until serve
+    /// shutdown. A missing key therefore means that admission never occurred.
+    private var identities: [Key: UInt64] = [:]
     private var inFlight: [Key: InFlight] = [:]
     private var completed: [Key: Completed] = [:]
     private var tombstones: [Key: UInt64] = [:]
     private var completionOrder: [Key] = []
-    private var timelineTails: [UUID: Task<Void, Never>] = [:]
+    private var timelineTails: [UUID: Lane] = [:]
 
-    /// - Parameter completedCapacity: Maximum number of terminal outcomes kept
-    ///   for replay. The cache is intentionally process-local and bounded.
-    public init(completedCapacity: Int = 256) {
+    internal var retainedStateCounts: (identities: Int, completed: Int, tombstones: Int, completedBytes: Int) {
+        (
+            identities.count,
+            completed.count,
+            tombstones.count,
+            completed.values.reduce(0) { $0 + Self.retainedPayloadBytes($1.outcome) }
+        )
+    }
+
+    internal var retainedIdentityCount: Int { identities.count }
+
+    internal var retainedTimelineCount: Int { timelineTails.count }
+
+    internal var inFlightCount: Int { inFlight.count }
+
+    /// - Parameters:
+    ///   - completedCapacity: Maximum number of terminal outcomes kept for replay.
+    ///   - identityCapacity: Maximum number of identified turns admitted during
+    ///     this serve lifetime. Admitted identities are never evicted.
+    public init(completedCapacity: Int = 256, identityCapacity: Int = 1_024) {
         self.completedCapacity = max(1, completedCapacity)
+        self.identityCapacity = max(1, identityCapacity)
     }
 
     /// Cancels admitted work during node shutdown. New requests are rejected by
     /// the owning NodeRuntime before reaching this coordinator.
     public func cancelAll(waitForCompletion: Bool = true) async {
-        let turns = inFlight.values.map(\.task)
-        let tails = Array(timelineTails.values)
+        let turns = inFlight.values.map(\.task) + timelineTails.values.map(\.task)
+        let tails = timelineTails.values.map(\.tail)
         turns.forEach { $0.cancel() }
         tails.forEach { $0.cancel() }
-        inFlight.removeAll()
-        timelineTails.removeAll()
         guard waitForCompletion else { return }
         for turn in turns { _ = await turn.result }
         for tail in tails { await tail.value }
@@ -63,20 +89,45 @@ public actor AscendantTurnCoordinator {
         operation: @escaping TurnOperation
     ) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
-        guard let clientTurnID = request.clientTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !clientTurnID.isEmpty else {
-            let task = enqueue(timelineID: request.timelineID, operation: operation)
-            let text = try await task.value
-            return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
+        guard let rawClientTurnID = request.clientTurnID else {
+            let lane = enqueue(timelineID: request.timelineID, operation: operation)
+            do {
+                let text = try await lane.task.value
+                removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
+                return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
+            } catch {
+                removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
+                throw error
+            }
         }
+        let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
+        let canonicalRequest = AscendantTurnRequest(
+            message: request.message,
+            timelineID: request.timelineID,
+            clientTurnID: clientTurnID,
+            protocolMajor: request.protocolMajor
+        )
 
         let key = Key(timelineID: request.timelineID, clientTurnID: clientTurnID)
         let messageDigest = Self.messageDigest(request.message)
-        if let existing = inFlight[key] {
-            guard existing.messageDigest == messageDigest else {
+        if let admittedDigest = identities[key] {
+            guard admittedDigest == messageDigest else {
                 throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return try await replay(existing.task, request: request)
+        } else {
+            guard identities.count < identityCapacity else {
+                throw AscendantTurnError.capacityExceeded(
+                    timelineID: request.timelineID,
+                    clientTurnID: clientTurnID
+                )
+            }
+            // Record identity before creating the operation. This admission is
+            // permanent for the serve lifetime, even if its result is evicted.
+            identities[key] = messageDigest
+        }
+
+        if let existing = inFlight[key] {
+            return try await replay(existing.task, request: canonicalRequest)
         }
 
         if let cached = completed[key] {
@@ -101,7 +152,7 @@ public actor AscendantTurnCoordinator {
             )
         }
 
-        let task = enqueue(timelineID: request.timelineID) {
+        let lane = enqueue(timelineID: request.timelineID) {
             do {
                 return try await operation()
             } catch is CancellationError {
@@ -129,7 +180,8 @@ public actor AscendantTurnCoordinator {
                         clientTurnID: clientTurnID,
                         code: failure.code,
                         detail: failure.message,
-                        retryable: failure.retryable
+                        retryable: failure.retryable,
+                        statusCode: 500
                     )
                 }
                 throw AscendantTurnError.terminal(
@@ -137,7 +189,8 @@ public actor AscendantTurnCoordinator {
                     clientTurnID: clientTurnID,
                     code: error.reasonCode,
                     detail: error.localizedDescription,
-                    retryable: false
+                    retryable: false,
+                    statusCode: error.statusCode
                 )
             } catch let error as AscendantTurnError {
                 throw error
@@ -150,27 +203,30 @@ public actor AscendantTurnCoordinator {
             }
         }
 
+        let task = lane.task
         inFlight[key] = InFlight(messageDigest: messageDigest, task: task)
 
         // Completion is observed independently of the requesting Call/Return;
         // this makes a lost caller unable to remove the dedupe record early.
         Task { [weak self] in
             let result = await task.result
-            await self?.recordCompletion(key: key, request: request, result: result)
+            await self?.recordCompletion(key: key, request: canonicalRequest, result: result)
         }
 
         do {
             let text = try await task.value
+            removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
             recordCompletion(
                 key: key,
-                request: request,
+                request: canonicalRequest,
                 result: .success(text)
             )
             return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: false)
         } catch {
+            removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
             recordCompletion(
                 key: key,
-                request: request,
+                request: canonicalRequest,
                 result: .failure(error)
             )
             throw error
@@ -196,7 +252,7 @@ public actor AscendantTurnCoordinator {
     ) {
         guard inFlight[key] != nil else { return }
         inFlight.removeValue(forKey: key)
-        tombstones[key] = Self.messageDigest(request.message)
+        let digest = Self.messageDigest(request.message)
 
         let outcome: CachedOutcome
         switch result {
@@ -222,15 +278,59 @@ public actor AscendantTurnCoordinator {
                     detail: String(describing: error)
                 )
             }
-            outcome = .failed(terminal)
+            outcome = .failed(Self.bounded(terminal))
         }
 
-        completed[key] = Completed(messageDigest: Self.messageDigest(request.message), outcome: outcome)
+        completed[key] = Completed(messageDigest: digest, outcome: outcome)
         completionOrder.removeAll { $0 == key }
         completionOrder.append(key)
         while completionOrder.count > completedCapacity {
             let oldest = completionOrder.removeFirst()
-            completed.removeValue(forKey: oldest)
+            guard let evicted = completed.removeValue(forKey: oldest) else { continue }
+            // The identity ledger prevents rerun. Retain only the digest for an
+            // evicted result so retries can still conflict or report 410.
+            tombstones[oldest] = evicted.messageDigest
+        }
+    }
+
+    private static let retainedPayloadByteLimit = GnosticWirePayload.maximumEmbeddedValueBytes
+
+    private static func bounded(_ error: AscendantTurnError) -> AscendantTurnError {
+        switch error {
+        case let .capacityExceeded(timelineID, clientTurnID):
+            return .capacityExceeded(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .conflict(timelineID, clientTurnID):
+            return .conflict(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .failed(timelineID, clientTurnID, detail):
+            return .failed(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
+        case let .terminal(timelineID, clientTurnID, code, detail, retryable, statusCode):
+            return .terminal(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                code: GnosticWirePayload.boundedIdentifier(code),
+                detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200),
+                retryable: retryable,
+                statusCode: statusCode
+            )
+        case let .cancelled(timelineID, clientTurnID):
+            return .cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .lifecycleUnusable(timelineID, clientTurnID, detail):
+            return .lifecycleUnusable(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
+        case let .backendUnavailable(timelineID, clientTurnID, detail):
+            return .backendUnavailable(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
+        case let .replayUnavailable(timelineID, clientTurnID):
+            return .replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+        }
+    }
+
+    private static func retainedPayloadBytes(_ outcome: CachedOutcome) -> Int {
+        switch outcome {
+        case let .succeeded(result):
+            return (try? JSONEncoder().encode(result).count) ?? retainedPayloadByteLimit
+        case let .failed(error):
+            // The fields are bounded above, and this mirrors the wire fields
+            // retained for conflict/status replay without retaining source text.
+            return error.reasonCode.utf8.count + error.localizedDescription.utf8.count + 64
         }
     }
 
@@ -248,13 +348,25 @@ public actor AscendantTurnCoordinator {
     private func enqueue(
         timelineID: UUID,
         operation: @escaping TurnOperation
-    ) -> Task<String, Error> {
-        let predecessor = timelineTails[timelineID]
+    ) -> Lane {
+        let predecessor = timelineTails[timelineID]?.tail
         let task = Task<String, Error> {
             _ = await predecessor?.value
+            try Task.checkCancellation()
             return try await operation()
         }
-        timelineTails[timelineID] = Task { _ = await task.result }
-        return task
+        let laneID = UUID()
+        let tail = Task { [weak self] in
+            _ = await task.result
+            await self?.removeTimelineTail(timelineID: timelineID, laneID: laneID)
+        }
+        let lane = Lane(id: laneID, task: task, tail: tail)
+        timelineTails[timelineID] = lane
+        return lane
+    }
+
+    private func removeTimelineTail(timelineID: UUID, laneID: UUID) {
+        guard timelineTails[timelineID]?.id == laneID else { return }
+        timelineTails.removeValue(forKey: timelineID)
     }
 }
