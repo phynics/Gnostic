@@ -180,6 +180,37 @@ struct BackendArchitectureFitnessTests {
         #expect(actualContractImports == expectedContractImports)
     }
 
+    @Test("terminal Turn observation remains a backend-neutral Core seam")
+    func terminalTurnObservationIsBackendNeutral() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/TerminalTurnObservation.swift"),
+            encoding: .utf8
+        )
+        for forbidden in [
+            "Atlas",
+            "Shard",
+            "Positronic",
+            "PositronicKit",
+            "prompt",
+            "transcript",
+            "tool",
+            "revision",
+            "provider",
+        ] {
+            #expect(!source.localizedCaseInsensitiveContains(forbidden), "Terminal observation must not mention backend detail '\(forbidden)'.")
+        }
+
+        let coordinator = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/AscendantTurnCoordinator.swift"),
+            encoding: .utf8
+        )
+        #expect(!coordinator.contains("Task.detached"))
+    }
+
     @Test("pre-reset Agent and Chat compatibility does not remain in Gnostic seams")
     func preResetCompatibilityIsRemoved() throws {
         let rootURL = URL(fileURLWithPath: #filePath)
