@@ -72,7 +72,7 @@ public final class TurnService {
             validatedClientTurnID = nil
         }
         let sink = BackendTurnUpdateSink(store: updates, request: turnRequest, clientTurnID: validatedClientTurnID)
-        return try await coordinator.execute(turnRequest) {
+        return try await coordinator.execute(turnRequest, ascendantID: ascendantID) {
             if let validatedClientTurnID {
                 do {
                     try await self.updates.start(

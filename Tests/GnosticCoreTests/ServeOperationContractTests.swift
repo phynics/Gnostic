@@ -88,7 +88,7 @@ struct ServeOperationContractTests {
         let coordinator = AscendantTurnCoordinator()
         let provider = AscendantTurnProvider(
             execute: { request in
-                try await coordinator.execute(request) {
+                try await coordinator.execute(request, ascendantID: UUID()) {
                     throw NodeRuntimeError.turnFailed("sentinel-secret-coordinator")
                 }
             },
@@ -123,7 +123,7 @@ struct ServeOperationContractTests {
             let coordinator = AscendantTurnCoordinator()
             let provider = AscendantTurnProvider(
                 execute: { request in
-                    try await coordinator.execute(request) { throw backendError }
+                    try await coordinator.execute(request, ascendantID: UUID()) { throw backendError }
                 },
                 replayStore: store
             )
@@ -161,7 +161,7 @@ struct ServeOperationContractTests {
     func turnConflictContract() async throws {
         let coordinator = AscendantTurnCoordinator()
         let provider = AscendantTurnProvider { request in
-            try await coordinator.execute(request) { "echo: \(request.message)" }
+            try await coordinator.execute(request, ascendantID: UUID()) { "echo: \(request.message)" }
         }
         let timelineID = UUID()
         let first = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
@@ -183,7 +183,7 @@ struct ServeOperationContractTests {
         let store = AscendantTurnUpdateStore(maxEntries: 1)
         let provider = AscendantTurnProvider(
             execute: { request in
-                try await coordinator.execute(request) { "echo: \(request.message)" }
+                try await coordinator.execute(request, ascendantID: UUID()) { "echo: \(request.message)" }
             },
             replayStore: store
         )

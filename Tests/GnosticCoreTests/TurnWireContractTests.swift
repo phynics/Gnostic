@@ -68,11 +68,11 @@ struct TurnWireContractTests {
         let first = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-1")
         let duplicate = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: " turn-1 ")
 
-        _ = try await coordinator.execute(first) {
+        _ = try await coordinator.execute(first, ascendantID: UUID()) {
             await counter.increment()
             return "answer"
         }
-        let replay = try await coordinator.execute(duplicate) {
+        let replay = try await coordinator.execute(duplicate, ascendantID: UUID()) {
             await counter.increment()
             return "wrong"
         }
