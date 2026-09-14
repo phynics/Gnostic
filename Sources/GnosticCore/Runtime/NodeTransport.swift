@@ -345,6 +345,7 @@ public final class NodeTransport {
     }
 
     func cancel() async {
+        advertisementTeardownInstalled = false
         _ = await scope.dispose()
     }
 }
