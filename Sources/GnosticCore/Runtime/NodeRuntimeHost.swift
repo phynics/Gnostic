@@ -40,6 +40,10 @@ final class NodeRuntimeHost {
     private var backendSupervisor: AscendantBackendSupervisor?
     private var transport: NodeTransport?
     private var refreshUnresolved: (@MainActor () async -> Void)?
+    private let scope: RuntimeEffectScope
+    private let publisherScope: RuntimeEffectScope
+    private let resolutionScope: RuntimeEffectScope
+    private var scopesAdopted = false
 
     init(
         lifecycleCoordinator: RuntimeLifecycleCoordinator,
@@ -58,6 +62,9 @@ final class NodeRuntimeHost {
         self.permissionCoordinator = permissionCoordinator
         self.turnCoordinator = turnCoordinator
         self.projectionRelay = projectionRelay
+        scope = try! RuntimeEffectScope(name: "node-runtime-host")
+        publisherScope = try! RuntimeEffectScope(name: "turn-update-publisher")
+        resolutionScope = try! RuntimeEffectScope(name: "network-resolution")
     }
 
     var isRunning: Bool { lifetime.isRunning }
@@ -115,8 +122,8 @@ final class NodeRuntimeHost {
         if lifetime.state == .starting {
             resources.container.shutdown()
         }
-        await lifecycleCoordinator.shutdown { [weak self] cleanup in
-            await self?.performCleanup(cleanup)
+        await lifecycleCoordinator.shutdown { [weak self] in
+            await self?.performCleanup()
         }
     }
 
@@ -125,20 +132,23 @@ final class NodeRuntimeHost {
             throw NodeRuntimeError.notRunning
         }
         do {
+            try await adoptComponentScopes()
             projectionRelay.bind(transport)
             try await resources.container.startAndWaitUntilReady()
             try requireActiveStart()
             try adapters.lifecycle.afterConnection()
             try await resources.subscription.start()
             try requireActiveStart()
-            startNetworkResolution()
+            try await startNetworkResolution()
             try await transport.registerOperations(
                 turnUpdates: turnUpdates,
                 permissionCoordinator: permissionCoordinator
             )
 
             let events = await turnUpdates.events()
-            lifetime.turnUpdatePublishTask = Task { [communication = resources.communication] in
+            _ = try await publisherScope.task(
+                label: "turn-update-publisher"
+            ) { @MainActor [communication = resources.communication] in
                 for await event in events {
                     guard let channel = try? AscendantTurnProvider.updateEvent(event) else { continue }
                     communication.publishChannel(channel)
@@ -157,15 +167,27 @@ final class NodeRuntimeHost {
             try await adapters.lifecycle.afterAdvertisement()
             try requireActiveRunningStart()
         } catch {
-            await lifecycleCoordinator.rollback(close: true) { [weak self] cleanup in
-                await self?.performCleanup(cleanup)
+            let shutdownWon = lifetime.state == .closed
+            await lifecycleCoordinator.rollback(close: true) { [weak self] in
+                await self?.performCleanup()
+            }
+            if shutdownWon {
+                throw NodeRuntimeError.notRunning
+            }
+            if let scopeError = error as? RuntimeEffectScopeError {
+                switch scopeError {
+                case .acquisitionClosed, .registrationRejected:
+                    throw NodeRuntimeError.notRunning
+                case .invalidName, .invalidLabel, .invalidAdoption:
+                    break
+                }
             }
             throw error
         }
     }
 
-    private func startNetworkResolution() {
-        lifetime.networkResolutionTask = Task { @MainActor [weak self] in
+    private func startNetworkResolution() async throws {
+        _ = try await resolutionScope.task(label: "network-resolution") { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self, self.lifetime.state != .closed else { return }
                 await self.refreshUnresolved?()
@@ -182,7 +204,7 @@ final class NodeRuntimeHost {
         try lifecycleCoordinator.requireActiveRunningStart()
     }
 
-    private func performCleanup(_ cleanup: NodeRuntimeLifetime.CleanupTasks) async {
+    private func performCleanup() async {
         guard let registry, let backendSupervisor, let transport else { return }
         await registry.fenceBackendLeases(at: lifetime.generation)
         await permissionCoordinator.denyAll(reason: .connectionLost)
@@ -191,11 +213,27 @@ final class NodeRuntimeHost {
         await turnCoordinator.cancelAll(waitForCompletion: false)
         await turnUpdates.finish()
         await backendSupervisor.retireAll(stage: .runtimeShutdown)
-        cleanup.publishTask?.cancel()
-        await cleanup.publishTask?.value
-        cleanup.resolutionTask?.cancel()
-        await cleanup.resolutionTask?.value
+        // These effects follow the existing domain cleanup order explicitly.
+        _ = await publisherScope.dispose()
+        _ = await resolutionScope.dispose()
+        _ = await scope.dispose()
         await resources.subscription.stopAndWait()
         await resources.container.shutdownAndWait()
+    }
+
+    /// Returns internal ownership diagnostics with static labels and no payloads.
+    func effectSnapshots() async -> [RuntimeEffectSnapshot] {
+        await [scope.snapshot(), publisherScope.snapshot(), resolutionScope.snapshot()]
+    }
+
+    private func adoptComponentScopes() async throws {
+        guard !scopesAdopted else { return }
+        let publisherScope = self.publisherScope
+        let resolutionScope = self.resolutionScope
+        try await scope.withAcquisition { owner in
+            _ = try await owner.adopt(publisherScope, label: "turn-update-publisher")
+            _ = try await owner.adopt(resolutionScope, label: "network-resolution")
+        }
+        scopesAdopted = true
     }
 }

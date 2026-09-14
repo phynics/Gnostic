@@ -209,6 +209,11 @@ public final class NodeRuntime {
         await registry.snapshot()
     }
 
+    /// Returns an internal ownership view with static labels and no payloads.
+    func effectSnapshots() async -> [RuntimeEffectSnapshot] {
+        await runtimeHost.effectSnapshots()
+    }
+
     public func advertisedWorkspaceIDs() -> [UUID] {
         plan.workspaces
             .map(\.id)
