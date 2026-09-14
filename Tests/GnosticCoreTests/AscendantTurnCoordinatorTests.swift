@@ -581,9 +581,76 @@ struct AscendantTurnCoordinatorTests {
         #expect(await order.values == ["failing", "succeeding"])
     }
 
-    @Test("shutdown awaits owned observation work before returning")
-    func shutdownReachesObservationQuiescence() async throws {
+    @Test("a backend that ignores cancellation still commits and observes its real outcome")
+    func cancelIgnoredByBackendKeepsRealOutcome() async throws {
+        let observer = TerminalTurnObservationProbe()
+        let coordinator = AscendantTurnCoordinator(observers: [observer])
         let gate = TurnGate()
+        let probe = TurnProbe()
+        let ascendantID = UUID()
+        let request = AscendantTurnRequest(message: "applied", timelineID: UUID(), clientTurnID: "applied")
+
+        let turn = Task {
+            try await coordinator.execute(request, ascendantID: ascendantID) {
+                await probe.enter("original")
+                // Deliberately ignore cancellation: no check, no throwing.
+                await gate.wait()
+                return "applied"
+            }
+        }
+        await probe.waitForStarts(1)
+        let shutdown = Task { await coordinator.cancelAll() }
+        await Task.yield()
+        await gate.release()
+        let result = try await turn.value
+        await shutdown.value
+        await observer.waitForRecords(1)
+
+        let records = await observer.records
+        #expect(result.text == "applied")
+        #expect(!result.replayed)
+        #expect(records.count == 1)
+        #expect(records[0].outcome == .succeeded)
+        #expect(records[0].operationID.isEmpty == false)
+        let counts = await coordinator.retainedStateCounts
+        #expect(counts.completed == 1)
+    }
+
+    @Test("unidentified turns in flight at bounded shutdown are still observed")
+    func unidentifiedTurnsObservedAfterBoundedShutdown() async throws {
+        let observer = TerminalTurnObservationProbe()
+        let coordinator = AscendantTurnCoordinator(observers: [observer])
+        let gate = TurnGate()
+        let probe = TurnProbe()
+        let timelineID = UUID()
+        let ascendantID = UUID()
+
+        let turn = Task {
+            try await coordinator.execute(
+                .init(message: "late", timelineID: timelineID),
+                ascendantID: ascendantID
+            ) {
+                await probe.enter("original")
+                await gate.wait()
+                return "late-result"
+            }
+        }
+        await probe.waitForStarts(1)
+        await coordinator.cancelAll(waitForCompletion: false)
+        await gate.release()
+        let result = try await turn.value
+        await observer.waitForRecords(1)
+
+        let records = await observer.records
+        #expect(result.text == "late-result")
+        #expect(records.count == 1)
+        #expect(records[0].timelineID == timelineID)
+        #expect(records[0].ascendantID == ascendantID)
+        #expect(records[0].clientTurnID == nil)
+    }
+
+    @Test("shutdown awaits owned observation work before returning")
+    func shutdownReachesObservationQuiescence() async throws {        let gate = TurnGate()
         let observer = TerminalTurnObservationProbe(gate: gate)
         let coordinator = AscendantTurnCoordinator(observers: [observer])
         let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "shutdown")

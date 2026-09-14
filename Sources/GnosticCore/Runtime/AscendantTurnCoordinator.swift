@@ -17,7 +17,6 @@ public actor AscendantTurnCoordinator {
         let messageDigest: UInt64
         let operationID: String
         let ascendantID: UUID
-        let request: AscendantTurnRequest
         let task: Task<String, Error>
     }
 
@@ -55,6 +54,12 @@ public actor AscendantTurnCoordinator {
     private var completionOrder: [Key] = []
     private var timelineTails: [UUID: Lane] = [:]
     private var acceptingTurns = true
+    /// Set when shutdown begins. Observer deliveries scheduled after this
+    /// point run inline in the settling Turn task instead of the disposed
+    /// scope, so late real outcomes are still observed exactly once.
+    private var observationClosed = false
+    private var observationPending = 0
+    private var observationWaiters: [CheckedContinuation<Void, Never>] = []
 
     internal var retainedStateCounts: (identities: Int, completed: Int, tombstones: Int, completedBytes: Int) {
         (
@@ -92,37 +97,33 @@ public actor AscendantTurnCoordinator {
     }
 
     /// Cancels admitted work during node shutdown. New requests are rejected by
-    /// the owning NodeRuntime before reaching this coordinator. The bounded
-    /// `false` path commits cancellation and quiesces observers without waiting
-    /// for noncooperative Turn or lane tasks; `true` additionally awaits them.
+    /// the owning NodeRuntime before reaching this coordinator. Only real
+    /// Turn-task completions terminalize a Turn: shutdown never fabricates an
+    /// outcome, so a backend that ignores cancellation still commits and
+    /// observes its real result. The bounded `false` path does not await
+    /// noncooperative Turn or lane tasks, but it always drains already-committed
+    /// observer deliveries before disposing the scope; `true` additionally
+    /// awaits Turn and lane settlement.
     public func cancelAll(waitForCompletion: Bool = true) async {
         acceptingTurns = false
-        let admitted = inFlight
-        let turns = admitted.values.map(\.task) + timelineTails.values.map(\.task)
+        let turns = inFlight.values.map(\.task) + timelineTails.values.map(\.task)
         let tails = timelineTails.values.map(\.tail)
         turns.forEach { $0.cancel() }
         tails.forEach { $0.cancel() }
-
-        // Commit cancellation before releasing the actor. This makes the
-        // bounded shutdown path independent of a backend that ignores cancel.
-        for (key, flight) in admitted {
-            guard inFlight[key] != nil else { continue }
-            await recordCompletion(
-                key: key,
-                request: flight.request,
-                ascendantID: flight.ascendantID,
-                operationID: flight.operationID,
-                result: .failure(CancellationError())
-            )
-        }
 
         if waitForCompletion {
             for turn in turns { _ = await turn.result }
             for tail in tails { await tail.value }
         }
-        // Runtime shutdown uses the bounded false path for backend work while
-        // still quiescing all observer tasks. True additionally waits for Turn
-        // and lane tasks to settle.
+        // Close scope admission before draining: deliveries scheduled after
+        // this point run inline in their settling Turn task. Draining first
+        // guarantees dispose never cancels a live observer delivery.
+        observationClosed = true
+        while observationPending > 0 {
+            await withCheckedContinuation { continuation in
+                observationWaiters.append(continuation)
+            }
+        }
         _ = await observationScope.dispose()
     }
 
@@ -286,7 +287,6 @@ public actor AscendantTurnCoordinator {
             messageDigest: messageDigest,
             operationID: admittedIdentity.operationID,
             ascendantID: ascendantID,
-            request: canonicalRequest,
             task: task
         )
 
@@ -380,20 +380,46 @@ public actor AscendantTurnCoordinator {
 
     private func scheduleObservation(_ record: TerminalTurnRecord) async {
         guard !observers.isEmpty else { return }
+        // After shutdown closes scope admission, deliver inline in the
+        // settling Turn task: no new scope work may be admitted, but the
+        // record must still reach observers exactly once.
+        guard !observationClosed else {
+            await deliverObservation(record)
+            return
+        }
+        observationPending += 1
         do {
-            _ = try await observationScope.task(label: "turn-observation") { [observers] in
-                for observer in observers {
-                    do {
-                        try await observer.observe(record)
-                    } catch {
-                        // Observers are diagnostics/side effects; they never
-                        // replace a committed client outcome or backend state.
-                    }
-                }
+            // The closure holds the coordinator until delivery finishes;
+            // the task releases it on completion, so ownership stays bounded.
+            _ = try await observationScope.task(label: "turn-observation") {
+                await self.deliverObservation(record)
+                await self.completeObservation()
             }
         } catch {
-            // Shutdown may close the observation scope after terminal commit.
+            // The scope closed concurrently with shutdown; fall back to
+            // inline delivery so the committed record is not dropped.
+            await deliverObservation(record)
+            completeObservation()
         }
+    }
+
+    private func deliverObservation(_ record: TerminalTurnRecord) async {
+        for observer in observers {
+            do {
+                try await observer.observe(record)
+            } catch {
+                // Observers are diagnostics/side effects; they never
+                // replace a committed client outcome or backend state.
+            }
+        }
+    }
+
+    private func completeObservation() {
+        observationPending -= 1
+        guard observationPending == 0 else { return }
+        let waiters = observationWaiters
+        observationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     private static func observationOutcome(for error: AscendantTurnError) -> TerminalTurnOutcome {
