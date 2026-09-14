@@ -645,15 +645,20 @@ struct AscendantTurnCoordinatorTests {
         await probe.waitForStarts(1)
         await coordinator.cancelAll(waitForCompletion: false)
         await gate.release()
+        // The lane awaits `completion` before publishing the Turn's value, so
+        // the late record is already delivered or already lost here. Asserting
+        // directly instead of waiting keeps a regression a failure, not a hang.
         let result = try await turn.value
-        await observer.waitForRecords(1)
 
         let records = await observer.records
         #expect(result.text == "late-result")
         #expect(records.count == 1)
-        #expect(records[0].timelineID == timelineID)
-        #expect(records[0].ascendantID == ascendantID)
-        #expect(records[0].clientTurnID == nil)
+        // require, not subscript: a dropped late record leaves this empty, and
+        // a regression should fail this test rather than trap the whole run.
+        let record = try #require(records.first)
+        #expect(record.timelineID == timelineID)
+        #expect(record.ascendantID == ascendantID)
+        #expect(record.clientTurnID == nil)
     }
 
     @Test("bounded shutdown does not wait for a contract-violating stuck observer")
