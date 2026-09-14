@@ -171,8 +171,16 @@ final class NodeRuntimeHost {
             await lifecycleCoordinator.rollback(close: true) { [weak self] in
                 await self?.performCleanup()
             }
-            if shutdownWon || error is RuntimeEffectScopeError {
+            if shutdownWon {
                 throw NodeRuntimeError.notRunning
+            }
+            if let scopeError = error as? RuntimeEffectScopeError {
+                switch scopeError {
+                case .acquisitionClosed, .registrationRejected:
+                    throw NodeRuntimeError.notRunning
+                case .invalidName, .invalidLabel, .invalidAdoption:
+                    break
+                }
             }
             throw error
         }
