@@ -91,11 +91,12 @@ public final class RemoteTurnClient: Sendable {
         throw RemoteTurnClientError.brokerUnreachable("timed out connecting")
     }
 
-    /// Stops the client's manager and subscriptions.
-    public func stop() {
+    /// Stops the client's manager and subscriptions with ordered cleanup.
+    public func stop() async {
         stateTask?.cancel()
         stateTask = nil
-        subscription.stop()
+        await subscription.stopAndWait()
+        await subscription.disposeScope()
         manager.stop()
     }
 

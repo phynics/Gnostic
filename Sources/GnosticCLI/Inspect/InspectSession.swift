@@ -46,15 +46,15 @@ final class InspectSession {
             try await subscription.start()
             await subscription.discover(using: manager, timeout: .seconds(values.observeSeconds))
             let entries = await catalog.networkObjects(includeIncompatible: true)
-            subscription.stop()
+            await subscription.stopAndWait()
             manager.stop()
             return entries
         } catch let error as InspectError {
-            subscription.stop()
+            await subscription.stopAndWait()
             manager.stop()
             throw error
         } catch {
-            subscription.stop()
+            await subscription.stopAndWait()
             manager.stop()
             if error is CancellationError {
                 throw InspectError.brokerUnreachable("timed out")

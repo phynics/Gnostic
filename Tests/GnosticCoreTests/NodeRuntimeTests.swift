@@ -676,7 +676,9 @@ struct NodeRuntimeTests {
 
         #expect(active.map(\.name) == ["node-runtime-host", "turn-update-publisher", "network-resolution"])
         let host = try #require(active.first)
-        #expect(host.liveEffects.map(\.originScope).sorted() == ["network-resolution", "turn-update-publisher"])
+        #expect(host.liveEffects.map(\.originScope).sorted() == [
+            "gnostic-subscription", "network-resolution", "node-transport", "turn-update-publisher",
+        ])
         #expect(active[1].liveEffects.map(\.label) == ["turn-update-publisher"])
         #expect(active[2].liveEffects.map(\.label) == ["network-resolution"])
 
@@ -758,7 +760,10 @@ struct NodeRuntimeTests {
         let shutdown = Task { @MainActor in
             await coordinator.shutdown { cleaned = true }
         }
-        await gate.release()
+        // No explicit release: LifecycleGate.hold self-releases through its
+        // cancellation handler once shutdown cancels startup. Releasing here
+        // would race shutdown's cancel and let startup succeed, surfacing
+        // notRunning instead of the expected CancellationError.
 
         await shutdown.value
         await #expect(throws: CancellationError.self) {

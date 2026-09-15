@@ -53,9 +53,9 @@ public actor AscendantTurnCoordinator {
     private var completionOrder: [Key] = []
     private var timelineTails: [UUID: Lane] = [:]
     private var acceptingTurns = true
-    /// Set when shutdown begins. Observer deliveries scheduled after this
-    /// point run inline in the settling Turn task instead of the disposed
-    /// scope, so late real outcomes are still observed exactly once.
+    /// Set when the bounded shutdown fence closes. Terminal outcomes committed
+    /// after this point remain domain state, but cannot start observer work after
+    /// the lifecycle has declared its observation boundary complete.
     private var observationClosed = false
     private var observationPending = 0
     private var observationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -121,9 +121,11 @@ public actor AscendantTurnCoordinator {
             for turn in turns { _ = await turn.result }
             for tail in tails { await tail.value }
         }
-        // Close scope admission before draining: deliveries scheduled after
-        // this point run inline in their settling Turn task. Draining first
-        // guarantees dispose never cancels a live observer delivery.
+        // Close observer admission before draining. A turn that settles after
+        // this fence still commits its replay/tombstone state, but its observer
+        // delivery is intentionally suppressed by the bounded shutdown policy.
+        // Draining first guarantees dispose never cancels a delivery that was
+        // admitted before the fence without waiting for its declared boundary.
         observationClosed = true
         await drainObservations(timeout: observationDrainTimeout)
         _ = await observationScope.dispose()
@@ -414,11 +416,10 @@ public actor AscendantTurnCoordinator {
 
     private func scheduleObservation(_ record: TerminalTurnRecord) async {
         guard !observers.isEmpty else { return }
-        // After shutdown closes scope admission, deliver inline in the
-        // settling Turn task: no new scope work may be admitted, but the
-        // record must still reach observers exactly once.
+        // Bounded shutdown is an explicit observation fence. Delivering inline
+        // here would let a late backend completion run observer work after the
+        // host reported its cooperative lifecycle boundary complete.
         guard !observationClosed else {
-            await isolatedObservation(record)
             return
         }
         observationPending += 1
@@ -430,20 +431,10 @@ public actor AscendantTurnCoordinator {
                 await self.completeObservation()
             }
         } catch {
-            // The scope closed concurrently with shutdown; fall back to
-            // inline delivery so the committed record is not dropped.
-            await isolatedObservation(record)
+            // The scope closed concurrently with shutdown. The bounded policy
+            // fences this delivery rather than creating an unowned fallback.
             completeObservation()
         }
-    }
-
-    /// Delivers one record outside the caller's cancellation context. Late
-    /// completions run in the lane task `cancelAll` just cancelled, so
-    /// inheriting cancellation would abort observers doing cancellable work
-    /// and drop the committed record. The unstructured task is awaited
-    /// inline: it escapes neither shutdown nor the settling Turn.
-    private func isolatedObservation(_ record: TerminalTurnRecord) async {
-        await Task { await self.deliverObservation(record) }.value
     }
 
     private func deliverObservation(_ record: TerminalTurnRecord) async {

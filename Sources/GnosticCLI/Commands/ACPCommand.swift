@@ -89,7 +89,6 @@ struct ACPCommand: AsyncParsableCommand {
             port: brokerKey.port,
             namespace: brokerKey.namespace
         )
-        defer { client.stop() }
         try await client.connect()
         let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
         let counts = Dictionary(grouping: entries, by: \.objectID).mapValues(\.count)
@@ -115,6 +114,7 @@ struct ACPCommand: AsyncParsableCommand {
         let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: profiles)
         try cache.store(bundle, for: brokerKey)
         try writeProfiles(bundle)
+        await client.stop()
     }
 
     private func writeProfiles(_ bundle: ACPProfileBundle) throws {

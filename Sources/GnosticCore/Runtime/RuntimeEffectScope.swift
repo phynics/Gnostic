@@ -24,7 +24,7 @@ enum RuntimeEffectScopeError: Error, Sendable, Equatable, CustomStringConvertibl
         case .invalidLabel:
             return "The effect label must be a static diagnostic label."
         case .invalidAdoption:
-            return "The effect scope cannot adopt itself or one of its ancestors."
+            return "The effect scope cannot adopt itself, one of its ancestors, a scope already adopted by another parent, or a scope that is not active."
         case .acquisitionClosed:
             return "The acquisition transaction is no longer accepting registrations."
         case let .registrationRejected(state):
@@ -101,20 +101,22 @@ private enum RuntimeEffectTaskContext {
 }
 
 private actor RuntimeEffectAdoptionRegistry {
-    private var children: [UUID: [UUID: Int]] = [:]
+    private var children: [UUID: Set<UUID>] = [:]
+    private var parents: [UUID: UUID] = [:]
 
     func reserve(parent: UUID, child: UUID) -> Bool {
-        guard parent != child, !reaches(from: child, target: parent) else { return false }
-        children[parent, default: [:]][child, default: 0] += 1
+        guard parent != child,
+              parents[child] == nil,
+              !reaches(from: child, target: parent) else { return false }
+        parents[child] = parent
+        children[parent, default: []].insert(child)
         return true
     }
 
     func release(parent: UUID, child: UUID) {
-        if let count = children[parent]?[child], count > 1 {
-            children[parent]?[child] = count - 1
-        } else {
-            children[parent]?.removeValue(forKey: child)
-        }
+        guard parents[child] == parent else { return }
+        parents.removeValue(forKey: child)
+        children[parent]?.remove(child)
         if children[parent]?.isEmpty == true {
             children.removeValue(forKey: parent)
         }
@@ -130,8 +132,8 @@ private actor RuntimeEffectAdoptionRegistry {
         while let current = pending.popLast() {
             if !visited.insert(current).inserted { continue }
             if current == target { return true }
-            if let keys = children[current]?.keys {
-                pending.append(contentsOf: keys)
+            if let children = children[current] {
+                pending.append(contentsOf: children)
             }
         }
         return false
@@ -425,6 +427,9 @@ actor RuntimeEffectScope {
 
     /// Adopts a child scope while retaining the child's own diagnostic identity.
     func adopt(_ child: RuntimeEffectScope, label: StaticString) async throws -> RuntimeEffectHandle {
+        guard await child.snapshot().state == .active else {
+            throw RuntimeEffectScopeError.invalidAdoption
+        }
         guard await runtimeEffectAdoptionRegistry.reserve(parent: token, child: await child.identityToken()) else {
             throw RuntimeEffectScopeError.invalidAdoption
         }

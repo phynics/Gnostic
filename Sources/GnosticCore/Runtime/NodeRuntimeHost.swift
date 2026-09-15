@@ -213,11 +213,15 @@ final class NodeRuntimeHost {
         await turnCoordinator.cancelAll(waitForCompletion: false)
         await turnUpdates.finish()
         await backendSupervisor.retireAll(stage: .runtimeShutdown)
+        // Cancel subscription loops while scopes are still active so their
+        // per-effect cleanup runs deterministically; host-scope disposal
+        // then reaps the (now empty) adopted subscription scope.
         // These effects follow the existing domain cleanup order explicitly.
+        await resources.subscription.stopAndWait()
         _ = await publisherScope.dispose()
         _ = await resolutionScope.dispose()
         _ = await scope.dispose()
-        await resources.subscription.stopAndWait()
+        await resources.subscription.disposeScope()
         await resources.container.shutdownAndWait()
     }
 
@@ -238,9 +242,13 @@ final class NodeRuntimeHost {
 
     private func adoptComponentScopes() async throws {
         guard !scopesAdopted else { return }
+        guard let transport else { throw NodeRuntimeError.notRunning }
+        let subscription = resources.subscription
         let publisherScope = self.publisherScope
         let resolutionScope = self.resolutionScope
         try await scope.withAcquisition { owner in
+            try await subscription.adopt(into: owner)
+            try await transport.adopt(into: owner)
             _ = try await owner.adopt(publisherScope, label: "turn-update-publisher")
             _ = try await owner.adopt(resolutionScope, label: "network-resolution")
         }

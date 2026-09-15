@@ -8,7 +8,15 @@ Terminal Turn observation is a one-way, backend-neutral Core seam. Hosts install
 `TerminalTurnObserving` values through `NodeRuntimeAdapters`. A
 `TerminalTurnRecord` contains only Gnostic identity and the bounded
 `TerminalTurnOutcome`; Atlas, Shard, prompt, revision, and PositronicKit types
-remain outside the contract.
+remain outside the contract. Exact shutdown waits for Turn and lane settlement
+before closing the observation fence, then drains admitted observer deliveries
+up to `observationDrainTimeout`; a stuck observer is cut off at the bound. Every
+observer receives at most one delivery per original identified terminal Turn,
+and only if it was admitted before the fence. Bounded shutdown closes the
+observation fence without awaiting Turn or lane settlement: terminal outcomes
+that commit after that fence remain identified/replay-backed domain state (or
+are discarded for the unobserved compatibility path), but do not start observer
+work after the lifecycle boundary.
 
 The design rejects Atlas-aware Core, Core-side Shard report generation, mutable
 post-start observer registries, and dynamic plugin observers. These alternatives
@@ -22,7 +30,9 @@ observation boundary, and `.identitySnapshotHasNoEffectState` keeps diagnostics
 out of domain projections. `RuntimeEffectScopeTests.labelsRejectDynamicOrUnsafeDiagnosticContent`
 protects label safety. Runtime integration tests prove that the default empty
 observer list preserves existing behavior and that installed observers receive
-terminal outcomes through the NodeRuntime seam.
+terminal outcomes through the NodeRuntime seam. Scope-adoption tests enforce one
+live parent per child, and subscription lifecycle tests enforce a single
+actor-safe start/stop owner.
 
 This decision adds no production dependency. Once #116 lands, the optional
 `GnosticPositronicAtlas` target will consume the generic Core seam and own

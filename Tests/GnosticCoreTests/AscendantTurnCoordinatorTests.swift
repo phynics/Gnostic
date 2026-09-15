@@ -620,12 +620,9 @@ struct AscendantTurnCoordinatorTests {
         #expect(counts.completed == 1)
     }
 
-    @Test("unidentified turns in flight at bounded shutdown are still observed")
-    func unidentifiedTurnsObservedAfterBoundedShutdown() async throws {
-        // sleepsFirst exercises cancellable observer work: the late delivery
-        // runs in the cancelled lane task, so inheriting cancellation would
-        // abort the sleep and drop the record.
-        let observer = TerminalTurnObservationProbe(sleepsFirst: true)
+    @Test("bounded shutdown fences late terminal observation")
+    func boundedShutdownFencesLateTerminalObservation() async throws {
+        let observer = TerminalTurnObservationProbe()
         let coordinator = AscendantTurnCoordinator(observers: [observer])
         let gate = TurnGate()
         let probe = TurnProbe()
@@ -645,20 +642,11 @@ struct AscendantTurnCoordinatorTests {
         await probe.waitForStarts(1)
         await coordinator.cancelAll(waitForCompletion: false)
         await gate.release()
-        // The lane awaits `completion` before publishing the Turn's value, so
-        // the late record is already delivered or already lost here. Asserting
-        // directly instead of waiting keeps a regression a failure, not a hang.
         let result = try await turn.value
 
         let records = await observer.records
         #expect(result.text == "late-result")
-        #expect(records.count == 1)
-        // require, not subscript: a dropped late record leaves this empty, and
-        // a regression should fail this test rather than trap the whole run.
-        let record = try #require(records.first)
-        #expect(record.timelineID == timelineID)
-        #expect(record.ascendantID == ascendantID)
-        #expect(record.clientTurnID == nil)
+        #expect(records.isEmpty)
     }
 
     @Test("bounded shutdown does not wait for a contract-violating stuck observer")

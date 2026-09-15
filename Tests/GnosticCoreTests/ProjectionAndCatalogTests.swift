@@ -507,8 +507,8 @@ struct ProjectionAndCatalogTests {
         #expect(snapshot.liveEffects.isEmpty)
     }
 
-    @Test("subscription stop awaits and joins component scope disposal") @MainActor
-    func subscriptionStopAwaitsAndJoinsComponentScopeDisposal() async throws {
+    @Test("concurrent subscription stops join the same task") @MainActor
+    func concurrentSubscriptionStopsJoinSameTask() async throws {
         let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
             AsyncStream { _ in }
         } observeDeadvertise: {
@@ -521,7 +521,9 @@ struct ProjectionAndCatalogTests {
         _ = await (first, second)
 
         let snapshot = await subscription.effectSnapshot()
-        #expect(snapshot.state == .disposed)
+        #expect(snapshot.state == .active)
+        // Stop cancels each loop via its handle while keeping the scope
+        // stable for restart; disposal happens via disposeScope().
         #expect(snapshot.liveEffects.isEmpty)
     }
 
@@ -537,6 +539,7 @@ struct ProjectionAndCatalogTests {
 
         try await subscription.start()
         await subscription.stopAndWait()
+        #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
         try await subscription.start()
 
         #expect(await probe.filters == [
@@ -547,6 +550,8 @@ struct ProjectionAndCatalogTests {
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
+        #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
+        await subscription.stopAndWait()
     }
 
     @Test("concurrent subscription starts register one observation set") @MainActor
@@ -570,17 +575,63 @@ struct ProjectionAndCatalogTests {
         ])
     }
 
-    @Test("synchronous subscription stop eventually completes scope cleanup") @MainActor
-    func synchronousSubscriptionStopEventuallyCompletesScopeCleanup() async throws {
+    @Test("synchronous subscription stop cancels the subscription loop") @MainActor
+    func synchronousSubscriptionStopCancelsSubscriptionLoop() async throws {
         let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
             AsyncStream { _ in }
         } observeDeadvertise: {
             AsyncStream { _ in }
         }
         try await subscription.start()
+        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
 
-        subscription.stop()
-        try await waitForDisposed(subscription)
+        await subscription.stopAndWait()
+        let snapshot = await subscription.effectSnapshot()
+        #expect(snapshot.state == .active)
+        #expect(snapshot.liveEffects.isEmpty)
+    }
+
+    @Test("subscription start waits for an in-flight stop before restarting") @MainActor
+    func subscriptionStartWaitsForAnInFlightStopBeforeRestarting() async throws {
+        let probe = SubscriptionStartProbe()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            await probe.record(objectType)
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: { AsyncStream { $0.finish() } }
+
+        try await subscription.start()
+        await subscription.stopAndWait()
+        let restart = Task { try await subscription.start() }
+
+        try await restart.value
+
+        #expect(await subscription.effectSnapshot().state == .active)
+        #expect(await probe.filters.count == 6)
+
+        await subscription.stopAndWait()
+    }
+
+    @Test("subscription stop fences a start that is awaiting registration") @MainActor
+    func subscriptionStopFencesStartAwaitingRegistration() async throws {
+        let gate = SubscriptionStartGate()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
+            await gate.enter()
+            await gate.waitForRelease()
+            return AsyncStream { $0.finish() }
+        } observeDeadvertise: { AsyncStream { $0.finish() } }
+
+        let start = Task { try await subscription.start() }
+        await gate.waitForEntry()
+
+        await subscription.stopAndWait()
+        await gate.release()
+
+        await #expect(throws: NodeRuntimeError.self) {
+            try await start.value
+        }
+        let snapshot = await subscription.effectSnapshot()
+        #expect(snapshot.state == .active)
+        #expect(snapshot.liveEffects.isEmpty)
     }
 
     @Test("catalog marks a workspace claimed by two providers as ambiguous")
@@ -707,10 +758,37 @@ private actor SubscriptionStartProbe {
     }
 }
 
-private func waitForDisposed(_ subscription: GnosticSubscription) async throws {
-    for _ in 0..<20 {
-        if await subscription.effectSnapshot().state == .disposed { return }
-        try await Task.sleep(for: .milliseconds(10))
+private actor SubscriptionStartGate {
+    private var entered = false
+    private var released = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func enter() {
+        entered = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
-    throw CancellationError()
+
+    func waitForEntry() async {
+        if entered { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func waitForRelease() async {
+        if released { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
 }
