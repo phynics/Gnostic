@@ -74,7 +74,9 @@ struct RuntimeOwnershipArchitectureFitnessTests {
     func identitySnapshotHasNoEffectState() throws {
         let source = try String(contentsOf: root.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntimeTypes.swift"), encoding: .utf8)
         let declaration = try #require(source.range(of: "public struct NodeRuntimeSnapshot"))
-        let body = source[declaration.lowerBound...]
+        let declarationSource = source[declaration.lowerBound...]
+        let closing = try #require(declarationSource.range(of: "\n}\n\n/// Gnostic's stable"))
+        let body = declarationSource[..<closing.upperBound]
         #expect(!body.contains("RuntimeEffectSnapshot"))
         #expect(!body.contains("RuntimeEffectInfo"))
 

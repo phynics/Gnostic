@@ -24,6 +24,6 @@ protects label safety. Runtime integration tests prove that the default empty
 observer list preserves existing behavior and that installed observers receive
 terminal outcomes through the NodeRuntime seam.
 
-This decision adds no production dependency. The optional
-`GnosticPositronicAtlas` target consumes the generic Core seam and owns
+This decision adds no production dependency. Once #116 lands, the optional
+`GnosticPositronicAtlas` target will consume the generic Core seam and own
 correlation, provenance, origin suppression, and revision snapshots.
