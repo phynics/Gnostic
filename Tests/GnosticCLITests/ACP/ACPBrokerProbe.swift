@@ -75,8 +75,10 @@ final class ACPBrokerProbe: Sendable {
         throw Error.brokerUnreachable
     }
 
+    /// Synchronous teardown for `defer` in the acceptance suites, which
+    /// cannot await. Ordered stop is owned by ``stopAndWait()``.
     func stop() {
-        subscription.stop()
+        Task { @MainActor [subscription] in await subscription.stopAndWait() }
         manager.stop()
     }
 

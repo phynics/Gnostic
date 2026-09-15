@@ -333,6 +333,11 @@ public final class NodeTransport {
         ]
     }
 
+    /// Gives the host scope one structural owner for transport resources.
+    func adopt(into parent: RuntimeEffectScope) async throws {
+        _ = try await parent.adopt(scope, label: "transport")
+    }
+
     private func discoverableObjects() async -> [CoatyObject] {
         var objects: [CoatyObject] = ascendantIdentities().map {
             GnosticAscendantObject(identity: $0, backendHealth: ascendantHealth($0.id))

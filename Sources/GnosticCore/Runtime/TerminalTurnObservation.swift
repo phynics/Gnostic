@@ -46,14 +46,20 @@ public struct TerminalTurnRecord: Sendable, Equatable {
     }
 }
 
-/// Receives each original terminal Turn once. Implementations must be low-cost
-/// and non-blocking: append or enqueue the immutable record locally rather
-/// than performing model calls, network I/O, or semantic integration inline.
-/// Any suspension must use cancellable primitives: shutdown drains pending
-/// deliveries up to a bound, then disposes the observation scope, which
-/// cancels a still-stuck delivery. A non-cancellable infinite wait would hang
-/// disposal itself. Implementations must not assume that observation
-/// succeeds; the coordinator contains every thrown failure.
+/// Receives each original terminal Turn at most once, and only if the
+/// coordinator admitted the observation before its shutdown fence closed.
+/// Shutdown cancels in-flight Turns and gives them a bounded window to
+/// settle before that fence closes, so a Turn cancelled by shutdown is
+/// still delivered when its backend honours cancellation. Turns that are
+/// still running when the window expires are not delivered. Implementations
+/// must be low-cost and non-blocking: append or enqueue the immutable
+/// record locally rather than performing model calls, network I/O, or
+/// semantic integration inline. Any suspension must use cancellable
+/// primitives: shutdown drains pending deliveries up to a bound, then
+/// disposes the observation scope, which cancels a still-stuck delivery.
+/// A non-cancellable infinite wait would hang disposal itself.
+/// Implementations must not assume that observation succeeds; the
+/// coordinator contains every thrown failure.
 public protocol TerminalTurnObserving: Sendable {
     func observe(_ record: TerminalTurnRecord) async throws
 }

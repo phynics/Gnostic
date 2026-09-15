@@ -46,28 +46,33 @@ struct ACPServer: Sendable {
 
     func run() async throws {
         try await client.connect()
-        defer { client.stop() }
-        while true {
-            switch await readInputOrLoss() {
-            case let .data(data):
-                guard !data.isEmpty else {
+        do {
+            while true {
+                switch await readInputOrLoss() {
+                case let .data(data):
+                    guard !data.isEmpty else {
+                        await requestBroker.finish()
+                        await session.finish()
+                        await client.stop()
+                        return
+                    }
+                    await session.receive(data)
+                    if await session.currentState() == .stopped {
+                        await session.finish()
+                        await client.stop()
+                        return
+                    }
+                case .brokerLost:
                     await requestBroker.finish()
                     await session.finish()
-                    return
-                }
-                await session.receive(data)
-                if await session.currentState() == .stopped {
+                    await client.stop()
+                    throw ACPServerError.brokerLost
+                case .eof:
+                    await requestBroker.finish()
                     await session.finish()
+                    await client.stop()
                     return
                 }
-            case .brokerLost:
-                await requestBroker.finish()
-                await session.finish()
-                throw ACPServerError.brokerLost
-            case .eof:
-                await requestBroker.finish()
-                await session.finish()
-                return
             }
         }
     }

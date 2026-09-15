@@ -620,13 +620,17 @@ struct AscendantTurnCoordinatorTests {
         #expect(counts.completed == 1)
     }
 
-    @Test("unidentified turns in flight at bounded shutdown are still observed")
-    func unidentifiedTurnsObservedAfterBoundedShutdown() async throws {
-        // sleepsFirst exercises cancellable observer work: the late delivery
-        // runs in the cancelled lane task, so inheriting cancellation would
-        // abort the sleep and drop the record.
-        let observer = TerminalTurnObservationProbe(sleepsFirst: true)
-        let coordinator = AscendantTurnCoordinator(observers: [observer])
+    @Test("bounded shutdown fences a turn that outlives the settle window")
+    func boundedShutdownFencesLateTerminalObservation() async throws {
+        // TurnGate.wait() is not cancellable, so this turn models a backend
+        // that ignores cancellation: it is still running when the settle
+        // window expires and is therefore cut off by the fence. The 50ms
+        // bound only limits test duration; the assertions are on state.
+        let observer = TerminalTurnObservationProbe()
+        let coordinator = AscendantTurnCoordinator(
+            observers: [observer],
+            observationDrainTimeout: .milliseconds(50)
+        )
         let gate = TurnGate()
         let probe = TurnProbe()
         let timelineID = UUID()
@@ -645,20 +649,81 @@ struct AscendantTurnCoordinatorTests {
         await probe.waitForStarts(1)
         await coordinator.cancelAll(waitForCompletion: false)
         await gate.release()
-        // The lane awaits `completion` before publishing the Turn's value, so
-        // the late record is already delivered or already lost here. Asserting
-        // directly instead of waiting keeps a regression a failure, not a hang.
         let result = try await turn.value
 
         let records = await observer.records
         #expect(result.text == "late-result")
-        #expect(records.count == 1)
-        // require, not subscript: a dropped late record leaves this empty, and
-        // a regression should fail this test rather than trap the whole run.
+        #expect(records.isEmpty)
+    }
+
+    @Test("bounded shutdown observes a turn that honours cancellation")
+    func boundedShutdownObservesCooperativeTurn() async throws {
+        let observer = TerminalTurnObservationProbe()
+        let coordinator = AscendantTurnCoordinator(observers: [observer])
+        let probe = TurnProbe()
+        let timelineID = UUID()
+
+        let turn = Task {
+            try await coordinator.execute(
+                .init(message: "cooperative", timelineID: timelineID, clientTurnID: "cooperative"),
+                ascendantID: UUID()
+            ) {
+                await probe.enter("original")
+                while !Task.isCancelled { await Task.yield() }
+                throw CancellationError()
+            }
+        }
+        await probe.waitForStarts(1)
+
+        // The bounded path cancels, then waits for settlement before closing
+        // the fence, so this turn is admitted for observation.
+        await coordinator.cancelAll(waitForCompletion: false)
+
+        await #expect(throws: AscendantTurnError.self) { _ = try await turn.value }
+        let records = await observer.records
+        // #require keeps a regression failing cleanly instead of trapping on
+        // an empty collection.
         let record = try #require(records.first)
-        #expect(record.timelineID == timelineID)
-        #expect(record.ascendantID == ascendantID)
-        #expect(record.clientTurnID == nil)
+        #expect(records.count == 1)
+        #expect(record.outcome == .cancelled)
+        #expect(record.clientTurnID == "cooperative")
+    }
+
+    @Test("overlapping bounded shutdowns both complete")
+    func overlappingBoundedShutdownsComplete() async throws {
+        let coordinator = AscendantTurnCoordinator(observationDrainTimeout: .milliseconds(50))
+        let gate = TurnGate()
+        let probe = TurnProbe()
+
+        let turn = Task {
+            try await coordinator.execute(
+                .init(message: "late", timelineID: UUID()),
+                ascendantID: UUID()
+            ) {
+                await probe.enter("original")
+                await gate.wait()
+                return "late-result"
+            }
+        }
+        await probe.waitForStarts(1)
+
+        let finished = CompletionFlag()
+        Task {
+            async let first: Void = coordinator.cancelAll(waitForCompletion: false)
+            async let second: Void = coordinator.cancelAll(waitForCompletion: false)
+            _ = await (first, second)
+            await finished.mark()
+        }
+        // Poll rather than join: a shutdown whose settle continuation was
+        // stranded by the overlapping call must fail this test, not hang it.
+        for _ in 0..<200 {
+            if await finished.value { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await finished.value)
+        await gate.release()
+        _ = try? await turn.value
     }
 
     @Test("bounded shutdown does not wait for a contract-violating stuck observer")

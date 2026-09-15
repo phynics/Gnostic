@@ -484,6 +484,39 @@ struct RuntimeEffectScopeTests {
         _ = await parent.dispose()
     }
 
+    @Test("one live child scope has exactly one parent")
+    func oneLiveChildScopeHasExactlyOneParent() async throws {
+        let firstParent = try RuntimeEffectScope(name: "first-parent")
+        let secondParent = try RuntimeEffectScope(name: "second-parent")
+        let child = try RuntimeEffectScope(name: "single-child")
+
+        _ = try await firstParent.adopt(child, label: "child")
+
+        await #expect(throws: RuntimeEffectScopeError.invalidAdoption) {
+            _ = try await firstParent.adopt(child, label: "repeated-child")
+        }
+        await #expect(throws: RuntimeEffectScopeError.invalidAdoption) {
+            _ = try await secondParent.adopt(child, label: "competing-child")
+        }
+
+        _ = await firstParent.dispose()
+        _ = await secondParent.dispose()
+    }
+
+    @Test("concurrent parents cannot both adopt one child")
+    func concurrentParentsCannotBothAdoptOneChild() async throws {
+        let firstParent = try RuntimeEffectScope(name: "concurrent-first")
+        let secondParent = try RuntimeEffectScope(name: "concurrent-second")
+        let child = try RuntimeEffectScope(name: "concurrent-child")
+
+        async let first: Bool = (try? await firstParent.adopt(child, label: "child")) != nil
+        async let second: Bool = (try? await secondParent.adopt(child, label: "child")) != nil
+
+        #expect((await first) != (await second))
+        _ = await firstParent.dispose()
+        _ = await secondParent.dispose()
+    }
+
     @Test("a handle report identifies the effect it disposed")
     func handleReportIdentifiesTheEffectItDisposed() async throws {
         let scope = try RuntimeEffectScope(name: "handle-report")

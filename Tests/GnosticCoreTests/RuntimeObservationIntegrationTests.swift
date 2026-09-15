@@ -76,12 +76,14 @@ struct RuntimeObservationIntegrationTests {
             "ascendant-turn-replay", "permission-handler", "permission-observation", "timeline-status",
             "timeline-management", "workspace-operations", "discover-responder", "advertisement-teardown",
             "advertisements", "permission", "registrations", "responders", "turn-update-publisher",
-            "network-resolution",
+            "network-resolution", "subscription", "transport",
         ]
         #expect(Set(snapshots.map(\.name)) == allowedScopes)
         #expect(Set(snapshots.flatMap(\.liveEffects).map(\.originScope)).isSubset(of: allowedScopes))
         #expect(Set(snapshots.flatMap(\.liveEffects).map(\.label)).isSubset(of: allowedLabels))
         #expect(snapshots.flatMap(\.liveEffects).allSatisfy { $0.label.utf8.count <= 64 })
+        let host = try #require(snapshots.first { $0.name == "node-runtime-host" })
+        #expect(Set(host.liveEffects.map(\.label)).isSuperset(of: ["subscription", "transport"]))
 
         await runtime.shutdown()
         #expect((await runtime.observationSnapshot()).state == .disposed)
