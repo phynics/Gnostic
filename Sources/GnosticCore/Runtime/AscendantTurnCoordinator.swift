@@ -59,8 +59,7 @@ public actor AscendantTurnCoordinator {
     private var observationClosed = false
     private var observationPending = 0
     private var observationWaiters: [CheckedContinuation<Void, Never>] = []
-    private var settlementResolved = true
-    private var settlementWaiter: CheckedContinuation<Void, Never>?
+    private var settlementWaiters: [CheckedContinuation<Void, Never>] = []
 
     internal var retainedStateCounts: (identities: Int, completed: Int, tombstones: Int, completedBytes: Int) {
         (
@@ -149,7 +148,8 @@ public actor AscendantTurnCoordinator {
         timeout: Duration
     ) async {
         guard !turns.isEmpty || !tails.isEmpty else { return }
-        settlementResolved = false
+        // Both tasks are actor-isolated, so neither can resolve the wait
+        // before the continuation below is registered.
         let settlement = Task { [weak self] in
             for turn in turns { _ = await turn.result }
             for tail in tails { await tail.value }
@@ -159,22 +159,19 @@ public actor AscendantTurnCoordinator {
             try? await Task.sleep(for: timeout)
             await self?.resolveSettlement()
         }
+        // A waiter list, not a single slot: overlapping shutdowns must not
+        // strand each other's continuation and hang cleanup.
         await withCheckedContinuation { continuation in
-            if settlementResolved {
-                continuation.resume()
-                return
-            }
-            settlementWaiter = continuation
+            settlementWaiters.append(continuation)
         }
         settlement.cancel()
         deadline.cancel()
     }
 
     private func resolveSettlement() {
-        guard !settlementResolved else { return }
-        settlementResolved = true
-        settlementWaiter?.resume()
-        settlementWaiter = nil
+        let waiters = settlementWaiters
+        settlementWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     /// Waits for committed observer deliveries up to `timeout`, so a

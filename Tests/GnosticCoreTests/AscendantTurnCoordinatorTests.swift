@@ -689,6 +689,43 @@ struct AscendantTurnCoordinatorTests {
         #expect(record.clientTurnID == "cooperative")
     }
 
+    @Test("overlapping bounded shutdowns both complete")
+    func overlappingBoundedShutdownsComplete() async throws {
+        let coordinator = AscendantTurnCoordinator(observationDrainTimeout: .milliseconds(50))
+        let gate = TurnGate()
+        let probe = TurnProbe()
+
+        let turn = Task {
+            try await coordinator.execute(
+                .init(message: "late", timelineID: UUID()),
+                ascendantID: UUID()
+            ) {
+                await probe.enter("original")
+                await gate.wait()
+                return "late-result"
+            }
+        }
+        await probe.waitForStarts(1)
+
+        let finished = CompletionFlag()
+        Task {
+            async let first: Void = coordinator.cancelAll(waitForCompletion: false)
+            async let second: Void = coordinator.cancelAll(waitForCompletion: false)
+            _ = await (first, second)
+            await finished.mark()
+        }
+        // Poll rather than join: a shutdown whose settle continuation was
+        // stranded by the overlapping call must fail this test, not hang it.
+        for _ in 0..<200 {
+            if await finished.value { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(await finished.value)
+        await gate.release()
+        _ = try? await turn.value
+    }
+
     @Test("bounded shutdown does not wait for a contract-violating stuck observer")
     func boundedShutdownReleasesStuckObserver() async throws {
         // stuckSleep suspends in *cancellable* Task.sleep: the drain bound
