@@ -16,6 +16,17 @@ whether its decision is delivered or remains a target.
 5. [ADR 0005 — Core PositronicKit dependency boundary](ADRs/0005-core-positronic-dependency-boundary.md)
 6. [ADR 0006 — Runtime effect ownership and terminal observation](ADRs/0006-runtime-effect-ownership-and-terminal-observation.md)
 
+The Timeline-bound backend session document that was published on
+`codex/timeline-bound-backend-sessions` also used the number 0006. That branch
+document is historical and is not an accepted architecture decision. [ADR 0007
+— Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
+records the `ARCHIVE` outcome. The accepted ADR 0006 is the runtime effect and
+terminal observation decision listed above.
+
+## Historical and disposition records
+
+7. [ADR 0007 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
+
 The delivered 0.3 compatibility declaration is [documented here](../Compatibility/0.3.0.md).
 
 ## Extension guides
