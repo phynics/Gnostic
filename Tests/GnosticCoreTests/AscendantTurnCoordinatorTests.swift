@@ -681,9 +681,12 @@ struct AscendantTurnCoordinatorTests {
 
         await #expect(throws: AscendantTurnError.self) { _ = try await turn.value }
         let records = await observer.records
+        // #require keeps a regression failing cleanly instead of trapping on
+        // an empty collection.
+        let record = try #require(records.first)
         #expect(records.count == 1)
-        #expect(records[0].outcome == .cancelled)
-        #expect(records[0].clientTurnID == "cooperative")
+        #expect(record.outcome == .cancelled)
+        #expect(record.clientTurnID == "cooperative")
     }
 
     @Test("bounded shutdown does not wait for a contract-violating stuck observer")
