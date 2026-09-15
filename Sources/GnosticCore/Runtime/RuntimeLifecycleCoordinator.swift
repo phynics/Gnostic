@@ -46,13 +46,12 @@ final class RuntimeLifecycleCoordinator {
             startup?.cancel()
             guard let self else { return }
             if let startup {
-                let result = await startup.result
-                if case .success = result {
-                    await self.rollback(close: true, cleanup: cleanup)
-                }
-            } else {
-                await self.rollback(close: true, cleanup: cleanup)
+                _ = await startup.result
             }
+            // Startup may finish with cancellation or another failure after
+            // shutdown wins. Either outcome can leave effects acquired before
+            // the failure, so shutdown always owns the cleanup transition.
+            await self.rollback(close: true, cleanup: cleanup)
         }
         lifetime.shutdownTask = task
         await task.value
