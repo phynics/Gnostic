@@ -701,6 +701,8 @@ actor RuntimeEffectScope {
 
     private static func isSafeDiagnosticLabel(_ value: String) -> Bool {
         guard !value.isEmpty, value.utf8.count <= 64 else { return false }
+        // Identifiers belong in domain records, not lifecycle diagnostics.
+        guard UUID(uuidString: value) == nil else { return false }
         return value.utf8.allSatisfy { byte in
             switch byte {
             case 45, 46, 48...57, 65...90, 95, 97...122:

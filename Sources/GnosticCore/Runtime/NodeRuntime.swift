@@ -83,7 +83,7 @@ public final class NodeRuntime {
         let updates = AscendantTurnUpdateStore()
         turnUpdates = updates
         permissionCoordinator = AscendantPermissionCoordinator(updates: updates)
-        turnCoordinator = AscendantTurnCoordinator()
+        turnCoordinator = AscendantTurnCoordinator(observers: adapters.terminalTurnObservers)
 
         let products = try await NodeAssembly.materializeWorkspaces(plan, adapters: adapters)
         initialWorkspaceReferences = products.references
@@ -212,6 +212,20 @@ public final class NodeRuntime {
     /// Returns an internal ownership view with static labels and no payloads.
     func effectSnapshots() async -> [RuntimeEffectSnapshot] {
         await runtimeHost.effectSnapshots()
+    }
+
+    /// Returns all host, transport, subscription, and Turn-observation
+    /// ownership diagnostics for lifecycle verification.
+    func allEffectSnapshots() async -> [RuntimeEffectSnapshot] {
+        var snapshots = await runtimeHost.allEffectSnapshots()
+        snapshots.append(await turnCoordinator.observationSnapshot())
+        return snapshots
+    }
+
+    /// Returns the internal terminal-observation ownership view for lifecycle
+    /// verification without exposing effect diagnostics as domain state.
+    func observationSnapshot() async -> RuntimeEffectSnapshot {
+        await turnCoordinator.observationSnapshot()
     }
 
     public func advertisedWorkspaceIDs() -> [UUID] {

@@ -221,15 +221,19 @@ public struct NodeRuntimeAdapters: Sendable {
     public var ascendants: AscendantAdapterRegistry
     public var workspaces: WorkspaceAdapterRegistry
     public var lifecycle: NodeRuntimeLifecycleHooks
+    /// Host-installed observers for backend-neutral terminal Turn records.
+    public var terminalTurnObservers: [any TerminalTurnObserving]
 
     public init(
         ascendants: AscendantAdapterRegistry = .init(),
         workspaces: WorkspaceAdapterRegistry = .init(),
-        lifecycle: NodeRuntimeLifecycleHooks = .init()
+        lifecycle: NodeRuntimeLifecycleHooks = .init(),
+        terminalTurnObservers: [any TerminalTurnObserving] = []
     ) {
         self.ascendants = ascendants
         self.workspaces = workspaces
         self.lifecycle = lifecycle
+        self.terminalTurnObservers = terminalTurnObservers
     }
 
     public static var `default`: NodeRuntimeAdapters { .init() }

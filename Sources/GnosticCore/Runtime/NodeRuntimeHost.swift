@@ -226,6 +226,16 @@ final class NodeRuntimeHost {
         await [scope.snapshot(), publisherScope.snapshot(), resolutionScope.snapshot()]
     }
 
+    /// Returns all component ownership diagnostics for lifecycle verification.
+    func allEffectSnapshots() async -> [RuntimeEffectSnapshot] {
+        var snapshots = await effectSnapshots()
+        if let transport {
+            snapshots.append(contentsOf: await transport.effectSnapshots())
+        }
+        snapshots.append(await resources.subscription.effectSnapshot())
+        return snapshots
+    }
+
     private func adoptComponentScopes() async throws {
         guard !scopesAdopted else { return }
         let publisherScope = self.publisherScope

@@ -513,15 +513,34 @@ struct RuntimeEffectScopeTests {
 
     @Test("labels reject dynamic or unsafe diagnostic content")
     func labelsRejectDynamicOrUnsafeDiagnosticContent() async throws {
-        #expect(throws: RuntimeEffectScopeError.invalidName) {
-            try RuntimeEffectScope(name: "user prompt")
+        let invalidNames: [StaticString] = [
+            "123e4567-e89b-12d3-a456-426614174000",
+            "user prompt",
+            "token=secret",
+            "/tmp/socket",
+            "route@host",
+            "turn:result",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ]
+        for invalidName in invalidNames {
+            #expect(throws: RuntimeEffectScopeError.invalidName) {
+                try RuntimeEffectScope(name: invalidName)
+            }
         }
         let scope = try RuntimeEffectScope(name: "label-test")
-        await #expect(throws: RuntimeEffectScopeError.invalidLabel) {
-            try await scope.add(label: "prompt=secret value") {}
-        }
-        await #expect(throws: RuntimeEffectScopeError.invalidLabel) {
-            try await scope.add(label: "") {}
+        let invalidLabels: [StaticString] = [
+            "123e4567-e89b-12d3-a456-426614174000",
+            "prompt=secret value",
+            "/tmp/socket",
+            "route@host",
+            "turn:result",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "",
+        ]
+        for invalidLabel in invalidLabels {
+            await #expect(throws: RuntimeEffectScopeError.invalidLabel) {
+                try await scope.add(label: invalidLabel) {}
+            }
         }
     }
 
