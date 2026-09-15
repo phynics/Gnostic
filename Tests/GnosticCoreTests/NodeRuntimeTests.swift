@@ -739,6 +739,35 @@ struct NodeRuntimeTests {
         #expect(operationRan == false)
     }
 
+    @Test("shutdown cleans up when startup reports cancellation")
+    @MainActor
+    func shutdownCleansUpAfterCancelledStartup() async throws {
+        let coordinator = RuntimeLifecycleCoordinator()
+        let gate = LifecycleGate()
+        var cleaned = false
+        let startup = Task { @MainActor in
+            try await coordinator.start(
+                operation: {
+                    await gate.hold()
+                    try Task.checkCancellation()
+                }
+            )
+        }
+
+        await gate.waitUntilOpened()
+        let shutdown = Task { @MainActor in
+            await coordinator.shutdown { cleaned = true }
+        }
+        await gate.release()
+
+        await shutdown.value
+        await #expect(throws: CancellationError.self) {
+            try await startup.value
+        }
+        #expect(cleaned)
+        #expect(coordinator.lifetime.cleanupCompleted)
+    }
+
     @Test("advertised workspaces are callable before startup returns") @MainActor
     func advertisedWorkspaceIsAvailableBeforeStartReturns() async throws {
         let gate = LifecycleGate()
