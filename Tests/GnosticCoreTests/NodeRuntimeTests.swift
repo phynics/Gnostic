@@ -298,7 +298,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
         await subscription.discover(using: consumer, timeout: .seconds(2))
 
         let target = try #require(await catalog.networkObjects().first {
@@ -367,7 +367,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
         await subscription.discover(using: consumer, timeout: .seconds(2))
 
         let target = try #require(await catalog.networkObjects().first {
@@ -446,7 +446,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
         await subscription.discover(using: consumer, timeout: .seconds(2))
 
         let target = try #require(await catalog.networkObjects().first {
@@ -832,7 +832,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
 
         let startup = Task { @MainActor in try await runtime.start() }
         await gate.waitUntilOpened()
@@ -871,7 +871,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
 
         let startup = Task { @MainActor in try await runtime.start() }
         await gate.waitUntilOpened()
@@ -975,7 +975,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
         try await startNodeRuntimeBrokerManager(consumer)
         await subscription.discover(using: consumer, timeout: .seconds(1))
 
@@ -1086,7 +1086,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
         try consumer.start()
         await subscription.discover(using: consumer, timeout: .seconds(1))
 
@@ -1141,7 +1141,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
 
         for _ in 0..<20 {
             await subscription.discover(using: consumer, timeout: .milliseconds(200))
@@ -1229,7 +1229,7 @@ struct NodeRuntimeTests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
 
         let remoteNodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000149")!
         var remoteAdapters = NodeRuntimeAdapters.default

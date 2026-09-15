@@ -427,32 +427,46 @@ actor RuntimeEffectScope {
 
     /// Adopts a child scope while retaining the child's own diagnostic identity.
     func adopt(_ child: RuntimeEffectScope, label: StaticString) async throws -> RuntimeEffectHandle {
-        guard await child.snapshot().state == .active else {
+        guard let identity = await child.reserveAdoption(parent: token) else {
             throw RuntimeEffectScopeError.invalidAdoption
         }
-        guard await runtimeEffectAdoptionRegistry.reserve(parent: token, child: await child.identityToken()) else {
-            throw RuntimeEffectScopeError.invalidAdoption
-        }
+        let parentToken = token
         do {
-            let childName = await child.snapshot().name
             let registration = try register(
                 label: String(describing: label),
-                originScope: childName,
+                originScope: identity.name,
                 failureReason: .adoptedScopeFailed,
                 transactionID: currentTransactionID
             ) {
                 let report = await child.dispose()
                 let completedReport = report.isComplete ? report : await child.waitForDisposal()
-                await runtimeEffectAdoptionRegistry.release(parent: await self.identityToken(), child: await child.identityToken())
+                await runtimeEffectAdoptionRegistry.release(parent: parentToken, child: identity.token)
                 if !completedReport.failures.isEmpty {
                     throw RuntimeEffectAdoptedScopeError()
                 }
             }
             return registration.handle
         } catch {
-            await runtimeEffectAdoptionRegistry.release(parent: token, child: await child.identityToken())
+            await runtimeEffectAdoptionRegistry.release(parent: parentToken, child: identity.token)
             throw error
         }
+    }
+
+    /// Reserves this scope as `parent`'s single live child, bracketing the
+    /// registry hop with the liveness check so adoption is enforced rather
+    /// than best effort. A scope that begins disposing while the reservation
+    /// is in flight releases the entry again and reports failure, and the
+    /// caller reads the child's identity from the same isolated step.
+    private func reserveAdoption(parent: UUID) async -> (token: UUID, name: String)? {
+        guard state == .active else { return nil }
+        guard await runtimeEffectAdoptionRegistry.reserve(parent: parent, child: token) else {
+            return nil
+        }
+        guard state == .active else {
+            await runtimeEffectAdoptionRegistry.release(parent: parent, child: token)
+            return nil
+        }
+        return (token, name)
     }
 
     /// Starts one shared reverse cleanup operation, or joins the existing one.
@@ -666,10 +680,6 @@ actor RuntimeEffectScope {
         var activeScopes = RuntimeEffectTaskContext.value?.activeScopes ?? []
         activeScopes.insert(token)
         return activeScopes
-    }
-
-    private func identityToken() -> UUID {
-        token
     }
 
     private func waitForDisposal() async -> RuntimeEffectCleanupReport {

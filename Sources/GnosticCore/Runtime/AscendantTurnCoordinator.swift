@@ -59,6 +59,8 @@ public actor AscendantTurnCoordinator {
     private var observationClosed = false
     private var observationPending = 0
     private var observationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var settlementResolved = true
+    private var settlementWaiter: CheckedContinuation<Void, Never>?
 
     internal var retainedStateCounts: (identities: Int, completed: Int, tombstones: Int, completedBytes: Int) {
         (
@@ -106,10 +108,12 @@ public actor AscendantTurnCoordinator {
     /// the owning NodeRuntime before reaching this coordinator. Only real
     /// Turn-task completions terminalize a Turn: shutdown never fabricates an
     /// outcome, so a backend that ignores cancellation still commits and
-    /// observes its real result. The bounded `false` path does not await
-    /// noncooperative Turn or lane tasks. Both paths drain committed observer
-    /// deliveries up to `observationDrainTimeout`, then dispose the scope;
-    /// `true` additionally awaits Turn and lane settlement first.
+    /// observes its real result. `true` awaits Turn and lane settlement
+    /// without a bound; `false` gives the same settlement a window of
+    /// `observationDrainTimeout`, so a Turn that honours cancellation is still
+    /// observed and only genuinely noncooperative work is cut off by the
+    /// fence. Both paths then drain committed observer deliveries up to
+    /// `observationDrainTimeout` and dispose the scope.
     public func cancelAll(waitForCompletion: Bool = true) async {
         acceptingTurns = false
         let turns = inFlight.values.map(\.task) + timelineTails.values.map(\.task)
@@ -120,15 +124,57 @@ public actor AscendantTurnCoordinator {
         if waitForCompletion {
             for turn in turns { _ = await turn.result }
             for tail in tails { await tail.value }
+        } else {
+            await awaitSettlement(turns: turns, tails: tails, timeout: observationDrainTimeout)
         }
-        // Close observer admission before draining. A turn that settles after
-        // this fence still commits its replay/tombstone state, but its observer
+        // Close observer admission only after that window. A turn that settles
+        // later still commits its replay/tombstone state, but its observer
         // delivery is intentionally suppressed by the bounded shutdown policy.
-        // Draining first guarantees dispose never cancels a delivery that was
-        // admitted before the fence without waiting for its declared boundary.
+        // Draining before disposal guarantees dispose never cancels a delivery
+        // that was admitted before the fence without waiting for its declared
+        // boundary.
         observationClosed = true
         await drainObservations(timeout: observationDrainTimeout)
         _ = await observationScope.dispose()
+    }
+
+    /// Waits up to `timeout` for cancelled Turn and lane tasks to settle, so
+    /// cooperative work commits its terminal record while observer admission
+    /// is still open. A task that outlives the window is abandoned rather than
+    /// awaited: it holds no shutdown resource, and its later delivery is the
+    /// case the observation fence exists for.
+    private func awaitSettlement(
+        turns: [Task<String, Error>],
+        tails: [Task<Void, Never>],
+        timeout: Duration
+    ) async {
+        guard !turns.isEmpty || !tails.isEmpty else { return }
+        settlementResolved = false
+        let settlement = Task { [weak self] in
+            for turn in turns { _ = await turn.result }
+            for tail in tails { await tail.value }
+            await self?.resolveSettlement()
+        }
+        let deadline = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.resolveSettlement()
+        }
+        await withCheckedContinuation { continuation in
+            if settlementResolved {
+                continuation.resume()
+                return
+            }
+            settlementWaiter = continuation
+        }
+        settlement.cancel()
+        deadline.cancel()
+    }
+
+    private func resolveSettlement() {
+        guard !settlementResolved else { return }
+        settlementResolved = true
+        settlementWaiter?.resume()
+        settlementWaiter = nil
     }
 
     /// Waits for committed observer deliveries up to `timeout`, so a

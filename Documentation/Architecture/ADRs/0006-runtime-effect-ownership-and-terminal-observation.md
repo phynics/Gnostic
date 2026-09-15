@@ -12,11 +12,13 @@ remain outside the contract. Exact shutdown waits for Turn and lane settlement
 before closing the observation fence, then drains admitted observer deliveries
 up to `observationDrainTimeout`; a stuck observer is cut off at the bound. Every
 observer receives at most one delivery per original identified terminal Turn,
-and only if it was admitted before the fence. Bounded shutdown closes the
-observation fence without awaiting Turn or lane settlement: terminal outcomes
-that commit after that fence remain identified/replay-backed domain state (or
-are discarded for the unobserved compatibility path), but do not start observer
-work after the lifecycle boundary.
+and only if it was admitted before the fence. Bounded shutdown (the production
+path) cancels Turn and lane tasks and then waits up to `observationDrainTimeout`
+for them to settle, so a Turn that honours cancellation is still observed. Only
+work that outlives that window is cut off: its terminal outcome remains
+identified/replay-backed domain state (or is discarded for the unobserved
+compatibility path), but does not start observer work after the lifecycle
+boundary.
 
 The design rejects Atlas-aware Core, Core-side Shard report generation, mutable
 post-start observer registries, and dynamic plugin observers. These alternatives

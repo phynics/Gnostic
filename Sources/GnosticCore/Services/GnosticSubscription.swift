@@ -65,11 +65,9 @@ public final class GnosticSubscription {
             try await start()
             return
         case .stopped:
-            if let stopTask {
-                await stopTask.value
-                try await start()
-                return
-            }
+            // A finished stop clears `stopTask` and `lifecycleState` in the
+            // same isolated step, so `.stopped` never carries a pending stop.
+            break
         }
 
         lifecycleState = .starting
@@ -94,7 +92,14 @@ public final class GnosticSubscription {
             }
         }
         startTask = task
-        try await awaitStart(task)
+        // Only the originating caller forwards cancellation: a caller that
+        // joined an in-flight start from the `.starting` branch must not
+        // cancel work it did not initiate.
+        try await withTaskCancellationHandler {
+            try await awaitStart(task)
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func awaitStart(_ task: Task<Void, Error>) async throws {
@@ -206,18 +211,12 @@ public final class GnosticSubscription {
         }
     }
 
-    /// Requests cancellation of active subscriptions without waiting.
-    /// Historical synchronous entry point for standalone consumers and
-    /// `defer` cleanup. Use ``stopAndWait()`` when shutdown ordering must
-    /// be observed by the caller.
-    public func stop() {
-        Task { @MainActor [self] in await self.stopAndWait() }
-    }
-
     /// Cancels active subscription loops and waits for their scope cleanup,
-    /// keeping the scope itself stable for restart. Concurrent callers join
-    /// the same stop task. Provides a deterministic ordering boundary for
-    /// host shutdown; final scope disposal happens via ``disposeScope()``.
+    /// including the cleanup owned by a start that this stop cancelled, so
+    /// no observation effect is live once it returns. The scope itself stays
+    /// stable for restart. Concurrent callers join the same stop task. This is
+    /// the deterministic ordering boundary for host shutdown; final scope
+    /// disposal happens via ``disposeScope()``.
     public func stopAndWait() async {
         switch lifecycleState {
         case .stopped:
@@ -232,18 +231,24 @@ public final class GnosticSubscription {
 
         lifecycleState = .stopping
         lifecycleGeneration &+= 1
-        startTask?.cancel()
         // Capture and clear synchronously: a fenced start that completes
         // after this point disposes its own newly acquired handles instead
-        // of publishing them, so there is no double-dispose. Do not await
-        // the cancelled start here: it may be blocked in non-cancellable
-        // observer work (e.g. a test gate) and fencing is its own
-        // responsibility via the generation check in start().
+        // of publishing them, so there is no double-dispose.
+        let pendingStart = startTask
+        pendingStart?.cancel()
         let toDispose = handles
         handles = []
         let task = Task { @MainActor [self] in
+            // Await the cancelled start before reporting completion: it owns
+            // disposal of anything it acquired past the generation fence, so
+            // stop only means quiescence once it has settled. An `observe`
+            // operation that ignores cancellation holds stop open, which is
+            // the same contract violation TerminalTurnObserving documents.
+            if let pendingStart { _ = await pendingStart.result }
             for handle in toDispose { _ = await handle.dispose() }
-            self.startTask = nil
+            if self.startTask == pendingStart { self.startTask = nil }
+            // Clearing both in one isolated step keeps `.stopped` free of a
+            // pending stop task for the `start()` fast path.
             if self.lifecycleState == .stopping {
                 self.lifecycleState = .stopped
             }

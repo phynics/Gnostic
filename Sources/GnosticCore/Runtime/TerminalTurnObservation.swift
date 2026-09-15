@@ -48,7 +48,10 @@ public struct TerminalTurnRecord: Sendable, Equatable {
 
 /// Receives each original terminal Turn at most once, and only if the
 /// coordinator admitted the observation before its shutdown fence closed.
-/// Turns that complete after the fence are not delivered. Implementations
+/// Shutdown cancels in-flight Turns and gives them a bounded window to
+/// settle before that fence closes, so a Turn cancelled by shutdown is
+/// still delivered when its backend honours cancellation. Turns that are
+/// still running when the window expires are not delivered. Implementations
 /// must be low-cost and non-blocking: append or enqueue the immutable
 /// record locally rather than performing model calls, network I/O, or
 /// semantic integration inline. Any suspension must use cancellable

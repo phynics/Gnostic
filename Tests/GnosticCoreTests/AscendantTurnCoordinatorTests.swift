@@ -620,10 +620,17 @@ struct AscendantTurnCoordinatorTests {
         #expect(counts.completed == 1)
     }
 
-    @Test("bounded shutdown fences late terminal observation")
+    @Test("bounded shutdown fences a turn that outlives the settle window")
     func boundedShutdownFencesLateTerminalObservation() async throws {
+        // TurnGate.wait() is not cancellable, so this turn models a backend
+        // that ignores cancellation: it is still running when the settle
+        // window expires and is therefore cut off by the fence. The 50ms
+        // bound only limits test duration; the assertions are on state.
         let observer = TerminalTurnObservationProbe()
-        let coordinator = AscendantTurnCoordinator(observers: [observer])
+        let coordinator = AscendantTurnCoordinator(
+            observers: [observer],
+            observationDrainTimeout: .milliseconds(50)
+        )
         let gate = TurnGate()
         let probe = TurnProbe()
         let timelineID = UUID()
@@ -647,6 +654,36 @@ struct AscendantTurnCoordinatorTests {
         let records = await observer.records
         #expect(result.text == "late-result")
         #expect(records.isEmpty)
+    }
+
+    @Test("bounded shutdown observes a turn that honours cancellation")
+    func boundedShutdownObservesCooperativeTurn() async throws {
+        let observer = TerminalTurnObservationProbe()
+        let coordinator = AscendantTurnCoordinator(observers: [observer])
+        let probe = TurnProbe()
+        let timelineID = UUID()
+
+        let turn = Task {
+            try await coordinator.execute(
+                .init(message: "cooperative", timelineID: timelineID, clientTurnID: "cooperative"),
+                ascendantID: UUID()
+            ) {
+                await probe.enter("original")
+                while !Task.isCancelled { await Task.yield() }
+                throw CancellationError()
+            }
+        }
+        await probe.waitForStarts(1)
+
+        // The bounded path cancels, then waits for settlement before closing
+        // the fence, so this turn is admitted for observation.
+        await coordinator.cancelAll(waitForCompletion: false)
+
+        await #expect(throws: AscendantTurnError.self) { _ = try await turn.value }
+        let records = await observer.records
+        #expect(records.count == 1)
+        #expect(records[0].outcome == .cancelled)
+        #expect(records[0].clientTurnID == "cooperative")
     }
 
     @Test("bounded shutdown does not wait for a contract-violating stuck observer")

@@ -89,31 +89,39 @@ struct ACPCommand: AsyncParsableCommand {
             port: brokerKey.port,
             namespace: brokerKey.namespace
         )
-        try await client.connect()
-        let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
-        let counts = Dictionary(grouping: entries, by: \.objectID).mapValues(\.count)
-        let profiles = entries.map { entry in
-            let baseID = "gnostic-\(entry.objectID.uuidString.lowercased())"
-            return ACPProfile(
-                id: counts[entry.objectID] == 1 ? baseID : "\(baseID)-\(entry.providerID.lowercased())",
-                name: entry.name,
-                command: "gnostic",
-                args: [
-                    "acp",
-                    "--host", host ?? stored.mqttHost,
-                    "--port", String(port ?? stored.mqttPort),
-                    "--namespace", namespace ?? stored.mqttNamespace,
-                    "--ascendant", entry.objectID.uuidString.lowercased(),
-                    "--provider", entry.providerID.lowercased(),
-                ],
-                env: [:]
-            )
-        }.sorted { $0.id < $1.id }
-        // Dynamic profile sources may emit only their executable profiles;
-        // profile selection remains owned by pi-acp-client's trusted config.
-        let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: profiles)
-        try cache.store(bundle, for: brokerKey)
-        try writeProfiles(bundle)
+        // Every exit path stops the client: a throwing connect, cache
+        // store, or profile write must not leak the manager and its
+        // subscription.
+        do {
+            try await client.connect()
+            let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
+            let counts = Dictionary(grouping: entries, by: \.objectID).mapValues(\.count)
+            let profiles = entries.map { entry in
+                let baseID = "gnostic-\(entry.objectID.uuidString.lowercased())"
+                return ACPProfile(
+                    id: counts[entry.objectID] == 1 ? baseID : "\(baseID)-\(entry.providerID.lowercased())",
+                    name: entry.name,
+                    command: "gnostic",
+                    args: [
+                        "acp",
+                        "--host", host ?? stored.mqttHost,
+                        "--port", String(port ?? stored.mqttPort),
+                        "--namespace", namespace ?? stored.mqttNamespace,
+                        "--ascendant", entry.objectID.uuidString.lowercased(),
+                        "--provider", entry.providerID.lowercased(),
+                    ],
+                    env: [:]
+                )
+            }.sorted { $0.id < $1.id }
+            // Dynamic profile sources may emit only their executable profiles;
+            // profile selection remains owned by pi-acp-client's trusted config.
+            let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: profiles)
+            try cache.store(bundle, for: brokerKey)
+            try writeProfiles(bundle)
+        } catch {
+            await client.stop()
+            throw error
+        }
         await client.stop()
     }
 

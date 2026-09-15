@@ -532,12 +532,15 @@ struct ProjectionAndCatalogTests {
         let probe = SubscriptionStartProbe()
         let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
             await probe.record(objectType)
-            return AsyncStream { $0.finish() }
+            return AsyncStream { _ in }
         } observeDeadvertise: {
-            AsyncStream { $0.finish() }
+            AsyncStream { _ in }
         }
 
         try await subscription.start()
+        // The streams never finish, so a live effect count is evidence that
+        // stop cancelled the loops and that the restart is actually running.
+        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
         await subscription.stopAndWait()
         #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
         try await subscription.start()
@@ -550,8 +553,9 @@ struct ProjectionAndCatalogTests {
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
-        #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
+        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
         await subscription.stopAndWait()
+        #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
     }
 
     @Test("concurrent subscription starts register one observation set") @MainActor
@@ -575,8 +579,8 @@ struct ProjectionAndCatalogTests {
         ])
     }
 
-    @Test("synchronous subscription stop cancels the subscription loop") @MainActor
-    func synchronousSubscriptionStopCancelsSubscriptionLoop() async throws {
+    @Test("awaited subscription stop cancels every observation loop") @MainActor
+    func awaitedSubscriptionStopCancelsObservationLoops() async throws {
         let subscription = GnosticSubscription(catalog: NetworkCatalog()) { _ in
             AsyncStream { _ in }
         } observeDeadvertise: {
@@ -623,15 +627,63 @@ struct ProjectionAndCatalogTests {
         let start = Task { try await subscription.start() }
         await gate.waitForEntry()
 
+        // Stop cancels the in-flight start and awaits it, so quiescence holds
+        // as soon as stopAndWait() returns, with no later disposal needed.
         await subscription.stopAndWait()
-        await gate.release()
-
-        await #expect(throws: NodeRuntimeError.self) {
-            try await start.value
-        }
         let snapshot = await subscription.effectSnapshot()
         #expect(snapshot.state == .active)
         #expect(snapshot.liveEffects.isEmpty)
+
+        await gate.release()
+        await #expect(throws: NodeRuntimeError.self) {
+            try await start.value
+        }
+    }
+
+    @Test("subscription start joins an in-flight stop before restarting") @MainActor
+    func subscriptionStartJoinsInFlightStopBeforeRestarting() async throws {
+        // The gate ignores cancellation, so the cancelled start stays
+        // suspended and the stop is observably in `.stopping` when the
+        // restart arrives.
+        let gate = SubscriptionStartGate(releasesOnCancellation: false)
+        let probe = SubscriptionStartProbe()
+        let subscription = GnosticSubscription(catalog: NetworkCatalog()) { objectType in
+            await probe.record(objectType)
+            await gate.enter()
+            await gate.waitForRelease()
+            return AsyncStream { _ in }
+        } observeDeadvertise: { AsyncStream { _ in } }
+
+        let start = Task { try await subscription.start() }
+        await gate.waitForEntry()
+
+        let stopFinished = SubscriptionCompletionFlag()
+        let stop = Task { @MainActor in
+            await subscription.stopAndWait()
+            await stopFinished.mark()
+        }
+        await Task.yield()
+
+        let restartFinished = SubscriptionCompletionFlag()
+        let restart = Task { @MainActor in
+            try await subscription.start()
+            await restartFinished.mark()
+        }
+        await Task.yield()
+        #expect(await stopFinished.value == false)
+        #expect(await restartFinished.value == false)
+
+        await gate.release()
+        await stop.value
+        try await restart.value
+
+        await #expect(throws: NodeRuntimeError.self) { try await start.value }
+        // Three observe calls for the fenced start, three for the restart.
+        #expect(await probe.filters.count == 6)
+        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
+
+        await subscription.stopAndWait()
+        #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
     }
 
     @Test("catalog marks a workspace claimed by two providers as ambiguous")
@@ -758,11 +810,27 @@ private actor SubscriptionStartProbe {
     }
 }
 
+private actor SubscriptionCompletionFlag {
+    private(set) var value = false
+
+    func mark() {
+        value = true
+    }
+}
+
 private actor SubscriptionStartGate {
+    /// A gate that releases on cancellation models an `observe` operation
+    /// that honours the cancellation contract; one that does not models the
+    /// noncooperative case, and keeps a stop suspended deterministically.
+    private let releasesOnCancellation: Bool
     private var entered = false
     private var released = false
     private var entryWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(releasesOnCancellation: Bool = true) {
+        self.releasesOnCancellation = releasesOnCancellation
+    }
 
     func enter() {
         entered = true
@@ -780,8 +848,22 @@ private actor SubscriptionStartGate {
 
     func waitForRelease() async {
         if released { return }
-        await withCheckedContinuation { continuation in
-            releaseWaiters.append(continuation)
+        guard releasesOnCancellation else {
+            await withCheckedContinuation { continuation in
+                releaseWaiters.append(continuation)
+            }
+            return
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if released || Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                releaseWaiters.append(continuation)
+            }
+        } onCancel: {
+            Task { await self.release() }
         }
     }
 

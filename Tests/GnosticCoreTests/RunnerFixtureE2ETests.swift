@@ -21,7 +21,7 @@ struct RunnerFixtureE2ETests {
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
         try await subscription.start()
-        defer { subscription.stop() }
+        defer { subscription.stopInTeardown() }
 
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
         let fixture = GnosticWorkspaceProvider(
