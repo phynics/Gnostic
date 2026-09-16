@@ -48,8 +48,9 @@ number collision, not a second current ADR.
 Archive `codex/timeline-bound-backend-sessions` at `533e9f7`. Do not rebase or
 re-land it. Keep its commits reachable through the
 `archive/timeline-bound-backend-sessions` tag and through the existing `main`
-history. The local tag is created as part of this decision; publishing the tag
-and deleting the remote preservation branch require GitHub write access.
+history. The annotated tag is published as `e54b2a6` and dereferences to
+`533e9f7`. Retiring the remote preservation branch is the last mechanical step
+and removes no reachable commit.
 
 Future multi-configuration work targets the flat `AscendantBackend` contract on
 `main`. A future requirement for a session boundary must use a new decision
