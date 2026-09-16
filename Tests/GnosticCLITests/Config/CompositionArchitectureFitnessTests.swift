@@ -11,10 +11,20 @@ struct CompositionArchitectureFitnessTests {
             .deletingLastPathComponent().deletingLastPathComponent()
     }
 
+    /// Every way a CLI file could build or install an `AscendantAdapterRegistry`
+    /// without going through the composition source. `.init()` spellings are
+    /// included so a registry installed via memberwise defaults still trips the
+    /// check.
+    private static let constructionSignatures = [
+        "AscendantAdapterRegistry(",
+        "AscendantAdapterRegistry.init(",
+        ".ascendants = .init(",
+        ".ascendants = AscendantAdapterRegistry",
+    ]
+
     @Test("GnosticCLI constructs the Ascendant registry only in the composition source")
     func onlyCompositionConstructsRegistry() throws {
         let sourceRoot = root.appendingPathComponent("Sources/GnosticCLI")
-        let constructor = "AscendantAdapterRegistry("
         var constructingPaths: [String] = []
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
             where relativePath.hasSuffix(".swift") {
@@ -22,7 +32,7 @@ struct CompositionArchitectureFitnessTests {
                 contentsOf: sourceRoot.appendingPathComponent(relativePath),
                 encoding: .utf8
             )
-            if source.contains(constructor) {
+            if Self.constructionSignatures.contains(where: source.contains) {
                 constructingPaths.append(relativePath)
             }
         }
@@ -40,6 +50,7 @@ struct CompositionArchitectureFitnessTests {
             encoding: .utf8
         )
         #expect(source.contains("BackendComposition.default.makeAdapters()"))
+        #expect(!source.contains("AscendantAdapterRegistry"))
         #expect(!source.contains("registerBackend("))
         #expect(!source.contains("registerPositronicBackend("))
     }

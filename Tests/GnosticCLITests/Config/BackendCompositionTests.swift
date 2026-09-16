@@ -142,7 +142,7 @@ struct BackendCompositionTests {
         #expect(text.contains("[secret]"))
     }
 
-    @Test("the fixture backend builds for serve from the same composition source")
+    @Test("the fixture backend builds through the adapters serve uses")
     @MainActor
     func serveBuildsFixtureKind() async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000A01")!
@@ -162,10 +162,10 @@ struct BackendCompositionTests {
             plan: manifest.compileLaunchPlan(),
             adapters: composition.makeAdapters()
         )
-        defer { Task { @MainActor in await runtime.shutdown() } }
 
         let snapshot = await runtime.snapshot()
         #expect(snapshot.ascendantIDs == [ascendantID])
+        await runtime.shutdown()
     }
 
     @Test("listing kinds and schemas never constructs a backend")

@@ -26,7 +26,7 @@ public struct BackendComposition: Sendable {
     /// Carries the bundled Positronic backend. Its factory constructs the
     /// configured language model only when a backend is materialized, so
     /// configuration listing stays free of credentials and network access.
-    public static var `default`: BackendComposition {
+    public static let `default`: BackendComposition = {
         var composition = BackendComposition()
         composition.registry.registerPositronicBackend { _, backend in
             let configuration = PositronicBackendConfiguration(backend: backend)
@@ -35,7 +35,7 @@ public struct BackendComposition: Sendable {
                 : UnconfiguredLLMService()
         }
         return composition
-    }
+    }()
 
     /// Every backend kind this composition can build.
     public var registeredKinds: Set<String> { registry.registeredKinds }
@@ -64,9 +64,6 @@ public struct BackendComposition: Sendable {
     ) {
         registry.registerBackend(kind: kind, settings: settings, factory: factory)
     }
-
-    /// The registry `serve` hands to ``NodeRuntimeAdapters``.
-    public var ascendantRegistry: AscendantAdapterRegistry { registry }
 
     /// Builds the Node adapters `serve` runs with.
     ///
