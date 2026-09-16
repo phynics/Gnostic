@@ -9,6 +9,8 @@ public enum AtlasStoreError: Error, Equatable, Sendable, PKError {
     case identityMismatch
     /// A stable Shard identity was registered with conflicting binding data.
     case conflictingBinding
+    /// A stable Shard identity was registered with different immutable fields.
+    case registrationConflict
     /// A report or patch reused an identity with different content.
     case reportIdentityConflict
     /// A patch identity was reused with different content.
@@ -42,6 +44,7 @@ public enum AtlasStoreError: Error, Equatable, Sendable, PKError {
         switch self {
         case .identityMismatch: 7001
         case .conflictingBinding: 7002
+        case .registrationConflict: 7016
         case .reportIdentityConflict: 7003
         case .patchIdentityConflict: 7004
         case .unknownShard: 7005
@@ -63,6 +66,7 @@ public enum AtlasStoreError: Error, Equatable, Sendable, PKError {
         switch self {
         case .identityMismatch: "identityMismatch"
         case .conflictingBinding: "conflictingBinding"
+        case .registrationConflict: "registrationConflict"
         case .reportIdentityConflict: "reportIdentityConflict"
         case .patchIdentityConflict: "patchIdentityConflict"
         case .unknownShard: "unknownShard"
@@ -82,7 +86,7 @@ public enum AtlasStoreError: Error, Equatable, Sendable, PKError {
     /// The HTTP-like status used by adapters that need a coarse classification.
     public var statusCode: Int {
         switch self {
-        case .staleState, .watermarkRegression, .conflictingBinding, .reportIdentityConflict, .patchIdentityConflict, .catalogChanged:
+        case .staleState, .watermarkRegression, .conflictingBinding, .registrationConflict, .reportIdentityConflict, .patchIdentityConflict, .catalogChanged:
             409
         case .unknownShard, .claimedReportNotFound:
             404
@@ -111,6 +115,7 @@ public enum AtlasStoreError: Error, Equatable, Sendable, PKError {
         switch self {
         case .identityMismatch: "The Atlas identity does not match the active Ascendant."
         case .conflictingBinding: "The Atlas Shard binding conflicts with the registered binding."
+        case .registrationConflict: "The Atlas Shard registration conflicts with the existing registration."
         case .reportIdentityConflict: "The Shard Report identity was reused with different data."
         case .patchIdentityConflict: "The Atlas patch identity was reused with different data."
         case .unknownShard: "The Atlas Shard was not found."
@@ -204,7 +209,11 @@ public actor InMemoryAtlasStore: AtlasStore {
         }
 
         if let existing = shards[shard.id] {
-            guard existing == shard else { throw AtlasStoreError.conflictingBinding }
+            let isSameLogicalShard = existing.ascendantID == shard.ascendantID
+                && existing.name == shard.name
+                && existing.kind == shard.kind
+                && existing.lifecycle == shard.lifecycle
+            guard isSameLogicalShard else { throw AtlasStoreError.registrationConflict }
             return AtlasRegistrationResult(shard: existing, wasInserted: false)
         }
 

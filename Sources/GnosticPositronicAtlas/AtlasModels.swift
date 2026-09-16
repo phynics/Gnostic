@@ -213,21 +213,22 @@ public struct AscendantShard: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// A decimal number carried as a validated canonical string so no
-/// floating-point value and no arbitrary text can become typed Atlas state.
+/// A decimal number carried as one normalized canonical string so no
+/// floating-point value and no arbitrary text can become typed Atlas state,
+/// and so equal numeric spellings (`007.50`, `7.5`) compare equal.
 public struct AtlasDecimal: Codable, Equatable, Hashable, Sendable, Comparable, CustomStringConvertible {
-    /// The canonical decimal spelling, for example `-12.50` or `3`.
+    /// The canonical decimal spelling, for example `-12.5` or `3`.
     public let canonical: String
 
     /// Creates a decimal from a numeric string, or returns `nil` when the
     /// text is not a plain decimal number.
     public init?(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, Self.isDecimal(trimmed) else { return nil }
-        self.canonical = trimmed
+        guard let canonical = Self.canonicalize(trimmed) else { return nil }
+        self.canonical = canonical
     }
 
-    /// Creates a decimal from a canonical string.
+    /// Creates a decimal from a numeric string.
     public init(rawValue: String) throws {
         guard let value = AtlasDecimal(rawValue) else {
             throw AtlasStoreError.invalidReference
@@ -259,41 +260,70 @@ public struct AtlasDecimal: Codable, Equatable, Hashable, Sendable, Comparable, 
         try container.encode(canonical)
     }
 
-    private static func isDecimal(_ text: String) -> Bool {
-        var index = text.startIndex
-        if text[index] == "+" || text[index] == "-" {
-            index = text.index(after: index)
-            guard index < text.endIndex else { return false }
+    /// Parses a plain decimal and returns its single canonical spelling, or
+    /// `nil` when the text is not a plain decimal number.
+    private static func canonicalize(_ text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        let characters = Array(text)
+        var index = 0
+        var isNegative = false
+        if characters[index] == "-" {
+            isNegative = true
+            index += 1
+        } else if characters[index] == "+" {
+            return nil
         }
-        var digitsBeforeSeparator = 0
-        while index < text.endIndex, text[index].isNumber {
-            digitsBeforeSeparator += 1
-            index = text.index(after: index)
+        guard index < characters.count else { return nil }
+
+        var integerDigits = ""
+        while index < characters.count, characters[index].isNumber {
+            integerDigits.append(characters[index])
+            index += 1
         }
-        if index < text.endIndex, text[index] == "." {
-            index = text.index(after: index)
-            var digitsAfterSeparator = 0
-            while index < text.endIndex, text[index].isNumber {
-                digitsAfterSeparator += 1
-                index = text.index(after: index)
+        guard !integerDigits.isEmpty else { return nil }
+
+        var fractionDigits = ""
+        if index < characters.count, characters[index] == "." {
+            index += 1
+            while index < characters.count, characters[index].isNumber {
+                fractionDigits.append(characters[index])
+                index += 1
             }
-            if digitsBeforeSeparator == 0, digitsAfterSeparator == 0 { return false }
-        } else if digitsBeforeSeparator == 0 {
-            return false
+            guard !fractionDigits.isEmpty else { return nil }
         }
-        if index < text.endIndex, text[index] == "e" || text[index] == "E" {
-            index = text.index(after: index)
-            if index < text.endIndex, text[index] == "+" || text[index] == "-" {
-                index = text.index(after: index)
+
+        var exponent = ""
+        if index < characters.count, characters[index] == "e" || characters[index] == "E" {
+            index += 1
+            var exponentSign = ""
+            if index < characters.count, characters[index] == "+" || characters[index] == "-" {
+                exponentSign = String(characters[index])
+                index += 1
             }
-            var exponentDigits = 0
-            while index < text.endIndex, text[index].isNumber {
-                exponentDigits += 1
-                index = text.index(after: index)
+            var exponentDigits = ""
+            while index < characters.count, characters[index].isNumber {
+                exponentDigits.append(characters[index])
+                index += 1
             }
-            if exponentDigits == 0 { return false }
+            guard !exponentDigits.isEmpty else { return nil }
+            exponent = "e" + exponentSign + exponentDigits
         }
-        return index == text.endIndex
+        guard index == characters.count else { return nil }
+
+        let trimmedInteger = integerDigits.drop(while: { $0 == "0" })
+        let normalizedInteger = trimmedInteger.isEmpty ? "0" : String(trimmedInteger)
+        var normalizedFraction = fractionDigits
+        while normalizedFraction.hasSuffix("0") {
+            normalizedFraction.removeLast()
+        }
+        let isZero = normalizedInteger == "0" && normalizedFraction.isEmpty
+        var result = (isNegative && !isZero) ? "-" : ""
+        result += normalizedInteger
+        if !normalizedFraction.isEmpty {
+            result += "." + normalizedFraction
+        }
+        result += exponent
+        return result
     }
 }
 

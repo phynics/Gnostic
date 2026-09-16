@@ -275,6 +275,55 @@ struct AtlasStoreTests {
         }
     }
 
+    @Test("re-registration ignores an absent binding but rejects changed fields")
+    func reRegistrationIsIdempotentAcrossAbsentBinding() async throws {
+        let bindingID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000077")!
+        let store = InMemoryAtlasStore(
+            binding: AscendantAtlasBinding(ascendantID: ascendantID, bindingID: bindingID)
+        )
+        let explicit = AscendantShard(
+            id: homeID,
+            ascendantID: ascendantID,
+            name: "Home",
+            bindingID: bindingID
+        )
+        #expect(try await store.register(explicit).wasInserted)
+
+        let absentBinding = AscendantShard(id: homeID, ascendantID: ascendantID, name: "Home")
+        let repeated = try await store.register(absentBinding)
+        #expect(!repeated.wasInserted)
+        #expect(repeated.shard.bindingID == bindingID)
+
+        let renamed = AscendantShard(id: homeID, ascendantID: ascendantID, name: "Renamed")
+        await #expect(throws: AtlasStoreError.registrationConflict) {
+            _ = try await store.register(renamed)
+        }
+
+        let stored = try #require((await store.registrations()).first)
+        #expect(stored.name == "Home")
+    }
+
+    @Test("decimal values use one canonical numeric spelling")
+    func decimalUsesOneCanonicalSpelling() {
+        #expect(AtlasDecimal("1")?.canonical == "1")
+        #expect(AtlasDecimal("-42.50")?.canonical == "-42.5")
+        #expect(AtlasDecimal("007.50")?.canonical == "7.5")
+        #expect(AtlasDecimal("0.0")?.canonical == "0")
+        #expect(AtlasDecimal("-0.0")?.canonical == "0")
+        #expect(AtlasDecimal("4.5e-3")?.canonical == "4.5e-3")
+        #expect(AtlasDecimal("1") == AtlasDecimal("1.0"))
+        #expect(AtlasDecimal("7.5") == AtlasDecimal("007.50"))
+
+        #expect(AtlasDecimal("1.") == nil)
+        #expect(AtlasDecimal("-42.") == nil)
+        #expect(AtlasDecimal("1.e5") == nil)
+        #expect(AtlasDecimal(".5") == nil)
+        #expect(AtlasDecimal("+3") == nil)
+        #expect(AtlasDecimal("+") == nil)
+        #expect(AtlasDecimal("abc") == nil)
+        #expect(AtlasDecimal("1.2.3") == nil)
+    }
+
     @Test("canonical state encoding is independent of input order")
     func canonicalStateEncoding() throws {
         let firstItem = AtlasItem(
