@@ -113,6 +113,7 @@ enum ServeLaunchPlan {
         effective.broker.namespace = overrides.namespace ?? configuration.mqttNamespace
         effective.broker.username = configuration.mqttUsername
         effective.broker.password = configuration.mqttPassword
+        effective.broker = effective.broker.normalized()
         if let approvalMode = overrides.approvalMode {
             effective.node.approvalMode = approvalMode.lowercased()
         }

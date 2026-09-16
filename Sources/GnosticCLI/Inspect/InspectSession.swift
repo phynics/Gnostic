@@ -31,6 +31,8 @@ final class InspectSession {
                     host: host,
                     port: UInt16(clamping: port),
                     shouldTryMDNSDiscovery: false,
+                    username: stored.mqttUsername,
+                    password: stored.mqttPassword,
                     autoReconnect: false
                 ),
                 shouldAutoStart: false

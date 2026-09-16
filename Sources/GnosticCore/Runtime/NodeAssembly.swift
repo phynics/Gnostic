@@ -212,14 +212,15 @@ struct NodeAssembly {
     }
 
     private static func mqttOptions(for broker: NodeManifest.Broker) -> MQTTClientOptions {
+        let normalized = broker.normalized()
         let options = MQTTClientOptions(
-            host: broker.host,
-            port: UInt16(clamping: broker.port),
+            host: normalized.host,
+            port: UInt16(clamping: normalized.port),
             shouldTryMDNSDiscovery: false,
             autoReconnect: false
         )
-        options.username = broker.username
-        options.password = broker.password
+        options.username = normalized.username
+        options.password = normalized.password
         return options
     }
 }
