@@ -118,7 +118,8 @@ Until durability lands, and after #247 removes the per-process provider pin:
   Timeline store, a durable backend `ThreadRuntimeRepository`, and a replay or
   idempotency durability decision all land.
 - This decision changes no source, wire, manifest, ACP method, protocol-major,
-  or persisted-identity contract. The interim behavior is a follow-up on #247.
+  or persisted-identity contract. The interim behavior is tracked by
+  [#277](https://github.com/phynics/Gnostic/issues/277) and depends on #247.
 
 ## Reconsideration triggers
 
