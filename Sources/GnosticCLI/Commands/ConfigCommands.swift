@@ -603,33 +603,31 @@ public enum ConfigCommandLogic {
         _ = try store.mutateManifest { $0.broker.password = password }
     }
 
-    /// The registry the CLI consults for backend kinds and their keys.
-    ///
-    /// Configuration commands never construct a backend, so this carries the
-    /// default registrations only. A kind registered solely inside a running
-    /// host is deliberately not configurable here.
-    static var backendRegistry: AscendantAdapterRegistry { AscendantAdapterRegistry() }
-
     /// Resolves the Ascendant at `ascendantID` and the schema of its kind.
+    ///
+    /// The registry comes from the supplied composition source, so a kind known
+    /// to `serve` is known here too. Resolving a schema never constructs a
+    /// backend or a language model.
     private static func backendTarget(
         _ ascendantID: String,
-        in manifest: NodeManifest
+        in manifest: NodeManifest,
+        composition: BackendComposition
     ) throws -> (index: Int, kind: String, schema: AscendantBackendSettingsSchema) {
         let id = try parseID(ascendantID, kind: "ascendant")
         guard let index = manifest.ascendants.firstIndex(where: { $0.id == id }) else {
             throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
         }
         let kind = manifest.ascendants[index].backend.kind
-        guard let schema = backendRegistry.settingsSchema(for: kind) else {
+        guard let schema = composition.settingsSchema(for: kind) else {
             throw CLIConfigurationError.invalidArgument(
-                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList())."
+                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList(composition))."
             )
         }
         return (index, kind, schema)
     }
 
-    private static func knownKindList() -> String {
-        backendRegistry.registeredKinds.sorted().joined(separator: ", ")
+    private static func knownKindList(_ composition: BackendComposition) -> String {
+        composition.registeredKinds.sorted().joined(separator: ", ")
     }
 
     /// Validates one key against the kind's advertised schema.
@@ -666,10 +664,11 @@ public enum ConfigCommandLogic {
         ascendantID: String,
         key: String,
         value: String,
-        store: CLIConfigurationStore
+        store: CLIConfigurationStore,
+        composition: BackendComposition = .default
     ) throws {
         _ = try store.mutateManifest { manifest in
-            let target = try backendTarget(ascendantID, in: manifest)
+            let target = try backendTarget(ascendantID, in: manifest, composition: composition)
             try validatedKey(key, wantsSecret: false, kind: target.kind, schema: target.schema)
             manifest.ascendants[target.index].backend.settings[key] = .string(value)
         }
@@ -680,19 +679,24 @@ public enum ConfigCommandLogic {
         ascendantID: String,
         key: String,
         value: String,
-        store: CLIConfigurationStore
+        store: CLIConfigurationStore,
+        composition: BackendComposition = .default
     ) throws {
         _ = try store.mutateManifest { manifest in
-            let target = try backendTarget(ascendantID, in: manifest)
+            let target = try backendTarget(ascendantID, in: manifest, composition: composition)
             try validatedKey(key, wantsSecret: true, kind: target.kind, schema: target.schema)
             manifest.ascendants[target.index].backend.secrets[key] = .string(value)
         }
     }
 
     /// Clears one Ascendant's backend envelope, preserving its kind.
-    public static func clearBackend(ascendantID: String, store: CLIConfigurationStore) throws {
+    public static func clearBackend(
+        ascendantID: String,
+        store: CLIConfigurationStore,
+        composition: BackendComposition = .default
+    ) throws {
         _ = try store.mutateManifest { manifest in
-            let target = try backendTarget(ascendantID, in: manifest)
+            let target = try backendTarget(ascendantID, in: manifest, composition: composition)
             manifest.ascendants[target.index].backend = .init(kind: target.kind)
         }
     }
@@ -701,10 +705,11 @@ public enum ConfigCommandLogic {
     public static func listBackendKeys(
         ascendantID: String,
         store: CLIConfigurationStore,
+        composition: BackendComposition = .default,
         writeOutput: (String) -> Void = { print($0) }
     ) throws {
         let manifest = try store.loadManifest()
-        let target = try backendTarget(ascendantID, in: manifest)
+        let target = try backendTarget(ascendantID, in: manifest, composition: composition)
         guard !target.schema.isUnspecified else {
             writeOutput("Backend kind '\(target.kind)' does not advertise its configuration keys.")
             return
@@ -763,12 +768,13 @@ public enum ConfigCommandLogic {
         name: String?,
         description: String,
         kind: String = AscendantAdapterRegistry.positronicKind,
-        store: CLIConfigurationStore
+        store: CLIConfigurationStore,
+        composition: BackendComposition = .default
     ) throws {
         guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("An Ascendant name is required.") }
-        guard backendRegistry.registeredKinds.contains(kind) else {
+        guard composition.registeredKinds.contains(kind) else {
             throw CLIConfigurationError.invalidArgument(
-                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList())."
+                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList(composition))."
             )
         }
         let ascendantID = UUID.makeVersion4()
