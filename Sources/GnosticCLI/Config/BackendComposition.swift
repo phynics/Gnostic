@@ -68,12 +68,11 @@ public struct BackendComposition: Sendable {
     /// Builds the Node adapters `serve` runs with.
     ///
     /// Workspace and lifecycle seams stay at their defaults; only the Ascendant
-    /// registry comes from this composition.
+    /// registry comes from this composition. The other fields use the
+    /// memberwise defaults directly, so no throwaway registry is built.
     ///
     /// - Returns: Adapters carrying this composition's backend registry.
     public func makeAdapters() -> NodeRuntimeAdapters {
-        var adapters = NodeRuntimeAdapters.default
-        adapters.ascendants = registry
-        return adapters
+        NodeRuntimeAdapters(ascendants: registry)
     }
 }

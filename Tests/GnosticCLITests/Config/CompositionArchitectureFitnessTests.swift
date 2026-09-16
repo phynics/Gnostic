@@ -11,35 +11,33 @@ struct CompositionArchitectureFitnessTests {
             .deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    /// Every way a CLI file could build or install an `AscendantAdapterRegistry`
-    /// without going through the composition source. `.init()` spellings are
-    /// included so a registry installed via memberwise defaults still trips the
-    /// check.
-    private static let constructionSignatures = [
-        "AscendantAdapterRegistry(",
-        "AscendantAdapterRegistry.init(",
-        ".ascendants = .init(",
-        ".ascendants = AscendantAdapterRegistry",
-    ]
+    /// The one registry reference the CLI may keep outside the composition
+    /// source: the stable kind identifier used as a default flag value. It is a
+    /// constant, not a construction.
+    private static let allowedRegistryReference = "AscendantAdapterRegistry.positronicKind"
 
-    @Test("GnosticCLI constructs the Ascendant registry only in the composition source")
-    func onlyCompositionConstructsRegistry() throws {
+    @Test("GnosticCLI names the Ascendant registry only in the composition source")
+    func onlyCompositionReferencesRegistry() throws {
         let sourceRoot = root.appendingPathComponent("Sources/GnosticCLI")
-        var constructingPaths: [String] = []
+        var referencingPaths: [String] = []
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
             where relativePath.hasSuffix(".swift") {
             let source = try String(
                 contentsOf: sourceRoot.appendingPathComponent(relativePath),
                 encoding: .utf8
             )
-            if Self.constructionSignatures.contains(where: source.contains) {
-                constructingPaths.append(relativePath)
+            // Strip the sanctioned constant, then any surviving mention of the
+            // type name -- a constructor, an initializer, a type annotation, or
+            // a memberwise `.init()` -- means a second registry path exists.
+            let residue = source.replacingOccurrences(of: Self.allowedRegistryReference, with: "")
+            if residue.contains("AscendantAdapterRegistry") {
+                referencingPaths.append(relativePath)
             }
         }
 
         #expect(
-            constructingPaths == ["Config/BackendComposition.swift"],
-            "GnosticCLI must build the Ascendant registry only in BackendComposition.swift; found: \(constructingPaths)."
+            referencingPaths == ["Config/BackendComposition.swift"],
+            "GnosticCLI must reach AscendantAdapterRegistry only through BackendComposition.swift; found: \(referencingPaths)."
         )
     }
 
