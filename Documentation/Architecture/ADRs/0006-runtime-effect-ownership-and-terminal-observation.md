@@ -39,3 +39,8 @@ actor-safe start/stop owner.
 This decision adds no production dependency. Once #116 lands, the optional
 `GnosticPositronicAtlas` target will consume the generic Core seam and own
 correlation, provenance, origin suppression, and revision snapshots.
+
+This ADR is the accepted repository ADR 0006. The historical
+`0006-timeline-bound-backend-execution.md` on
+`codex/timeline-bound-backend-sessions` is not an alternative current ADR; ADR
+0007 records its archive disposition.
