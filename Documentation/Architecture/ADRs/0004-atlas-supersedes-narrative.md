@@ -5,8 +5,8 @@
 Accepted and delivered as the RESET-006 boundary. Delivery is tracked by
 [Epic #140](https://github.com/phynics/Gnostic/issues/140), [RESET-006 #144](https://github.com/phynics/Gnostic/issues/144),
 and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145). The 0.3
-package contains an optional Atlas scaffold only; Atlas behavior is not yet
-implemented.
+package contains the optional Atlas model and in-memory store foundation;
+durable persistence and host integration remain future work.
 
 ## Context
 
