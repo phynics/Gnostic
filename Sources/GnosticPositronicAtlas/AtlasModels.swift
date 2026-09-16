@@ -1064,7 +1064,7 @@ public struct AtlasWatermark: Codable, Equatable, Hashable, Comparable, Sendable
     }
 
     public static func < (lhs: Self, rhs: Self) -> Bool {
-        lhs.shardID < rhs.shardID
+        (lhs.shardID, lhs.sequence) < (rhs.shardID, rhs.sequence)
     }
 }
 

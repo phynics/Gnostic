@@ -331,7 +331,7 @@ public actor InMemoryAtlasStore: AtlasStore {
             throw AtlasStoreError.captureMismatch
         }
 
-        try validateWatermarks(patch.watermarks)
+        try validateWatermarks(patch.watermarks, consumedBy: state)
 
         let nextState = try apply(patch, to: state)
         let accepted = AtlasAcceptedPatch(
@@ -345,15 +345,6 @@ public actor InMemoryAtlasStore: AtlasStore {
         history.append(accepted)
         receipts[patch.id] = receipt
         return receipt
-    }
-
-    /// Commits a patch against a freshly captured state version.
-    public func commit(_ patch: AtlasPatch, expectedStateVersion: UInt64) throws -> AtlasCommitReceipt {
-        let capture = capture()
-        guard capture.baseStateVersion == expectedStateVersion else {
-            throw AtlasStoreError.staleState(expected: expectedStateVersion, actual: capture.baseStateVersion)
-        }
-        return try compareAndSwap(capture: capture, patch: patch)
     }
 
     /// Returns accepted history in resulting state-version order.
@@ -412,13 +403,14 @@ public actor InMemoryAtlasStore: AtlasStore {
         guard shard.lifecycle == .active else { throw AtlasStoreError.inactiveShard }
     }
 
-    private func validateWatermarks(_ values: [AtlasWatermark]) throws {
+    private func validateWatermarks(_ values: [AtlasWatermark], consumedBy current: AscendantAtlas) throws {
         var seen: Set<AscendantShardID> = []
         for watermark in values {
             guard seen.insert(watermark.shardID).inserted,
                   shards[watermark.shardID] != nil else { throw AtlasStoreError.invalidReference }
-            let consumed = state.watermark(for: watermark.shardID)
-            guard watermark.sequence >= consumed else { throw AtlasStoreError.watermarkRegression }
+            guard watermark.sequence >= current.watermark(for: watermark.shardID) else {
+                throw AtlasStoreError.watermarkRegression
+            }
             guard watermark.sequence <= (reportHeads[watermark.shardID] ?? 0) else {
                 throw AtlasStoreError.captureMismatch
             }
@@ -460,7 +452,7 @@ public actor InMemoryAtlasStore: AtlasStore {
     private func apply(_ patch: AtlasPatch, to current: AscendantAtlas) throws -> AscendantAtlas {
         guard patch.ascendantID == ascendantID,
               patch.provenance.ascendantID == ascendantID else { throw AtlasStoreError.identityMismatch }
-        try validateWatermarksAgainstCurrent(patch.watermarks, current: current)
+        try validateWatermarks(patch.watermarks, consumedBy: current)
 
         var items = Dictionary(uniqueKeysWithValues: current.items.map { ($0.id, $0) })
         var conflicts = Dictionary(uniqueKeysWithValues: current.conflicts.map { ($0.id, $0) })
@@ -536,18 +528,6 @@ public actor InMemoryAtlasStore: AtlasStore {
             directives: Array(directives.values),
             watermarks: nextWatermarks
         )
-    }
-
-    private func validateWatermarksAgainstCurrent(_ values: [AtlasWatermark], current: AscendantAtlas) throws {
-        var seen: Set<AscendantShardID> = []
-        for watermark in values {
-            guard seen.insert(watermark.shardID).inserted,
-                  shards[watermark.shardID] != nil,
-                  watermark.sequence >= current.watermark(for: watermark.shardID),
-                  watermark.sequence <= (reportHeads[watermark.shardID] ?? 0) else {
-                throw AtlasStoreError.watermarkRegression
-            }
-        }
     }
 
     private func validate(item: AtlasItem, shards: [AscendantShardID: AscendantShard]) throws {

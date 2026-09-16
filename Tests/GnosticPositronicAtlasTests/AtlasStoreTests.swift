@@ -242,6 +242,9 @@ struct AtlasStoreTests {
         )
         #expect(state.watermark(for: homeID) == 3)
 
+        #expect(AtlasWatermark(shardID: homeID, sequence: 1) < AtlasWatermark(shardID: homeID, sequence: 2))
+        #expect(!(AtlasWatermark(shardID: homeID, sequence: 2) < AtlasWatermark(shardID: homeID, sequence: 2)))
+
         let store = InMemoryAtlasStore(ascendantID: ascendantID)
         _ = try await store.register(AscendantShard(id: homeID, ascendantID: ascendantID, name: "Home"))
         let report = try await store.append(makeDraft(operationID: "watermark"))
