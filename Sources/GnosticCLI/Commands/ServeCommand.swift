@@ -4,8 +4,6 @@ import ArgumentParser
 import Foundation
 import GnosticCore
 import Logging
-import PKContracts
-import PositronicKit
 
 /// `gnostic serve` — a persistent process that advertises Gnostic objects and
 /// hosts the network operations remote clients use.
@@ -55,22 +53,7 @@ struct ServeCommand: AsyncParsableCommand {
                 return handler
             }
 
-            var adapters = NodeRuntimeAdapters.default
-            adapters.ascendants.registerBackend(
-                kind: AscendantAdapterRegistry.positronicKind
-            ) { ascendant, backend, services, timelines in
-                let configuration = PositronicBackendConfiguration(backend: backend)
-                let languageModel: any LLMStreamClient = configuration.provider != nil
-                    ? ConfiguredLLMService.make(from: configuration)
-                    : UnconfiguredLLMService()
-                return try await PositronicAscendantAdapter(
-                    ascendant: ascendant,
-                    backend: backend,
-                    services: services,
-                    timelines: timelines,
-                    languageModel: languageModel
-                )
-            }
+            let adapters = BackendComposition.default.makeAdapters()
             let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
             do {
                 guard try await start(runtime: runtime, until: terminationMonitor) else { return }
