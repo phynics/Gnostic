@@ -19,10 +19,10 @@ SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down
+.PHONY: help image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke wrapper-test verify shell clean dev-up dev-status dev-down
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check runner-smoke acp-smoke container-smoke wrapper-test verify shell clean dev-up dev-status dev-down"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -40,6 +40,7 @@ worktree-bootstrap: resolve
 
 build: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS)
+	@git rev-parse HEAD > "$(BUILD_DIR)/gnostic-build-revision"
 
 test: build
 	@mkdir -p .testing
@@ -54,8 +55,13 @@ runner-smoke: require-package image
 acp-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; npm ci --prefix Tests/Fixtures/OfficialACPClient --cache .testing/npm-cache; npm ci --legacy-peer-deps --prefix Tests/Fixtures/PiACPClient --cache .testing/npm-cache; GNOSTIC_ACP_BINARY=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic GNOSTIC_ACP_OFFICIAL_CLIENT=/workspace/Tests/Fixtures/OfficialACPClient/lifecycle.mjs GNOSTIC_PI_ACP_CLIENT_FIXTURE=/workspace/Tests/Fixtures/PiACPClient/lifecycle.mjs swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --filter GnosticCLITests.ACPSubprocessTests | tee .testing/acp-smoke.log && grep -F "Test run with 4 tests" .testing/acp-smoke.log'
 
-container-smoke: image
+container-smoke: image wrapper-test
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
+
+# Fake-runtime harness for Scripts/gnostic-container.sh. It needs no container
+# runtime, so it runs on the host and inside the container.
+wrapper-test:
+	@Tests/Support/test-gnostic-container.sh
 
 verify: docs-check test
 

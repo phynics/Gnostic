@@ -98,6 +98,38 @@ make container-smoke
 
 `make verify` runs the documentation check and Swift test suite. The smoke
 targets exercise the standalone runner, ACP clients, and container setup.
+`make wrapper-test` runs the fake-runtime harness for the host wrapper below.
+
+## Use the host container wrapper
+
+The Linux `gnostic` binary that `make build` produces runs inside the
+development container. Host tools that cannot run the Linux binary directly,
+such as [`pi-acp-client`](https://github.com/phynics/pi-acp-client), call
+`Scripts/gnostic-container.sh` as `gnostic`.
+
+Install it on `PATH`:
+
+```sh
+ln -s "$PWD/Scripts/gnostic-container.sh" ~/.local/bin/gnostic
+```
+
+The wrapper matches the build cache that `make build` uses, so the main
+checkout and every worktree share one build. Set `GNOSTIC_BUILD_ROOT` to pin a
+different build, `GNOSTIC_IMAGE` to select the image, and `CONTAINER_RUNTIME`
+to select `podman` or `docker`.
+
+Run `gnostic --wrapper-info` to print the wrapper path, the build root, the
+binary path, and the revision the build was stamped with. The wrapper warns on
+standard error when that revision differs from the checkout it lives in, which
+means the build cache holds a binary from another branch.
+
+The wrapper forwards the `GNOSTIC_*` variables the CLI reads: `GNOSTIC_CONFIG`,
+`GNOSTIC_HOST`, `GNOSTIC_PORT`, `GNOSTIC_NAMESPACE`, `GNOSTIC_STATE_HOME`,
+`GNOSTIC_MQTT_*`, and `GNOSTIC_LLM_*`. The container sees `~/.gnostic` at
+`/root/.gnostic` and `~/.local/state/gnostic` at `/root/.local/state/gnostic`.
+`GNOSTIC_CONFIG` and `GNOSTIC_STATE_HOME` must name paths under those host
+directories; the wrapper rejects any other path with a diagnostic instead of
+silently dropping it.
 
 ## Run the local ACP stack
 
