@@ -71,8 +71,10 @@ Ascendant backend.
 
 An ACP session resumes after the ACP child restarts while the same
 `gnostic serve` process stays online. A serve restart orphans Timelines created
-at runtime, so a later resume fails with `timelineUnavailable`; ADR 0008 records
-the decision and the deferred durability work.
+at runtime, so a later resume or prompt fails with `timelineUnavailable` and
+`session/list` omits the session; ADR 0008 records the decision and the
+deferred durability work. The session record stays on disk for diagnostics,
+marked ended.
 
 To create profiles for the generic
 [`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running

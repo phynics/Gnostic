@@ -279,14 +279,36 @@ public final class RemoteTurnClient: Sendable {
         return capable[0]
     }
 
-    private func discoveredProviderID(forTimeline timelineID: UUID) async throws -> String {
+    /// Refreshes discovery once and returns a snapshot that answers Timeline
+    /// presence for any number of identifiers.
+    ///
+    /// ACP reconciles a durable session registry against the live environment,
+    /// so it needs one catalog refresh for the whole registry rather than one
+    /// per record.
+    public func timelinePresenceSnapshot() async -> TimelinePresenceSnapshot {
         await refreshCatalog()
-        let providers = Set(await catalog.networkObjects().compactMap {
-            $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID ? $0.providerID : nil
-        })
-        guard let provider = providers.first else { throw RemoteTurnClientError.timelineUnavailable(timelineID) }
-        guard providers.count == 1 else { throw RemoteTurnClientError.timelineAmbiguous(timelineID) }
-        return provider
+        let entries = await catalog.networkObjects()
+        var providersByTimeline: [UUID: Set<String>] = [:]
+        for entry in entries where entry.objectType == GnosticObjectType.timeline {
+            providersByTimeline[entry.objectID, default: []].insert(entry.providerID)
+        }
+        return TimelinePresenceSnapshot(
+            providersByTimeline: providersByTimeline,
+            hasDiscoveredNode: entries.contains { $0.objectType == GnosticObjectType.ascendant }
+        )
+    }
+
+    /// Reports whether one Timeline is discoverable on a live Node.
+    public func timelinePresence(of timelineID: UUID) async -> TimelinePresence {
+        await timelinePresenceSnapshot().presence(of: timelineID)
+    }
+
+    private func discoveredProviderID(forTimeline timelineID: UUID) async throws -> String {
+        switch await timelinePresence(of: timelineID) {
+        case let .present(providerID): return providerID
+        case .ambiguous: throw RemoteTurnClientError.timelineAmbiguous(timelineID)
+        case .absent, .indeterminate: throw RemoteTurnClientError.timelineUnavailable(timelineID)
+        }
     }
 
     private func resolvedProviderID(_ explicit: String?, forTimeline timelineID: UUID) async throws -> String {

@@ -46,6 +46,55 @@ struct ACPProtocolTests {
         #expect((fileAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 
+    @Test("timeline presence separates a confirmed-absent Timeline from an undiscovered network")
+    func timelinePresenceClassification() {
+        let present = UUID()
+        let ambiguous = UUID()
+        let missing = UUID()
+        let live = TimelinePresenceSnapshot(
+            providersByTimeline: [present: ["node-a"], ambiguous: ["node-a", "node-b"]],
+            hasDiscoveredNode: true
+        )
+        #expect(live.presence(of: present) == .present(providerID: "node-a"))
+        #expect(live.presence(of: ambiguous) == .ambiguous)
+        #expect(live.presence(of: missing) == .absent)
+
+        // No Node answered discovery, so nothing is proven about any Timeline.
+        let dark = TimelinePresenceSnapshot(providersByTimeline: [:], hasDiscoveredNode: false)
+        #expect(dark.presence(of: missing) == .indeterminate)
+    }
+
+    @Test("ending an orphaned record keeps it on disk and does not move its first end")
+    func registryMarksOrphanedRecordsEnded() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-orphan-\(UUID().uuidString)")
+            .appendingPathComponent("sessions.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let registry = ACPSessionRegistry(url: url)
+        let created = try await registry.create(
+            profileFingerprint: "namespace:provider:ascendant",
+            ascendantID: UUID(),
+            timelineID: UUID(),
+            cwd: "/workspace/project",
+            title: "ACP project"
+        )
+        #expect(created.closedAt == nil)
+
+        let ended = try #require(try await registry.markEnded(id: created.id))
+        let closedAt = try #require(ended.closedAt)
+        #expect(ended.updatedAt == created.updatedAt)
+
+        // Reconciliation runs on every list; only the first end may set the time.
+        let reEnded = try #require(try await registry.markEnded(id: created.id))
+        #expect(reEnded.closedAt == closedAt)
+
+        let restored = ACPSessionRegistry(url: url)
+        let persisted = try #require(await restored.record(id: created.id))
+        #expect(persisted.closedAt == closedAt)
+        #expect(persisted.cwd == "/workspace/project")
+    }
+
     #if !os(macOS)
     @Test("Linux session registry uses the XDG application-state directory")
     func registryUsesXDGStateHome() {
