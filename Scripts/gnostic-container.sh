@@ -35,11 +35,15 @@ GNOSTIC_LLM_UTILITY_MODEL
 GNOSTIC_LLM_FAST_MODEL
 GNOSTIC_LLM_API_KEY"
 
-# Maps a host path under host_root onto container_root, or fails.
+# Maps a host path under host_root onto container_root, or fails. Parent
+# segments are rejected so a path cannot lexically escape the mounted root.
 map_path() {
     path=$1
     host_root=$2
     container_root=$3
+    case $path in
+        ..|../*|*/..|*/../*) return 1 ;;
+    esac
     case $path in
         "$host_root") printf '%s' "$container_root" ;;
         "$host_root"/*) printf '%s/%s' "$container_root" "${path#"$host_root"/}" ;;
@@ -80,10 +84,10 @@ if [ -n "$build_sha" ] && [ -n "$checkout_sha" ] && [ "$build_sha" != "$checkout
     echo "warning: gnostic container build is $build_sha but $repo_root is at $checkout_sha; run 'make build' in $repo_root" >&2
 fi
 
-container_args=""
-if [ -d "$HOME/.gnostic" ]; then
-    container_args="$container_args -v $HOME/.gnostic:/root/.gnostic"
-fi
+# The CLI defaults to /root/.gnostic and /root/.local/state/gnostic inside the
+# container. Create and mount both host directories even when they do not exist
+# yet, so a first `config init` through the wrapper is not lost on --rm exit.
+mkdir -p "$HOME/.gnostic" "$HOME/.local/state/gnostic"
 
 environment_args=""
 for name in $environment_variables; do
@@ -108,12 +112,11 @@ for name in $environment_variables; do
     environment_args="$environment_args -e $name"
 done
 
-mkdir -p "$HOME/.local/state/gnostic"
 exec "$runtime" run --rm -i --network host \
     -v "$repo_root:/workspace:ro" \
     -v "$build_root:/workspace/.build:ro" \
+    -v "$HOME/.gnostic:/root/.gnostic" \
     -v "$HOME/.local/state/gnostic:/root/.local/state/gnostic" \
-    $container_args \
     $environment_args \
     -w /workspace "$image" \
     /workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic "$@"

@@ -123,10 +123,11 @@ checkout and every worktree share one build. Set `GNOSTIC_BUILD_ROOT` to pin a
 different build, `GNOSTIC_IMAGE` to select the image, and `CONTAINER_RUNTIME`
 to select `podman` or `docker`.
 
-Run `gnostic --wrapper-info` to print the wrapper path, the build root, the
-binary path, and the revision the build was stamped with. The wrapper warns on
-standard error when that revision differs from the checkout it lives in, which
-means the build cache holds a binary from another branch.
+Run `gnostic --wrapper-info` to print the wrapper path, the repository root,
+the build root, the binary path, the build revision, and the checkout
+revision. The wrapper warns on standard error when the build revision differs
+from the checkout revision, which means the build cache holds a binary from
+another branch.
 
 The wrapper forwards the `GNOSTIC_*` variables the CLI reads: `GNOSTIC_CONFIG`,
 `GNOSTIC_HOST`, `GNOSTIC_PORT`, `GNOSTIC_NAMESPACE`, `GNOSTIC_STATE_HOME`,

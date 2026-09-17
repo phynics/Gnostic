@@ -40,7 +40,7 @@ worktree-bootstrap: resolve
 
 build: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS)
-	@git rev-parse HEAD > "$(BUILD_DIR)/gnostic-build-revision"
+	@git rev-parse HEAD > "$(BUILD_DIR)/gnostic-build-revision" 2>/dev/null || rm -f "$(BUILD_DIR)/gnostic-build-revision"
 
 test: build
 	@mkdir -p .testing

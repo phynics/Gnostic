@@ -143,6 +143,65 @@ test_wrapper_forwards_environment() {
     assert_contains "GNOSTIC_STATE_HOME=/root/.local/state/gnostic" "$environment" "GNOSTIC_STATE_HOME host path is remapped"
 }
 
+test_wrapper_mounts_a_fresh_config_directory() {
+    runtime="$fixture_dir/runtime-fresh"
+    arguments="$fixture_dir/fresh-arguments"
+    environment="$fixture_dir/fresh-environment"
+    build_dir="$fixture_dir/fresh-build"
+    output="$fixture_dir/fresh.out"
+    fresh_home="$fixture_dir/fresh-home"
+    mkdir -p "$fresh_home"
+    make_fake_runtime "$runtime"
+    make_build "$build_dir" "$head_revision"
+
+    run_capture "$output" env \
+        HOME="$fresh_home" \
+        CONTAINER_RUNTIME="$runtime" \
+        GNOSTIC_BUILD_ROOT="$build_dir" \
+        FAKE_RUNTIME_ARGUMENTS="$arguments" \
+        FAKE_RUNTIME_ENVIRONMENT="$environment" \
+        GNOSTIC_CONFIG="$fresh_home/.gnostic/config.json" \
+        "$wrapper" config init
+    assert_status 0 "$run_status" "fresh host wrapper invocation"
+    assert_contains "$fresh_home/.gnostic:/root/.gnostic" "$arguments" "fresh config directory is mounted"
+    [ -d "$fresh_home/.gnostic" ] || fail "wrapper creates the host config directory"
+}
+
+test_wrapper_rejects_parent_directory_escapes() {
+    runtime="$fixture_dir/runtime-escape"
+    arguments="$fixture_dir/escape-arguments"
+    environment="$fixture_dir/escape-environment"
+    build_dir="$fixture_dir/escape-build"
+    output="$fixture_dir/escape-config.out"
+    make_fake_runtime "$runtime"
+    make_build "$build_dir" "$head_revision"
+
+    run_capture "$output" env \
+        HOME="$home" \
+        CONTAINER_RUNTIME="$runtime" \
+        GNOSTIC_BUILD_ROOT="$build_dir" \
+        FAKE_RUNTIME_ARGUMENTS="$arguments" \
+        FAKE_RUNTIME_ENVIRONMENT="$environment" \
+        GNOSTIC_CONFIG="$home/.gnostic/../escape.json" \
+        "$wrapper" config show
+    assert_status 2 "$run_status" "GNOSTIC_CONFIG parent escape is rejected"
+    assert_contains "GNOSTIC_CONFIG" "$output" "GNOSTIC_CONFIG parent escape diagnostic names the variable"
+    [ ! -f "$arguments" ] || fail "GNOSTIC_CONFIG parent escape does not start the container"
+
+    state_output="$fixture_dir/escape-state.out"
+    run_capture "$state_output" env \
+        HOME="$home" \
+        CONTAINER_RUNTIME="$runtime" \
+        GNOSTIC_BUILD_ROOT="$build_dir" \
+        FAKE_RUNTIME_ARGUMENTS="$arguments" \
+        FAKE_RUNTIME_ENVIRONMENT="$environment" \
+        GNOSTIC_STATE_HOME="$home/.local/state/gnostic/../escape" \
+        "$wrapper" acp
+    assert_status 2 "$run_status" "GNOSTIC_STATE_HOME parent escape is rejected"
+    assert_contains "GNOSTIC_STATE_HOME" "$state_output" "GNOSTIC_STATE_HOME parent escape diagnostic names the variable"
+    [ ! -f "$arguments" ] || fail "GNOSTIC_STATE_HOME parent escape does not start the container"
+}
+
 test_wrapper_rejects_config_outside_mounts() {
     runtime="$fixture_dir/runtime-config"
     arguments="$fixture_dir/config-arguments"
@@ -252,6 +311,8 @@ test_wrapper_requires_a_build() {
 }
 
 test_wrapper_forwards_environment
+test_wrapper_mounts_a_fresh_config_directory
+test_wrapper_rejects_parent_directory_escapes
 test_wrapper_rejects_config_outside_mounts
 test_wrapper_rejects_state_home_outside_mounts
 test_wrapper_reports_build_identity
@@ -263,4 +324,4 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 
-echo "6 wrapper harness tests passed"
+echo "8 wrapper harness tests passed"
