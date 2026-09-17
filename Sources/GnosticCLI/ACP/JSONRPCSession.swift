@@ -237,8 +237,8 @@ public actor JSONRPCSession {
         let code: JSONRPCErrorCode = switch error {
         case .brokerUnreachable: .internalError
         case .noServedAscendant, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
-             .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .timelineUnavailable,
-             .timelineAmbiguous, .providerMismatch, .missingCapability: .invalidState
+             .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .providerOffline,
+             .timelineUnavailable, .timelineAmbiguous, .providerMismatch, .missingCapability: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI: .invalidParams
         }
         return JSONRPCErrorObject(

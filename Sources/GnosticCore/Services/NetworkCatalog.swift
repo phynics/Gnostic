@@ -18,9 +18,29 @@ public actor NetworkCatalog {
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
     private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
+    private var providerEvictionContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
 
     /// Creates an empty catalog.
     public init() {}
+
+    /// Observes providers removed by a lifecycle identity deadvertisement.
+    ///
+    /// The stream yields the evicted provider identity each time an identity
+    /// deadvertisement removes that provider's catalog state. It does not end
+    /// with the catalog; callers cancel their iteration at shutdown.
+    public func providerEvictionStream() -> AsyncStream<String> {
+        let pair = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(16))
+        let id = UUID()
+        providerEvictionContinuations[id] = pair.continuation
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeProviderEvictionContinuation(id) }
+        }
+        return pair.stream
+    }
+
+    private func removeProviderEvictionContinuation(_ id: UUID) {
+        providerEvictionContinuations[id] = nil
+    }
 
     /// Ingests an advertisement or readvertisement for a supported Gnostic object type.
     ///
@@ -88,9 +108,19 @@ public actor NetworkCatalog {
 
     /// Ingests a deadvertisement and removes only entries owned by its provider.
     ///
+    /// A lifecycle identity deadvertisement names the provider's own identity in
+    /// its `objectIds`. That event is not scoped to a discoverable Gnostic
+    /// object, so it evicts every catalog entry, workspace tool, and ownership
+    /// record for that provider instead of the listed object IDs. A per-object
+    /// deadvertisement leaves the rest of the provider's state untouched.
+    ///
     /// - Parameter event: The immutable Axoloty deadvertisement snapshot.
     public func ingest(_ event: DeadvertiseEventSnapshot) {
         let providerID = event.sourceId ?? Self.anonymousProviderID
+        if event.objectIds.contains(where: { $0.caseInsensitiveCompare(providerID) == .orderedSame }) {
+            evictProvider(providerID)
+            return
+        }
         for rawID in event.objectIds {
             guard let objectID = UUID(uuidString: rawID) else { continue }
             if let owner = workspaceToolOwners.removeValue(forKey: objectID) {
@@ -106,6 +136,28 @@ public actor NetworkCatalog {
             if entries[objectID]?.isEmpty == true {
                 entries[objectID] = nil
             }
+        }
+    }
+
+    /// Removes every record owned by one provider and notifies observers.
+    private func evictProvider(_ providerID: String) {
+        for objectID in Array(entries.keys) where entries[objectID]?[providerID] != nil {
+            entries[objectID]?[providerID] = nil
+            if entries[objectID]?.isEmpty == true {
+                entries[objectID] = nil
+            }
+        }
+        for workspaceID in Array(workspaceTools.keys) where workspaceTools[workspaceID]?[providerID] != nil {
+            workspaceTools[workspaceID]?[providerID] = nil
+            if workspaceTools[workspaceID]?.isEmpty == true {
+                workspaceTools[workspaceID] = nil
+            }
+        }
+        for objectID in Array(workspaceToolOwners.keys) where workspaceToolOwners[objectID]?.providerID == providerID {
+            workspaceToolOwners[objectID] = nil
+        }
+        for continuation in providerEvictionContinuations.values {
+            continuation.yield(providerID)
         }
     }
 
