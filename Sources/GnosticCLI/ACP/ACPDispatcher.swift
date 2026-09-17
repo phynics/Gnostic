@@ -9,11 +9,17 @@ import PKContracts
 /// in the Gnostic object advertisements.
 @MainActor
 final class ACPDispatcher: Sendable {
+    /// The Ascendant this ACP process is pinned to.
+    ///
+    /// `providerID` is the serve process that currently answers for it and is
+    /// re-resolved after an eviction. `nodeID` is the manifest identity that
+    /// outlives every such process, so it is what a session binds to.
     private struct Ascendant {
         let id: UUID
         let name: String
         let timelineID: UUID
         let providerID: String
+        let nodeID: UUID?
     }
 
     private struct ActivePrompt {
@@ -31,6 +37,7 @@ final class ACPDispatcher: Sendable {
     private let registry: ACPSessionRegistry
     private let requestedAscendantID: UUID?
     private let requestedProviderID: String?
+    private let requestedNodeID: UUID?
     private let publish: @Sendable (String, AnyCodable) -> Void
     private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
     private var ascendant: Ascendant?
@@ -44,6 +51,7 @@ final class ACPDispatcher: Sendable {
         registry: ACPSessionRegistry,
         requestedAscendantID: UUID?,
         requestedProviderID: String? = nil,
+        requestedNodeID: UUID? = nil,
         publish: @escaping @Sendable (String, AnyCodable) -> Void,
         requestPermission: @escaping @Sendable (AnyCodable) async throws -> AnyCodable
     ) {
@@ -51,6 +59,7 @@ final class ACPDispatcher: Sendable {
         self.registry = registry
         self.requestedAscendantID = requestedAscendantID
         self.requestedProviderID = requestedProviderID
+        self.requestedNodeID = requestedNodeID
         self.publish = publish
         self.requestPermission = requestPermission
     }
@@ -131,7 +140,7 @@ final class ACPDispatcher: Sendable {
             timelineID: status.timelineID,
             cwd: cwd,
             title: status.title,
-            providerID: selected.providerID
+            nodeID: selected.nodeID
         )
         return .dictionary([
             "sessionId": .string(record.id),
@@ -165,14 +174,13 @@ final class ACPDispatcher: Sendable {
         var sessions: [AnyCodable] = []
         var unresolved: [ACPSessionRecord] = []
         // Registry entries survive process restarts, but a deleted remote
-        // Timeline must not be presented as resumable. Omitting a record that
-        // is already closed or fails its status probe is the explicit ACP
-        // invariant; a record that fails the binding filter is unresolved
-        // here too, because a record created by an earlier serve carries that
-        // process's provider ID (#247).
-        for record in records where record.closedAt == nil {
-            guard matchesBinding(record, selected: selected),
-                  let status = try? await client.timelineStatus(timelineID: record.timelineID, providerID: selected.providerID) else {
+        // Timeline must not be presented as resumable. A closed record or one
+        // bound to a different Node is omitted outright; a record whose
+        // Timeline cannot be read is unresolved so ADR 0008 can end it once
+        // absence is confirmed. The binding is namespace, Ascendant, and Node,
+        // so a record created by an earlier serve of the same Node resolves.
+        for record in records where record.closedAt == nil && isBound(record, to: selected) {
+            guard let status = try? await client.timelineStatus(timelineID: record.timelineID, providerID: selected.providerID) else {
                 unresolved.append(record)
                 continue
             }
@@ -505,12 +513,17 @@ final class ACPDispatcher: Sendable {
 
     private func resolveAscendant() async throws -> Ascendant {
         do {
-            let selected = try await client.selectAscendant(id: requestedAscendantID, providerID: requestedProviderID)
+            let selected = try await client.selectAscendant(
+                id: requestedAscendantID,
+                providerID: requestedProviderID,
+                nodeID: requestedNodeID
+            )
             return Ascendant(
                 id: selected.id,
                 name: selected.name,
                 timelineID: selected.timelineID,
-                providerID: selected.providerID
+                providerID: selected.providerID,
+                nodeID: selected.nodeID ?? requestedNodeID
             )
         } catch let error as RemoteTurnClientError {
             throw JSONRPCMethodError.invalidState(error.localizedDescription)
@@ -566,33 +579,46 @@ final class ACPDispatcher: Sendable {
     }
 
     private func requireBinding(of record: ACPSessionRecord) async throws {
-        guard matchesBinding(record, selected: try await currentAscendant()) else {
-            throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant or namespace")
+        guard isBound(record, to: try await currentAscendant()) else {
+            throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant, Node, or namespace")
         }
     }
 
-    /// Whether a record belongs to the Ascendant and namespace this process serves.
-    private func matchesBinding(_ record: ACPSessionRecord, selected: Ascendant) -> Bool {
-        record.ascendantID == selected.id
-            && (record.providerID == nil || record.providerID == selected.providerID)
-            && (record.profileFingerprint == profileFingerprint(for: selected)
-                || record.profileFingerprint == legacyProfileFingerprint(for: selected))
+    /// Whether a persisted record belongs to this process's Ascendant.
+    ///
+    /// The binding is namespace, Ascendant, and Node. It never includes the
+    /// provider identity, which changes with every serve process, so a record
+    /// stays valid across a restart of its Node.
+    private func isBound(_ record: ACPSessionRecord, to ascendant: Ascendant) -> Bool {
+        guard record.ascendantID == ascendant.id else { return false }
+        if let recorded = record.nodeID, let current = ascendant.nodeID, recorded != current { return false }
+        return acceptsFingerprint(record.profileFingerprint, for: ascendant)
+    }
+
+    /// Accepts this process's fingerprint and the shapes written before it.
+    ///
+    /// A record written before this contract carries a per-process provider
+    /// identity in its middle segment. The namespace and the Ascendant are the
+    /// parts that ever bound it, and the Node is checked separately, so an
+    /// existing record keeps loading instead of failing on a stale provider.
+    private func acceptsFingerprint(_ fingerprint: String, for ascendant: Ascendant) -> Bool {
+        let ascendantID = ascendant.id.uuidString.lowercased()
+        if fingerprint == "\(client.namespace):\(ascendantID)" { return true }
+        return fingerprint.hasPrefix("\(client.namespace):") && fingerprint.hasSuffix(":\(ascendantID)")
     }
 
     private func profileFingerprint(for ascendant: Ascendant) -> String {
-        "\(client.namespace):\(ascendant.providerID.lowercased()):\(ascendant.id.uuidString.lowercased())"
+        let ascendantID = ascendant.id.uuidString.lowercased()
+        guard let nodeID = ascendant.nodeID else { return "\(client.namespace):\(ascendantID)" }
+        return "\(client.namespace):node:\(nodeID.uuidString.lowercased()):\(ascendantID)"
     }
 
-    private func legacyProfileFingerprint(for ascendant: Ascendant) -> String {
-        "\(client.namespace):\(ascendant.id.uuidString.lowercased())"
-    }
-
+    /// The provider that currently answers for a record's Ascendant.
+    ///
+    /// The record itself is not bound to a provider; this is the live serve
+    /// process behind its Node, re-resolved after an eviction.
     private func boundProviderID(for record: ACPSessionRecord) async throws -> String {
-        let selected = try await currentAscendant()
-        guard record.providerID == nil || record.providerID == selected.providerID else {
-            throw JSONRPCMethodError.invalidState("session is bound to a different provider")
-        }
-        return selected.providerID
+        try await currentAscendant().providerID
     }
 
     private func canonicalCWD(_ cwd: String) throws -> String {

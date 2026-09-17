@@ -23,6 +23,13 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
     /// The attached workspace relationships.
     public var attachedWorkspaceIDs: [UUID]
 
+    /// The identity of the node that serves this Timeline.
+    ///
+    /// The node identity is stable across serve processes, unlike the Axoloty
+    /// provider identity. It is absent on advertisements from a serve older
+    /// than this property.
+    public var nodeID: UUID?
+
     /// The timeline creation timestamp.
     public var createdAt: Date
 
@@ -35,13 +42,18 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
     }
 
     /// Creates a network projection without exposing a provider's Timeline type.
-    public init(timeline: AscendantRuntimeTimeline, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(
+        timeline: AscendantRuntimeTimeline,
+        nodeID: UUID? = nil,
+        protocolMajor: Int = GnosticProtocol.currentMajor
+    ) {
         self.protocolMajor = protocolMajor
         title = GnosticWirePayload.boundedLabel(timeline.title)
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
         attachedAscendantID = timeline.attachedAscendantID
         attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(timeline.attachedWorkspaceIDs)
+        self.nodeID = nodeID
         createdAt = timeline.createdAt
         updatedAt = timeline.updatedAt
         super.init(
@@ -59,6 +71,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
         case isPrivate
         case attachedAscendantID
         case attachedWorkspaceIDs
+        case nodeID
         case createdAt
         case updatedAt
     }
@@ -74,6 +87,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
         isPrivate = try container.decode(Bool.self, forKey: .isPrivate)
         attachedAscendantID = try container.decodeIfPresent(UUID.self, forKey: .attachedAscendantID)
         attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(try container.decode([UUID].self, forKey: .attachedWorkspaceIDs))
+        nodeID = try container.decodeIfPresent(UUID.self, forKey: .nodeID)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         try super.init(from: decoder)
@@ -91,6 +105,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
         try container.encode(isPrivate, forKey: .isPrivate)
         try container.encodeIfPresent(attachedAscendantID, forKey: .attachedAscendantID)
         try container.encode(attachedWorkspaceIDs, forKey: .attachedWorkspaceIDs)
+        try container.encodeIfPresent(nodeID, forKey: .nodeID)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }

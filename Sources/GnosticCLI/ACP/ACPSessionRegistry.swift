@@ -20,7 +20,7 @@ actor ACPSessionRegistry {
         timelineID: UUID,
         cwd: String,
         title: String,
-        providerID: String? = nil
+        nodeID: UUID? = nil
     ) throws -> ACPSessionRecord {
         let now = Date()
         let record = ACPSessionRecord(
@@ -28,7 +28,8 @@ actor ACPSessionRegistry {
             profileFingerprint: profileFingerprint,
             ascendantID: ascendantID,
             timelineID: timelineID,
-            providerID: providerID,
+            nodeID: nodeID,
+            providerID: nil,
             cwd: cwd,
             title: title,
             createdAt: now,

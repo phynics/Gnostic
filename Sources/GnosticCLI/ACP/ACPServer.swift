@@ -13,6 +13,7 @@ struct ACPServer: Sendable {
         client: RemoteTurnClient,
         ascendantID: UUID?,
         providerID: String? = nil,
+        nodeID: UUID? = nil,
         registry: ACPSessionRegistry,
         output: @escaping JSONRPCSession.Output = { data in
         FileHandle.standardOutput.write(data)
@@ -26,6 +27,7 @@ struct ACPServer: Sendable {
             registry: registry,
             requestedAscendantID: ascendantID,
             requestedProviderID: providerID,
+            requestedNodeID: nodeID,
             publish: { method, params in
                 let request = JSONRPCRequest(id: nil, method: method, params: params)
                 guard let data = try? JSONEncoder().encode(request) else { return }

@@ -9,27 +9,32 @@ public final class OrchestrationProjector {
     private let advertiseObject: (CoatyObject) -> Void
     private let readvertiseObject: (CoatyObject) -> Void
     private var timelines: [UUID: GnosticTimelineObject] = [:]
+    private let nodeID: UUID?
 
     /// Creates a projector using the provided advertisement operations.
     ///
     /// - Parameters:
     ///   - advertise: Publishes a newly advertised local object.
     ///   - readvertise: Publishes a changed local object with the same identity.
+    ///   - nodeID: The serving node identity carried by each projection.
     public init(
         advertise: @escaping (CoatyObject) -> Void,
-        readvertise: @escaping (CoatyObject) -> Void
+        readvertise: @escaping (CoatyObject) -> Void,
+        nodeID: UUID? = nil
     ) {
         advertiseObject = advertise
         readvertiseObject = readvertise
+        self.nodeID = nodeID
     }
 
     /// Creates a projector backed by an Axoloty lifecycle controller.
     ///
     /// - Parameter controller: The controller that publishes lifecycle events.
-    public convenience init(controller: ObjectLifecycleController) {
+    public convenience init(controller: ObjectLifecycleController, nodeID: UUID? = nil) {
         self.init(
             advertise: { controller.advertiseDiscoverableObject(object: $0) },
-            readvertise: { controller.readvertiseDiscoverableObject(object: $0) }
+            readvertise: { controller.readvertiseDiscoverableObject(object: $0) },
+            nodeID: nodeID
         )
     }
 
@@ -44,8 +49,8 @@ public final class OrchestrationProjector {
         timeline: AscendantRuntimeTimeline,
         workspaces: [GnosticWorkspaceReference]
     ) {
-        advertiseObject(GnosticAscendantObject(identity: ascendant))
-        let timelineObject = GnosticTimelineObject(timeline: timeline)
+        advertiseObject(GnosticAscendantObject(identity: ascendant, nodeID: nodeID))
+        let timelineObject = GnosticTimelineObject(timeline: timeline, nodeID: nodeID)
         timelines[timeline.id] = timelineObject
         advertiseObject(timelineObject)
         workspaces.forEach { advertiseObject(GnosticWorkspaceObject(workspace: $0)) }
@@ -57,7 +62,7 @@ public final class OrchestrationProjector {
     /// - Returns: The timeline object sent in the readvertisement.
     @discardableResult
     public func readvertise(timeline: AscendantRuntimeTimeline) -> GnosticTimelineObject {
-        let object = GnosticTimelineObject(timeline: timeline)
+        let object = GnosticTimelineObject(timeline: timeline, nodeID: nodeID)
         timelines[timeline.id] = object
         readvertiseObject(object)
         return object

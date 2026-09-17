@@ -159,7 +159,8 @@ EOF
     echo "  PI_ACP_CONFIG=$stack_dir/acp-profiles.json pi"
     echo
     echo "pi starts profiles with 'gnostic' from PATH (Scripts/gnostic-container.sh)."
-    echo "Relaunch pi after restarting serve: provider IDs change with every serve process."
+    echo "Profiles address the Node, so they survive a serve restart. Timelines"
+    echo "created at runtime do not, so open a new session after a restart."
     if ! command -v gnostic >/dev/null 2>&1; then
         echo "warning: 'gnostic' is not on PATH; link Scripts/gnostic-container.sh into PATH" >&2
     fi

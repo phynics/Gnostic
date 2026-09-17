@@ -76,6 +76,51 @@ struct ProjectionAndCatalogTests {
         #expect(workspaceObject.tools.map { $0.id } == ["search"])
     }
 
+    @Test("advertised projections carry the stable serving node identity")
+    func advertisedProjectionsCarryServingNodeIdentity() async throws {
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000005")!
+        let ascendant = AscendantRuntimeIdentity(
+            id: ascendantID, name: "Atlas", description: "Coordinates analysis.",
+            privateTimelineID: timelineID, primaryWorkspaceID: nil,
+            lastActiveAt: updateDate, createdAt: creationDate, updatedAt: updateDate
+        )
+        let timeline = AscendantRuntimeTimeline(
+            id: timelineID,
+            title: "Private research",
+            attachedWorkspaceIDs: [],
+            attachedAscendantID: ascendantID,
+            isArchived: false,
+            isPrivate: false,
+            createdAt: creationDate,
+            updatedAt: updateDate
+        )
+
+        let catalog = NetworkCatalog()
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: "provider-a",
+            object: try snapshot(of: GnosticAscendantObject(identity: ascendant, nodeID: nodeID))
+        ))
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: "provider-a",
+            object: try snapshot(of: GnosticTimelineObject(timeline: timeline, nodeID: nodeID))
+        ))
+
+        let ascendantEntry = try #require(await catalog.object(id: ascendantID, providerID: "provider-a"))
+        let timelineEntry = try #require(await catalog.object(id: timelineID, providerID: "provider-a"))
+        #expect(ascendantEntry.knownProperties["nodeID"] == .string(nodeID.uuidString))
+        #expect(timelineEntry.knownProperties["nodeID"] == .string(nodeID.uuidString))
+
+        // The property is additive: a projection without a node identity keeps
+        // advertising, and its catalog entry simply carries no node property.
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: "provider-b",
+            object: try snapshot(of: GnosticAscendantObject(identity: ascendant))
+        ))
+        let withoutNode = try #require(await catalog.object(id: ascendantID, providerID: "provider-b"))
+        #expect(withoutNode.knownProperties["nodeID"] == nil)
+        #expect(withoutNode.isProtocolCompatible)
+    }
+
     @Test("Workspace network values round trip through the explicit adapter")
     func workspaceNetworkValuesRoundTripThroughAdapter() throws {
         let definition = GnosticWorkspaceToolDefinition(
@@ -817,6 +862,16 @@ struct ProjectionAndCatalogTests {
                     "updatedAt": updateDate.timeIntervalSince1970,
                 ])
             )
+        )
+    }
+
+    private func snapshot<Object: CoatyObject>(of object: Object) throws -> CoatyObjectSnapshot {
+        CoatyObjectSnapshot(
+            objectId: object.objectId.string,
+            coreType: .coatyObject,
+            objectType: object.objectType,
+            name: object.name,
+            payload: String(decoding: try JSONEncoder().encode(object), as: UTF8.self)
         )
     }
 

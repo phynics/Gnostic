@@ -85,13 +85,18 @@ struct ACPProviderAcceptanceTests {
             #expect(Set(profiles.profiles.map(\.id)).count == 2)
             #expect(profiles.profiles.allSatisfy { profile in
                 profile.id.hasPrefix("gnostic-\(sharedAscendantID.uuidString.lowercased())-")
-                    && profile.args.contains("--provider")
+                    && profile.args.contains("--node")
+                    && !profile.args.contains("--provider")
             })
+            // The selector is each serving node, which outlives its process.
             #expect(Set(profiles.profiles.compactMap { profile in
-                guard let index = profile.args.firstIndex(of: "--provider"),
+                guard let index = profile.args.firstIndex(of: "--node"),
                       profile.args.indices.contains(index + 1) else { return nil }
                 return profile.args[index + 1]
-            }) == Set(ascendants.map { $0.providerID.lowercased() }))
+            }) == [
+                "a21d0000-0000-4000-8000-000000000201",
+                "a21d0000-0000-4000-8000-000000000204",
+            ])
         }
     }
 
@@ -161,7 +166,9 @@ struct ACPProviderAcceptanceTests {
             "gnostic-\(secondAscendantID.uuidString.lowercased())",
         ])
         #expect(profiles.profiles.allSatisfy { profile in
-            profile.args.contains("--ascendant") && profile.args.contains("--provider")
+            profile.args.contains("--ascendant")
+                && !profile.args.contains("--provider")
+                && !profile.args.contains("--node")
         })
 
         let session = try launchACP(
@@ -284,6 +291,118 @@ struct ACPProviderAcceptanceTests {
         #expect(try await readResponse(from: &mismatchedOutput).error == nil)
         mismatched.input.fileHandleForWriting.closeFile()
         mismatched.process.waitUntilExit()
+    }
+
+    @Test(
+        "a captured profile still initializes and opens sessions after a serve restart",
+        .timeLimit(.minutes(2))
+    )
+    @MainActor
+    func capturedProfileSurvivesServeRestart() async throws {
+        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+
+        let namespace = "acp-restart-\(UUID().uuidString.lowercased())"
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000222")!
+        let plan = try acceptanceManifest(
+            namespace: namespace,
+            nodeID: "A21D0000-0000-4000-8000-000000000221",
+            ascendantID: ascendantID,
+            timelineID: "A21D0000-0000-4000-8000-000000000223",
+            name: "Restart Ascendant"
+        ).compileLaunchPlan()
+
+        let first = try await NodeRuntime(plan: plan, adapters: acceptanceAdapters())
+        var stopped = false
+        defer {
+            if !stopped { Task { @MainActor in await first.shutdown() } }
+        }
+        try await first.start()
+
+        let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { probe.stop() }
+        try await probe.connect()
+        let before = try await waitForAscendant(ascendantID, using: probe)
+
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-restart-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: stateURL) }
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_STATE_HOME"] = stateURL.path
+        environment["GNOSTIC_CONFIG"] = stateURL.appendingPathComponent("config.json").path
+
+        let profiles = try await runACPProfiles(
+            binary: binary,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
+        )
+        let profile = try #require(profiles.profiles.first)
+        #expect(profiles.profiles.count == 1)
+        #expect(!profile.args.contains("--provider"))
+
+        let staleSessionID = try await openACPSession(
+            binary: binary,
+            arguments: profile.args,
+            environment: environment,
+            cwd: "/tmp/acp-restart"
+        )
+
+        // Replace the serve process. Its Axoloty provider identity is per
+        // process, so the restarted node answers under a new one.
+        await first.shutdown()
+        stopped = true
+        let second = try await NodeRuntime(plan: plan, adapters: acceptanceAdapters())
+        defer { Task { @MainActor in await second.shutdown() } }
+        try await second.start()
+        // A client that connects after the restart is the case the captured
+        // profile must satisfy. The pre-restart probe is bound to the old
+        // provider's catalog entry, so it cannot answer for the new one.
+        let restartedProbe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
+        defer { restartedProbe.stop() }
+        try await restartedProbe.connect()
+        let after = try await waitForAscendant(ascendantID, using: restartedProbe)
+        #expect(after.providerID != before.providerID)
+
+        // The profile captured before the restart is still executable.
+        let session = try launchACP(
+            binary: binary,
+            arguments: profile.args,
+            environment: environment
+        )
+        defer {
+            if session.process.isRunning { session.process.terminate() }
+        }
+        try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("restart-acceptance"), "version": .string("1")]),
+        ])))
+        var output = session.lines.stream.makeAsyncIterator()
+        #expect(try await readResponse(from: &output).error == nil)
+
+        try session.send(JSONRPCRequest(id: .number(2), method: "session/new", params: .dictionary([
+            "cwd": .string("/tmp/acp-restart"),
+            "mcpServers": .array([]),
+        ])))
+        #expect(try await readResponse(from: &output).error == nil)
+
+        // The session created before the restart is still bound to this
+        // Ascendant and Node, so resume passes the binding check. Its runtime
+        // Timeline does not outlive the serve process (#248), so resume
+        // reports the missing Timeline rather than a binding failure.
+        try session.send(JSONRPCRequest(id: .number(3), method: "session/resume", params: .dictionary([
+            "sessionId": .string(staleSessionID),
+            "cwd": .string("/tmp/acp-restart"),
+            "mcpServers": .array([]),
+        ])))
+        let resumed = try await readResponse(from: &output)
+        #expect(resumed.error?.data == .dictionary(["gnosticCode": .string("timelineUnavailable")]))
+
+        try session.send(JSONRPCRequest(id: .number(4), method: "shutdown"))
+        #expect(try await readResponse(from: &output).error == nil)
+        session.input.fileHandleForWriting.closeFile()
+        session.process.waitUntilExit()
     }
 
     @Test(
@@ -811,6 +930,41 @@ private struct ACPProcess {
     }
 }
 
+/// Runs one ACP process long enough to create a session, then stops it.
+private func openACPSession(
+    binary: String,
+    arguments: [String],
+    environment: [String: String],
+    cwd: String
+) async throws -> String {
+    let session = try launchACP(binary: binary, arguments: arguments, environment: environment)
+    defer {
+        if session.process.isRunning { session.process.terminate() }
+    }
+    try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
+        "protocolVersion": .number(1),
+        "clientInfo": .dictionary(["name": .string("restart-acceptance"), "version": .string("1")]),
+    ])))
+    var output = session.lines.stream.makeAsyncIterator()
+    #expect(try await readResponse(from: &output).error == nil)
+
+    try session.send(JSONRPCRequest(id: .number(2), method: "session/new", params: .dictionary([
+        "cwd": .string(cwd),
+        "mcpServers": .array([]),
+    ])))
+    let created = try await readResponse(from: &output)
+    #expect(created.error == nil)
+    guard case let .dictionary(values) = created.result,
+          case let .string(sessionID) = values["sessionId"] else {
+        throw ACPSubprocessError.timeout
+    }
+    try session.send(JSONRPCRequest(id: .number(3), method: "shutdown"))
+    #expect(try await readResponse(from: &output).error == nil)
+    session.input.fileHandleForWriting.closeFile()
+    session.process.waitUntilExit()
+    return sessionID
+}
+
 private func launchACP(
     binary: String,
     ascendantID: UUID,
@@ -820,14 +974,24 @@ private func launchACP(
     namespace: String,
     environment: [String: String]
 ) throws -> ACPProcess {
+    try launchACP(
+        binary: binary,
+        arguments: [
+            "acp", "--host", host, "--port", String(port), "--namespace", namespace,
+            "--ascendant", ascendantID.uuidString.lowercased(),
+        ] + (providerID.map { ["--provider", $0.lowercased()] } ?? []),
+        environment: environment
+    )
+}
+
+private func launchACP(
+    binary: String,
+    arguments: [String],
+    environment: [String: String]
+) throws -> ACPProcess {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
-    // A client that pins no provider is the shape ADR 0008 cares about: it
-    // survives a serve restart that changes the per-process provider ID.
-    process.arguments = [
-        "acp", "--host", host, "--port", String(port), "--namespace", namespace,
-        "--ascendant", ascendantID.uuidString.lowercased(),
-    ] + (providerID.map { ["--provider", $0.lowercased()] } ?? [])
+    process.arguments = arguments
     process.environment = environment
     let input = Pipe()
     let output = Pipe()

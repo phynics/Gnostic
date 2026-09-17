@@ -238,7 +238,8 @@ public actor JSONRPCSession {
         case .brokerUnreachable: .internalError
         case .noServedAscendant, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
              .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .providerOffline,
-             .timelineUnavailable, .timelineAmbiguous, .providerMismatch, .missingCapability: .invalidState
+             .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
+             .missingCapability: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI: .invalidParams
         }
         return JSONRPCErrorObject(

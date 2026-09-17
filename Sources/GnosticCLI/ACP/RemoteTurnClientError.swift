@@ -16,6 +16,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case ascendantUnavailable(UUID)
     case providerUnavailable(String)
     case providerOffline(String)
+    case nodeUnavailable(UUID)
     case timelineUnavailable(UUID)
     case timelineAmbiguous(UUID)
     case providerMismatch
@@ -35,6 +36,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case let .ascendantUnavailable(id): "Ascendant \(id.uuidString.lowercased()) was not discovered."
         case let .providerUnavailable(id): "Provider \(id.lowercased()) was not discovered."
         case let .providerOffline(id): "Provider \(id.lowercased()) went offline."
+        case let .nodeUnavailable(id): "Node \(id.uuidString.lowercased()) was not discovered."
         case let .timelineUnavailable(id): "Timeline \(id.uuidString.lowercased()) was not discovered."
         case let .timelineAmbiguous(id): "Timeline \(id.uuidString.lowercased()) is advertised by more than one Node."
         case .providerMismatch: "The response came from a different provider than the addressed Node."
@@ -57,6 +59,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .ascendantUnavailable: "ascendantUnavailable"
         case .providerUnavailable: "providerUnavailable"
         case .providerOffline: "providerOffline"
+        case .nodeUnavailable: "nodeUnavailable"
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
         case .providerMismatch: "providerMismatch"

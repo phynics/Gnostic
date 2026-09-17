@@ -134,6 +134,142 @@ struct ACPProtocolTests {
         ) == nil)
     }
 
+    @Test("profiles pin a node only when one Ascendant is served by more than one node")
+    func profilesPinNodeOnlyWhenAmbiguous() throws {
+        let ascendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000031")!
+        let otherAscendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000032")!
+        let firstNodeID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000041")!
+        let secondNodeID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000042")!
+
+        let single = ACPCommand.profiles(
+            from: [ascendantEntry(id: ascendantID, providerID: "provider-a", nodeID: firstNodeID)],
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: "profiles"
+        )
+        let onlyProfile = try #require(single.first)
+        #expect(single.count == 1)
+        #expect(onlyProfile.id == "gnostic-\(ascendantID.uuidString.lowercased())")
+        #expect(onlyProfile.args == [
+            "acp",
+            "--host", "127.0.0.1",
+            "--port", "1883",
+            "--namespace", "profiles",
+            "--ascendant", ascendantID.uuidString.lowercased(),
+        ])
+
+        // A second serve process of the same node is the same address, so the
+        // profile stays restart-stable instead of naming either process.
+        let restarted = ACPCommand.profiles(
+            from: [
+                ascendantEntry(id: ascendantID, providerID: "provider-a", nodeID: firstNodeID),
+                ascendantEntry(id: ascendantID, providerID: "provider-b", nodeID: firstNodeID),
+            ],
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: "profiles"
+        )
+        #expect(restarted.map(\.id) == [onlyProfile.id])
+        #expect(restarted.allSatisfy { !$0.args.contains("--provider") })
+
+        let duplicated = ACPCommand.profiles(
+            from: [
+                ascendantEntry(id: ascendantID, providerID: "provider-a", nodeID: firstNodeID),
+                ascendantEntry(id: ascendantID, providerID: "provider-b", nodeID: secondNodeID),
+                ascendantEntry(id: otherAscendantID, providerID: "provider-b", nodeID: secondNodeID),
+            ],
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: "profiles"
+        )
+        #expect(duplicated.map(\.id) == [
+            "gnostic-\(ascendantID.uuidString.lowercased())-\(firstNodeID.uuidString.lowercased())",
+            "gnostic-\(ascendantID.uuidString.lowercased())-\(secondNodeID.uuidString.lowercased())",
+            "gnostic-\(otherAscendantID.uuidString.lowercased())",
+        ])
+        #expect(duplicated.allSatisfy { !$0.args.contains("--provider") })
+        #expect(duplicated.prefix(2).compactMap { profile -> String? in
+            guard let index = profile.args.firstIndex(of: "--node") else { return nil }
+            return profile.args[index + 1]
+        } == [firstNodeID.uuidString.lowercased(), secondNodeID.uuidString.lowercased()])
+
+        // A serve that advertises no node identity keeps the provider as its
+        // only available selector.
+        let legacy = ACPCommand.profiles(
+            from: [
+                ascendantEntry(id: ascendantID, providerID: "provider-a", nodeID: nil),
+                ascendantEntry(id: ascendantID, providerID: "provider-b", nodeID: nil),
+            ],
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: "profiles"
+        )
+        #expect(legacy.count == 2)
+        #expect(legacy.allSatisfy { $0.args.contains("--provider") })
+    }
+
+    @Test("a cached profile bundle that pins a provider is discarded")
+    func cachedProviderPinnedBundleIsDiscarded() {
+        let base = ["acp", "--namespace", "cache", "--ascendant", "a"]
+        let stable = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: [
+            ACPProfile(id: "gnostic-a", name: "A", command: "gnostic", args: base, env: [:])
+        ])
+        let pinned = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: [
+            ACPProfile(id: "gnostic-a", name: "A", command: "gnostic", args: base + ["--provider", "p"], env: [:])
+        ])
+        #expect(stable.isRestartStable)
+        #expect(!pinned.isRestartStable)
+    }
+
+    @Test("a session record written before the node binding still loads")
+    func legacySessionRecordStillLoads() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-legacy-\(UUID().uuidString)")
+            .appendingPathComponent("sessions.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let ascendantID = UUID()
+        let legacy = """
+        [{"id":"session-legacy",
+          "profileFingerprint":"namespace:4293ec9c:\(ascendantID.uuidString.lowercased())",
+          "ascendantID":"\(ascendantID.uuidString)",
+          "timelineID":"\(UUID().uuidString)",
+          "providerID":"4293ec9c",
+          "cwd":"/workspace/project",
+          "title":"Legacy",
+          "createdAt":0,
+          "updatedAt":0}]
+        """
+        try Data(legacy.utf8).write(to: url)
+
+        let registry = ACPSessionRegistry(url: url)
+        let record = try #require(await registry.record(id: "session-legacy"))
+        #expect(record.ascendantID == ascendantID)
+        #expect(record.nodeID == nil)
+        #expect(record.providerID == "4293ec9c")
+
+        // New records never persist a provider identity.
+        let created = try await registry.create(
+            profileFingerprint: "namespace:node:\(UUID().uuidString.lowercased()):\(ascendantID.uuidString.lowercased())",
+            ascendantID: ascendantID,
+            timelineID: UUID(),
+            cwd: "/workspace/project",
+            title: "Current",
+            nodeID: UUID(uuidString: "C41D0000-0000-4000-8000-000000000051")!
+        )
+        #expect(created.providerID == nil)
+        #expect(created.nodeID == UUID(uuidString: "C41D0000-0000-4000-8000-000000000051"))
+
+        // Both records survive the reload: the legacy one keeps its retained
+        // provider field, the new one has none to keep.
+        let reloaded = ACPSessionRegistry(url: url)
+        #expect(await reloaded.record(id: "session-legacy")?.providerID == "4293ec9c")
+        #expect(await reloaded.record(id: created.id)?.providerID == nil)
+    }
+
     @Test("prompt accepts only text and carries the stable client turn id")
     func promptMetadata() throws {
         let params = ACPPromptParameters(
@@ -298,6 +434,24 @@ struct ACPProtocolTests {
             "outcome": .dictionary(["outcome": .string("cancelled")]),
         ])) == false)
     }
+}
+
+private func ascendantEntry(id: UUID, providerID: String, nodeID: UUID?) -> NetworkCatalogEntry {
+    var known: [String: NetworkDynamicValue] = [
+        "privateTimelineID": .string(UUID().uuidString.lowercased()),
+        "capabilities": .array([.string(GnosticCapability.textTurnInput)]),
+    ]
+    if let nodeID { known["nodeID"] = .string(nodeID.uuidString.lowercased()) }
+    return NetworkCatalogEntry(
+        objectID: id,
+        objectType: GnosticObjectType.ascendant,
+        protocolMajor: GnosticProtocol.currentMajor,
+        providerID: providerID,
+        name: "Ascendant",
+        knownProperties: known,
+        dynamicProperties: [:],
+        workspace: nil
+    )
 }
 
 private extension AnyCodable {

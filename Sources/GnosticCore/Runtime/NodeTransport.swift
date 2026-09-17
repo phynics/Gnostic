@@ -51,6 +51,7 @@ public final class NodeTransport {
     private let communication: CommunicationManager?
     private let lifecycle: ObjectLifecycleController?
     private let registry: NodeRegistry?
+    private let nodeID: UUID?
     private let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
@@ -69,6 +70,7 @@ public final class NodeTransport {
         communication: CommunicationManager? = nil,
         lifecycle: ObjectLifecycleController? = nil,
         registry: NodeRegistry? = nil,
+        nodeID: UUID? = nil,
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
@@ -88,6 +90,7 @@ public final class NodeTransport {
         self.communication = communication
         self.lifecycle = lifecycle
         self.registry = registry
+        self.nodeID = nodeID
         self.ascendantIdentities = ascendantIdentities
         self.ascendantHealth = ascendantHealth
         self.workspaceReferences = workspaceReferences
@@ -273,7 +276,7 @@ public final class NodeTransport {
 
     func projectTimeline(_ timeline: AscendantRuntimeTimeline, replacing: Bool) {
         guard isAvailable(), let lifecycle, advertisementTeardownInstalled else { return }
-        let object = GnosticTimelineObject(timeline: timeline)
+        let object = GnosticTimelineObject(timeline: timeline, nodeID: nodeID)
         advertisedObjects[object.objectId.string] = object
         if replacing { lifecycle.readvertiseDiscoverableObject(object: object) }
         else { lifecycle.advertiseDiscoverableObject(object: object) }
@@ -285,7 +288,7 @@ public final class NodeTransport {
         replacing: Bool
     ) {
         guard isAvailable(), let lifecycle, advertisementTeardownInstalled else { return }
-        let object = GnosticAscendantObject(identity: identity, backendHealth: health)
+        let object = GnosticAscendantObject(identity: identity, backendHealth: health, nodeID: nodeID)
         advertisedObjects[object.objectId.string] = object
         if replacing { lifecycle.readvertiseDiscoverableObject(object: object) }
         else { lifecycle.advertiseDiscoverableObject(object: object) }
@@ -340,10 +343,10 @@ public final class NodeTransport {
 
     private func discoverableObjects() async -> [CoatyObject] {
         var objects: [CoatyObject] = ascendantIdentities().map {
-            GnosticAscendantObject(identity: $0, backendHealth: ascendantHealth($0.id))
+            GnosticAscendantObject(identity: $0, backendHealth: ascendantHealth($0.id), nodeID: nodeID)
         }
         if let registry {
-            objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0) }
+            objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0, nodeID: nodeID) }
         }
         objects += await workspaceReferences().map { GnosticWorkspaceObject(workspace: $0) }
         return objects
