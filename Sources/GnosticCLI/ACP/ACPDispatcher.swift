@@ -146,27 +146,36 @@ final class ACPDispatcher: Sendable {
         let input: ACPResumeParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
-        let record = try await requireSession(id: input.sessionID, cwd: cwd)
-        let status = try await client.timelineStatus(timelineID: record.timelineID, providerID: try await boundProviderID(for: record))
-        try await registry.touch(id: record.id)
-        return .dictionary(["_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status))])
+        let record = try await knownSession(id: input.sessionID, cwd: cwd)
+        do {
+            try await requireBinding(of: record)
+            let status = try await client.timelineStatus(timelineID: record.timelineID, providerID: try await boundProviderID(for: record))
+            try await registry.touch(id: record.id)
+            return .dictionary(["_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status))])
+        } catch {
+            throw await orphanAwareError(error, for: record)
+        }
     }
 
     private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPListParameters = try decode(params ?? .dictionary([:]))
         let cwd = try input.cwd.map { try canonicalCWD($0) }
         let selected = try await currentAscendant()
-        let fingerprint = profileFingerprint(for: selected)
-        let legacyFingerprint = legacyProfileFingerprint(for: selected)
         let records = await registry.list(cwd: cwd)
         var sessions: [AnyCodable] = []
-        for record in records where (record.profileFingerprint == fingerprint || record.profileFingerprint == legacyFingerprint)
-            && record.ascendantID == selected.id
-            && (record.providerID == nil || record.providerID == selected.providerID) {
-            // Registry entries survive process restarts, but a deleted remote
-            // Timeline must not be presented as resumable. Keep the metadata on
-            // disk for diagnostics while omitting it from the ACP result.
-            guard let status = try? await client.timelineStatus(timelineID: record.timelineID, providerID: selected.providerID) else { continue }
+        var unresolved: [ACPSessionRecord] = []
+        // Registry entries survive process restarts, but a deleted remote
+        // Timeline must not be presented as resumable. Omitting a record that
+        // is already closed or fails its status probe is the explicit ACP
+        // invariant; a record that fails the binding filter is unresolved
+        // here too, because a record created by an earlier serve carries that
+        // process's provider ID (#247).
+        for record in records where record.closedAt == nil {
+            guard matchesBinding(record, selected: selected),
+                  let status = try? await client.timelineStatus(timelineID: record.timelineID, providerID: selected.providerID) else {
+                unresolved.append(record)
+                continue
+            }
             sessions.append(.dictionary([
                 "sessionId": .string(record.id),
                 "cwd": .string(record.cwd),
@@ -174,6 +183,18 @@ final class ACPDispatcher: Sendable {
                 "updatedAt": .string(Self.iso8601(record.updatedAt)),
                 "_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status)),
             ]))
+        }
+        // ADR 0008: keep the on-disk record for diagnostics and mark it ended
+        // once the Timeline is confirmed absent, so a restarted ACP child stops
+        // retrying. One discovery refresh serves the whole registry, and it
+        // only runs when something failed to resolve, so a healthy list costs
+        // nothing extra. A record left unresolved by an undiscoverable Node
+        // stays open: provider liveness is the separate problem in #249.
+        if !unresolved.isEmpty {
+            let presence = await client.timelinePresenceSnapshot()
+            for record in unresolved where presence.presence(of: record.timelineID) == .absent {
+                _ = try? await registry.markEnded(id: record.id)
+            }
         }
         return .dictionary(["sessions": .array(sessions)])
     }
@@ -203,7 +224,12 @@ final class ACPDispatcher: Sendable {
         guard let text = input.text else {
             throw JSONRPCMethodError.invalidParams("session/prompt accepts non-empty text content only")
         }
-        let record = try await requireSession(id: input.sessionID, cwd: nil)
+        let record = try await knownSession(id: input.sessionID, cwd: nil)
+        do {
+            try await requireBinding(of: record)
+        } catch {
+            throw await orphanAwareError(error, for: record)
+        }
         let turnID: String
         if let clientTurnID = input.clientTurnID {
             // ACP metadata may contain compatibility whitespace. Canonicalize
@@ -248,7 +274,7 @@ final class ACPDispatcher: Sendable {
             if cancelledSessions.contains(input.sessionID) {
                 return .dictionary(["stopReason": .string("cancelled")])
             }
-            throw error
+            throw await orphanAwareError(error, for: record)
         }
         if cancelledSessions.contains(input.sessionID) {
             return .dictionary(["stopReason": .string("cancelled")])
@@ -313,7 +339,7 @@ final class ACPDispatcher: Sendable {
             do {
                 await completion.set(.completed(try await turnTask.value))
             } catch {
-                await completion.set(.failed(String(describing: error)))
+                await completion.set(.failed(.of(error)))
             }
         }
         let promptToken = UUID()
@@ -326,7 +352,7 @@ final class ACPDispatcher: Sendable {
             token: promptToken,
             close: {
                 stopTasks()
-                Task { await completion.set(.failed("ACP session was closed")) }
+                Task { await completion.set(.failed(.message("ACP session was closed"))) }
             },
             cancel: {
                 stopTasks()
@@ -365,7 +391,7 @@ final class ACPDispatcher: Sendable {
 
             switch await completion.value() {
             case .completed(let result): return (result, lastSequence)
-            case .failed(let detail): throw JSONRPCMethodError.invalidState(detail)
+            case .failed(let failure): throw failure.thrown
             case .cancelled: throw CancellationError()
             case nil: break
             }
@@ -374,8 +400,31 @@ final class ACPDispatcher: Sendable {
 
     fileprivate enum PromptWaitOutcome: Sendable {
         case completed(AscendantTurnResult)
-        case failed(String)
+        case failed(PromptFailure)
         case cancelled
+    }
+
+    /// A Turn failure kept in the shape the ACP client should see.
+    ///
+    /// ADR 0008 requires an orphaned prompt to surface `timelineUnavailable`
+    /// with its `data.gnosticCode`, so a structured client error must survive
+    /// the hop through the completion actor instead of being flattened into a
+    /// description string.
+    fileprivate enum PromptFailure: Sendable {
+        case remote(RemoteTurnClientError)
+        case message(String)
+
+        static func of(_ error: any Error) -> Self {
+            if let remote = error as? RemoteTurnClientError { return .remote(remote) }
+            return .message(String(describing: error))
+        }
+
+        var thrown: any Error {
+            switch self {
+            case let .remote(error): error
+            case let .message(detail): JSONRPCMethodError.invalidState(detail)
+            }
+        }
     }
 
     private func handlePermissionUpdate(
@@ -478,20 +527,56 @@ final class ACPDispatcher: Sendable {
     }
 
     private func requireSession(id: String, cwd: String?) async throws -> ACPSessionRecord {
+        let record = try await knownSession(id: id, cwd: cwd)
+        try await requireBinding(of: record)
+        return record
+    }
+
+    /// Reclassifies a failed session operation against live discovery.
+    ///
+    /// ADR 0008 requires an orphaned session to surface `timelineUnavailable`
+    /// and never a binding or provider error: across a serve restart the
+    /// per-process provider ID changes (#247), so the binding check fails
+    /// first and would otherwise mask the real cause. The probe runs only
+    /// after something has already failed, which keeps a healthy request free
+    /// of an extra discovery round. Confirmed absence also ends the registry
+    /// record; any other outcome keeps the original error and leaves the
+    /// record open.
+    ///
+    /// An evicted provider is never an orphan. Its catalog entries are gone
+    /// (#249), so the Timeline would probe as absent next to any other live
+    /// Node — exactly the false positive ADR 0008 forbids. A typed
+    /// `providerOffline` says the Node left, not that the Timeline died, so it
+    /// passes through untouched.
+    private func orphanAwareError(_ error: any Error, for record: ACPSessionRecord) async -> any Error {
+        if case RemoteTurnClientError.providerOffline = error { return error }
+        guard await client.timelinePresence(of: record.timelineID) == .absent else { return error }
+        _ = try? await registry.markEnded(id: record.id)
+        return RemoteTurnClientError.timelineUnavailable(record.timelineID)
+    }
+
+    private func knownSession(id: String, cwd: String?) async throws -> ACPSessionRecord {
         guard let record = await registry.record(id: id) else {
             throw JSONRPCMethodError.invalidParams("unknown ACP session")
         }
         if let cwd, cwd != record.cwd {
             throw JSONRPCMethodError.invalidParams("session cwd does not match its original binding")
         }
-        let selected = try await currentAscendant()
-        let legacyFingerprint = legacyProfileFingerprint(for: selected)
-        guard record.ascendantID == selected.id,
-              record.providerID == nil || record.providerID == selected.providerID,
-              record.profileFingerprint == profileFingerprint(for: selected) || record.profileFingerprint == legacyFingerprint else {
+        return record
+    }
+
+    private func requireBinding(of record: ACPSessionRecord) async throws {
+        guard matchesBinding(record, selected: try await currentAscendant()) else {
             throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant or namespace")
         }
-        return record
+    }
+
+    /// Whether a record belongs to the Ascendant and namespace this process serves.
+    private func matchesBinding(_ record: ACPSessionRecord, selected: Ascendant) -> Bool {
+        record.ascendantID == selected.id
+            && (record.providerID == nil || record.providerID == selected.providerID)
+            && (record.profileFingerprint == profileFingerprint(for: selected)
+                || record.profileFingerprint == legacyProfileFingerprint(for: selected))
     }
 
     private func profileFingerprint(for ascendant: Ascendant) -> String {

@@ -9,6 +9,12 @@ import Testing
 
 @testable import GnosticCLI
 
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
+
 @Suite("ACP provider acceptance", .serialized)
 struct ACPProviderAcceptanceTests {
     @Test("two NodeRuntime instances advertise multiple Ascendants in one namespace")
@@ -497,6 +503,207 @@ struct ACPProviderAcceptanceTests {
         session.input.fileHandleForWriting.closeFile()
         session.process.waitUntilExit()
     }
+
+    /// ADR 0008's interim orphaned-session behavior, end to end.
+    ///
+    /// A runtime Timeline is process-scoped, so killing `gnostic serve`
+    /// destroys it while the durable ACP session record survives. The restarted
+    /// Node advertises the same Ascendant under a new provider identity (#247),
+    /// which is exactly the case where a binding error used to hide the real
+    /// cause.
+    @Test("a serve restart orphans an ACP session with a structured timelineUnavailable", .timeLimit(.minutes(2)))
+    @MainActor
+    func serveRestartOrphansRuntimeTimelineSessions() async throws {
+        let environmentSource = ProcessInfo.processInfo.environment
+        guard let binary = environmentSource["GNOSTIC_SERVE_BINARY"]
+                ?? environmentSource["GNOSTIC_CLI_BINARY"]
+                ?? environmentSource["GNOSTIC_ACP_BINARY"] else { return }
+
+        let namespace = "acp-orphan-\(UUID().uuidString.lowercased())"
+        let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000222"))
+        let folder = try TemporaryFolder()
+        let configURL = folder.url.appendingPathComponent("manifest.json")
+        let manifest = try acceptanceManifest(
+            namespace: namespace,
+            nodeID: "A21D0000-0000-4000-8000-000000000221",
+            ascendantID: ascendantID,
+            timelineID: "A21D0000-0000-4000-8000-000000000223",
+            name: "Orphan ACP Ascendant"
+        )
+        try JSONEncoder().encode(manifest).write(to: configURL, options: .atomic)
+        let stateHome = folder.url.appendingPathComponent("state", isDirectory: true)
+        var environment = environmentSource
+        environment["GNOSTIC_CONFIG"] = configURL.path
+        environment["GNOSTIC_STATE_HOME"] = stateHome.path
+
+        let cwd = "/tmp/acp-orphan-acceptance"
+        let firstServe = try launchServe(binary: binary, configURL: configURL, namespace: namespace)
+        defer { firstServe.kill() }
+        try await firstServe.waitUntilOnline()
+
+        let creator = try launchACP(
+            binary: binary,
+            ascendantID: ascendantID,
+            providerID: nil,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
+        )
+        defer { if creator.process.isRunning { creator.process.terminate() } }
+        var creatorOutput = creator.lines.stream.makeAsyncIterator()
+        try creator.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("orphan-acceptance"), "version": .string("1")]),
+        ])))
+        #expect(try await readResponse(from: &creatorOutput).error == nil)
+
+        try creator.send(JSONRPCRequest(id: .number(2), method: "session/new", params: .dictionary([
+            "cwd": .string(cwd),
+            "mcpServers": .array([]),
+        ])))
+        let created = try await readResponse(from: &creatorOutput)
+        #expect(created.error == nil)
+        guard case let .dictionary(createdValues) = created.result,
+              case let .string(sessionID) = createdValues["sessionId"] else {
+            Issue.record("session/new returned no sessionId")
+            return
+        }
+
+        try creator.send(JSONRPCRequest(id: .number(3), method: "session/list", params: .dictionary([
+            "cwd": .string(cwd),
+        ])))
+        #expect(listedSessionIDs(in: try await readResponse(from: &creatorOutput)).contains(sessionID))
+
+        try creator.send(JSONRPCRequest(id: .number(4), method: "shutdown"))
+        #expect(try await readResponse(from: &creatorOutput).error == nil)
+        creator.input.fileHandleForWriting.closeFile()
+        creator.process.waitUntilExit()
+
+        firstServe.kill()
+        let secondServe = try launchServe(binary: binary, configURL: configURL, namespace: namespace)
+        defer { secondServe.kill() }
+        try await secondServe.waitUntilOnline()
+
+        let resumer = try launchACP(
+            binary: binary,
+            ascendantID: ascendantID,
+            providerID: nil,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
+        )
+        defer { if resumer.process.isRunning { resumer.process.terminate() } }
+        var resumerOutput = resumer.lines.stream.makeAsyncIterator()
+        try resumer.send(JSONRPCRequest(id: .number(5), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("orphan-acceptance"), "version": .string("1")]),
+        ])))
+        #expect(try await readResponse(from: &resumerOutput).error == nil)
+
+        try resumer.send(JSONRPCRequest(id: .number(6), method: "session/resume", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "cwd": .string(cwd),
+            "mcpServers": .array([]),
+        ])))
+        let resumed = try await readResponse(from: &resumerOutput)
+        #expect(resumed.error?.code == JSONRPCErrorCode.invalidState.rawValue)
+        #expect(resumed.error?.data == .dictionary(["gnosticCode": .string("timelineUnavailable")]))
+
+        try resumer.send(JSONRPCRequest(id: .number(7), method: "session/prompt", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "prompt": .array([.dictionary(["type": .string("text"), "text": .string("hello")])]),
+            "mcpServers": .array([]),
+            "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string("orphan-acceptance:turn-1")]),
+        ])))
+        let prompted = try await readResponse(from: &resumerOutput)
+        #expect(prompted.error?.code == JSONRPCErrorCode.invalidState.rawValue)
+        #expect(prompted.error?.data == .dictionary(["gnosticCode": .string("timelineUnavailable")]))
+
+        try resumer.send(JSONRPCRequest(id: .number(8), method: "session/list", params: .dictionary([
+            "cwd": .string(cwd),
+        ])))
+        #expect(!listedSessionIDs(in: try await readResponse(from: &resumerOutput)).contains(sessionID))
+
+        try resumer.send(JSONRPCRequest(id: .number(9), method: "shutdown"))
+        #expect(try await readResponse(from: &resumerOutput).error == nil)
+        resumer.input.fileHandleForWriting.closeFile()
+        resumer.process.waitUntilExit()
+
+        // The record stays on disk for diagnostics and is marked ended.
+        let registry = ACPSessionRegistry(url: stateHome.appendingPathComponent("acp-sessions-v1.json"))
+        let record = try #require(await registry.record(id: sessionID))
+        #expect(record.closedAt != nil)
+        #expect(record.cwd == cwd)
+    }
+}
+
+/// A `gnostic serve` subprocess whose lifetime the test controls.
+///
+/// ADR 0008's orphan case needs an unclean exit: `kill` sends SIGKILL so the
+/// Node never deadvertises, which is what a crashed serve looks like.
+private struct ServeProcess {
+    let process: Process
+    let logURL: URL
+
+    func waitUntilOnline() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(30)
+        while clock.now < deadline {
+            // The readiness marker is the structured advertisement log, not the
+            // `print` banner: stdout is block-buffered when it is a file.
+            if let log = try? String(contentsOf: logURL, encoding: .utf8),
+               log.contains("advertised objects") {
+                return
+            }
+            guard process.isRunning else { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+        Issue.record(Comment(rawValue: "gnostic serve did not come online: \(log)"))
+        throw ACPSubprocessError.timeout
+    }
+
+    func kill() {
+        guard process.isRunning else { return }
+        #if os(Linux)
+        Glibc.kill(process.processIdentifier, SIGKILL)
+        #else
+        Darwin.kill(process.processIdentifier, SIGKILL)
+        #endif
+        process.waitUntilExit()
+    }
+}
+
+private func launchServe(binary: String, configURL: URL, namespace: String) throws -> ServeProcess {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: binary)
+    process.arguments = [
+        "serve", "--config", configURL.path,
+        "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
+    ]
+    let logURL = configURL.deletingLastPathComponent()
+        .appendingPathComponent("serve-\(UUID().uuidString).log")
+    guard FileManager.default.createFile(atPath: logURL.path, contents: nil) else {
+        throw ACPSubprocessError.timeout
+    }
+    let log = try FileHandle(forWritingTo: logURL)
+    process.standardOutput = log
+    process.standardError = log
+    try process.run()
+    return ServeProcess(process: process, logURL: logURL)
+}
+
+private func listedSessionIDs(in response: JSONRPCResponse) -> [String] {
+    guard response.error == nil,
+          case let .dictionary(values) = response.result,
+          case let .array(sessions) = values["sessions"] else { return [] }
+    return sessions.compactMap { value in
+        guard case let .dictionary(fields) = value,
+              case let .string(id) = fields["sessionId"] else { return nil }
+        return id
+    }
 }
 
 private func acceptanceAdapters() -> NodeRuntimeAdapters {
@@ -607,7 +814,7 @@ private struct ACPProcess {
 private func launchACP(
     binary: String,
     ascendantID: UUID,
-    providerID: String,
+    providerID: String?,
     host: String,
     port: Int,
     namespace: String,
@@ -615,11 +822,12 @@ private func launchACP(
 ) throws -> ACPProcess {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
+    // A client that pins no provider is the shape ADR 0008 cares about: it
+    // survives a serve restart that changes the per-process provider ID.
     process.arguments = [
         "acp", "--host", host, "--port", String(port), "--namespace", namespace,
         "--ascendant", ascendantID.uuidString.lowercased(),
-        "--provider", providerID.lowercased(),
-    ]
+    ] + (providerID.map { ["--provider", $0.lowercased()] } ?? [])
     process.environment = environment
     let input = Pipe()
     let output = Pipe()

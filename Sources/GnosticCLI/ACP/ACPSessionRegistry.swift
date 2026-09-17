@@ -60,6 +60,23 @@ actor ACPSessionRegistry {
         return record
     }
 
+    /// Ends a record whose remote Timeline is confirmed absent.
+    ///
+    /// ADR 0008 keeps the on-disk record for diagnostics and only marks it
+    /// ended, so a restarted ACP child stops offering an orphaned session
+    /// without losing its provenance. The first end wins: re-running
+    /// reconciliation must not keep moving `closedAt` forward, and it never
+    /// counts as client activity, so `updatedAt` stays put.
+    @discardableResult
+    func markEnded(id: String) throws -> ACPSessionRecord? {
+        guard var record = records[id] else { return nil }
+        guard record.closedAt == nil else { return record }
+        record.closedAt = Date()
+        records[id] = record
+        try persist()
+        return record
+    }
+
     func touch(id: String, title: String? = nil) throws {
         guard var record = records[id] else { return }
         record.updatedAt = Date()
