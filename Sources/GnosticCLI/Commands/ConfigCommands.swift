@@ -581,7 +581,9 @@ public enum ConfigCommandLogic {
     }
 
     public static func validate(store: CLIConfigurationStore = CLIConfigurationStore(), writeOutput: (String) -> Void = { print($0) }) throws {
-        try store.loadManifest().validate()
+        let manifest = try store.loadManifest()
+        try manifest.validate()
+        try manifest.validateBrokerCredentials()
         writeOutput("Configuration is valid.")
     }
 
@@ -600,7 +602,7 @@ public enum ConfigCommandLogic {
     }
 
     public static func setBrokerPassword(_ password: String, store: CLIConfigurationStore) throws {
-        _ = try store.mutateManifest { $0.broker.password = password }
+        _ = try store.mutateManifest { $0.broker.password = password.isEmpty ? nil : password }
     }
 
     /// Resolves the Ascendant at `ascendantID` and the schema of its kind.

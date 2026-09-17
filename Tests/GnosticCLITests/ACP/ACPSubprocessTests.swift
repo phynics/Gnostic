@@ -151,6 +151,103 @@ struct ACPSubprocessTests {
         #expect(Set(envelope.keys) == ["version", "profiles"])
     }
 
+    @Test("credentialed broker authenticates ACP profiles and a session", .timeLimit(.minutes(1)))
+    @MainActor
+    func credentialedBrokerAuthenticates() async throws {
+        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
+        let namespace = "acp-credentials-\(UUID().uuidString.lowercased())"
+        let agentID = UUID()
+        let node = try await makeACPNode(
+            namespace: namespace,
+            ascendantID: agentID,
+            name: "Credentialed Ascendant",
+            host: "127.0.0.1",
+            port: 1884,
+            username: "gnostic-test",
+            password: "gnostic-secret"
+        )
+        defer { Task { @MainActor in await node.shutdown() } }
+        try await node.start()
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_MQTT_USERNAME"] = "gnostic-test"
+        environment["GNOSTIC_MQTT_PASSWORD"] = "gnostic-secret"
+
+        let profilesProcess = Process()
+        profilesProcess.executableURL = URL(fileURLWithPath: binary)
+        profilesProcess.arguments = [
+            "acp", "profiles", "--json",
+            "--host", "127.0.0.1",
+            "--port", "1884",
+            "--namespace", namespace,
+        ]
+        profilesProcess.environment = environment
+        let profilesOutput = Pipe()
+        let profilesError = Pipe()
+        profilesProcess.standardOutput = profilesOutput
+        profilesProcess.standardError = profilesError
+        try profilesProcess.run()
+        while profilesProcess.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let profilesData = profilesOutput.fileHandleForReading.readDataToEndOfFile()
+        let profilesStandardError = String(
+            decoding: profilesError.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(profilesProcess.terminationStatus == 0, Comment(rawValue: profilesStandardError))
+        let bundle = try JSONDecoder().decode(ACPProfileBundle.self, from: profilesData)
+        let profile = try #require(bundle.profiles.first { $0.args.contains(agentID.uuidString.lowercased()) })
+        let providerIndex = try #require(profile.args.firstIndex(of: "--provider"))
+        let providerID = profile.args[providerIndex + 1]
+
+        let sessionProcess = Process()
+        sessionProcess.executableURL = URL(fileURLWithPath: binary)
+        sessionProcess.arguments = [
+            "acp",
+            "--host", "127.0.0.1",
+            "--port", "1884",
+            "--namespace", namespace,
+            "--ascendant", agentID.uuidString,
+            "--provider", providerID,
+        ]
+        sessionProcess.environment = environment
+        let input = Pipe()
+        let output = Pipe()
+        let outputLines = LineStream(handle: output.fileHandleForReading)
+        sessionProcess.standardInput = input
+        sessionProcess.standardOutput = output
+        sessionProcess.standardError = Pipe()
+        try sessionProcess.run()
+        defer { if sessionProcess.isRunning { sessionProcess.terminate() } }
+
+        func send(_ request: JSONRPCRequest) throws {
+            input.fileHandleForWriting.write(try JSONEncoder().encode(request) + Data([0x0A]))
+        }
+
+        try send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("acp-credentials"), "version": .string("1")]),
+        ])))
+        var iterator = outputLines.stream.makeAsyncIterator()
+        let initialized = try await readResponse(from: &iterator)
+        #expect(initialized.error == nil)
+        #expect(initialized.result != nil)
+
+        try send(JSONRPCRequest(id: .number(2), method: "session/new", params: .dictionary([
+            "cwd": .string("/tmp/acp-credentials"),
+            "mcpServers": .array([]),
+        ])))
+        let created = try await readResponse(from: &iterator)
+        #expect(created.error == nil)
+        #expect(created.result != nil)
+
+        try send(JSONRPCRequest(id: .number(3), method: "shutdown"))
+        #expect(try await readResponse(from: &iterator).error == nil)
+        input.fileHandleForWriting.closeFile()
+        sessionProcess.waitUntilExit()
+    }
+
     @Test("official ACP client completes the stable session lifecycle", .timeLimit(.minutes(1)))
     @MainActor
     func officialClientLifecycle() async throws {
@@ -467,7 +564,11 @@ private func makeACPNode(
     namespace: String,
     ascendantID: UUID,
     name: String,
-    workspaceID: UUID? = nil
+    workspaceID: UUID? = nil,
+    host: String = "127.0.0.1",
+    port: Int = 1883,
+    username: String? = nil,
+    password: String? = nil
 ) async throws -> NodeRuntime {
     let timelineID = UUID()
     let workspaces = workspaceID.map {
@@ -479,7 +580,7 @@ private func makeACPNode(
         )]
     } ?? []
     let manifest = NodeManifest(
-        broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+        broker: .init(host: host, port: port, namespace: namespace, username: username, password: password),
         node: .init(id: UUID(), approvalMode: "auto"),
         ascendants: [.init(
             id: ascendantID,
