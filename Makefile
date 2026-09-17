@@ -40,6 +40,7 @@ worktree-bootstrap: resolve
 
 build: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS)
+	@git rev-parse HEAD > "$(BUILD_DIR)/gnostic-build-revision" 2>/dev/null || rm -f "$(BUILD_DIR)/gnostic-build-revision"
 
 test: build
 	@mkdir -p .testing
@@ -50,6 +51,7 @@ docs-check: build
 
 harness-test:
 	@./Tests/Support/test-run-container.sh
+	@./Tests/Support/test-gnostic-container.sh
 
 runner-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'set -e; test ! -e Sources/GnosticRunner/FixtureScenario.swift; test ! -e Sources/GnosticRunner/RunnerError.swift; package=$$(swift package dump-package $(SWIFT_LOCKED_ARGS)); printf "%s\\n" "$$package" | node -e "let data=\"\"; process.stdin.on(\"data\", chunk => data += chunk); process.stdin.on(\"end\", () => { const target = JSON.parse(data).targets.find(({ name }) => name === \"GnosticRunner\"); const dependencies = JSON.stringify(target?.dependencies ?? []); if (!target || /PositronicKit|PKContracts/.test(dependencies)) process.exit(1); });"; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic-runner --show-bin-path)/gnostic-runner; test -x "$$bin"; help=$$("$$bin" --help 2>&1); status=$$?; printf "%s\\n" "$$help" && test $$status -eq 0 && ! (printf "%s\\n" "$$help" | grep -F -- "--scenario"); pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; runner_output=$$(mktemp); runner_pid=; cleanup() { if test -n "$$runner_pid"; then kill "$$runner_pid" 2>/dev/null || true; fi; rm -f "$$runner_output"; }; trap cleanup EXIT INT TERM; stdbuf -oL "$$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke >"$$runner_output" 2>&1 & runner_pid=$$!; status=1; for i in $$(seq 1 30); do if grep -F "gnostic-runner online at" "$$runner_output" >/dev/null 2>&1; then status=0; break; fi; if ! kill -0 "$$runner_pid" 2>/dev/null; then break; fi; sleep 1; done; output=$$(<"$$runner_output"); printf "%s\\n" "$$output"; test $$status -eq 0 && printf "%s\\n" "$$output" | grep -F "gnostic-runner online at"'
