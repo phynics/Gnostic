@@ -69,6 +69,11 @@ Gnostic does not expose direct file APIs for remote Workspaces.
 Gnostic Timelines and keeps backend transcript state private to the selected
 Ascendant backend.
 
+An ACP session resumes after the ACP child restarts while the same
+`gnostic serve` process stays online. A serve restart orphans Timelines created
+at runtime, so a later resume fails with `timelineUnavailable`; ADR 0008 records
+the decision and the deferred durability work.
+
 To create profiles for the generic
 [`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running
 Node:
