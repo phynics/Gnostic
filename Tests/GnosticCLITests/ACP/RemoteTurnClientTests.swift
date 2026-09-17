@@ -41,6 +41,64 @@ struct ACPTransportSelectionTests {
         }
     }
 
+    @Test("node selection resolves a duplicated Ascendant across serve restarts")
+    @MainActor
+    func nodeSelectionResolvesDuplicatedAscendant() throws {
+        let ascendantID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000031")!
+        let firstNodeID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000041")!
+        let secondNodeID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000042")!
+        func candidate(providerID: String, nodeID: UUID?) -> RemoteTurnClient.DiscoveredAscendant {
+            RemoteTurnClient.DiscoveredAscendant(
+                id: ascendantID,
+                name: "Shared Ascendant",
+                timelineID: UUID(uuidString: "C41D0000-0000-4000-8000-000000000051")!,
+                providerID: providerID,
+                nodeID: nodeID,
+                capabilities: [GnosticCapability.textTurnInput]
+            )
+        }
+        let candidates = [
+            candidate(providerID: "provider-a", nodeID: firstNodeID),
+            candidate(providerID: "provider-b", nodeID: secondNodeID),
+        ]
+
+        // The Ascendant ID alone stays ambiguous; the node resolves it, and the
+        // provider that answers is whatever the live serve process advertises.
+        #expect(throws: RemoteTurnClientError.self) {
+            try RemoteTurnClient.selectCandidate(from: candidates, id: ascendantID)
+        }
+        #expect(try RemoteTurnClient.selectCandidate(
+            from: candidates,
+            id: ascendantID,
+            nodeID: secondNodeID
+        ).providerID == "provider-b")
+
+        // After a restart the same node answers under a new provider identity.
+        #expect(try RemoteTurnClient.selectCandidate(
+            from: [candidate(providerID: "provider-c", nodeID: secondNodeID)],
+            id: ascendantID,
+            nodeID: secondNodeID
+        ).providerID == "provider-c")
+
+        do {
+            _ = try RemoteTurnClient.selectCandidate(
+                from: candidates,
+                id: ascendantID,
+                nodeID: UUID(uuidString: "C41D0000-0000-4000-8000-000000000043")!
+            )
+            Issue.record("an unadvertised node was selected")
+        } catch let error as RemoteTurnClientError {
+            #expect(error.gnosticCode == "nodeUnavailable")
+        }
+
+        // A serve older than the node property stays addressable by Ascendant.
+        #expect(try RemoteTurnClient.selectCandidate(
+            from: [candidate(providerID: "provider-legacy", nodeID: nil)],
+            id: ascendantID,
+            nodeID: firstNodeID
+        ).providerID == "provider-legacy")
+    }
+
     @Test("an evicted provider reports a typed offline error")
     @MainActor
     func evictedProviderReportsTypedOfflineError() {

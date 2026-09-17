@@ -84,8 +84,11 @@ Node:
 gnostic acp profiles --json
 ```
 
-Run `gnostic acp` as the stdio process for an ACP client. Pass `--ascendant`
-and `--provider` when a broker advertises more than one matching object.
+Run `gnostic acp` as the stdio process for an ACP client. A generated profile
+carries `--node` only when more than one Node advertises the same Ascendant.
+Node and Ascendant identities come from the manifest, so a captured profile
+stays valid across a `gnostic serve` restart. `--provider` still pins one serve
+process and is needed only for a Node that advertises no identity.
 
 ## Extend Gnostic
 
@@ -160,9 +163,9 @@ It starts `gnostic serve` on a fresh namespace, writes a pi-acp-client profile,
 and prints the `PI_ACP_CONFIG=... pi` command after profile discovery succeeds.
 
 Stack state lives in `~/.gnostic/dev/stack`. The generated profile runs
-`gnostic` from `PATH`, which should link to `Scripts/gnostic-container.sh`.
-Restart pi after restarting the server because each server process has a new
-provider ID.
+`gnostic` from `PATH`, which should link to `Scripts/gnostic-container.sh`. The
+profile survives a server restart; sessions created at runtime do not, because
+their Timelines are not durable yet.
 
 ## Run the standalone runner
 

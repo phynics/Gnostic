@@ -81,11 +81,18 @@ struct ACPProfileBundle: Codable, Sendable {
     let profiles: [ACPProfile]
 }
 
+/// Durable ACP session identity.
+///
+/// A record binds to the namespace, the Ascendant, and — when the serve
+/// advertises one — the node. It never binds to the provider identity, which
+/// changes with every serve process. `providerID` is retained only so records
+/// written before the node-bound contract still decode.
 struct ACPSessionRecord: Codable, Sendable, Identifiable {
     let id: String
     let profileFingerprint: String
     let ascendantID: UUID
     let timelineID: UUID
+    let nodeID: UUID?
     let providerID: String?
     let cwd: String
     var title: String

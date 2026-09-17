@@ -51,6 +51,14 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
     /// The Ascendant's private timeline relationship.
     public var privateTimelineID: UUID
 
+    /// The identity of the node that serves this Ascendant.
+    ///
+    /// The node identity is stable across serve processes, unlike the Axoloty
+    /// provider identity. Clients use it to address one node's projection of an
+    /// Ascendant identifier that more than one node may advertise. It is
+    /// absent on advertisements from a serve older than this property.
+    public var nodeID: UUID?
+
     /// The Ascendant's latest recorded activity timestamp.
     public var lastActiveAt: Date
 
@@ -69,6 +77,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
     public init(
         identity: AscendantRuntimeIdentity,
         backendHealth: AscendantBackendHealth = .unknown,
+        nodeID: UUID? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
@@ -81,6 +90,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
         ascendantDescription = GnosticWirePayload.boundedLabel(identity.description)
         primaryWorkspaceID = identity.primaryWorkspaceID
         privateTimelineID = identity.privateTimelineID
+        self.nodeID = nodeID
         lastActiveAt = identity.lastActiveAt
         createdAt = identity.createdAt
         updatedAt = identity.updatedAt
@@ -101,6 +111,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
         case ascendantDescription
         case primaryWorkspaceID
         case privateTimelineID
+        case nodeID
         case lastActiveAt
         case createdAt
         case updatedAt
@@ -121,6 +132,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
         ascendantDescription = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .ascendantDescription))
         primaryWorkspaceID = try container.decodeIfPresent(UUID.self, forKey: .primaryWorkspaceID)
         privateTimelineID = try container.decode(UUID.self, forKey: .privateTimelineID)
+        nodeID = try container.decodeIfPresent(UUID.self, forKey: .nodeID)
         lastActiveAt = try container.decode(Date.self, forKey: .lastActiveAt)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -141,6 +153,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
         try container.encode(ascendantDescription, forKey: .ascendantDescription)
         try container.encodeIfPresent(primaryWorkspaceID, forKey: .primaryWorkspaceID)
         try container.encode(privateTimelineID, forKey: .privateTimelineID)
+        try container.encodeIfPresent(nodeID, forKey: .nodeID)
         try container.encode(lastActiveAt, forKey: .lastActiveAt)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)

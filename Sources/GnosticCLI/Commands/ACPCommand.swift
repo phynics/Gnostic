@@ -32,8 +32,11 @@ struct ACPCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Ascendant UUID to pin for this ACP process.")
     var ascendant: String?
 
-    @Option(name: .long, help: "Node provider identity to pin for this ACP process.")
+    @Option(name: .long, help: "Provider identity to pin for this ACP process. Prefer --node.")
     var provider: String?
+
+    @Option(name: .long, help: "Node UUID to pin for this ACP process.")
+    var node: String?
 
     @MainActor
     func run() async throws {
@@ -54,6 +57,12 @@ struct ACPCommand: AsyncParsableCommand {
             }
             return id
         }
+        let nodeID = try node.map { value in
+            guard let id = UUID(uuidString: value) else {
+                throw ValidationError("--node must be a UUID")
+            }
+            return id
+        }
         let client = try RemoteTurnClient(
             host: host ?? stored.mqttHost,
             port: port ?? stored.mqttPort,
@@ -69,6 +78,7 @@ struct ACPCommand: AsyncParsableCommand {
             client: client,
             ascendantID: ascendantID,
             providerID: provider,
+            nodeID: nodeID,
             registry: ACPSessionRegistry()
         ).run()
     }
@@ -81,8 +91,7 @@ struct ACPCommand: AsyncParsableCommand {
             namespace: namespace ?? stored.mqttNamespace
         )
         let cache = ACPProfileCache()
-        if !refresh, let cached = cache.load(for: brokerKey),
-           cached.profiles.allSatisfy({ $0.args.contains("--provider") }) {
+        if !refresh, let cached = cache.load(for: brokerKey), cached.isRestartStable {
             try writeProfiles(cached)
             return
         }
@@ -99,24 +108,12 @@ struct ACPCommand: AsyncParsableCommand {
         do {
             try await client.connect()
             let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
-            let counts = Dictionary(grouping: entries, by: \.objectID).mapValues(\.count)
-            let profiles = entries.map { entry in
-                let baseID = "gnostic-\(entry.objectID.uuidString.lowercased())"
-                return ACPProfile(
-                    id: counts[entry.objectID] == 1 ? baseID : "\(baseID)-\(entry.providerID.lowercased())",
-                    name: entry.name,
-                    command: "gnostic",
-                    args: [
-                        "acp",
-                        "--host", host ?? stored.mqttHost,
-                        "--port", String(port ?? stored.mqttPort),
-                        "--namespace", namespace ?? stored.mqttNamespace,
-                        "--ascendant", entry.objectID.uuidString.lowercased(),
-                        "--provider", entry.providerID.lowercased(),
-                    ],
-                    env: [:]
-                )
-            }.sorted { $0.id < $1.id }
+            let profiles = Self.profiles(
+                from: entries,
+                host: host ?? stored.mqttHost,
+                port: port ?? stored.mqttPort,
+                namespace: namespace ?? stored.mqttNamespace
+            )
             // Dynamic profile sources may emit only their executable profiles;
             // profile selection remains owned by pi-acp-client's trusted config.
             let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: profiles)
@@ -127,6 +124,58 @@ struct ACPCommand: AsyncParsableCommand {
             throw error
         }
         await client.stop()
+    }
+
+    /// Builds one profile per served Ascendant, per node.
+    ///
+    /// A profile carries a disambiguating selector only when more than one node
+    /// advertises the same Ascendant identifier, and that selector is the node
+    /// identity. The provider identity changes with every serve process, so
+    /// pinning it would invalidate the profile at the next restart. It remains
+    /// the fallback selector for a serve that advertises no node identity.
+    static func profiles(
+        from entries: [NetworkCatalogEntry],
+        host: String,
+        port: Int,
+        namespace: String
+    ) -> [ACPProfile] {
+        var profiles: [ACPProfile] = []
+        for (ascendantID, advertised) in Dictionary(grouping: entries, by: \.objectID) {
+            var byNode: [String: NetworkCatalogEntry] = [:]
+            for entry in advertised.sorted(by: { $0.providerID < $1.providerID }) {
+                let key = RemoteTurnClient.nodeID(of: entry)?.uuidString.lowercased()
+                    ?? "provider:\(entry.providerID.lowercased())"
+                if byNode[key] == nil { byNode[key] = entry }
+            }
+            let needsSelector = byNode.count > 1
+            for entry in byNode.values {
+                var identifier = "gnostic-\(ascendantID.uuidString.lowercased())"
+                var args = [
+                    "acp",
+                    "--host", host,
+                    "--port", String(port),
+                    "--namespace", namespace,
+                    "--ascendant", ascendantID.uuidString.lowercased(),
+                ]
+                if needsSelector {
+                    if let nodeID = RemoteTurnClient.nodeID(of: entry)?.uuidString.lowercased() {
+                        identifier += "-\(nodeID)"
+                        args += ["--node", nodeID]
+                    } else {
+                        identifier += "-\(entry.providerID.lowercased())"
+                        args += ["--provider", entry.providerID.lowercased()]
+                    }
+                }
+                profiles.append(ACPProfile(
+                    id: identifier,
+                    name: entry.name,
+                    command: "gnostic",
+                    args: args,
+                    env: [:]
+                ))
+            }
+        }
+        return profiles.sorted { $0.id < $1.id }
     }
 
     private func writeProfiles(_ bundle: ACPProfileBundle) throws {

@@ -11,6 +11,8 @@ import PositronicKit
 @MainActor
 final class NodeRuntimeHost {
     struct TransportWiring {
+        /// The manifest node identity advertised alongside every projection.
+        let nodeID: UUID
         let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
         let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
@@ -81,6 +83,7 @@ final class NodeRuntimeHost {
             communication: resources.communication,
             lifecycle: resources.lifecycle,
             registry: registry,
+            nodeID: wiring.nodeID,
             ascendantIdentities: wiring.ascendantIdentities,
             ascendantHealth: wiring.ascendantHealth,
             workspaceReferences: wiring.workspaceReferences,

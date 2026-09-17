@@ -140,6 +140,7 @@ public final class NodeRuntime {
         }
 
         let wiring = NodeRuntimeHost.TransportWiring(
+            nodeID: plan.nodeID,
             ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
             ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
             workspaceReferences: { [weak self] in await self?.workspaceService.publicReferences() ?? [] },

@@ -15,13 +15,24 @@ public final class RemoteTurnClient: Sendable {
         public let name: String
         public let timelineID: UUID
         public let providerID: String
+        /// The serving node identity, when the serve advertises one. It is
+        /// stable across serve processes; `providerID` is not.
+        public let nodeID: UUID?
         public let capabilities: [String]
 
-        public init(id: UUID, name: String, timelineID: UUID, providerID: String, capabilities: [String] = []) {
+        public init(
+            id: UUID,
+            name: String,
+            timelineID: UUID,
+            providerID: String,
+            nodeID: UUID? = nil,
+            capabilities: [String] = []
+        ) {
             self.id = id
             self.name = name
             self.timelineID = timelineID
             self.providerID = providerID
+            self.nodeID = nodeID
             self.capabilities = capabilities
         }
     }
@@ -190,6 +201,7 @@ public final class RemoteTurnClient: Sendable {
                     name: entry.name,
                     timelineID: timelineID,
                     providerID: entry.providerID,
+                    nodeID: Self.nodeID(of: entry),
                     capabilities: capabilities
                 )
             }
@@ -283,16 +295,19 @@ public final class RemoteTurnClient: Sendable {
     }
 
     /// Creates a new timeline on the serve and returns its status.
-    public func createTimeline(title: String, ascendantID: UUID? = nil, providerID: String? = nil) async throws -> TimelineStatus {
+    public func createTimeline(
+        title: String,
+        ascendantID: UUID? = nil,
+        providerID: String? = nil,
+        nodeID: UUID? = nil
+    ) async throws -> TimelineStatus {
         try ensureProviderOnline(providerID)
         let payload = try JSONEncoder().encode(TimelineCreateRequest(title: title, ascendantID: ascendantID))
         let targetProvider: String?
         if let providerID {
             targetProvider = providerID
-        } else if let ascendantID {
-            targetProvider = try await selectAscendant(id: ascendantID).providerID
         } else {
-            targetProvider = try await selectAscendant(id: nil).providerID
+            targetProvider = try await selectAscendant(id: ascendantID, nodeID: nodeID).providerID
         }
         let response = try await call(
             operation: TimelineManagementProvider.createOperation,
@@ -303,21 +318,35 @@ public final class RemoteTurnClient: Sendable {
         return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
-    public func selectAscendant(id ascendantID: UUID? = nil, providerID: String? = nil) async throws -> DiscoveredAscendant {
-        try Self.selectCandidate(from: await discoverAscendants(), id: ascendantID, providerID: providerID)
+    public func selectAscendant(
+        id ascendantID: UUID? = nil,
+        providerID: String? = nil,
+        nodeID: UUID? = nil
+    ) async throws -> DiscoveredAscendant {
+        try Self.selectCandidate(
+            from: await discoverAscendants(),
+            id: ascendantID,
+            providerID: providerID,
+            nodeID: nodeID
+        )
     }
 
     static func selectCandidate(
         from candidates: [DiscoveredAscendant],
         id ascendantID: UUID? = nil,
-        providerID: String? = nil
+        providerID: String? = nil,
+        nodeID: UUID? = nil
     ) throws -> DiscoveredAscendant {
-        if ascendantID != nil || providerID != nil {
+        if ascendantID != nil || providerID != nil || nodeID != nil {
             let matches = candidates.filter {
                 (ascendantID == nil || $0.id == ascendantID)
                     && (providerID == nil || $0.providerID.lowercased() == providerID?.lowercased())
+                    && (nodeID == nil || $0.nodeID == nil || $0.nodeID == nodeID)
             }
             guard let candidate = matches.first else {
+                if let nodeID, candidates.contains(where: { ascendantID == nil || $0.id == ascendantID }) {
+                    throw RemoteTurnClientError.nodeUnavailable(nodeID)
+                }
                 if let ascendantID { throw RemoteTurnClientError.ascendantUnavailable(ascendantID) }
                 throw RemoteTurnClientError.providerUnavailable(providerID ?? "")
             }
@@ -355,6 +384,12 @@ public final class RemoteTurnClient: Sendable {
         )
     }
 
+    /// Reads the stable serving node identity from a catalog entry.
+    nonisolated static func nodeID(of entry: NetworkCatalogEntry) -> UUID? {
+        guard case let .string(raw) = entry.knownProperties["nodeID"] else { return nil }
+        return UUID(uuidString: raw)
+    }
+
     /// Reports whether one Timeline is discoverable on a live Node.
     public func timelinePresence(of timelineID: UUID) async -> TimelinePresence {
         await timelinePresenceSnapshot().presence(of: timelineID)
@@ -373,7 +408,10 @@ public final class RemoteTurnClient: Sendable {
         return try await discoveredProviderID(forTimeline: timelineID)
     }
 
-    private func resolvedTurnTarget(_ explicitProviderID: String?, forTimeline timelineID: UUID) async throws -> (providerID: String, ascendantID: UUID) {
+    private func resolvedTurnTarget(
+        _ explicitProviderID: String?,
+        forTimeline timelineID: UUID
+    ) async throws -> (providerID: String, ascendantID: UUID) {
         await refreshCatalog()
         let entries = await catalog.networkObjects()
         let timelines = entries.filter {

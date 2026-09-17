@@ -63,3 +63,14 @@ struct ACPProfileCache: Sendable {
             .appendingPathComponent("acp-profiles-v1.json")
     }
 }
+
+extension ACPProfileBundle {
+    /// Whether every profile survives a `gnostic serve` restart.
+    ///
+    /// A profile that pins `--provider` names one serve process, so it stops
+    /// resolving as soon as that process is replaced. Bundles cached before the
+    /// node-bound contract have that shape and are discarded on load.
+    var isRestartStable: Bool {
+        profiles.allSatisfy { !$0.args.contains("--provider") }
+    }
+}

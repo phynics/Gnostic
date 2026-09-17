@@ -138,15 +138,15 @@ struct ACPSubprocessTests {
         #expect(bundle.profiles.map(\.name) == ["Lower Ascendant"])
         #expect(bundle.profiles.allSatisfy { $0.command == "gnostic" && $0.env.isEmpty })
         let lowerProfile = try #require(bundle.profiles.first)
-        #expect(Array(lowerProfile.args.dropLast(2)) == [
+        // One node serves this Ascendant, so the profile carries no
+        // disambiguating selector and stays valid across a serve restart.
+        #expect(lowerProfile.args == [
             "acp",
             "--host", "127.0.0.1",
             "--port", "1883",
             "--namespace", namespace,
             "--ascendant", lowerID.uuidString.lowercased(),
         ])
-        #expect(lowerProfile.args.dropLast().last == "--provider")
-        #expect(UUID(uuidString: try #require(lowerProfile.args.last)) != nil)
         let envelope = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(Set(envelope.keys) == ["version", "profiles"])
     }
@@ -198,19 +198,12 @@ struct ACPSubprocessTests {
         #expect(profilesProcess.terminationStatus == 0, Comment(rawValue: profilesStandardError))
         let bundle = try JSONDecoder().decode(ACPProfileBundle.self, from: profilesData)
         let profile = try #require(bundle.profiles.first { $0.args.contains(agentID.uuidString.lowercased()) })
-        let providerIndex = try #require(profile.args.firstIndex(of: "--provider"))
-        let providerID = profile.args[providerIndex + 1]
+        #expect(!profile.args.contains("--provider"))
 
+        // Run exactly what the captured profile asks for.
         let sessionProcess = Process()
         sessionProcess.executableURL = URL(fileURLWithPath: binary)
-        sessionProcess.arguments = [
-            "acp",
-            "--host", "127.0.0.1",
-            "--port", "1884",
-            "--namespace", namespace,
-            "--ascendant", agentID.uuidString,
-            "--provider", providerID,
-        ]
+        sessionProcess.arguments = profile.args
         sessionProcess.environment = environment
         let input = Pipe()
         let output = Pipe()
