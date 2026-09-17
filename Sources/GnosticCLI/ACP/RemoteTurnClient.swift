@@ -28,6 +28,8 @@ public final class RemoteTurnClient: Sendable {
     public let host: String
     public let port: Int
     public let namespace: String
+    public let username: String?
+    public let password: String?
     private let manager: CommunicationManager
     private let catalog: NetworkCatalog
     private let subscription: GnosticSubscription
@@ -37,16 +39,25 @@ public final class RemoteTurnClient: Sendable {
     private var connectionLost = false
 
     /// Creates a client bound to a broker namespace.
+    ///
+    /// Empty credential strings are treated as absent so the client never asks
+    /// the broker to authenticate with a blank username or password.
     public init(
         host: String,
         port: Int,
         namespace: String,
+        username: String? = nil,
+        password: String? = nil,
         timeout: Duration = .seconds(5),
         promptTimeout: Duration? = nil
     ) throws {
+        let username = username.flatMap { $0.isEmpty ? nil : $0 }
+        let password = password.flatMap { $0.isEmpty ? nil : $0 }
         self.host = host
         self.port = port
         self.namespace = namespace
+        self.username = username
+        self.password = password
         self.timeout = timeout
         self.promptTimeout = promptTimeout ?? timeout
         manager = try CommunicationManager(
@@ -58,6 +69,8 @@ public final class RemoteTurnClient: Sendable {
                     host: host,
                     port: UInt16(port),
                     shouldTryMDNSDiscovery: false,
+                    username: username,
+                    password: password,
                     autoReconnect: false
                 ),
                 shouldAutoStart: false

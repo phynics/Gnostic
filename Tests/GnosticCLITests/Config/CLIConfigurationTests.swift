@@ -107,6 +107,45 @@ struct CLIConfigurationTests {
         #expect(effective.mqttHost == "env.example.com")
     }
 
+    @Test("empty credential environment overrides clear stored values")
+    func emptyCredentialEnvironmentOverridesClear() throws {
+        let folder = try TemporaryFolder()
+        let store = self.store(folder: folder)
+        try ConfigCommandLogic.initialize(store: store)
+        try store.setValue("alice", for: .mqttUsername)
+        try store.setValue("s3cr3t", for: .mqttPassword)
+
+        let cleared = try CLIConfigurationStore(
+            baseDirectory: folder.url,
+            environment: ["GNOSTIC_MQTT_USERNAME": "", "GNOSTIC_MQTT_PASSWORD": ""]
+        ).load()
+
+        #expect(cleared.mqttUsername == nil)
+        #expect(cleared.mqttPassword == nil)
+    }
+
+    @Test("empty credential strings never reach MQTT client options")
+    func emptyCredentialStringsDoNotReachMQTTOptions() {
+        let configuration = CLIConfiguration(
+            mqttHost: "localhost",
+            mqttPort: 1883,
+            mqttNamespace: "gnostic",
+            mqttUsername: "",
+            mqttPassword: "",
+            llmProvider: nil,
+            llmEndpoint: nil,
+            llmModel: nil,
+            llmUtilityModel: nil,
+            llmFastModel: nil,
+            llmAPIKey: nil
+        )
+
+        let options = configuration.mqttClientOptions()
+
+        #expect(options.username == nil)
+        #expect(options.password == nil)
+    }
+
     @Test("malformed json and invalid ports produce structured errors naming the key")
     func malformedInputProducesStructuredErrors() throws {
         let folder = try TemporaryFolder()

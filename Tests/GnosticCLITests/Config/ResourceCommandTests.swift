@@ -189,6 +189,37 @@ struct ResourceCommandTests {
         _ = try JSONSerialization.jsonObject(with: Data(output.utf8))
     }
 
+    @Test("set-password with empty input clears the stored password")
+    func emptyPasswordClearsStoredPassword() throws {
+        let folder = try TemporaryFolder()
+        let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
+        try ConfigCommandLogic.initialize(store: store)
+        try store.setValue("alice", for: .mqttUsername)
+        try ConfigCommandLogic.setBrokerPassword("broker-secret", store: store)
+        #expect(try store.loadManifest().broker.password == "broker-secret")
+
+        try ConfigCommandLogic.setBrokerPassword("", store: store)
+
+        #expect(try store.loadManifest().broker.password == nil)
+        #expect(!(try String(contentsOf: store.path(), encoding: .utf8)).contains("\"password\""))
+    }
+
+    @Test("config validate rejects a password without a username")
+    func validateRejectsPasswordWithoutUsername() throws {
+        let folder = try TemporaryFolder()
+        let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
+        try ConfigCommandLogic.initialize(store: store)
+        try store.setValue("broker-secret", for: .mqttPassword)
+
+        do {
+            try ConfigCommandLogic.validate(store: store)
+            Issue.record("config validate accepted a password without a username")
+        } catch let error as NodeManifestError {
+            #expect(error == .passwordWithoutUsername)
+            #expect(error.errorDescription?.contains("requires a username") == true)
+        }
+    }
+
     @Test("resource CRUD preserves relationships and supports lazy network attachments")
     func resourceCRUD() throws {
         let folder = try TemporaryFolder()

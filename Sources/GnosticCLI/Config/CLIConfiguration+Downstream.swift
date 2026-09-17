@@ -19,8 +19,8 @@ extension CLIConfiguration {
             shouldTryMDNSDiscovery: false,
             autoReconnect: false
         )
-        options.username = mqttUsername
-        options.password = mqttPassword
+        options.username = mqttUsername.flatMap { $0.isEmpty ? nil : $0 }
+        options.password = mqttPassword.flatMap { $0.isEmpty ? nil : $0 }
         return options
     }
 

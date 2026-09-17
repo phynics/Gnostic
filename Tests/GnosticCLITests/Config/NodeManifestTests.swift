@@ -57,6 +57,39 @@ struct NodeManifestTests {
         #expect(String(data: try Data(contentsOf: path), encoding: .utf8)?.contains("_legacyID") == false)
     }
 
+    @Test("v2 load clears empty broker credentials and rewrites the manifest")
+    func v2LoadClearsEmptyBrokerCredentials() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        var manifest = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
+        manifest.broker.username = ""
+        manifest.broker.password = ""
+        try JSONEncoder().encode(manifest).write(to: path)
+
+        let loaded = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(loaded.broker.username == nil)
+        #expect(loaded.broker.password == nil)
+        let stored = try String(contentsOf: path, encoding: .utf8)
+        #expect(!stored.contains("\"password\""))
+        #expect(!stored.contains("\"username\""))
+    }
+
+    @Test("v1 migration clears empty broker credentials")
+    func v1MigrationClearsEmptyBrokerCredentials() throws {
+        let folder = try TemporaryFolder()
+        let path = folder.url.appendingPathComponent("config.json")
+        let node = "A21D0000-0000-4000-8000-000000000131"
+        let source = "{\"schemaVersion\":1,\"broker\":{\"host\":\"legacy.example\",\"port\":1883,\"namespace\":\"gnostic\",\"username\":\"\",\"password\":\"\"},\"node\":{\"id\":\"\(node)\",\"kind\":\"node\",\"approvalMode\":\"auto\",\"logLevel\":\"info\"},\"ascendants\":[],\"timelines\":[],\"workspaces\":[]}"
+        try Data(source.utf8).write(to: path)
+
+        let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+        #expect(migrated.broker.username == nil)
+        #expect(migrated.broker.password == nil)
+        let canonical = try String(contentsOf: path, encoding: .utf8)
+        #expect(!canonical.contains("\"password\""))
+        #expect(!canonical.contains("\"username\""))
+    }
+
     @Test("v2 load preserves opaque settings owned by other backends")
     func v2LoadPreservesNonPositronicLegacyIDSetting() throws {
         let folder = try TemporaryFolder()

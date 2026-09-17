@@ -88,6 +88,34 @@ struct ServeSubprocessTests {
         }
     }
 
+    @Test("effective launch plan rejects a password without a username")
+    func effectiveLaunchPlanRejectsPasswordWithoutUsername() throws {
+        let manifest = NodeManifest.makeDefault(
+            broker: .init(host: "manifest.example", port: 1_883, namespace: "manifest")
+        )
+        let configuration = CLIConfiguration(
+            mqttHost: "manifest.example",
+            mqttPort: 1_883,
+            mqttNamespace: "manifest",
+            mqttUsername: nil,
+            mqttPassword: "environment-secret",
+            llmProvider: nil,
+            llmEndpoint: nil,
+            llmModel: nil,
+            llmUtilityModel: nil,
+            llmFastModel: nil,
+            llmAPIKey: nil
+        )
+
+        #expect(throws: NodeManifestError.passwordWithoutUsername) {
+            try ServeLaunchPlan.compile(
+                manifest: manifest,
+                configuration: configuration,
+                overrides: .init(host: nil, port: nil, namespace: nil, approvalMode: nil, logLevel: nil)
+            )
+        }
+    }
+
     @Test("SIGTERM gracefully stops gnostic serve", .timeLimit(.minutes(1)))
     @MainActor
     func sigtermStopsServe() async throws {

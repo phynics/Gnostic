@@ -79,8 +79,8 @@ public struct CLIConfiguration: Sendable, Equatable, Codable {
         case .mqttHost: copy.mqttHost = validated
         case .mqttPort: copy.mqttPort = Int(validated) ?? copy.mqttPort
         case .mqttNamespace: copy.mqttNamespace = validated
-        case .mqttUsername: copy.mqttUsername = validated
-        case .mqttPassword: copy.mqttPassword = validated
+        case .mqttUsername: copy.mqttUsername = validated.isEmpty ? nil : validated
+        case .mqttPassword: copy.mqttPassword = validated.isEmpty ? nil : validated
         case .llmProvider: copy.llmProvider = validated
         case .llmEndpoint: copy.llmEndpoint = validated
         case .llmModel: copy.llmModel = validated

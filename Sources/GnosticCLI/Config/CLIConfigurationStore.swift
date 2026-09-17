@@ -98,6 +98,7 @@ public struct CLIConfigurationStore: Sendable {
             var manifest = try existingManifestOrEmptyUnlocked()
             let original = manifest
             try mutation(&manifest)
+            manifest = manifest.normalized()
             try manifest.validate(against: original)
             try writeManifestUnlocked(manifest)
             return manifest
@@ -178,7 +179,7 @@ public struct CLIConfigurationStore: Sendable {
             do {
                 let manifest = try JSONDecoder().decode(NodeManifest.self, from: data)
                 if manifest.schemaVersion == 1 {
-                    let migrated = try manifest.migratedToV2()
+                    let migrated = try manifest.migratedToV2().normalized()
                     try retainLegacyBackupUnlocked(data)
                     try writeManifestUnlocked(migrated)
                     return migrated
@@ -227,11 +228,13 @@ public struct CLIConfigurationStore: Sendable {
 
     /// Removes the retired profile identity marker from v2 files emitted by
     /// the pre-164 CLI projection without changing opaque backend settings.
+    /// Empty broker credentials are cleared so the stored manifest is canonical.
     private func canonicalV2Manifest(_ manifest: NodeManifest) -> NodeManifest {
         var result = manifest
         for index in result.ascendants.indices where result.ascendants[index].backend.kind == "positronic" {
             result.ascendants[index].backend.settings.removeValue(forKey: "_legacyID")
         }
+        result.broker = result.broker.normalized()
         return result
     }
 
@@ -280,12 +283,13 @@ public struct CLIConfigurationStore: Sendable {
     }
 
     private func configuration(from manifest: NodeManifest) -> CLIConfiguration {
+        let broker = manifest.broker.normalized()
         var result = CLIConfiguration(
-            mqttHost: manifest.broker.host,
-            mqttPort: manifest.broker.port,
-            mqttNamespace: manifest.broker.namespace,
-            mqttUsername: manifest.broker.username,
-            mqttPassword: manifest.broker.password,
+            mqttHost: broker.host,
+            mqttPort: broker.port,
+            mqttNamespace: broker.namespace,
+            mqttUsername: broker.username,
+            mqttPassword: broker.password,
             llmProvider: nil,
             llmEndpoint: nil,
             llmModel: nil,
@@ -307,12 +311,12 @@ public struct CLIConfigurationStore: Sendable {
 
     private func manifestApplying(_ configuration: CLIConfiguration, to manifest: NodeManifest) throws -> NodeManifest {
         var result = manifest
-        result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword)
+        result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword).normalized()
         return result
     }
 
     private static func manifest(from legacy: PersistedConfiguration, configuration: CLIConfiguration) -> NodeManifest {
-        let broker = NodeManifest.Broker(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword)
+        let broker = NodeManifest.Broker(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword).normalized()
         let hasLLMValues = [legacy.llmProvider, legacy.llmEndpoint, legacy.llmModel, legacy.llmUtilityModel, legacy.llmFastModel, legacy.llmAPIKey].contains { $0 != nil }
         let timelineID = UUID.makeVersion4()
         let ascendantID = UUID.makeVersion4()

@@ -58,6 +58,8 @@ struct ACPCommand: AsyncParsableCommand {
             host: host ?? stored.mqttHost,
             port: port ?? stored.mqttPort,
             namespace: namespace ?? stored.mqttNamespace,
+            username: stored.mqttUsername,
+            password: stored.mqttPassword,
             // ACP prompts may wait on an interactive permission decision.
             // Keep discovery calls bounded while allowing the authoritative
             // unary turn enough time to survive that interaction.
@@ -87,7 +89,9 @@ struct ACPCommand: AsyncParsableCommand {
         let client = try RemoteTurnClient(
             host: brokerKey.host,
             port: brokerKey.port,
-            namespace: brokerKey.namespace
+            namespace: brokerKey.namespace,
+            username: stored.mqttUsername,
+            password: stored.mqttPassword
         )
         // Every exit path stops the client: a throwing connect, cache
         // store, or profile write must not leak the manager and its
