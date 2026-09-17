@@ -42,11 +42,21 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
     && chown -R vscode:vscode /workspace
 
 RUN printf '%s\n' \
+        'per_listener_settings true' \
+        '' \
         'listener 1883 127.0.0.1' \
         'allow_anonymous true' \
+        '' \
+        'listener 1884 127.0.0.1' \
+        'allow_anonymous false' \
+        'password_file /etc/mosquitto/gnostic.passwd' \
+        '' \
         'persistence false' \
         'pid_file /tmp/gnostic-mosquitto.pid' \
         'log_dest stderr' \
-        > /etc/mosquitto/gnostic.conf
+        > /etc/mosquitto/gnostic.conf \
+    && mosquitto_passwd -b -c /etc/mosquitto/gnostic.passwd gnostic-test gnostic-secret \
+    && chown mosquitto:mosquitto /etc/mosquitto/gnostic.passwd \
+    && chmod 0640 /etc/mosquitto/gnostic.passwd
 
 WORKDIR /workspace

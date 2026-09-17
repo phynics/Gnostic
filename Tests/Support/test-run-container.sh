@@ -28,7 +28,7 @@ assert_contains() {
     needle=$1
     file=$2
     name=$3
-    if ! rg -F --quiet -- "$needle" "$file"; then
+    if ! grep -F --quiet -- "$needle" "$file"; then
         fail "$name (missing: $needle)"
     fi
 }
@@ -191,13 +191,71 @@ test_absent_container_smoke_script_fails_directly() {
     fi
 }
 
-test_tooling_only_make_targets_fail_for_missing_manifest() {
+test_missing_manifest_guard_fails_for_tooling_only_fixture() {
+    tooling_root="$fixture_dir/tooling-only"
+    runtime="$fixture_dir/guard-fake-runtime"
+    captured="$fixture_dir/guard-runtime-arguments"
+    mkdir -p "$tooling_root"
+    cp "$root_dir/Makefile" "$tooling_root/Makefile"
+    cp -R "$root_dir/.devcontainer" "$tooling_root/.devcontainer"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
     for target in resolve build test verify; do
         output="$fixture_dir/make-$target.out"
-        run_capture "$output" make -C "$root_dir" "$target"
-        assert_status 2 "$run_status" "make $target on tooling-only branch"
+        run_capture "$output" env \
+            GNOSTIC_DEVCONTAINER=0 \
+            CONTAINER_RUNTIME="$runtime" \
+            FAKE_RUNTIME_ARGUMENTS="$captured" \
+            BUILD_DIR="$fixture_dir/guard-build-$target" \
+            make -C "$tooling_root" "$target"
+        assert_status 2 "$run_status" "make $target on tooling-only fixture"
         assert_contains "Package.swift is not present on this branch" "$output" "make $target missing manifest diagnostic"
     done
+
+    [ ! -f "$captured" ] || fail "missing manifest guard does not build"
+}
+
+test_dev_stack_rejects_unknown_command() {
+    output="$fixture_dir/dev-stack-usage.out"
+    run_capture "$output" env \
+        GNOSTIC_BUILD_ROOT="$fixture_dir/dev-stack-build" \
+        "$root_dir/Scripts/dev-stack.sh" bogus
+    assert_status 1 "$run_status" "dev-stack unknown command"
+    assert_contains "usage: $root_dir/Scripts/dev-stack.sh up|status|down" "$output" "dev-stack usage diagnostic"
+
+    output="$fixture_dir/dev-stack-env.out"
+    run_capture "$output" env -u GNOSTIC_BUILD_ROOT "$root_dir/Scripts/dev-stack.sh" up
+    assert_status 2 "$run_status" "dev-stack missing build root"
+    assert_contains "GNOSTIC_BUILD_ROOT" "$output" "dev-stack build root diagnostic"
+}
+
+test_worktree_build_root_matches_wrapper() {
+    main="$fixture_dir/worktree-main"
+    worktree="$fixture_dir/worktree-checkout"
+    mkdir -p "$main/Scripts"
+    cp "$root_dir/Makefile" "$main/Makefile"
+    cp "$root_dir/Scripts/gnostic-container.sh" "$main/Scripts/gnostic-container.sh"
+    git -C "$main" init -q
+    git -C "$main" -c user.email=harness@example.invalid -c user.name=harness commit -q --allow-empty -m init
+    git -C "$main" worktree add -q "$worktree"
+    mkdir -p "$worktree/Scripts"
+    cp "$root_dir/Makefile" "$worktree/Makefile"
+    cp "$root_dir/Scripts/gnostic-container.sh" "$worktree/Scripts/gnostic-container.sh"
+
+    output="$fixture_dir/worktree-make.out"
+    run_capture "$output" env -u BUILD_CACHE_ROOT -u BUILD_DIR make -n -C "$worktree" build
+    assert_status 0 "$run_status" "worktree build dry run"
+    build_dir=$(awk -F'"' '/^BUILD_DIR="/ { print $2; exit }' "$output")
+    [ -n "$build_dir" ] || fail "worktree build root (make did not print BUILD_DIR)"
+
+    output="$fixture_dir/worktree-wrapper.out"
+    run_capture "$output" env -u GNOSTIC_BUILD_ROOT "$worktree/Scripts/gnostic-container.sh" acp profiles
+    assert_status 2 "$run_status" "worktree wrapper missing binary"
+    assert_contains "$build_dir/x86_64-unknown-linux-gnu/debug/gnostic" "$output" "worktree wrapper build root"
 }
 
 test_direct_command_preserves_exit_status
@@ -208,11 +266,13 @@ test_failing_child_releases_lock
 test_container_smoke_delegates_to_smoke_script
 test_repository_container_smoke_script_is_executable
 test_absent_container_smoke_script_fails_directly
-test_tooling_only_make_targets_fail_for_missing_manifest
+test_missing_manifest_guard_fails_for_tooling_only_fixture
+test_dev_stack_rejects_unknown_command
+test_worktree_build_root_matches_wrapper
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures harness test(s) failed" >&2
     exit 1
 fi
 
-echo "9 harness tests passed"
+echo "11 harness tests passed"

@@ -283,6 +283,59 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
     }
 
+    @Test("catalog identity deadvertise evicts every record and tool for its provider")
+    func catalogIdentityDeadvertiseEvictsEveryProviderRecord() async throws {
+        let catalog = NetworkCatalog()
+        let ascendant = try ascendantSnapshot(health: .unknown, sourceID: "provider-a")
+        let workspace = workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a")
+        let tool = try workspaceToolSnapshot(sourceID: "provider-a")
+
+        await catalog.ingest(ascendant)
+        await catalog.ingest(workspace)
+        await catalog.ingest(tool)
+        #expect(await catalog.workspaceDescriptor(id: workspaceID, providerID: "provider-a")?.tools.map(\.id) == ["search"])
+
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: ["provider-a"]))
+
+        #expect(await catalog.networkObjects(includeIncompatible: true).isEmpty)
+        #expect(await catalog.object(id: ascendantID, providerID: "provider-a") == nil)
+        #expect(await catalog.workspaceDescriptor(id: workspaceID, providerID: "provider-a") == nil)
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
+    }
+
+    @Test("catalog identity deadvertise leaves other providers intact")
+    func catalogIdentityDeadvertiseLeavesOtherProvidersIntact() async {
+        let catalog = NetworkCatalog()
+
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a"))
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://beta", sourceID: "provider-b"))
+
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: ["provider-a"]))
+
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .available(
+            providerID: "provider-b",
+            uri: "workspace://beta"
+        ))
+        #expect(await catalog.networkObjects().map(\.providerID) == ["provider-b"])
+    }
+
+    @Test("catalog notifies provider eviction only for the identity deadvertise")
+    func catalogNotifiesProviderEvictionOnlyForIdentityDeadvertise() async {
+        let catalog = NetworkCatalog()
+        let stream = await catalog.providerEvictionStream()
+        let received = Task { () -> String? in
+            var iterator = stream.makeAsyncIterator()
+            return await iterator.next()
+        }
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a"))
+        // A per-object deadvertise is not an identity eviction.
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: [workspaceID.uuidString.lowercased()]))
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a"))
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: ["provider-a"]))
+
+        #expect(await received.value == "provider-a")
+    }
+
     @Test("catalog ingests a resolved object snapshot")
     func catalogIngestsResolvedObjectSnapshot() async throws {
         let catalog = NetworkCatalog()
@@ -713,6 +766,28 @@ struct ProjectionAndCatalogTests {
                     "isAvailable": true,
                     "tools": [],
                 ], protocolMajor: protocolMajor)
+            )
+        )
+    }
+
+    private func workspaceToolSnapshot(sourceID: String) throws -> AdvertiseEventSnapshot {
+        let toolObject = GnosticWorkspaceToolObject(
+            workspaceID: workspaceID,
+            definition: GnosticWorkspaceToolDefinition(
+                id: "search",
+                name: "Search",
+                description: "Searches notes."
+            )
+        )
+        let encoded = try #require(String(data: JSONEncoder().encode(toolObject), encoding: .utf8))
+        return AdvertiseEventSnapshot(
+            sourceId: sourceID,
+            object: CoatyObjectSnapshot(
+                objectId: toolObject.objectId.string,
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.workspaceTool,
+                name: toolObject.name,
+                payload: encoded
             )
         )
     }

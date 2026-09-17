@@ -117,6 +117,19 @@ public struct NodeManifest: Codable, Equatable, Sendable {
             self.host = host; self.port = port; self.namespace = namespace
             self.username = username; self.password = password
         }
+
+        /// Returns a copy with empty credential strings cleared to `nil`.
+        ///
+        /// MQTT treats a present-but-empty password as a credential on the wire,
+        /// which brokers reject when no username is present. Empty values carry
+        /// no authentication intent, so the canonical manifest never stores
+        /// them.
+        public func normalized() -> Self {
+            var copy = self
+            if copy.username?.isEmpty == true { copy.username = nil }
+            if copy.password?.isEmpty == true { copy.password = nil }
+            return copy
+        }
     }
 
     public struct Node: Codable, Equatable, Sendable {
@@ -302,8 +315,30 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         for (id, kind) in original.identityMap where current[id] != nil && current[id] != kind { throw NodeManifestError.immutableIdentity(id) }
     }
 
+    /// Returns a copy with empty broker credential strings cleared.
+    ///
+    /// The store writes this form so the persisted manifest never records `""`
+    /// where no credential was intended.
+    public func normalized() -> Self {
+        var copy = self
+        copy.broker = copy.broker.normalized()
+        return copy
+    }
+
+    /// Verifies that the broker credentials can be represented on the MQTT wire.
+    ///
+    /// MQTT 3.1.1 §3.1.2.9 forbids the password flag when the username flag is
+    /// clear, so a password without a username is rejected before a transport
+    /// connects.
+    public func validateBrokerCredentials() throws {
+        let broker = broker.normalized()
+        guard broker.password != nil else { return }
+        guard broker.username != nil else { throw NodeManifestError.passwordWithoutUsername }
+    }
+
     public func compileLaunchPlan() throws -> NodeLaunchPlan {
-        try validate(); return NodeLaunchPlan(node: node, broker: broker, ascendants: ascendants, timelines: timelines, workspaces: workspaces)
+        try validate(); try validateBrokerCredentials()
+        return NodeLaunchPlan(node: node, broker: broker.normalized(), ascendants: ascendants, timelines: timelines, workspaces: workspaces)
     }
 
     public func redactedDescription() -> String {

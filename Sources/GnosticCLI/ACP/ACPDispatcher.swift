@@ -81,6 +81,20 @@ final class ACPDispatcher: Sendable {
     }
 
     func handle(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        do {
+            return try await route(request)
+        } catch let error as RemoteTurnClientError {
+            if case .providerOffline = error {
+                // The cached selection points at a provider that is gone. Drop
+                // it so the next request re-resolves the Ascendant instead of
+                // reusing the dead binding.
+                ascendant = nil
+            }
+            throw error
+        }
+    }
+
+    private func route(_ request: JSONRPCRequest) async throws -> AnyCodable {
         switch request.method {
         case "session/new":
             return try await newSession(request.params)
@@ -105,7 +119,7 @@ final class ACPDispatcher: Sendable {
         let input: ACPSessionParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
-        let selected = try selectedAscendant()
+        let selected = try await currentAscendant()
         let status = try await client.createTimeline(
             title: "ACP \(URL(fileURLWithPath: cwd).lastPathComponent)",
             ascendantID: selected.id,
@@ -134,8 +148,8 @@ final class ACPDispatcher: Sendable {
         try rejectMCP(input.mcpServers)
         let record = try await knownSession(id: input.sessionID, cwd: cwd)
         do {
-            try requireBinding(of: record)
-            let status = try await client.timelineStatus(timelineID: record.timelineID, providerID: try boundProviderID(for: record))
+            try await requireBinding(of: record)
+            let status = try await client.timelineStatus(timelineID: record.timelineID, providerID: try await boundProviderID(for: record))
             try await registry.touch(id: record.id)
             return .dictionary(["_meta": .dictionary(sessionMetadata(cwd: record.cwd, status: status))])
         } catch {
@@ -146,7 +160,7 @@ final class ACPDispatcher: Sendable {
     private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
         let input: ACPListParameters = try decode(params ?? .dictionary([:]))
         let cwd = try input.cwd.map { try canonicalCWD($0) }
-        let selected = try selectedAscendant()
+        let selected = try await currentAscendant()
         let records = await registry.list(cwd: cwd)
         var sessions: [AnyCodable] = []
         var unresolved: [ACPSessionRecord] = []
@@ -212,7 +226,7 @@ final class ACPDispatcher: Sendable {
         }
         let record = try await knownSession(id: input.sessionID, cwd: nil)
         do {
-            try requireBinding(of: record)
+            try await requireBinding(of: record)
         } catch {
             throw await orphanAwareError(error, for: record)
         }
@@ -231,7 +245,7 @@ final class ACPDispatcher: Sendable {
         // for the bounded update stream, so consume it before attempting
         // admission and never risk a second Timeline mutation.
         if input.clientTurnID != nil,
-           let existing = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text, providerID: try boundProviderID(for: record)),
+           let existing = try? await client.replay(timelineID: record.timelineID, clientTurnID: turnID, message: text, providerID: try await boundProviderID(for: record)),
            existing.terminal {
             if existing.conflict {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
@@ -271,7 +285,7 @@ final class ACPDispatcher: Sendable {
             clientTurnID: turnID,
             message: text,
             afterSequence: lastSequence,
-            providerID: try boundProviderID(for: record)
+            providerID: try await boundProviderID(for: record)
         )
         let updates = replay?.updates ?? []
         if updates.isEmpty, lastSequence == 0 {
@@ -303,7 +317,7 @@ final class ACPDispatcher: Sendable {
         record: ACPSessionRecord,
         turnID: String
     ) async throws -> (AscendantTurnResult, Int) {
-        let providerID = try boundProviderID(for: record)
+        let providerID = try await boundProviderID(for: record)
         let channel = try await client.observeTurnUpdates(providerID: providerID)
         let inbox = TurnUpdateInbox()
         let collector = Task {
@@ -449,7 +463,7 @@ final class ACPDispatcher: Sendable {
                     timelineID: timelineID,
                     clientTurnID: turnID,
                     approved: approved
-                ), providerID: try selectedAscendant().providerID)
+                ), providerID: try await currentAscendant().providerID)
             } catch {
                 try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
                 if error is CancellationError {
@@ -470,7 +484,7 @@ final class ACPDispatcher: Sendable {
             timelineID: timelineID,
             clientTurnID: turnID,
             approved: false
-        ), providerID: try selectedAscendant().providerID)
+        ), providerID: try await currentAscendant().providerID)
     }
 
     private func publishUpdate(
@@ -503,14 +517,18 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func selectedAscendant() throws -> Ascendant {
-        guard let ascendant else { throw JSONRPCMethodError.invalidState("ACP agent is not initialized") }
-        return ascendant
+    /// Returns the cached Ascendant, re-resolving it when a provider eviction
+    /// cleared the selection.
+    private func currentAscendant() async throws -> Ascendant {
+        if let ascendant { return ascendant }
+        let resolved = try await resolveAscendant()
+        ascendant = resolved
+        return resolved
     }
 
     private func requireSession(id: String, cwd: String?) async throws -> ACPSessionRecord {
         let record = try await knownSession(id: id, cwd: cwd)
-        try requireBinding(of: record)
+        try await requireBinding(of: record)
         return record
     }
 
@@ -523,8 +541,15 @@ final class ACPDispatcher: Sendable {
     /// after something has already failed, which keeps a healthy request free
     /// of an extra discovery round. Confirmed absence also ends the registry
     /// record; any other outcome keeps the original error and leaves the
-    /// record open, because provider liveness is the separate problem in #249.
+    /// record open.
+    ///
+    /// An evicted provider is never an orphan. Its catalog entries are gone
+    /// (#249), so the Timeline would probe as absent next to any other live
+    /// Node — exactly the false positive ADR 0008 forbids. A typed
+    /// `providerOffline` says the Node left, not that the Timeline died, so it
+    /// passes through untouched.
     private func orphanAwareError(_ error: any Error, for record: ACPSessionRecord) async -> any Error {
+        if case RemoteTurnClientError.providerOffline = error { return error }
         guard await client.timelinePresence(of: record.timelineID) == .absent else { return error }
         _ = try? await registry.markEnded(id: record.id)
         return RemoteTurnClientError.timelineUnavailable(record.timelineID)
@@ -540,8 +565,8 @@ final class ACPDispatcher: Sendable {
         return record
     }
 
-    private func requireBinding(of record: ACPSessionRecord) throws {
-        guard matchesBinding(record, selected: try selectedAscendant()) else {
+    private func requireBinding(of record: ACPSessionRecord) async throws {
+        guard matchesBinding(record, selected: try await currentAscendant()) else {
             throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant or namespace")
         }
     }
@@ -562,8 +587,8 @@ final class ACPDispatcher: Sendable {
         "\(client.namespace):\(ascendant.id.uuidString.lowercased())"
     }
 
-    private func boundProviderID(for record: ACPSessionRecord) throws -> String {
-        let selected = try selectedAscendant()
+    private func boundProviderID(for record: ACPSessionRecord) async throws -> String {
+        let selected = try await currentAscendant()
         guard record.providerID == nil || record.providerID == selected.providerID else {
             throw JSONRPCMethodError.invalidState("session is bound to a different provider")
         }
