@@ -34,6 +34,11 @@ jobs:
             swift-6.3.3-${{ hashFiles('Package.resolved') }}-
             swift-6.3.3-
 
+      # The harness runs on the runner and uses fake runtimes, so it needs no
+      # image and fails fast on a stale or broken container command contract.
+      - name: make harness-test
+        run: make harness-test
+
       # Every target below builds the image from .devcontainer/Dockerfile via
       # the Makefile, so CI and local development share one dependency list.
       # Restating the apt packages here would let the two drift.
