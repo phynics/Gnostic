@@ -36,7 +36,10 @@ public final class RemoteTurnClient: Sendable {
     private let timeout: Duration
     private let promptTimeout: Duration
     private var stateTask: Task<Void, Never>?
+    private var providerEvictionTask: Task<Void, Never>?
     private var connectionLost = false
+    private var offlineProviders: Set<String> = []
+    private var inFlightCalls: [String: [UUID: Task<UnaryCallResult, Error>]] = [:]
 
     /// Creates a client bound to a broker namespace.
     ///
@@ -88,6 +91,7 @@ public final class RemoteTurnClient: Sendable {
         try manager.start()
         while let state = await iterator.next() {
             if state == .online {
+                startProviderEvictionMonitor()
                 try await subscription.start()
                 connectionLost = false
                 stateTask?.cancel()
@@ -108,13 +112,47 @@ public final class RemoteTurnClient: Sendable {
     public func stop() async {
         stateTask?.cancel()
         stateTask = nil
+        providerEvictionTask?.cancel()
+        providerEvictionTask = nil
         await subscription.stopAndWait()
         await subscription.disposeScope()
         manager.stop()
     }
 
+    /// Observes catalog provider evictions so their in-flight and later calls
+    /// fail without waiting for the call or prompt timeout.
+    private func startProviderEvictionMonitor() {
+        providerEvictionTask?.cancel()
+        providerEvictionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let stream = await self.catalog.providerEvictionStream()
+            for await providerID in stream {
+                self.providerEvicted(providerID)
+            }
+        }
+    }
+
+    private func providerEvicted(_ providerID: String) {
+        let normalized = providerID.lowercased()
+        offlineProviders.insert(normalized)
+        if let calls = inFlightCalls[normalized] {
+            for task in calls.values {
+                task.cancel()
+            }
+        }
+    }
+
+    private func ensureProviderOnline(_ providerID: String?) throws {
+        guard let providerID, offlineProviders.contains(providerID.lowercased()) else { return }
+        throw RemoteTurnClientError.providerOffline(providerID)
+    }
+
     /// Whether the underlying broker connection has been lost since connect.
     public var hasLostConnection: Bool { connectionLost }
+
+    /// Providers observed offline through a lifecycle identity deadvertisement.
+    /// Diagnostic surface for tests and inspection; not part of the ACP contract.
+    var evictedProviderIDs: Set<String> { offlineProviders }
 
     /// Refreshes the catalog using Axoloty's active discover request.
     private func refreshCatalog() async {
@@ -167,10 +205,12 @@ public final class RemoteTurnClient: Sendable {
         clientTurnID: String?,
         providerID: String? = nil
     ) async throws -> AscendantTurnResult {
+        try ensureProviderOnline(providerID)
         let payload = try GnosticWirePayload.encode(
             AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
             , context: "ascendant.turn request")
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
+        try ensureProviderOnline(target.providerID)
         let response = try await call(
             operation: AscendantTurnProvider.turnOperation,
             parameters: String(decoding: payload, as: UTF8.self),
@@ -190,10 +230,12 @@ public final class RemoteTurnClient: Sendable {
         afterSequence: Int = 0,
         providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
+        try ensureProviderOnline(providerID)
         let payload = try GnosticWirePayload.encode(
             AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
             , context: "ascendant.turn.replay request")
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
+        try ensureProviderOnline(target.providerID)
         let response = try await call(
             operation: AscendantTurnProvider.replayOperation,
             parameters: String(decoding: payload, as: UTF8.self),
@@ -229,6 +271,7 @@ public final class RemoteTurnClient: Sendable {
 
     /// Reads the served timeline's attachment state.
     public func timelineStatus(timelineID: UUID, providerID: String? = nil) async throws -> TimelineStatus {
+        try ensureProviderOnline(providerID)
         let payload = try JSONEncoder().encode(TimelineStatusRequest(timelineID: timelineID))
         let response = try await call(
             operation: TimelineStatusProvider.statusOperation,
@@ -241,6 +284,7 @@ public final class RemoteTurnClient: Sendable {
 
     /// Creates a new timeline on the serve and returns its status.
     public func createTimeline(title: String, ascendantID: UUID? = nil, providerID: String? = nil) async throws -> TimelineStatus {
+        try ensureProviderOnline(providerID)
         let payload = try JSONEncoder().encode(TimelineCreateRequest(title: title, ascendantID: ascendantID))
         let targetProvider: String?
         if let providerID {
@@ -339,12 +383,37 @@ public final class RemoteTurnClient: Sendable {
     }
 
     private func call(operation: String, parameters: String? = nil, providerID: String?, timeout: Duration) async throws -> UnaryCallResult {
-        let response = try await manager.call(
-            operation: operation,
-            parameters: parameters,
-            context: providerID.map(Self.providerContext),
-            timeout: timeout
-        )
+        try ensureProviderOnline(providerID)
+        let normalized = providerID?.lowercased()
+        let callID = UUID()
+        let task = Task { [manager] in
+            try await manager.call(
+                operation: operation,
+                parameters: parameters,
+                context: providerID.map(Self.providerContext),
+                timeout: timeout
+            )
+        }
+        if let normalized {
+            inFlightCalls[normalized, default: [:]][callID] = task
+        }
+        defer {
+            if let normalized {
+                inFlightCalls[normalized]?[callID] = nil
+                if inFlightCalls[normalized]?.isEmpty == true {
+                    inFlightCalls[normalized] = nil
+                }
+            }
+        }
+        let response: UnaryCallResult
+        do {
+            response = try await task.value
+        } catch {
+            // A provider eviction cancels this call. Report the typed offline
+            // error instead of the generic cancellation it produces.
+            try ensureProviderOnline(providerID)
+            throw error
+        }
         if let providerID, response.sourceId?.lowercased() != providerID.lowercased() {
             throw RemoteTurnClientError.providerMismatch
         }
