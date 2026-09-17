@@ -98,11 +98,16 @@ Use the repository container for package development and validation:
 make worktree-bootstrap
 make verify
 make docs-check
+make harness-test
 make container-smoke
 ```
 
 `make verify` runs the documentation check and Swift test suite. The smoke
 targets exercise the standalone runner, ACP clients, and container setup.
+`make harness-test` runs the container command harness on the host with fake
+runtimes. It covers `.devcontainer/run.sh`, the smoke delegation, the
+missing-manifest guard, the dev-stack argument handling, and the build-root
+derivation, without building anything.
 
 ## Run the local ACP stack
 
