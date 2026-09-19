@@ -953,6 +953,11 @@ public struct ShardReportDraft: Codable, Equatable, Hashable, Sendable {
     public let recordedAt: Date
     /// Reference-only provenance.
     public let provenance: AtlasProvenance
+    /// The exact accepted Atlas version projected into prompt assembly for the
+    /// Turn that produced this draft, when the source projected one. Recording
+    /// it keeps the report tied to the snapshot it was actually derived from
+    /// instead of the live state at append time.
+    public let projectedVersion: AtlasVersion?
 
     /// Creates an immutable report draft.
     public init(
@@ -964,7 +969,8 @@ public struct ShardReportDraft: Codable, Equatable, Hashable, Sendable {
         outcome: ShardReportOutcome = .succeeded,
         occurredAt: Date = Date(timeIntervalSince1970: 0),
         recordedAt: Date = Date(timeIntervalSince1970: 0),
-        provenance: AtlasProvenance
+        provenance: AtlasProvenance,
+        projectedVersion: AtlasVersion? = nil
     ) {
         self.ascendantID = ascendantID
         self.shardID = shardID
@@ -975,6 +981,7 @@ public struct ShardReportDraft: Codable, Equatable, Hashable, Sendable {
         self.occurredAt = occurredAt
         self.recordedAt = recordedAt
         self.provenance = provenance
+        self.projectedVersion = projectedVersion
     }
 }
 
@@ -1002,6 +1009,9 @@ public struct AscendantShardReport: Codable, Equatable, Hashable, Sendable {
     public let recordedAt: Date
     /// Reference-only provenance.
     public let provenance: AtlasProvenance
+    /// The exact accepted Atlas version projected into prompt assembly for the
+    /// Turn that produced this report, when one was projected.
+    public let projectedVersion: AtlasVersion?
 
     /// Creates an immutable report with an actor-assigned sequence.
     public init(draft: ShardReportDraft, sequence: UInt64) {
@@ -1016,6 +1026,7 @@ public struct AscendantShardReport: Codable, Equatable, Hashable, Sendable {
         self.occurredAt = draft.occurredAt
         self.recordedAt = draft.recordedAt
         self.provenance = draft.provenance
+        self.projectedVersion = draft.projectedVersion
     }
 }
 
