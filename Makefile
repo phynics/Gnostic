@@ -25,10 +25,10 @@ SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test docs-check harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package resolve worktree-bootstrap build test docs-check lint harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check lint harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -55,6 +55,9 @@ test: build
 docs-check: build
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'node /workspace/Scripts/check-documentation.mjs --self-test; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path)/gnostic; test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; node /workspace/Scripts/check-documentation.mjs --root /workspace --cli "$$bin"'
 
+lint: require-package
+	@./Scripts/check-unchecked-sendable.sh
+
 harness-test:
 	@./Tests/Support/test-run-container.sh
 	@./Tests/Support/test-gnostic-container.sh
@@ -76,7 +79,7 @@ sbom: require-package image
 	@mkdir -p .testing/sbom
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'rm -rf .testing/sbom; mkdir -p .testing/sbom; swift package generate-sbom --cache-path /workspace/.swiftpm-cache --sbom-spec spdx --sbom-spec cyclonedx --sbom-output-dir .testing/sbom && ls -1 .testing/sbom'
 
-verify: docs-check test
+verify: docs-check lint test
 
 shell: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash

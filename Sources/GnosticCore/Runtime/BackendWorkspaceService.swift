@@ -69,7 +69,7 @@ public protocol AscendantBackendWorkspaceFileService: Sendable {
 /// Positronic workspace values are deliberately confined to this host bridge;
 /// the ``AscendantBackendWorkspaceService`` contract remains Foundation-only.
 @MainActor
-final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, AscendantBackendWorkspaceFileService, @unchecked Sendable {
+final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, AscendantBackendWorkspaceFileService, @unchecked Sendable { // SAFETY: @MainActor class; all mutable state is actor-isolated.
     private let localWorkspaces: [UUID: any WorkspaceProvider]
     private var references: [UUID: WorkspaceReference]
     private let catalog: NetworkCatalog

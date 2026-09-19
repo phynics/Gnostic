@@ -27,7 +27,7 @@ public enum GnosticObjectType {
 }
 
 /// A safe network projection of a backend-neutral Ascendant identity.
-public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable {
+public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 

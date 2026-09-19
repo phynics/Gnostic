@@ -8,7 +8,7 @@ import Foundation
 /// Tool objects are intentionally queryable but never advertised. Their
 /// parent object is the Workspace, so a consumer can retrieve the public tool
 /// catalog without placing the dynamic catalog in the retained advertisement.
-public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable {
+public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.
     public let protocolMajor: Int
     public let workspaceID: UUID
     public let toolID: String
