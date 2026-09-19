@@ -381,6 +381,41 @@ struct ProjectionAndCatalogTests {
         #expect(await received.value == "provider-a")
     }
 
+    @Test("catalog publishes advertisement, deadvertisement, and eviction changes")
+    func catalogPublishesChangeStream() async {
+        let catalog = NetworkCatalog()
+        let stream = await catalog.changes()
+        var iterator = stream.makeAsyncIterator()
+
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a"))
+        guard case let .advertised(entry)? = await iterator.next() else {
+            Issue.record("expected an advertised change")
+            return
+        }
+        #expect(entry.objectID == workspaceID)
+
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: [workspaceID.uuidString.lowercased()]))
+        guard case let .deadvertised(objectID, providerID)? = await iterator.next() else {
+            Issue.record("expected a deadvertised change")
+            return
+        }
+        #expect(objectID == workspaceID)
+        #expect(providerID == "provider-a")
+
+        await catalog.ingest(workspaceSnapshot(uri: "workspace://alpha", sourceID: "provider-a"))
+        guard case .advertised? = await iterator.next() else {
+            Issue.record("expected a second advertised change")
+            return
+        }
+
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "provider-a", objectIds: ["provider-a"]))
+        guard case let .providerEvicted(evicted)? = await iterator.next() else {
+            Issue.record("expected a provider evicted change")
+            return
+        }
+        #expect(evicted == "provider-a")
+    }
+
     @Test("catalog ingests a resolved object snapshot")
     func catalogIngestsResolvedObjectSnapshot() async throws {
         let catalog = NetworkCatalog()
