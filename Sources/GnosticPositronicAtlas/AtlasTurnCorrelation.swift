@@ -122,52 +122,87 @@ public actor AtlasTurnCorrelator {
     public var pendingCount: Int { pending.count }
 }
 
-/// Projects a bounded Atlas context for one Positronic Turn and registers the
-/// immutable invocation used to record that Turn's Shard Report.
+/// Projects the bounded Ascendant Brief for one Positronic Turn and registers
+/// the immutable invocation used to record that Turn's Shard Report.
 ///
 /// The source reads the Gnostic Turn identity from
-/// ``PositronicTurnInvocationContext/current`` directly. Atlas never aborts a
-/// Turn: a missing identity, an unresolvable client Turn id, or an absent
-/// snapshot produces no contribution and no report.
+/// ``PositronicTurnInvocationContext/current`` directly. It reuses the
+/// first-registered invocation snapshot for the Turn, so prompt projection and
+/// report recording always describe the same revision. Atlas never aborts a
+/// Turn: a missing identity, an unresolvable client Turn id, a provider
+/// failure, or an absent projection produces no contribution. A provider
+/// failure or a rejected binding additionally emits one structured, redacted
+/// diagnostic.
 public struct AtlasTurnContextSource: TurnContextSource {
-    /// The default contribution namespace.
-    public static let defaultNamespace = "atlas"
-    /// The default contribution key.
-    public static let defaultKey = "context"
-    /// The maximum projected context text in bytes.
-    public static let maximumProjectionBytes = 512
+    /// The default contribution namespace, held stable across revisions.
+    public static let defaultNamespace = AscendantBriefProjector.sectionNamespace
+    /// The default contribution key, held stable across revisions.
+    public static let defaultKey = AscendantBriefProjector.sectionKey
 
-    private let store: any AtlasStore
+    private let provider: any AscendantBriefProvider
     private let correlator: AtlasTurnCorrelator
     private let shardID: AscendantShardID
     private let origin: AtlasOrigin
     private let namespace: String
     private let key: String
+    private let projector: AscendantBriefProjector
+    private let diagnosticObserver: (any AscendantBriefDiagnosticObserver)?
+    private let now: @Sendable () -> Date
 
-    /// Creates a context source for one Ascendant Shard.
+    /// Creates a context source over one in-process store.
     public init(
         store: any AtlasStore,
         correlator: AtlasTurnCorrelator,
         shardID: AscendantShardID,
         origin: AtlasOrigin = .ascendantTurn,
         namespace: String = AtlasTurnContextSource.defaultNamespace,
-        key: String = AtlasTurnContextSource.defaultKey
+        key: String = AtlasTurnContextSource.defaultKey,
+        diagnosticObserver: (any AscendantBriefDiagnosticObserver)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
-        self.store = store
+        self.init(
+            provider: AtlasStoreBriefProvider(store: store),
+            correlator: correlator,
+            shardID: shardID,
+            origin: origin,
+            namespace: namespace,
+            key: key,
+            diagnosticObserver: diagnosticObserver,
+            now: now
+        )
+    }
+
+    /// Creates a context source over an injectable brief provider.
+    public init(
+        provider: any AscendantBriefProvider,
+        correlator: AtlasTurnCorrelator,
+        shardID: AscendantShardID,
+        origin: AtlasOrigin = .ascendantTurn,
+        namespace: String = AtlasTurnContextSource.defaultNamespace,
+        key: String = AtlasTurnContextSource.defaultKey,
+        projector: AscendantBriefProjector = AscendantBriefProjector(),
+        diagnosticObserver: (any AscendantBriefDiagnosticObserver)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.provider = provider
         self.correlator = correlator
         self.shardID = shardID
         self.origin = origin
         self.namespace = namespace
         self.key = key
+        self.projector = projector
+        self.diagnosticObserver = diagnosticObserver
+        self.now = now
     }
 
-    /// Atlas context is additive: a missing projection never fails a Turn.
+    /// Atlas context is additive: a missing or failed projection never fails a Turn.
     public var failureRequirement: TurnContextContributionRequirement { .optional }
 
-    /// Projects the bounded Atlas context and registers the invocation.
+    /// Projects the bounded brief and registers the invocation.
     ///
     /// - Returns: One bounded contribution, or an empty array when the Turn has
-    ///   no correlatable Gnostic identity.
+    ///   no correlatable Gnostic identity, no eligible state, or a failed
+    ///   provider.
     /// - Throws: ``TurnContextContributionError`` when the projection does not
     ///   satisfy the PositronicKit contribution bounds.
     public func contributions(for _: TurnContextRequest) async throws -> [TurnContextContribution] {
@@ -179,32 +214,56 @@ public struct AtlasTurnContextSource: TurnContextSource {
         let turnID = AtlasOperationID(turnIDString)
         guard !turnID.rawValue.isEmpty else { return [] }
 
+        let providerContext: AscendantBriefContext
+        do {
+            providerContext = try await provider.context()
+        } catch {
+            if error is CancellationError { throw error }
+            await recordDiagnostic(.providerFailed, invocation: invocation)
+            return []
+        }
+
         let proposed = AtlasTurnInvocation(
             ascendantID: invocation.ascendantID,
             timelineID: invocation.timelineID,
             turnID: turnID,
             shardID: shardID,
             origin: origin,
-            snapshot: await store.snapshot()
+            snapshot: providerContext.snapshot
         )
         let registered = await correlator.register(proposed)
-        return [try TurnContextContribution(
-            namespace: namespace,
-            key: key,
-            text: Self.projection(for: registered),
-            requirement: .optional
-        )]
+
+        let projectionContext = AscendantBriefContext(
+            ascendantID: invocation.ascendantID,
+            snapshot: registered.snapshot,
+            registrations: providerContext.registrations
+        )
+        switch projector.project(context: projectionContext, targetShardID: shardID, now: now()) {
+        case let .projected(brief):
+            return [try TurnContextContribution(
+                namespace: namespace,
+                key: key,
+                text: brief.text,
+                requirement: .optional
+            )]
+        case let .rejected(reason):
+            await recordDiagnostic(reason, invocation: invocation)
+            return []
+        case .empty:
+            return []
+        }
     }
 
-    /// A bounded, deterministic description of the projected revision.
-    ///
-    /// #118 replaces this summary with the scoped Ascendant Brief; #116 only
-    /// needs the projection to pin the exact snapshot the report is tied to.
-    static func projection(for invocation: AtlasTurnInvocation) -> String {
-        let version = invocation.snapshot.version
-        let text = "Atlas revision \(version.semanticRevision) at state \(version.stateVersion); "
-            + "\(invocation.snapshot.items.count) accepted item(s)."
-        return GnosticWirePayload.prefix(text, maximumBytes: maximumProjectionBytes)
+    /// Emits one structured, payload-free diagnostic.
+    private func recordDiagnostic(
+        _ reason: AscendantBriefDiagnosticReason,
+        invocation: PositronicTurnInvocation
+    ) async {
+        await diagnosticObserver?.observe(AscendantBriefDiagnostic(
+            reason: reason,
+            ascendantID: invocation.ascendantID,
+            shardID: shardID
+        ))
     }
 }
 
