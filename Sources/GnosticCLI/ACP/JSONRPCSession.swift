@@ -61,14 +61,21 @@ public actor JSONRPCSession {
     }
 
     /// Finishes the stream and emits a parse error for an incomplete frame.
+    ///
+    /// Shutdown runs under a cancellation shield: a cancelled caller must not
+    /// skip framing teardown, cancellation of in-flight requests, or the
+    /// terminal state transition. In-flight handlers are awaited so the
+    /// session does not report stopped while domain cleanup is still running.
     public func finish() async {
-        do {
-            try framer.finish()
-        } catch {
-            emit(JSONRPCResponse(id: nil, error: errorObject(code: .parseError, message: "Incomplete JSON-RPC frame")))
+        await withTaskCancellationShield {
+            do {
+                try framer.finish()
+            } catch {
+                emit(JSONRPCResponse(id: nil, error: errorObject(code: .parseError, message: "Incomplete JSON-RPC frame")))
+            }
+            await cancelAllAndWait()
+            state = .stopped
         }
-        cancelAll()
-        state = .stopped
     }
 
     /// Emits a JSON-RPC notification without an id. ACP uses notifications for
@@ -139,14 +146,18 @@ public actor JSONRPCSession {
             respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "session is not initialized"))
             return
         }
-        state = .stopped
-        cancelAll()
+        await withTaskCancellationShield {
+            state = .stopped
+            await cancelAllAndWait()
+        }
         respondIfNeeded(to: request, result: .dictionary([:]))
     }
 
     private func exit(_ request: JSONRPCRequest) async {
-        cancelAll()
-        state = .stopped
+        await withTaskCancellationShield {
+            await cancelAllAndWait()
+            state = .stopped
+        }
         respondIfNeeded(to: request, result: .dictionary([:]))
     }
 
@@ -200,9 +211,18 @@ public actor JSONRPCSession {
         if let response { emit(response) }
     }
 
-    private func cancelAll() {
-        for task in requests.values { task.cancel() }
+    /// Cancels every in-flight request and waits for each handler to unwind.
+    ///
+    /// Delivery of cancellation stays synchronous; the shield only protects
+    /// the join that follows. Handlers are expected to honour cancellation,
+    /// which every production handler does before it completes.
+    private func cancelAllAndWait() async {
+        let tasks = Array(requests.values)
         requests.removeAll()
+        tasks.forEach { $0.cancel() }
+        await withTaskCancellationShield {
+            for task in tasks { await task.value }
+        }
     }
 
     private func respondIfNeeded(to request: JSONRPCRequest, result: AnyCodable) {

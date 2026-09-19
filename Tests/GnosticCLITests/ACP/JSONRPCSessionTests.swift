@@ -100,6 +100,45 @@ struct JSONRPCSessionTests {
         #expect(response.id == .number(1))
         #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
     }
+
+    @Test("finish waits for an in-flight request to unwind before reporting stopped")
+    func finishWaitsForInflightTeardown() async throws {
+        let output = JSONRPCOutputCapture()
+        let started = SessionSignal()
+        let unwound = SessionSignal()
+        let session = JSONRPCSession(handler: { _ in
+            await started.signal()
+            do { try await Task.sleep(for: .seconds(60)) } catch {}
+            await unwound.signal()
+            return .boolean(true)
+        }, output: output.append)
+
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"long.running"}"#))
+        await started.wait()
+        await session.finish()
+
+        #expect(await session.currentState() == .stopped)
+        #expect(await unwound.didSignal)
+    }
+}
+
+private actor SessionSignal {
+    private var signaled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var didSignal: Bool { signaled }
+
+    func signal() {
+        signaled = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+
+    func wait() async {
+        guard !signaled else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
 }
 
 private func waitForResponseCount(_ expected: Int, output: JSONRPCOutputCapture) async throws {

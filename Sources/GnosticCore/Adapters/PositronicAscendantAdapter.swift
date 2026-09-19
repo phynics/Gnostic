@@ -358,9 +358,13 @@ import struct PositronicKit.Thread
     }
 
     public func shutdown() async {
-        guard lifecycleFailure == nil else { return }
-        await cancel()
-        lifecycleFailure = .init(code: "backendShutdown", message: "The Positronic backend has been shut down.")
+        // Backend retirement must reach its cancelled-and-failed terminal
+        // state even if the caller of shutdown was cancelled first.
+        await withTaskCancellationShield {
+            guard lifecycleFailure == nil else { return }
+            await cancel()
+            lifecycleFailure = .init(code: "backendShutdown", message: "The Positronic backend has been shut down.")
+        }
     }
 
     public func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
