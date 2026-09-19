@@ -114,6 +114,22 @@ runtimes. It covers `.devcontainer/run.sh`, the smoke delegation, the
 missing-manifest guard, the dev-stack argument handling, the worktree build
 root, and the host container wrapper, without building anything.
 
+### Reproduce a flaky subprocess test
+
+Swift Testing repetitions (ST-0024) stress the subprocess and ACP suites without
+changing the gate. Run them inside the container:
+
+```sh
+make shell
+swift test --cache-path /workspace/.swiftpm-cache --disable-automatic-resolution \
+  --build-system native -Xswiftc -warnings-as-errors \
+  --filter GnosticCLITests.ACPSubprocessTests --repeat 20
+```
+
+`--repeat 20` bounds the run; `--repeat-until fail` stops at the first failure.
+`make acp-smoke` remains the gate; repetitions only help reproduce an
+intermittent failure.
+
 ## Use the host container wrapper
 
 The Linux `gnostic` binary that `make build` produces runs inside the
