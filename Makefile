@@ -2,7 +2,7 @@ SHELL := /bin/sh
 IMAGE ?= gnostic-dev
 CONTAINER_RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 WORKDIR := /workspace
-CACHE_NAMESPACE ?= swift-6.3.3-linux
+CACHE_NAMESPACE ?= swift-6.4.0-linux
 # An absolute common dir names the same cache from the main checkout and
 # from every worktree; Scripts/gnostic-container.sh derives the same path.
 GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
@@ -13,7 +13,11 @@ BUILD_LOCK ?= 1
 SPM_CACHE_DIR ?= $(HOME)/.cache/gnostic/swiftpm/$(CACHE_NAMESPACE)
 EXTRA_CONTAINER_MOUNTS ?=
 SWIFT_CACHE_ARGS := --cache-path /workspace/.swiftpm-cache
-SWIFT_LOCKED_ARGS := $(SWIFT_CACHE_ARGS) --disable-automatic-resolution
+# Swift 6.4 makes Swift Build the default build system, whose product layout
+# differs from the triple-scoped paths below. Pin the legacy native system so
+# this toolchain bump stays behavior-neutral; #266 owns the adoption decision.
+SWIFT_BUILD_SYSTEM_ARGS := --build-system native
+SWIFT_LOCKED_ARGS := $(SWIFT_CACHE_ARGS) --disable-automatic-resolution $(SWIFT_BUILD_SYSTEM_ARGS)
 SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 
 DEV_BROKER_PORT ?= 1884

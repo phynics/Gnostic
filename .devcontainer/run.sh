@@ -7,7 +7,7 @@ runtime=${CONTAINER_RUNTIME:-}
 image=${IMAGE:-gnostic-dev}
 workdir=${WORKDIR:-/workspace}
 build_dir=${BUILD_DIR:-"$root_dir/.build"}
-spm_cache_dir=${SPM_CACHE_DIR:-"${HOME}/.cache/gnostic/swiftpm/swift-6.3.3-linux"}
+spm_cache_dir=${SPM_CACHE_DIR:-"${HOME}/.cache/gnostic/swiftpm/swift-6.4.0-linux"}
 build_lock=${BUILD_LOCK:-1}
 extra_container_mounts=${EXTRA_CONTAINER_MOUNTS:-}
 

@@ -1,4 +1,4 @@
-FROM swift:6.3.3-noble
+FROM swift:6.4.0-noble
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
