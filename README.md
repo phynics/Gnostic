@@ -63,6 +63,55 @@ The object inspection command requires an advertised object UUID. Workspace
 tool calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` operation.
 Gnostic does not expose direct file APIs for remote Workspaces.
 
+## Use the consumer session facade
+
+External clients that connect, discover, and read the catalog programmatically
+use `GnosticConsumerSession` from the `GnosticCore` library. The facade owns
+the broker connection and a `NetworkCatalog`, so a consumer never imports the
+CLI executable and never builds the generic Axoloty host objects.
+
+```swift
+import GnosticCore
+
+let session = try GnosticConsumerSession(
+    broker: GnosticBrokerSettings(
+        host: "127.0.0.1",
+        port: 1883,
+        namespace: "gnostic",
+        username: nil,
+        password: nil
+    ),
+    identityName: "my-client",
+    connectTimeout: .seconds(5),
+    discoverTimeout: .seconds(5)
+)
+try await session.start()
+try await session.discover()
+
+let workspaces = await session.networkObjects()
+    .filter { $0.objectType == GnosticObjectType.workspace }
+
+let updates = await session.catalogUpdates()
+for await change in updates {
+    // Observe .advertised, .deadvertised, or .providerEvicted.
+}
+
+await session.stop()
+```
+
+`connectTimeout` bounds the wait for the transport to report online. When it
+elapses, `start` tears the session down and throws
+`GnosticConsumerSessionError.brokerUnreachable`. `discoverTimeout` bounds how
+long `discover(timeout:)` collects resolve responses; a per-call timeout
+overrides it. Empty credential strings are treated as absent, and a password
+without a username is rejected before connecting.
+
+A per-object deadvertisement removes only that provider's record and yields
+`NetworkCatalogChange.deadvertised`. A lifecycle identity deadvertisement
+removes every record owned by the provider and yields
+`NetworkCatalogChange.providerEvicted`. Both are reflected by
+`networkObjects(includeIncompatible:)` and `object(id:providerID:)`.
+
 ## Use ACP
 
 `gnostic acp` is the supported ACP v1 stdio interface. It maps ACP sessions to
