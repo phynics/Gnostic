@@ -14,6 +14,7 @@ import struct PositronicKit.Thread
     private let kit: PositronicKit
     private let threadStore: any ThreadRuntimeRepository
     private let networkTools: [AnyTool]
+    private let contributionTools: [AnyTool]
     private var workspaceToolsByID: [UUID: [AnyTool]]
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: any AscendantBackendWorkspaceService?
@@ -24,7 +25,8 @@ import struct PositronicKit.Thread
         backend: AscendantBackendConfiguration,
         services: AscendantBackendServices,
         timelines: [NodeManifest.Timeline],
-        languageModel: any LLMStreamClient
+        languageModel: any LLMStreamClient,
+        contributions: [any PositronicContribution] = []
     ) async throws {
         try AscendantBackendConfigurationValidator.validate(backend)
         configuration = backend
@@ -96,6 +98,26 @@ import struct PositronicKit.Thread
             }
         }
 
+        // Resolve Workspace tools before constructing the kit: the contribution
+        // surface must reject a tool that would override one of them, and that
+        // rejection has to happen before the backend is published.
+        let resolvedWorkspaceToolsByID = try references.reduce(into: [UUID: [AnyTool]]()) { result, entry in
+            result[entry.key] = try Self.workspaceTools(for: entry.value, service: services.workspace)
+        }
+        let contributionSurface = try PositronicContributionSurface(
+            contributions: contributions,
+            reservedTools: resolvedWorkspaceToolsByID.values.flatMap { $0 },
+            recordNotice: { turnID, message in
+                try? await runtimeRepository.appendNotice(
+                    turnID: turnID,
+                    notice: TurnNotice(
+                        kind: TurnNoticeCode.contextContributionFailed.rawValue,
+                        message: message
+                    )
+                )
+            }
+        )
+
         let factory = PositronicBackendWorkspaceFactory(service: services.workspace)
         let createdKit = PositronicKit(configuration: .init(
             provider: .init(languageModel: languageModel),
@@ -108,6 +130,7 @@ import struct PositronicKit.Thread
             ),
             runtime: .init(
                 workspaceCreator: factory,
+                customization: RuntimeCustomization(turnContextSource: contributionSurface.turnContextSource),
                 runtimeToolPolicy: .init(
                     installFilesystemTools: false,
                     installThreadObservationTools: true,
@@ -116,17 +139,8 @@ import struct PositronicKit.Thread
                 toolApprovalPolicy: AscendantToolApprovalPolicy(coordinator: services.permission)
             )
         ))
-        kit = createdKit
-        threadStore = runtimeRepository
-        lifecycleFailure = nil
-        workspaceService = services.workspace
-        workspaceToolsByID = try references.reduce(into: [:]) { result, entry in
-            result[entry.key] = try Self.workspaceTools(for: entry.value, service: services.workspace)
-        }
-        workspaceIDsByTimeline = Dictionary(uniqueKeysWithValues: timelines.map {
-            ($0.id, $0.attachments.map(\.workspaceID))
-        })
 
+        let resolvedNetworkTools: [AnyTool]
         if let host = services.capability(BackendWorkspaceDiscoveryCapability.self) {
             let attachmentHost = services.capability(BackendWorkspaceAttachmentCapability.self)
             let attachmentService = DiscoveredWorkspaceAttachmentService(
@@ -136,14 +150,28 @@ import struct PositronicKit.Thread
                 hostAttachment: attachmentHost,
                 allowedTimelineIDs: Set(timelines.map(\.id))
             )
-            networkTools = [
+            resolvedNetworkTools = [
                 ListNetworkObjectsTool(service: attachmentService).toAnyTool(),
                 InspectNetworkObjectTool(service: attachmentService).toAnyTool(),
                 AttachWorkspaceTool(service: attachmentService).toAnyTool(),
             ]
         } else {
-            networkTools = []
+            resolvedNetworkTools = []
         }
+        // Network tools require the kit, so this second check completes the
+        // startup rejection before publication.
+        try PositronicContributionSurface.validate(contributionSurface.tools, against: resolvedNetworkTools)
+
+        kit = createdKit
+        threadStore = runtimeRepository
+        lifecycleFailure = nil
+        workspaceService = services.workspace
+        networkTools = resolvedNetworkTools
+        contributionTools = contributionSurface.tools
+        workspaceToolsByID = resolvedWorkspaceToolsByID
+        workspaceIDsByTimeline = Dictionary(uniqueKeysWithValues: timelines.map {
+            ($0.id, $0.attachments.map(\.workspaceID))
+        })
     }
 
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
@@ -288,8 +316,12 @@ import struct PositronicKit.Thread
 
     public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
         try requireUsable()
+        let tools = try Self.workspaceTools(for: reference, service: workspaceService)
+        // A contribution must never override a Workspace tool, including one
+        // attached after startup.
+        try PositronicContributionSurface.validate(tools, against: contributionTools)
         try await kit.workspaces.update(Self.positronicReference(reference))
-        workspaceToolsByID[reference.id] = try Self.workspaceTools(for: reference, service: workspaceService)
+        workspaceToolsByID[reference.id] = tools
         if !workspaceIDsByTimeline[timelineID, default: []].contains(reference.id) {
             workspaceIDsByTimeline[timelineID, default: []].append(reference.id)
         }
@@ -304,7 +336,8 @@ import struct PositronicKit.Thread
         guard lifecycleFailure == nil else { return [] }
         let workspaceIDs = workspaceIDsByTimeline[timelineID, default: []]
         let workspaceToolIDs = (await availableWorkspaceTools(for: workspaceIDs)).map(\.callName)
-        return Array(Set(networkTools.map(\.callName) + workspaceToolIDs)).sorted()
+        let contributionToolIDs = contributionTools.map(\.callName)
+        return Array(Set(networkTools.map(\.callName) + workspaceToolIDs + contributionToolIDs)).sorted()
     }
 
     private func availableWorkspaceTools(for workspaceIDs: [UUID]) async -> [AnyTool] {
@@ -336,19 +369,26 @@ import struct PositronicKit.Thread
         guard operated.contains(where: { $0.id == request.timelineID }) else {
             throw AscendantBackendError.timelineNotFound(request.timelineID)
         }
-        let stream = try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
-            .init(timelineID: request.timelineID, clientTurnID: $0)
-        }) {
-            let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
-            let workspaceTools = await availableWorkspaceTools(for: workspaceIDs)
-            let turnRequest = TurnRequest(
-                threadID: request.timelineID,
-                requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
-                message: request.message,
-                tools: workspaceTools + networkTools,
-                maxModelRounds: 5
-            )
-            return try await kit.threads.open(request.timelineID).run(turnRequest)
+        let invocation = PositronicTurnInvocation(
+            ascendantID: identity.id,
+            timelineID: request.timelineID,
+            turnID: request.clientTurnID
+        )
+        let stream = try await PositronicTurnInvocationContext.$current.withValue(invocation) {
+            try await AscendantTurnPermissionContext.$current.withValue(request.clientTurnID.map {
+                .init(timelineID: request.timelineID, clientTurnID: $0)
+            }) {
+                let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
+                let workspaceTools = await availableWorkspaceTools(for: workspaceIDs)
+                let turnRequest = TurnRequest(
+                    threadID: request.timelineID,
+                    requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
+                    message: request.message,
+                    tools: workspaceTools + networkTools + contributionTools,
+                    maxModelRounds: 5
+                )
+                return try await kit.threads.open(request.timelineID).run(turnRequest)
+            }
         }
         var finalText = ""
         var failure: String?

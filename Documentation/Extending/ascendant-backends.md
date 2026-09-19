@@ -124,6 +124,33 @@ Configuration commands consult the default registrations only. A kind
 registered solely inside a running host can be built but not configured
 through the CLI.
 
+## Extending the bundled Positronic backend
+
+The bundled Positronic backend accepts a static list of
+`PositronicContribution` values at construction. A contribution is compiled in;
+it is not loaded dynamically. It may expose additional tools and one bounded
+`TurnContextSource`.
+
+```swift
+struct NotesContribution: PositronicContribution {
+    let label = "notes"
+    func turnContextSource() -> (any TurnContextSource)? { NotesContextSource() }
+    func tools() -> [AnyTool] { [NotesTool().toAnyTool()] }
+}
+```
+
+A contribution cannot override a Workspace or network tool. Duplicate tool
+identities or call names, and labels that collide with reserved tools, fail at
+startup before the backend is published. A contribution label is static and
+must not carry user payloads or secrets.
+
+`TurnContextSource.failureRequirement` decides what a failure means: `.required`
+aborts the Turn before provider work and leaves the backend healthy, while
+`.optional` records a host notice and the Turn continues. The adapter scopes a
+`PositronicTurnInvocation` to the Turn, so a source reads
+`PositronicTurnInvocationContext.current` to correlate the Ascendant, Timeline,
+and admitted client Turn it is projecting for.
+
 ## What stays Gnostic's
 
 Do not reimplement these. Gnostic remains authoritative for Ascendant and
