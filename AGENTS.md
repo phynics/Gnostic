@@ -111,6 +111,13 @@ progress` and name the active child.
 Use Swift 6 concurrency deliberately. Make ownership and actor isolation
 explicit. Add `Sendable` where values cross isolation boundaries.
 
+Suppress a compiler diagnostic only at the smallest scope with `@diagnose`
+(SE-0522), never with a module-wide or compiler-flag suppression. A `@diagnose`
+must name the diagnostic and the reason in a comment and record the owning
+issue and a reconsideration condition in that issue. An unowned `@diagnose` is
+a defect; prefer fixing the diagnostic. This is the diagnostic-level companion
+to the architecture exception policy.
+
 Use Swift Testing with `import Testing`, `@Test`, `#expect`, and `#require`.
 Do not use XCTest. Use ErrorKit-compatible structured errors at public
 boundaries.

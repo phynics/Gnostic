@@ -27,7 +27,7 @@ public final class TurnService {
             backendProvider: ClosureBackendSessionProvider(
                 isRunning: isRunning,
                 lifecycleGeneration: lifecycleGeneration,
-                adapter: { _ in nil as (any AscendantBackend)? },
+                adapter: { _ in nil as any AscendantBackend? },
                 current: { _, _, _ in true },
                 backendLease: { _, _ in nil as UUID? },
                 failure: lifecycleFailure,

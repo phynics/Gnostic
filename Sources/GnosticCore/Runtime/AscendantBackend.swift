@@ -444,7 +444,7 @@ public protocol AscendantBackendWorkspaceCapability: AnyObject, Sendable {
 /// layer and in backend-specific adapters.
 public struct AscendantBackendServices: Sendable {
     /// Workspace consumption, when the host offers it.
-    public let workspace: (any AscendantBackendWorkspaceService)?
+    public let workspace: any AscendantBackendWorkspaceService?
     /// Permission mediation. Always present; see ``AscendantBackendServices/empty``.
     public let permission: any AscendantBackendPermissionService
     /// Backend-specific services the mandatory contract never depends on.
@@ -452,7 +452,7 @@ public struct AscendantBackendServices: Sendable {
 
     /// Creates the construction-time services for one backend.
     public init(
-        workspace: (any AscendantBackendWorkspaceService)? = nil,
+        workspace: any AscendantBackendWorkspaceService? = nil,
         permission: any AscendantBackendPermissionService,
         optionalCapabilities: [any AscendantBackendOptionalCapability] = []
     ) {

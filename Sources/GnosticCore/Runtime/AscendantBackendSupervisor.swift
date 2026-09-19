@@ -37,7 +37,7 @@ final class ClosureBackendSessionProvider: BackendSessionProviding {
     private let running: @MainActor () -> Bool
     private let generation: @MainActor () -> UInt64
     private let backend: @MainActor (UUID) async throws -> any AscendantBackend
-    private let adapter: @MainActor (UUID) -> (any AscendantBackend)?
+    private let adapter: @MainActor (UUID) -> any AscendantBackend?
     private let current: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
     private let backendLease: @MainActor (UUID, any AscendantBackend) -> UUID?
     private let failure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
@@ -45,7 +45,7 @@ final class ClosureBackendSessionProvider: BackendSessionProviding {
     init(
         isRunning: @escaping @MainActor () -> Bool,
         lifecycleGeneration: @escaping @MainActor () -> UInt64,
-        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
+        adapter: @escaping @MainActor (UUID) -> any AscendantBackend?,
         current: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool,
         backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID?,
         failure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void,
@@ -333,7 +333,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         readvertiseAscendant(ascendantID, health: .unknown)
         let task = Task { @MainActor [weak self] () throws -> any AscendantBackend in
             guard let self else { throw NodeRuntimeError.notRunning }
-            var candidate: (any AscendantBackend)?
+            var candidate: any AscendantBackend?
             do {
                 guard self.isCurrentReconstructionGeneration(generation) else {
                     throw NodeRuntimeError.notRunning

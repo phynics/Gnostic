@@ -27,7 +27,7 @@ public final class WorkspaceService {
         lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
         isCurrentBackend: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool = { _, _, _ in true },
         backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID? = { _, _ in nil },
-        adapter: @escaping @MainActor (UUID) -> (any AscendantBackend)?,
+        adapter: @escaping @MainActor (UUID) -> any AscendantBackend?,
         lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
         readvertiseTimeline: @escaping @MainActor (AscendantRuntimeTimeline) -> Void
     ) {
