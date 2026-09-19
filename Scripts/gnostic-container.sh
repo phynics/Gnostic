@@ -13,7 +13,7 @@ if common_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-commo
 else
     repository_name=$(basename "$repo_root")
 fi
-build_root=${GNOSTIC_BUILD_ROOT:-/tmp/gnostic-swift-build/$repository_name/swift-6.3.3-linux/debug}
+build_root=${GNOSTIC_BUILD_ROOT:-/tmp/gnostic-swift-build/$repository_name/swift-6.4.0-linux/debug}
 binary="$build_root/x86_64-unknown-linux-gnu/debug/gnostic"
 
 # Every variable the CLI reads and that a host tool may want to set. The

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-swift --version | grep -F "Swift version 6.3.3"
+swift --version | grep -F "Swift version 6.4"
 cargo --version
 git --version
 node --version

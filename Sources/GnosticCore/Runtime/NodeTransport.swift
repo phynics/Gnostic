@@ -247,7 +247,7 @@ public final class NodeTransport {
             try hooks.beforeDiscoverResponder()
             _ = try await responderScope.acquire(
                 label: "discover-responder",
-                acquire: {
+                acquire: { [self] in
                     await communication.registerDiscoverResponder { [weak self] request in
                         guard let self, await self.isAvailable() else { return }
                         let types = request.snapshot.objectTypes

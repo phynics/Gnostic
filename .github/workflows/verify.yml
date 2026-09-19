@@ -29,10 +29,10 @@ jobs:
           path: |
             /tmp/gnostic-swift-build
             ~/.cache/gnostic/swiftpm
-          key: swift-6.3.3-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          key: swift-6.4.0-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
           restore-keys: |
-            swift-6.3.3-${{ hashFiles('Package.resolved') }}-
-            swift-6.3.3-
+            swift-6.4.0-${{ hashFiles('Package.resolved') }}-
+            swift-6.4.0-
 
       # The harness runs on the runner and uses fake runtimes, so it needs no
       # image and fails fast on a stale or broken container command contract.
