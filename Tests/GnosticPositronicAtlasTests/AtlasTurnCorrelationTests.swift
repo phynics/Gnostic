@@ -228,39 +228,24 @@ struct AtlasTurnCorrelationTests {
 
     // MARK: - Projection determinism
 
-    @Test("the projected context is bounded, deterministic, and pins the first snapshot")
+    @Test("the projected brief is bounded, deterministic, and pins the first snapshot")
     func projectionIsDeterministicAndBounded() async throws {
         let harness = try await makeHarness()
         let modelStore = harness.store
         let home = homeID
         let ascendant = ascendantID
 
+        try await seedItem(modelStore, ascendant: ascendant, shard: home, key: "response-style", text: "Prefer explicit schemas.")
+
         let first = try await project(harness, clientTurnID: "turn-projection")
         let firstText = try #require(first.first?.value.textValue)
         #expect(first.count == 1)
-        #expect(firstText.contains("revision 0"))
-        #expect(firstText.utf8.count <= 512)
+        #expect(firstText.contains("revision=1"))
+        #expect(firstText.count <= AscendantBriefProjector.maximumCharacters)
 
         // Advance state, then project again for the same Turn. The first
         // immutable snapshot must win so prompt and report cannot drift.
-        let capture = await modelStore.capture()
-        let item = AtlasItem(
-            ascendantID: ascendant,
-            sourceShardID: home,
-            key: "response-style",
-            value: .text("Prefer explicit schemas."),
-            kind: .preference,
-            provenance: AtlasProvenance(ascendantID: ascendant, shardID: home, origin: .host)
-        )
-        _ = try await modelStore.compareAndSwap(
-            capture: capture,
-            patch: AtlasPatch(
-                id: AtlasPatchID("bump-projection"),
-                capture: capture,
-                operations: [.upsertItem(item)],
-                provenance: AtlasProvenance(ascendantID: ascendant, shardID: home, origin: .host)
-            )
-        )
+        try await seedItem(modelStore, ascendant: ascendant, shard: home, key: "later-style", text: "Project the live revision.")
 
         let second = try await project(harness, clientTurnID: "turn-projection")
         #expect(second.first?.value.textValue == firstText)
@@ -323,6 +308,35 @@ struct AtlasTurnCorrelationTests {
             recorder: recorder,
             inbox: inbox,
             coordinator: coordinator
+        )
+    }
+
+    private func seedItem(
+        _ store: InMemoryAtlasStore,
+        ascendant: UUID,
+        shard: AscendantShardID,
+        key: String,
+        text: String
+    ) async throws {
+        let capture = await store.capture()
+        let item = AtlasItem(
+            ascendantID: ascendant,
+            sourceShardID: shard,
+            key: key,
+            value: .text(text),
+            kind: .preference,
+            applicability: .ascendant,
+            disclosure: .ascendant,
+            provenance: AtlasProvenance(ascendantID: ascendant, shardID: shard, origin: .host)
+        )
+        _ = try await store.compareAndSwap(
+            capture: capture,
+            patch: AtlasPatch(
+                id: AtlasPatchID("seed-\(key)"),
+                capture: capture,
+                operations: [.upsertItem(item)],
+                provenance: AtlasProvenance(ascendantID: ascendant, shardID: shard, origin: .host)
+            )
         )
     }
 
