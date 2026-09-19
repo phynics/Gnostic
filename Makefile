@@ -25,10 +25,10 @@ SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test docs-check harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down
+.PHONY: help image require-package resolve worktree-bootstrap build test docs-check harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test docs-check harness-test runner-smoke acp-smoke container-smoke verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -67,6 +67,14 @@ acp-smoke: require-package image
 
 container-smoke: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
+
+# Release-time SBOM for the SwiftPM dependency graph. Not part of verify: the
+# output embeds a random serial number and creation timestamp, and SwiftPM
+# warns that it omits build-time conditionals and does not cover the
+# container's system packages. See README "Generate an SBOM".
+sbom: require-package image
+	@mkdir -p .testing/sbom
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'rm -rf .testing/sbom; mkdir -p .testing/sbom; swift package generate-sbom --cache-path /workspace/.swiftpm-cache --sbom-spec spdx --sbom-spec cyclonedx --sbom-output-dir .testing/sbom && ls -1 .testing/sbom'
 
 verify: docs-check test
 

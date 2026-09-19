@@ -130,6 +130,15 @@ swift test --cache-path /workspace/.swiftpm-cache --disable-automatic-resolution
 `make acp-smoke` remains the gate; repetitions only help reproduce an
 intermittent failure.
 
+### Generate an SBOM
+
+`make sbom` writes SPDX 3.0.1 and CycloneDX 1.7 SBOMs for the SwiftPM
+dependency graph to `.testing/sbom/`. Use it to attach supply-chain metadata to
+a release; it is not part of `make verify`. The output embeds a random serial
+number and a creation timestamp, so it is not byte-deterministic, and SwiftPM
+warns that it omits build-time conditionals. It also does not cover the
+container's system packages, such as mosquitto and Node.js.
+
 ## Use the host container wrapper
 
 The Linux `gnostic` binary that `make build` produces runs inside the
