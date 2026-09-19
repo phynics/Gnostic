@@ -347,6 +347,47 @@ struct BackendArchitectureFitnessTests {
         }
     }
 
+    @Test("GnosticCore depends on no experiment target")
+    func coreHasNoExperimentTargetDependency() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        // Experiment targets incubate outside Core. Core may host their adapters
+        // through the flat AscendantBackend contract without importing them.
+        let experimentTargets = ["GnosticPositronicAtlas", "RLM", "Letta"]
+
+        let package = try String(
+            contentsOf: rootURL.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
+        for target in experimentTargets {
+            #expect(
+                !coreTarget.contains(target),
+                "GnosticCore must not depend on experiment target '\(target)'."
+            )
+        }
+
+        let sourceRoot = rootURL.appendingPathComponent("Sources/GnosticCore")
+        var importingPaths: [String] = []
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for target in experimentTargets
+            where source.contains("import \(target)") || source.contains("import \(target).") {
+                importingPaths.append("\(relativePath) -> \(target)")
+            }
+        }
+        #expect(
+            importingPaths.isEmpty,
+            "GnosticCore sources must not import an experiment target; found: \(importingPaths)."
+        )
+    }
+
     private static func targetBlock(named name: String, in package: String) -> String? {
         guard let targetStart = package.range(of: ".target(\n            name: \"\(name)\"")?.lowerBound else {
             return nil
