@@ -59,6 +59,35 @@ struct AtlasBoundaryTests {
         }
     }
 
+    @Test("Atlas integration APIs never appear in GnosticCore")
+    func coreDoesNotAdvertiseAtlasIntegration() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        let forbiddenSymbols = [
+            "AtlasIntegrationCoordinator",
+            "AtlasHostValidator",
+            "AtlasIntegratorDescriptor",
+            "AtlasIntegrationProposal",
+            "AtlasAcceptedChangeDiagnostic",
+            "AtlasIntegrationOutcome",
+            "AtlasPatchOperation",
+            "AtlasPatch",
+            "AscendantAtlas",
+        ]
+
+        for (relativePath, source) in try swiftSources(in: repositoryRoot.appendingPathComponent("Sources/GnosticCore")) {
+            for symbol in forbiddenSymbols {
+                #expect(
+                    !source.contains(symbol),
+                    "Core must not advertise Atlas integration API \(symbol): \(relativePath)"
+                )
+            }
+        }
+    }
+
     private func swiftSources(in root: URL) throws -> [(String, String)] {
         try FileManager.default.subpathsOfDirectory(atPath: root.path)
             .filter { $0.hasSuffix(".swift") }
