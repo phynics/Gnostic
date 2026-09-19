@@ -16,7 +16,7 @@ import struct PositronicKit.Thread
     private let networkTools: [AnyTool]
     private var workspaceToolsByID: [UUID: [AnyTool]]
     private var workspaceIDsByTimeline: [UUID: [UUID]]
-    private let workspaceService: (any AscendantBackendWorkspaceService)?
+    private let workspaceService: any AscendantBackendWorkspaceService?
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
 
     public init(
@@ -466,7 +466,7 @@ import struct PositronicKit.Thread
 
     private static func workspaceTools(
         for reference: BackendWorkspaceReference,
-        service: (any AscendantBackendWorkspaceService)?
+        service: any AscendantBackendWorkspaceService?
     ) throws -> [AnyTool] {
         let native = try positronicReference(reference)
         let workspace = PositronicBackendWorkspace(reference: native, service: service)
@@ -489,7 +489,7 @@ import struct PositronicKit.Thread
 }
 
 private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
-    let service: (any AscendantBackendWorkspaceService)?
+    let service: any AscendantBackendWorkspaceService?
 
     func create(from reference: WorkspaceReference) throws -> any WorkspaceProvider {
         PositronicBackendWorkspace(reference: reference, service: service)
@@ -498,7 +498,7 @@ private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
 
 private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
-    let service: (any AscendantBackendWorkspaceService)?
+    let service: any AscendantBackendWorkspaceService?
 
     var id: UUID { reference.id }
 
