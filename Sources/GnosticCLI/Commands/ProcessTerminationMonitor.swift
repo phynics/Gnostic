@@ -10,7 +10,7 @@ import Darwin
 #endif
 
 /// Converts process termination signals into an awaitable event without doing async work in a signal handler.
-final class ProcessTerminationMonitor: @unchecked Sendable {
+final class ProcessTerminationMonitor: @unchecked Sendable { // SAFETY: NSLock guards the dispatch sources and cancellation state.
     private let waiters = ProcessTerminationWaiters()
     private let lock = NSLock()
     private let signalNumbers: [Int32]
@@ -52,7 +52,7 @@ final class ProcessTerminationMonitor: @unchecked Sendable {
     deinit { cancel() }
 }
 
-private final class ProcessTerminationWaiters: @unchecked Sendable {
+private final class ProcessTerminationWaiters: @unchecked Sendable { // SAFETY: NSLock guards the continuation table and termination flag.
     private let lock = NSLock()
     private var terminationRequested = false
     private var continuations: [UUID: CheckedContinuation<Void, Never>] = [:]

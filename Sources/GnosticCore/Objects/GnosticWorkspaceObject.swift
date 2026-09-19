@@ -35,7 +35,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
 }
 
 /// A safe network projection of a Gnostic Workspace reference.
-public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable {
+public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 

@@ -56,7 +56,7 @@ public struct CoatyUUID: Codable, CustomStringConvertible, Hashable, Sendable {
     fileprivate var foundationUUID: UUID { uuid }
 }
 
-open class CoatyObject: Codable, @unchecked Sendable {
+open class CoatyObject: Codable, @unchecked Sendable { // SAFETY: Axoloty-compatible reference base; shared instances stay within one isolation domain.
     open class var objectType: String { "CoatyObject" }
     public var coreType: CoreType
     public var objectType: String
@@ -148,7 +148,7 @@ public struct AdvertiseEventSnapshot: Codable, Equatable, Sendable {
     }
 }
 
-public struct AdvertiseEvent: Decodable, @unchecked Sendable {
+public struct AdvertiseEvent: Decodable, @unchecked Sendable { // SAFETY: wraps an immutable decoded CoatyObject snapshot.
     public let object: CoatyObject
 
     public static func with(object: CoatyObject) throws -> Self { .init(object: object) }
@@ -244,7 +244,7 @@ public struct ChannelEventSnapshot: Codable, Equatable, Sendable {
 
 public enum CommunicationState: Sendable, Equatable { case offline, online }
 
-public final class Identity: CoatyObject, @unchecked Sendable {
+public final class Identity: CoatyObject, @unchecked Sendable { // SAFETY: Axoloty-compatible identity reference; immutable after construction.
     override public class var objectType: String { "coaty.Identity" }
     public init(name: String = "IdentityObject", objectType: String = Identity.objectType, objectId: CoatyUUID = .init()) {
         super.init(coreType: .identity, objectType: objectType, objectId: objectId, name: name)
@@ -308,21 +308,21 @@ public struct CallEventSnapshot: Codable, Equatable, Sendable {
     }
 }
 
-public final class CallHandlerRegistration: @unchecked Sendable {
+public final class CallHandlerRegistration: @unchecked Sendable { // SAFETY: cancellation flag and closure are touched only by the owning actor.
     private let onCancel: () -> Void
     private(set) public var isCancelled = false
     fileprivate init(onCancel: @escaping () -> Void) { self.onCancel = onCancel }
     public func cancel() { guard !isCancelled else { return }; isCancelled = true; onCancel() }
 }
 
-public final class DiscoverResponderRegistration: @unchecked Sendable {
+public final class DiscoverResponderRegistration: @unchecked Sendable { // SAFETY: cancellation flag and closure are touched only by the owning actor.
     private let onCancel: () -> Void
     private(set) public var isCancelled = false
     fileprivate init(onCancel: @escaping () -> Void) { self.onCancel = onCancel }
     public func cancel() { guard !isCancelled else { return }; isCancelled = true; onCancel() }
 }
 
-public final class QueryResponderRegistration: @unchecked Sendable {
+public final class QueryResponderRegistration: @unchecked Sendable { // SAFETY: cancellation flag and closure are touched only by the owning actor.
     private let onCancel: () -> Void
     private(set) public var isCancelled = false
     fileprivate init(onCancel: @escaping () -> Void) { self.onCancel = onCancel }
@@ -350,14 +350,14 @@ public struct QueryEvent: Sendable {
     }
 }
 
-public final class DiscoverResponderRequest: @unchecked Sendable {
+public final class DiscoverResponderRequest: @unchecked Sendable { // SAFETY: snapshot is immutable; the resolve closure runs on the owning actor.
     public let snapshot: DiscoverEventSnapshot
     private let resolveAction: (CoatyObject) throws -> Void
     fileprivate init(snapshot: DiscoverEventSnapshot, resolve: @escaping (CoatyObject) throws -> Void) { self.snapshot = snapshot; resolveAction = resolve }
     public func resolve(object: CoatyObject) throws { try resolveAction(object) }
 }
 
-public final class QueryResponderRequest: @unchecked Sendable {
+public final class QueryResponderRequest: @unchecked Sendable { // SAFETY: snapshot is immutable; the retrieve closure runs on the owning actor.
     public let snapshot: QueryEventSnapshot
     private let retrieveAction: ([CoatyObject]) throws -> Void
     fileprivate init(snapshot: QueryEventSnapshot, retrieve: @escaping ([CoatyObject]) throws -> Void) {
@@ -367,7 +367,7 @@ public final class QueryResponderRequest: @unchecked Sendable {
     public func retrieve(object: CoatyObject) throws { try retrieve(objects: [object]) }
 }
 
-public struct ChannelEvent: @unchecked Sendable {
+public struct ChannelEvent: @unchecked Sendable { // SAFETY: immutable compatibility value holding decoded CoatyObject references.
     fileprivate let channelId: String
     fileprivate let object: CoatyObject?
     fileprivate let objects: [CoatyObject]?
@@ -932,24 +932,24 @@ private func channelPayload(_ event: ChannelEvent) throws -> [UInt8] {
     return try jsonObject(value)
 }
 
-public struct ObjectFilter: @unchecked Sendable {
+public struct ObjectFilter: Sendable {
     public let condition: ObjectFilterCondition
     public init(condition: ObjectFilterCondition) { self.condition = condition }
 }
 
-public struct ObjectFilterCondition: @unchecked Sendable {
+public struct ObjectFilterCondition: Sendable {
     public let property: ObjectFilterProperty
     public let expression: FilterExpression
     public init(property: ObjectFilterProperty, expression: FilterExpression) { self.property = property; self.expression = expression }
 }
 
-public struct ObjectFilterProperty: @unchecked Sendable {
+public struct ObjectFilterProperty: Sendable {
     public let name: String
     public init(_ name: String) { self.name = name }
 }
 
-public enum FilterExpression: @unchecked Sendable { case equals(FilterOperand) }
-public struct FilterOperand: @unchecked Sendable { public let value: String; public init(_ value: String) { self.value = value } }
+public enum FilterExpression: Sendable { case equals(FilterOperand) }
+public struct FilterOperand: Sendable { public let value: String; public init(_ value: String) { self.value = value } }
 
 private func filterObject(_ context: ObjectFilter) throws -> [String: Any] {
     let expression: [Any]

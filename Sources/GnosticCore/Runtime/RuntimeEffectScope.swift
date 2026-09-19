@@ -142,7 +142,7 @@ private actor RuntimeEffectAdoptionRegistry {
 
 private let runtimeEffectAdoptionRegistry = RuntimeEffectAdoptionRegistry()
 
-private final class RuntimeEffectCompletion: @unchecked Sendable {
+private final class RuntimeEffectCompletion: @unchecked Sendable { // SAFETY: NSLock guards the completion flag and continuation array.
     private let lock = NSLock()
     private var completed = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -177,7 +177,7 @@ private final class RuntimeEffectCompletion: @unchecked Sendable {
     }
 }
 
-private final class RuntimeEffectTaskBox: @unchecked Sendable {
+private final class RuntimeEffectTaskBox: @unchecked Sendable { // SAFETY: NSLock guards the installed task handle.
     private let lock = NSLock()
     private var task: Task<Void, Never>?
 
@@ -201,7 +201,7 @@ private final class RuntimeEffectTaskBox: @unchecked Sendable {
     }
 }
 
-private final class RuntimeEffectAcquisitionCell<Value: Sendable>: @unchecked Sendable {
+private final class RuntimeEffectAcquisitionCell<Value: Sendable>: @unchecked Sendable { // SAFETY: NSLock guards the outcome and continuation array.
     private enum Outcome {
         case pending
         case acquired(Value)

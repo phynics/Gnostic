@@ -4,7 +4,7 @@ import Axoloty
 import Foundation
 
 /// A safe network projection of a Gnostic Timeline.
-public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable {
+public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.
     /// The protocol major carried by this advertisement.
     public let protocolMajor: Int
 

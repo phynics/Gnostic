@@ -17,7 +17,7 @@ protocol WorkspaceDiscovery: Sendable {
 /// Gnostic-owned optional host capability for backends that expose network
 /// Workspace tools. It keeps catalog and broker implementations in the host
 /// composition layer while allowing a backend to opt into discovery.
-final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapability, @unchecked Sendable {
+final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapability, Sendable {
     let discovery: any WorkspaceDiscovery
 
     init(discovery: any WorkspaceDiscovery) {
@@ -30,7 +30,7 @@ final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapabil
 /// backend receives only this narrow capability and never the registry or
 /// transport objects behind it.
 @MainActor
-final class BackendWorkspaceAttachmentCapability: AscendantBackendOptionalCapability, @unchecked Sendable {
+final class BackendWorkspaceAttachmentCapability: AscendantBackendOptionalCapability, @unchecked Sendable { // SAFETY: @MainActor class; the bound handler is actor-isolated.
     typealias Handler = @MainActor @Sendable (UUID, UUID) async throws -> Void
 
     private var handler: Handler?
