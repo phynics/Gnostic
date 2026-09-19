@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
+        .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
@@ -39,6 +40,9 @@ let package = Package(
                 .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
+        .target(
+            name: "GnosticRLM"
+        ),
         .testTarget(
             name: "GnosticPositronicAtlasTests",
             dependencies: [
@@ -56,6 +60,12 @@ let package = Package(
                 .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticRLMTests",
+            dependencies: [
+                "GnosticRLM",
             ]
         ),
         .executableTarget(
