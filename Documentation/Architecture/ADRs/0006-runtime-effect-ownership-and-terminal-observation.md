@@ -36,9 +36,11 @@ terminal outcomes through the NodeRuntime seam. Scope-adoption tests enforce one
 live parent per child, and subscription lifecycle tests enforce a single
 actor-safe start/stop owner.
 
-This decision adds no production dependency. Once #116 lands, the optional
-`GnosticPositronicAtlas` target will consume the generic Core seam and own
-correlation, provenance, origin suppression, and revision snapshots.
+This decision adds no production dependency. #116 delivered the optional
+consumer: `GnosticPositronicAtlas` installs a `TerminalTurnObserving` recorder
+and a Positronic contribution, correlates the canonical Gnostic Turn identity to
+an immutable projected Atlas snapshot, owns provenance, origin suppression, and
+the recorded revision, and never adds an Atlas type to `GnosticCore`.
 
 This ADR is the accepted repository ADR 0006. The historical
 `0006-timeline-bound-backend-execution.md` on

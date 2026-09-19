@@ -43,6 +43,8 @@ let package = Package(
             name: "GnosticPositronicAtlasTests",
             dependencies: [
                 "GnosticPositronicAtlas",
+                "GnosticCore",
+                .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),

@@ -261,7 +261,8 @@ public actor InMemoryAtlasStore: AtlasStore {
             outcome: report.outcome,
             occurredAt: report.occurredAt,
             recordedAt: report.recordedAt,
-            provenance: report.provenance
+            provenance: report.provenance,
+            projectedVersion: report.projectedVersion
         )
         reportHeads[report.shardID] = report.sequence
         return AtlasAppendResult(report: report, wasInserted: true)

@@ -13,7 +13,7 @@ struct AtlasBoundaryTests {
             .deletingLastPathComponent()
         let sourceRoot = repositoryRoot.appendingPathComponent("Sources/GnosticPositronicAtlas")
 
-        let forbiddenImports = ["import Axoloty", "import AxolotyMQTT", "import PositronicKit"]
+        let forbiddenImports = ["import Axoloty", "import AxolotyMQTT"]
         let forbiddenVocabulary = ["AgentInstance"]
 
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
@@ -25,7 +25,7 @@ struct AtlasBoundaryTests {
             for forbidden in forbiddenImports {
                 #expect(
                     !source.contains(forbidden),
-                    "Atlas must not import backend or transport modules: \(relativePath)"
+                    "Atlas must not import Axoloty transport modules: \(relativePath)"
                 )
             }
             for forbidden in forbiddenVocabulary {
