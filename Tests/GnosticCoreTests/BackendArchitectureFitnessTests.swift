@@ -109,6 +109,7 @@ struct BackendArchitectureFitnessTests {
         let expectedImports: Set<String> = [
             "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
             "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
+            "Sources/GnosticCore/Adapters/PositronicContribution.swift",
             "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
             "Sources/GnosticCore/Runtime/BackendWorkspaceService.swift",
             "Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift",
@@ -149,6 +150,7 @@ struct BackendArchitectureFitnessTests {
         let expectedContractImports: Set<String> = [
             "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
             "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
+            "Sources/GnosticCore/Adapters/PositronicContribution.swift",
             "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
             "Sources/GnosticCore/Providers/AgentChatProvider.swift",
             "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
