@@ -43,15 +43,21 @@ final class RuntimeLifecycleCoordinator {
         }
         let startup = shutdownState.startupTask
         let task = Task { @MainActor [weak self, startup] in
-            startup?.cancel()
-            guard let self else { return }
-            if let startup {
-                _ = await startup.result
+            // The join task is intentionally detached so concurrent callers
+            // share one shutdown, but its cleanup body is shielded: a
+            // cancellation that reaches this task must not abandon rollback
+            // half-applied.
+            await withTaskCancellationShield {
+                startup?.cancel()
+                guard let self else { return }
+                if let startup {
+                    _ = await startup.result
+                }
+                // Startup may finish with cancellation or another failure after
+                // shutdown wins. Either outcome can leave effects acquired before
+                // the failure, so shutdown always owns the cleanup transition.
+                await self.rollback(close: true, cleanup: cleanup)
             }
-            // Startup may finish with cancellation or another failure after
-            // shutdown wins. Either outcome can leave effects acquired before
-            // the failure, so shutdown always owns the cleanup transition.
-            await self.rollback(close: true, cleanup: cleanup)
         }
         lifetime.shutdownTask = task
         await task.value
@@ -65,7 +71,9 @@ final class RuntimeLifecycleCoordinator {
         }
         guard lifetime.beginCleanup(close: close) else { return }
         let cleanupTask = Task { @MainActor in
-            await cleanup()
+            await withTaskCancellationShield {
+                await cleanup()
+            }
         }
         lifetime.cleanupTask = cleanupTask
         await cleanupTask.value

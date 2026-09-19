@@ -183,6 +183,13 @@ public actor AscendantTurnCoordinator {
                 await withTaskCancellationHandler(operation: {
                     await self.awaitObservationDrain()
                 }, onCancel: {
+                    // Deliberately detached: the cancellation handler is
+                    // synchronous and `abortObservationDrain` is
+                    // actor-isolated. This hop only wakes an already-registered
+                    // waiter; the drain join and the observation-scope disposal
+                    // are awaited by `drainObservations`, and the group timeout
+                    // bounds a waiter that never arrives. It is a signal, not
+                    // cleanup work (#267).
                     Task { await self.abortObservationDrain() }
                 })
             }

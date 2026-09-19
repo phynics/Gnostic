@@ -563,6 +563,7 @@ public final class CommunicationManager {
     private let runtime: AxolotyRuntime
     private let transport: MQTTBinding
     private var startTask: Task<Void, Error>?
+    private var stopTask: Task<Void, Never>?
     private var stateContinuations: [UUID: AsyncStream<CommunicationState>.Continuation] = [:]
     private var advertiseContinuations: [UUID: (objectType: String?, continuation: AsyncStream<AdvertiseEventSnapshot>.Continuation)] = [:]
     private var deadvertiseContinuations: [UUID: AsyncStream<DeadvertiseEventSnapshot>.Continuation] = [:]
@@ -672,28 +673,44 @@ public final class CommunicationManager {
     public func stop() {
         let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
-        // Keep this synchronous compatibility wrapper. The internal async
-        // seam lets an owner await runtime drain when it controls teardown.
-        Task { @MainActor in
-            await stopAndWait(runtimeWasReady: runtimeWasReady)
-        }
         isStarted = false
         emitState(.offline)
+        // Coaty-era compatibility entry point: it must stay synchronous, so
+        // it cannot await. The teardown handle is stored on `stopTask` instead
+        // of being an unowned `Task`, and `stopAndWait()` joins it. #267 keeps
+        // this site detached deliberately; an owner that controls teardown
+        // awaits `stopAndWait()`.
+        _ = beginStop(runtimeWasReady: runtimeWasReady)
     }
 
     func stopAndWait() async {
         let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
-        await stopAndWait(runtimeWasReady: runtimeWasReady)
         isStarted = false
         emitState(.offline)
+        await beginStop(runtimeWasReady: runtimeWasReady).value
     }
 
-    private func stopAndWait(runtimeWasReady: Bool) async {
+    /// Starts one shared teardown or joins the in-flight one. The handle is
+    /// owned here so the synchronous `stop()` compatibility path never strands
+    /// an unowned task.
+    @discardableResult
+    private func beginStop(runtimeWasReady: Bool) -> Task<Void, Never> {
+        if let stopTask { return stopTask }
+        let task = Task { @MainActor in
+            await self.drain(runtimeWasReady: runtimeWasReady)
+        }
+        stopTask = task
+        return task
+    }
+
+    private func drain(runtimeWasReady: Bool) async {
         // A ready runtime owns shutdown ordering: it must drain its
         // deadvertisements before the transport disconnects. A pending start
         // has no runtime lifecycle to drain, so cancel its transport first to
-        // release the start continuation.
+        // release the start continuation. MQTTBinding fails that continuation
+        // before it awaits socket teardown, so a broker handshake cannot hold
+        // the lifecycle owner until its deadline.
         if runtimeWasReady {
             await runtime.stop()
         } else {

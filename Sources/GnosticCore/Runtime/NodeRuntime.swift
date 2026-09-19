@@ -197,7 +197,11 @@ public final class NodeRuntime {
     }
 
     public func shutdown() async {
-        await runtimeHost.shutdown()
+        // A cancelled caller must still drive the host to its disposed
+        // boundary; the host owns the actual cleanup and reports completion.
+        await withTaskCancellationShield {
+            await runtimeHost.shutdown()
+        }
     }
 
     /// Returns the current health slot for an Ascendant's backend. Health is

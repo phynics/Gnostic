@@ -24,8 +24,11 @@ final class ACPDispatcher: Sendable {
 
     private struct ActivePrompt {
         let token: UUID
-        let close: () -> Void
-        let cancel: () -> Void
+        // Async so session close/cancel can await the completion transition
+        // instead of spawning an unowned `Task` hop. The pending prompt's
+        // polling loop observes the transition before it unwinds.
+        let close: () async -> Void
+        let cancel: () async -> Void
     }
 
     private struct ActivePermissionRequest {
@@ -211,7 +214,7 @@ final class ACPDispatcher: Sendable {
         let input: ACPCloseParameters = try decode(params)
         _ = try await requireSession(id: input.sessionID, cwd: nil)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
-        activePrompts.removeValue(forKey: input.sessionID)?.close()
+        await activePrompts.removeValue(forKey: input.sessionID)?.close()
         _ = try await registry.close(id: input.sessionID)
         return .dictionary([:])
     }
@@ -222,7 +225,7 @@ final class ACPDispatcher: Sendable {
         guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
         cancelledSessions.insert(input.sessionID)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
-        prompt.cancel()
+        await prompt.cancel()
         return .dictionary([:])
     }
 
@@ -360,11 +363,11 @@ final class ACPDispatcher: Sendable {
             token: promptToken,
             close: {
                 stopTasks()
-                Task { await completion.set(.failed(.message("ACP session was closed"))) }
+                await completion.set(.failed(.message("ACP session was closed")))
             },
             cancel: {
                 stopTasks()
-                Task { await completion.set(.cancelled) }
+                await completion.set(.cancelled)
             }
         )
         defer {

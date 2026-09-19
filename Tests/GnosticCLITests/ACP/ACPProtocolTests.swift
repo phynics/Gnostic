@@ -364,6 +364,25 @@ struct ACPProtocolTests {
         #expect(await broker.pendingCount == 0)
     }
 
+    @Test("a request cancelled before its continuation installs resumes instead of stranding")
+    func clientRequestCancelledBeforeInstall() async throws {
+        let output = OutputCapture()
+        let broker = ACPClientRequestBroker(output: output.append)
+        let pending = Task {
+            // Cancel the calling task before `request` installs its
+            // continuation, the window where a detached cancellation hop could
+            // race the install and leave the request suspended forever.
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await broker.request(
+                method: "session/request_permission",
+                params: .dictionary(["sessionId": .string("session-1")])
+            )
+        }
+
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        #expect(await broker.pendingCount == 0)
+    }
+
     @Test("structured Ascendant tool states render as stable ACP tool updates")
     func structuredToolUpdate() throws {
         let update = AscendantTurnUpdate(

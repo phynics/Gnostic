@@ -119,14 +119,19 @@ final class NodeRuntimeHost {
     }
 
     func shutdown() async {
-        // Interrupt only a pending broker handshake before the coordinator
-        // waits for startup. A running transport must first drain its tracked
-        // deadvertisements during cleanup.
-        if lifetime.state == .starting {
-            resources.container.shutdown()
-        }
-        await lifecycleCoordinator.shutdown { [weak self] in
-            await self?.performCleanup()
+        // Shutdown is a completion boundary, not a cancellation request. The
+        // shield keeps a cancelled caller from skipping the cleanup handoff
+        // before the coordinator owns it.
+        await withTaskCancellationShield {
+            // Interrupt only a pending broker handshake before the coordinator
+            // waits for startup. A running transport must first drain its tracked
+            // deadvertisements during cleanup.
+            if lifetime.state == .starting {
+                resources.container.shutdown()
+            }
+            await lifecycleCoordinator.shutdown { [weak self] in
+                await self?.performCleanup()
+            }
         }
     }
 

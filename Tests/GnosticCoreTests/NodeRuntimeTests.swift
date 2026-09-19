@@ -714,6 +714,41 @@ struct NodeRuntimeTests {
         #expect(snapshots.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
     }
 
+    @Test("shutdown cleanup completes when the caller is cancelled mid-teardown")
+    @MainActor
+    func shutdownCompletesWhenCallerIsCancelled() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000158")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000159")!
+        let shutdownProbe = BackendShutdownProbe()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-cancel-shutdown"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000160")!),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
+            timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
+            FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, shutdownProbe: shutdownProbe)
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await runtime.start()
+
+        let shutdown = Task { @MainActor in await runtime.shutdown() }
+        await shutdownProbe.waitUntilStarted()
+        // Cancel the caller while backend retirement is suspended, then let the
+        // cleanup finish. Transport, runtime, and backend disposal must all
+        // reach their terminal boundary.
+        shutdown.cancel()
+        await shutdownProbe.release()
+        await shutdown.value
+
+        #expect(await shutdownProbe.didComplete)
+        #expect(runtime.isRunning == false)
+        let snapshots = await runtime.allEffectSnapshots()
+        #expect(!snapshots.isEmpty)
+        #expect(snapshots.allSatisfy { $0.state == .disposed && $0.liveEffects.isEmpty })
+    }
+
     @Test("startup is fenced when shutdown wins while preparation is suspended")
     @MainActor
     func startupDoesNotResumeAfterConcurrentShutdown() async throws {
@@ -1367,11 +1402,13 @@ private final class FixtureAscendantBackend: AscendantBackend {
     private var storedTimelines: [AscendantBackendTimeline]
     private let cancellationProbe: AdapterCancellationProbe?
     private let creationProbe: AdapterCreationProbe?
+    private let shutdownProbe: BackendShutdownProbe?
 
-    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil) {
+    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil, shutdownProbe: BackendShutdownProbe? = nil) {
         let now = Date()
         self.cancellationProbe = cancellationProbe
         self.creationProbe = creationProbe
+        self.shutdownProbe = shutdownProbe
         identity = .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
         storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), ascendantID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
     }
@@ -1404,7 +1441,11 @@ private final class FixtureAscendantBackend: AscendantBackend {
         return "fixture: \(request.message)"
     }
     func cancel() async { await cancellationProbe?.cancel() }
-    func shutdown() async {}
+    func shutdown() async {
+        guard let shutdownProbe else { return }
+        await shutdownProbe.begin()
+        await shutdownProbe.finish()
+    }
 }
 
 private actor AdapterCancellationProbe {
@@ -1438,6 +1479,46 @@ private actor AdapterCancellationProbe {
 private actor AdapterCreationProbe {
     private(set) var removedIDs: [UUID] = []
     func recordRemoval(_ id: UUID) { removedIDs.append(id) }
+}
+
+/// Gates one backend `shutdown()` so a test can cancel the shutdown caller
+/// while backend cleanup is mid-flight, then prove the cleanup still completes.
+private actor BackendShutdownProbe {
+    private var started = false
+    private var released = false
+    private var completed = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    var didComplete: Bool { completed }
+
+    func begin() async {
+        started = true
+        startedWaiters.forEach { $0.resume() }
+        startedWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            if released {
+                continuation.resume()
+            } else {
+                releaseContinuation = continuation
+            }
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    func finish() {
+        completed = true
+    }
 }
 
 private final class NodeToolCaptureLanguageModel: LLMStreamClient, @unchecked Sendable {
