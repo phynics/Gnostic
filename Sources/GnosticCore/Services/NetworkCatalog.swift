@@ -3,6 +3,20 @@
 import Axoloty
 import Foundation
 
+/// A change retained by the catalog after ingesting a network lifecycle event.
+public enum NetworkCatalogChange: Sendable {
+    /// A supported object was advertised or resolved.
+    case advertised(NetworkCatalogEntry)
+
+    /// A listed object was deadvertised by the given provider.
+    case deadvertised(objectID: UUID, providerID: String)
+
+    /// A provider published a lifecycle identity deadvertisement.
+    ///
+    /// Every record owned by that provider was removed from the catalog.
+    case providerEvicted(String)
+}
+
 public actor NetworkCatalog {
     private static let anonymousProviderID = "<unknown-provider>"
     private static let corePropertyNames: Set<String> = [
@@ -19,9 +33,39 @@ public actor NetworkCatalog {
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
     private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
     private var providerEvictionContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
+    private var changeContinuations: [UUID: AsyncStream<NetworkCatalogChange>.Continuation] = [:]
 
     /// Creates an empty catalog.
     public init() {}
+
+    /// Observes every advertisement, deadvertisement, and provider eviction
+    /// ingested by this catalog.
+    ///
+    /// The stream is latest-biased and bounded at 64 pending changes; slow
+    /// observers drop the oldest pending change instead of stalling ingest.
+    /// It does not end with the catalog, so callers cancel their iteration at
+    /// shutdown.
+    ///
+    /// - Returns: A stream of catalog changes in ingest order.
+    public func changes() -> AsyncStream<NetworkCatalogChange> {
+        let pair = AsyncStream<NetworkCatalogChange>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        let id = UUID()
+        changeContinuations[id] = pair.continuation
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeChangeContinuation(id) }
+        }
+        return pair.stream
+    }
+
+    private func removeChangeContinuation(_ id: UUID) {
+        changeContinuations[id] = nil
+    }
+
+    private func emitChange(_ change: NetworkCatalogChange) {
+        for continuation in changeContinuations.values {
+            continuation.yield(change)
+        }
+    }
 
     /// Observes providers removed by a lifecycle identity deadvertisement.
     ///
@@ -91,6 +135,7 @@ public actor NetworkCatalog {
             workspaceTool: workspaceTool
         )
         entries[objectID, default: [:]][providerID] = entry
+        emitChange(.advertised(entry))
     }
 
     /// Ingests a resolved object returned by an active discover request.
@@ -136,6 +181,7 @@ public actor NetworkCatalog {
             if entries[objectID]?.isEmpty == true {
                 entries[objectID] = nil
             }
+            emitChange(.deadvertised(objectID: objectID, providerID: providerID))
         }
     }
 
@@ -159,6 +205,7 @@ public actor NetworkCatalog {
         for continuation in providerEvictionContinuations.values {
             continuation.yield(providerID)
         }
+        emitChange(.providerEvicted(providerID))
     }
 
     /// Returns a single provider-scoped object record.
