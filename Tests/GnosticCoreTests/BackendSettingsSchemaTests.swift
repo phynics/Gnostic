@@ -36,7 +36,7 @@ struct BackendSettingsSchemaTests {
         let registry = AscendantAdapterRegistry()
         let schema = try #require(registry.settingsSchema(for: AscendantAdapterRegistry.positronicKind))
 
-        #expect(schema.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel"])
+        #expect(schema.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions"])
         #expect(schema.secretNames == ["apiKey"])
         #expect(schema.key(named: "apiKey")?.isSecret == true)
         #expect(schema.key(named: "provider")?.isSecret == false)
@@ -63,7 +63,7 @@ struct BackendSettingsSchemaTests {
     func adapterValidatesAgainstItsAdvertisedSchema() {
         // The adapter must not carry a second, drifting list of key names.
         let advertised = Set(PositronicAscendantAdapter.settingsSchema.settingNames)
-        #expect(advertised == ["provider", "endpoint", "model", "utilityModel", "fastModel"])
+        #expect(advertised == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions"])
         #expect(PositronicAscendantAdapter.settingsSchema.secretNames == ["apiKey"])
     }
 }

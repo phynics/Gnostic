@@ -151,6 +151,45 @@ aborts the Turn before provider work and leaves the backend healthy, while
 `PositronicTurnInvocationContext.current` to correlate the Ascendant, Timeline,
 and admitted client Turn it is projecting for.
 
+### Selecting extensions per Ascendant
+
+A composition root registers each compiled-in extension on `BackendComposition`,
+keyed by a static name. The extension declares its own settings keys and builds
+its contribution from the settings of the Ascendant that selected it:
+
+```swift
+var composition = BackendComposition()
+composition.registerPositronicExtension(PositronicExtension(
+    name: "notes",
+    settingKeys: [
+        .init(name: "topic", summary: "Notes topic."),
+        .init(name: "token", summary: "Notes credential.", isSecret: true),
+    ]
+) { scope in
+    NotesContribution(topic: try scope.stringSetting("topic"))
+})
+```
+
+Each Ascendant opts in through the backend-owned `extensions` setting; existing
+envelopes without the key behave exactly as before:
+
+```json
+{ "kind": "positronic", "settings": { "extensions": ["notes"], "notes.topic": "release" } }
+```
+
+Extension settings are namespaced `<name>.<key>` in `settings`. Secrets use the
+same namespacing in `backend.secrets`, so they stay covered by the structural
+redaction `gnostic config show` applies. The Positronic settings schema includes
+the selection key and every registered extension key, so
+`gnostic config backend keys <ascendant-id>` lists them.
+
+Two Positronic Ascendants on one Node may select different sets. Selection is
+static: there is no live enable, disable, or hot reload. An unknown or malformed
+selection fails startup before advertisement and names the extension. The
+rejected alternative, a distinct backend kind per variant, would multiply kinds
+combinatorially and conflict with the single `positronic` kind the adapter
+validates.
+
 ## What stays Gnostic's
 
 Do not reimplement these. Gnostic remains authoritative for Ascendant and

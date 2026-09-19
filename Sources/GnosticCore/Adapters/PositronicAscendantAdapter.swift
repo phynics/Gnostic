@@ -204,7 +204,13 @@ import struct PositronicKit.Thread
         .init(name: "utilityModel", summary: "Model used for utility work."),
         .init(name: "fastModel", summary: "Model used where latency matters more than quality."),
         .init(name: "apiKey", summary: "Provider API key.", isSecret: true),
+        .init(name: "extensions", summary: "Names of compiled-in Positronic extensions this Ascendant enables."),
     ])
+
+    /// Advertised keys that select extensions rather than configure the
+    /// language model. Their presence must not opt an Ascendant into provider
+    /// validation: an extension-only Ascendant is a valid unconfigured state.
+    private nonisolated static let nonProviderSettingNames: Set<String> = ["extensions"]
 
     public func validateConfiguration() throws {
         try Self.validateConfiguration(configuration)
@@ -216,9 +222,10 @@ import struct PositronicKit.Thread
         }
 
         let schema = Self.settingsSchema
-        let hasKnownValue = schema.settingNames.contains { configuration.settings[$0] != nil }
+        let providerSettingNames = Set(schema.settingNames).subtracting(Self.nonProviderSettingNames)
+        let hasProviderValue = providerSettingNames.contains { configuration.settings[$0] != nil }
             || schema.secretNames.contains { configuration.secrets[$0] != nil }
-        guard hasKnownValue else { return }
+        guard hasProviderValue else { return }
 
         let providerName = try stringValue(for: "provider", in: configuration.settings)
         guard let provider = LLMProvider.allCases.first(where: {

@@ -186,7 +186,7 @@ struct BackendCompositionTests {
         let composition = BackendComposition.default
         #expect(composition.registeredKinds == [AscendantAdapterRegistry.positronicKind])
         let schema = composition.settingsSchema(for: AscendantAdapterRegistry.positronicKind)
-        #expect(schema?.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel"])
+        #expect(schema?.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions"])
     }
 
     @Test("an unregistered kind is still rejected")
