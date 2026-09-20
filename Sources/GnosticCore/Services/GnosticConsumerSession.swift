@@ -281,8 +281,8 @@ public final class GnosticConsumerSession {
     ///
     /// The session keeps ownership of the connection. The returned client
     /// shares the session's subscription and catalog, so it runs Turns and
-    /// answers permission requests without a second connection, a hosted Node,
-    /// or any advertisement.
+    /// answers permission requests without a second connection or a hosted
+    /// Node; neither the session nor the client advertises.
     ///
     /// - Parameters:
     ///   - timeout: The bounded window for replay and provider discovery.
