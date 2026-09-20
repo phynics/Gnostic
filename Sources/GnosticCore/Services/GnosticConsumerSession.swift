@@ -267,6 +267,19 @@ public final class GnosticConsumerSession {
         await catalog.workspaceDescriptor(id: id, providerID: providerID)
     }
 
+    /// Returns the provider-independent attachment status of a discovered
+    /// Workspace.
+    ///
+    /// This is the observable effective usability of a Workspace advertisement,
+    /// including malformed and ambiguous advertisements that a bare descriptor
+    /// cannot express.
+    ///
+    /// - Parameter id: The advertised workspace identifier.
+    /// - Returns: The Workspace attachment status.
+    public func workspaceAttachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
+        await catalog.workspaceAttachmentStatus(id: id)
+    }
+
     /// Observes advertisements, deadvertisements, and provider evictions
     /// ingested by this session.
     ///
@@ -302,6 +315,29 @@ public final class GnosticConsumerSession {
             subscription: subscription,
             timeout: timeout,
             promptTimeout: promptTimeout ?? timeout
+        )
+    }
+
+    /// Creates a public workspace client over this session's connected
+    /// transport.
+    ///
+    /// The session keeps ownership of the connection. The returned client
+    /// shares the session's subscription and catalog, so it discovers, attaches,
+    /// detaches, and invokes Workspace tools without a second connection or a
+    /// hosted Node; neither the session nor the client advertises.
+    ///
+    /// - Parameter timeout: The bounded window for discovery refreshes and each
+    ///   workspace call.
+    /// - Returns: A workspace client bound to this session's transport.
+    /// - Throws: ``GnosticConsumerSessionError/notStarted`` when the session is
+    ///   not running.
+    public func workspaceClient(timeout: Duration = .seconds(5)) throws -> GnosticWorkspaceClient {
+        guard state == .running else { throw GnosticConsumerSessionError.notStarted }
+        return GnosticWorkspaceClient(
+            manager: manager,
+            catalog: catalog,
+            subscription: subscription,
+            timeout: timeout
         )
     }
 
