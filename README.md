@@ -1,12 +1,13 @@
 # Gnostic
 
-Gnostic 0.4.0 hosts Ascendant backends and exposes them over Axoloty. The
+Gnostic 0.4.1 hosts Ascendant backends and exposes them over Axoloty. The
 bundled Ascendant backend is `positronic`. The bundled local Workspace backend
 is `echo`.
 
-The [0.4.0 compatibility declaration](Documentation/Compatibility/0.4.0.md)
-lists the public consumer clients and the dependency exception this release
-carries. The [0.3.0 declaration](Documentation/Compatibility/0.3.0.md) remains
+The [0.4.1 compatibility declaration](Documentation/Compatibility/0.4.1.md)
+records the deployment-target fix this release carries. The
+[0.4.0 declaration](Documentation/Compatibility/0.4.0.md) lists the public
+consumer clients and the dependency exception. The [0.3.0 declaration](Documentation/Compatibility/0.3.0.md) remains
 authoritative for the protocol, manifest, migration, and intentional 0.2
 breaks.
 
