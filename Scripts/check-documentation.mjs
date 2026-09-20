@@ -6,6 +6,11 @@ import { mkdtempSync, chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve } from "node:path";
 
+// The released package version. A release bumps this constant, the CLI
+// version string, and adds the matching compatibility declaration.
+const PACKAGE_VERSION = "0.4.0";
+const COMPATIBILITY_FILE = `Documentation/Compatibility/${PACKAGE_VERSION}.md`;
+
 const REQUIRED_FILES = [
   "CONTEXT.md",
   "Documentation/Architecture/README.md",
@@ -14,7 +19,7 @@ const REQUIRED_FILES = [
   "Documentation/Architecture/ADRs/0003-pre-1-0-manifest-and-protocol-reset.md",
   "Documentation/Architecture/ADRs/0004-atlas-supersedes-narrative.md",
   "Documentation/Architecture/exceptions.json",
-  "Documentation/Compatibility/0.3.0.md",
+  COMPATIBILITY_FILE,
 ];
 
 const ADR_FILES = REQUIRED_FILES.filter((file) => file.includes("/ADRs/"));
@@ -210,9 +215,9 @@ function validateResetBaseline(root, failures) {
     if (/import\s+GnosticPositronicAtlas\b/.test(text)) failures.push(`${relative(root, path)}: GnosticCore must not import Atlas`);
   }
 
-  const compatibility = readText(root, "Documentation/Compatibility/0.3.0.md").toLowerCase();
-  for (const phrase of ["0.3.0", "protocol major", "manifest v2", "v1", "migration", "bundled", "atlas", "narrative", "0.2"]) {
-    if (!compatibility.includes(phrase)) failures.push(`Documentation/Compatibility/0.3.0.md: compatibility declaration must mention '${phrase}'`);
+  const compatibility = readText(root, COMPATIBILITY_FILE).toLowerCase();
+  for (const phrase of [PACKAGE_VERSION, "protocol major", "manifest v2", "v1", "migration", "bundled", "atlas", "narrative", "0.2"]) {
+    if (!compatibility.includes(phrase)) failures.push(`${COMPATIBILITY_FILE}: compatibility declaration must mention '${phrase}'`);
   }
 }
 
@@ -239,10 +244,10 @@ function validateCLI(root, cliPath, failures, cliArgs = [], cliRunner = null) {
   const runHelp = (chain) => cliRunner
     ? cliRunner({ cliPath, cliArgs, chain })
     : spawnSync(cliPath, [...cliArgs, ...chain, "--help"], { encoding: "utf8" });
-  const compatibility = readText(root, "Documentation/Compatibility/0.3.0.md");
+  const compatibility = readText(root, COMPATIBILITY_FILE);
   const declaredVersion = compatibility.match(/^[-*]\s*Package version:\s*`([^`]+)`\./m)?.[1];
   if (!declaredVersion) {
-    failures.push("Documentation/Compatibility/0.3.0.md: package version is missing");
+    failures.push(`${COMPATIBILITY_FILE}: package version is missing`);
   } else {
     const versionResult = cliRunner
       ? cliRunner({ cliPath, cliArgs, chain: [], action: "version" })
@@ -378,7 +383,7 @@ function writeFixture(root) {
     ]
 )
 `,
-    "Documentation/Compatibility/0.3.0.md": "# Compatibility\n\n- Package version: `0.3.0`.\n\nPackage 0.3.0 uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n",
+    [COMPATIBILITY_FILE]: `# Compatibility\n\n- Package version: \`${PACKAGE_VERSION}\`.\n\nPackage ${PACKAGE_VERSION} uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n`,
     "Sources/GnosticCore/Core.swift": "let core = true\n",
     "Sources/Protocol.swift": "let route = \"me.atkn.gnostic.workspace.invoke\"\n",
     "Documentation/Architecture/README.md": "# Architecture\n\n[ADR 0001](ADRs/0001-axoloty-native-multi-backend-host.md) [ADR 0002](ADRs/0002-gnostic-identity-vs-backend-state.md) [ADR 0003](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md) [ADR 0004](ADRs/0004-atlas-supersedes-narrative.md)\n",
@@ -431,7 +436,7 @@ function selfTest() {
     const options = {
       cliPath: "fixture-gnostic",
       cliRunner: ({ chain, action }) => {
-        if (action === "version") return { status: 0, stdout: "0.3.0\n" };
+        if (action === "version") return { status: 0, stdout: `${PACKAGE_VERSION}\n` };
         if (chain.length === 0) return { status: 0, stdout: "SUBCOMMANDS:\n  acp  Run ACP\n" };
         if (chain.includes("turn") || chain.includes("does-not-exist")) return { status: 1, stderr: "unknown command" };
         return { status: 0, stdout: "help" };
@@ -447,7 +452,7 @@ function selfTest() {
       () => {},
       "does not match declared package version"
     );
-    expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Compatibility/0.3.0.md"), "# Compatibility\n"), "must mention '0.3.0'");
+    expectFailure(root, options, () => writeFileSync(join(root, COMPATIBILITY_FILE), "# Compatibility\n"), `must mention '${PACKAGE_VERSION}'`);
     writeFixture(root);
     expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n', "")), "Atlas target must depend on GnosticCore");
     writeFixture(root);
