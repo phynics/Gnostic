@@ -47,7 +47,7 @@ final class RuntimeLifecycleCoordinator {
             // share one shutdown, but its cleanup body is shielded: a
             // cancellation that reaches this task must not abandon rollback
             // half-applied.
-            await withTaskCancellationShield {
+            await withCancellationShield {
                 startup?.cancel()
                 guard let self else { return }
                 if let startup {
@@ -71,7 +71,7 @@ final class RuntimeLifecycleCoordinator {
         }
         guard lifetime.beginCleanup(close: close) else { return }
         let cleanupTask = Task { @MainActor in
-            await withTaskCancellationShield {
+            await withCancellationShield {
                 await cleanup()
             }
         }

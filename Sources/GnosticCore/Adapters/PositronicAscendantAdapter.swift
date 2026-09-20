@@ -367,7 +367,7 @@ import struct PositronicKit.TimelineRecord
     public func shutdown() async {
         // Backend retirement must reach its cancelled-and-failed terminal
         // state even if the caller of shutdown was cancelled first.
-        await withTaskCancellationShield {
+        await withCancellationShield {
             guard lifecycleFailure == nil else { return }
             await cancel()
             lifecycleFailure = .init(code: "backendShutdown", message: "The Positronic backend has been shut down.")

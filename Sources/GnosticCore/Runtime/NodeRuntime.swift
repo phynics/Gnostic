@@ -199,7 +199,7 @@ public final class NodeRuntime {
     public func shutdown() async {
         // A cancelled caller must still drive the host to its disposed
         // boundary; the host owns the actual cleanup and reports completion.
-        await withTaskCancellationShield {
+        await withCancellationShield {
             await runtimeHost.shutdown()
         }
     }
