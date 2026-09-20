@@ -277,6 +277,34 @@ public final class GnosticConsumerSession {
         await catalog.changes()
     }
 
+    /// Creates a public turn client over this session's connected transport.
+    ///
+    /// The session keeps ownership of the connection. The returned client
+    /// shares the session's subscription and catalog, so it runs Turns and
+    /// answers permission requests without a second connection, a hosted Node,
+    /// or any advertisement.
+    ///
+    /// - Parameters:
+    ///   - timeout: The bounded window for replay and provider discovery.
+    ///   - promptTimeout: The bounded window for a Turn call. Defaults to
+    ///     `timeout`.
+    /// - Returns: A turn client bound to this session's transport.
+    /// - Throws: ``GnosticConsumerSessionError/notStarted`` when the session is
+    ///   not running.
+    public func turnClient(
+        timeout: Duration = .seconds(5),
+        promptTimeout: Duration? = nil
+    ) throws -> GnosticTurnClient {
+        guard state == .running else { throw GnosticConsumerSessionError.notStarted }
+        return GnosticTurnClient(
+            manager: manager,
+            catalog: catalog,
+            subscription: subscription,
+            timeout: timeout,
+            promptTimeout: promptTimeout ?? timeout
+        )
+    }
+
     /// Stops subscriptions and the transport with ordered cleanup.
     ///
     /// Safe to call before ``start()`` and safe to call more than once. A
