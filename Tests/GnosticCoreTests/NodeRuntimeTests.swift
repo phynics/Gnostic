@@ -1556,7 +1556,9 @@ private final class NodeToolCaptureLanguageModel: LLMStreamClient, @unchecked Se
         toolChoice: LLMToolChoice?,
         responseFormat: LLMResponseFormat?,
         generationParameters: GenerationParameters?,
-        modelTier: ModelTier
+        modelTier: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await chatStream(
             messages: messages,
@@ -1616,7 +1618,7 @@ private struct LegacyLedgerWorkspace: WorkspaceToolProvider, WorkspaceFileProvid
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
     func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    func healthCheck() async -> Bool { true }
+    var isHealthy: Bool { true }
 }
 
 private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
@@ -1643,7 +1645,7 @@ private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvi
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
     func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    func healthCheck() async -> Bool { true }
+    var isHealthy: Bool { true }
 }
 
 private struct SentinelWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
@@ -1659,7 +1661,7 @@ private struct SentinelWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, 
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
     func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    func healthCheck() async -> Bool { true }
+    var isHealthy: Bool { true }
 }
 
 private struct CancellationWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
@@ -1674,7 +1676,7 @@ private struct CancellationWorkspace: WorkspaceToolProvider, WorkspaceFileProvid
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
     func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    func healthCheck() async -> Bool { true }
+    var isHealthy: Bool { true }
 }
 
 private final class ProviderIsolationLanguageModel: LLMStreamClient, @unchecked Sendable {
@@ -1727,7 +1729,9 @@ private final class ProviderIsolationLanguageModel: LLMStreamClient, @unchecked 
         toolChoice: LLMToolChoice?,
         responseFormat: LLMResponseFormat?,
         generationParameters: GenerationParameters?,
-        modelTier: ModelTier
+        modelTier: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await chatStream(
             messages: messages,

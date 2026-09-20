@@ -7,12 +7,12 @@ import PKContracts
 import PositronicKit
 
 /// The `list_network_objects` PositronicKit tool.
-public struct ListNetworkObjectsTool: Tool, Sendable {
+public struct ListNetworkObjectsTool: PKTool, Sendable {
     private let service: DiscoveredWorkspaceAttachmentService
     init(service: DiscoveredWorkspaceAttachmentService) { self.service = service }
     public let callName = "list_network_objects"
     public let name = "List network objects"
-    public let description = "Lists currently advertised Gnostic network objects."
+    public let toolDescription = "Lists currently advertised Gnostic network objects."
     public let requiresPermission = false
     public let sideEffects: ToolSideEffects = .none
     public var parametersSchema: Schema {
@@ -26,12 +26,12 @@ public struct ListNetworkObjectsTool: Tool, Sendable {
 }
 
 /// The `inspect_network_object` PositronicKit tool.
-public struct InspectNetworkObjectTool: Tool, Sendable {
+public struct InspectNetworkObjectTool: PKTool, Sendable {
     private let service: DiscoveredWorkspaceAttachmentService
     init(service: DiscoveredWorkspaceAttachmentService) { self.service = service }
     public let callName = "inspect_network_object"
     public let name = "Inspect network object"
-    public let description = "Inspects one provider-scoped advertised Gnostic object."
+    public let toolDescription = "Inspects one provider-scoped advertised Gnostic object."
     public let requiresPermission = false
     public let sideEffects: ToolSideEffects = .none
     public var parametersSchema: Schema {
@@ -54,12 +54,12 @@ public struct InspectNetworkObjectTool: Tool, Sendable {
 }
 
 /// The approval-gated `attach_workspace` PositronicKit tool.
-public struct AttachWorkspaceTool: Tool, Sendable {
+public struct AttachWorkspaceTool: PKTool, Sendable {
     private let service: DiscoveredWorkspaceAttachmentService
     init(service: DiscoveredWorkspaceAttachmentService) { self.service = service }
     public let callName = "attach_workspace"
     public let name = "Attach workspace"
-    public let description = "Imports and attaches an unambiguous discovered workspace to a timeline."
+    public let toolDescription = "Imports and attaches an unambiguous discovered workspace to a timeline."
     public let requiresPermission = true
     public let sideEffects: ToolSideEffects = .mutating
     public var parametersSchema: Schema {

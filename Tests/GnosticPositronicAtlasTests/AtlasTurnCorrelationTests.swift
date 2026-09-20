@@ -356,7 +356,7 @@ struct AtlasTurnCorrelationTests {
                 PositronicTurnInvocation(ascendantID: ascendantID, timelineID: timeline, turnID: clientTurnID)
             ) {
                 _ = try await source.contributions(for: TurnContextRequest(
-                    threadID: timeline,
+                    timelineID: timeline,
                     turnID: UUID(),
                     requestID: UUID(),
                     agentID: ascendantID,
@@ -379,7 +379,7 @@ struct AtlasTurnCorrelationTests {
             PositronicTurnInvocation(ascendantID: ascendantID, timelineID: timelineID, turnID: clientTurnID)
         ) {
             try await source.contributions(for: TurnContextRequest(
-                threadID: timelineID,
+                timelineID: timelineID,
                 turnID: UUID(),
                 requestID: UUID(),
                 agentID: ascendantID,

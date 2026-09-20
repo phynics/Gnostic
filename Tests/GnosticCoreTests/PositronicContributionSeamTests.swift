@@ -18,10 +18,10 @@ struct PositronicContributionSeamTests {
             _ = try PositronicContributionSurface(
                 contributions: [
                     FixtureContribution(label: "first", tools: [
-                        FixtureTool(callName: "first_name", identity: .known(id: "shared_identity")).toAnyTool(),
+                        AnyTool(FixtureTool(callName: "first_name", identity: .known(id: "shared_identity"))),
                     ]),
                     FixtureContribution(label: "second", tools: [
-                        FixtureTool(callName: "second_name", identity: .known(id: "shared_identity")).toAnyTool(),
+                        AnyTool(FixtureTool(callName: "second_name", identity: .known(id: "shared_identity"))),
                     ]),
                 ],
                 reservedTools: [],
@@ -35,8 +35,8 @@ struct PositronicContributionSeamTests {
         #expect(throws: AscendantBackendError.self) {
             _ = try PositronicContributionSurface(
                 contributions: [
-                    FixtureContribution(label: "first", tools: [FixtureTool(callName: "shared_name").toAnyTool()]),
-                    FixtureContribution(label: "second", tools: [FixtureTool(callName: "shared_name").toAnyTool()]),
+                    FixtureContribution(label: "first", tools: [AnyTool(FixtureTool(callName: "shared_name"))]),
+                    FixtureContribution(label: "second", tools: [AnyTool(FixtureTool(callName: "shared_name"))]),
                 ],
                 reservedTools: [],
                 recordNotice: { _, _ in }
@@ -46,10 +46,10 @@ struct PositronicContributionSeamTests {
 
     @Test("a contribution cannot override a Workspace tool call name")
     func rejectsWorkspaceToolCollision() throws {
-        let workspaceTool = FixtureTool(callName: "workspace_echo").toAnyTool()
+        let workspaceTool = AnyTool(FixtureTool(callName: "workspace_echo"))
         #expect(throws: AscendantBackendError.self) {
             _ = try PositronicContributionSurface(
-                contributions: [FixtureContribution(label: "fixture", tools: [FixtureTool(callName: "workspace_echo").toAnyTool()])],
+                contributions: [FixtureContribution(label: "fixture", tools: [AnyTool(FixtureTool(callName: "workspace_echo"))])],
                 reservedTools: [workspaceTool],
                 recordNotice: { _, _ in }
             )
@@ -60,8 +60,8 @@ struct PositronicContributionSeamTests {
     func rejectsNetworkToolCollision() throws {
         #expect(throws: AscendantBackendError.self) {
             _ = try PositronicContributionSurface(
-                contributions: [FixtureContribution(label: "fixture", tools: [FixtureTool(callName: "attach_workspace").toAnyTool()])],
-                reservedTools: [FixtureTool(callName: "attach_workspace").toAnyTool()],
+                contributions: [FixtureContribution(label: "fixture", tools: [AnyTool(FixtureTool(callName: "attach_workspace"))])],
+                reservedTools: [AnyTool(FixtureTool(callName: "attach_workspace"))],
                 recordNotice: { _, _ in }
             )
         }
@@ -72,9 +72,9 @@ struct PositronicContributionSeamTests {
         #expect(throws: AscendantBackendError.self) {
             _ = try PositronicContributionSurface(
                 contributions: [FixtureContribution(label: "fixture", tools: [
-                    FixtureTool(callName: "novel_name", identity: .known(id: "workspace_echo")).toAnyTool(),
+                    AnyTool(FixtureTool(callName: "novel_name", identity: .known(id: "workspace_echo"))),
                 ])],
-                reservedTools: [FixtureTool(callName: "workspace_echo").toAnyTool()],
+                reservedTools: [AnyTool(FixtureTool(callName: "workspace_echo"))],
                 recordNotice: { _, _ in }
             )
         }
@@ -115,7 +115,7 @@ struct PositronicContributionSeamTests {
     func emptySurfaceIsInert() throws {
         let surface = try PositronicContributionSurface(
             contributions: [],
-            reservedTools: [FixtureTool(callName: "workspace_echo").toAnyTool()],
+            reservedTools: [AnyTool(FixtureTool(callName: "workspace_echo"))],
             recordNotice: { _, _ in }
         )
         #expect(surface.tools.isEmpty)
@@ -272,7 +272,7 @@ struct PositronicContributionSeamTests {
             ascendantID: UUID(),
             timelineID: timelineID,
             languageModel: model,
-            contributions: [FixtureContribution(label: "fixture", tools: [FixtureTool(callName: "contributed_fixture").toAnyTool()])]
+            contributions: [FixtureContribution(label: "fixture", tools: [AnyTool(FixtureTool(callName: "contributed_fixture"))])]
         )
 
         _ = try await adapter.runTurn(
@@ -324,7 +324,7 @@ struct PositronicContributionSeamTests {
             workspaces: [.init(id: workspaceID, name: "Echo", uri: "echo://collision", kind: "echo")]
         )
         let adapters = makeAdapters(contributions: [
-            FixtureContribution(label: "fixture", tools: [FixtureTool(callName: "workspace_echo").toAnyTool()]),
+            FixtureContribution(label: "fixture", tools: [AnyTool(FixtureTool(callName: "workspace_echo"))]),
         ])
 
         var threw = false
@@ -351,7 +351,7 @@ struct PositronicContributionSeamTests {
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
         )
         let adapters = makeAdapters(contributions: [
-            FixtureContribution(label: "fixture", tools: [FixtureTool(callName: "attach_workspace").toAnyTool()]),
+            FixtureContribution(label: "fixture", tools: [AnyTool(FixtureTool(callName: "attach_workspace"))]),
         ])
 
         var threw = false
@@ -414,7 +414,7 @@ struct PositronicContributionSeamTests {
 
     private func makeContextRequest() -> TurnContextRequest {
         TurnContextRequest(
-            threadID: UUID(),
+            timelineID: UUID(),
             turnID: UUID(),
             requestID: UUID(),
             agentID: nil,
@@ -441,7 +441,7 @@ private struct FixtureContribution: PositronicContribution {
     func turnContextSource() -> (any TurnContextSource)? { source }
 }
 
-private struct FixtureTool: Tool, Sendable {
+private struct FixtureTool: PKTool, Sendable {
     let callName: String
     let identityOverride: ToolReference?
 
@@ -452,7 +452,7 @@ private struct FixtureTool: Tool, Sendable {
 
     var identity: ToolReference { identityOverride ?? .known(id: callName) }
     var name: String { callName }
-    var description: String { "Fixture tool \(callName)." }
+    var toolDescription: String { "Fixture tool \(callName)." }
     var requiresPermission: Bool { false }
     var sideEffects: ToolSideEffects { .none }
     var parametersSchema: Schema { ToolParameterSchema.object {}.schemaDefinition }
@@ -548,7 +548,9 @@ private final class RecordingLanguageModel: LLMStreamClient, @unchecked Sendable
         toolChoice _: LLMToolChoice?,
         responseFormat _: LLMResponseFormat?,
         generationParameters _: GenerationParameters?,
-        modelTier _: ModelTier
+        modelTier _: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await capture.record(messages: messages, tools: tools ?? [])
         let response = response

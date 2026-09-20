@@ -3,7 +3,7 @@
 import Foundation
 import PKContracts
 import PositronicKit
-import struct PositronicKit.Thread
+import struct PositronicKit.TimelineRecord
 
 /// The built-in adapter owns PositronicKit construction, tool wiring, event
 /// translation, timeline persistence, and provider shutdown. PositronicKit
@@ -11,8 +11,8 @@ import struct PositronicKit.Thread
 @MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
     private let configuration: AscendantBackendConfiguration
-    private let kit: PositronicKit
-    private let threadStore: any ThreadRuntimeRepository
+    private let kit: PKRuntime
+    private let threadStore: any TimelineRuntimeRepository
     private let networkTools: [AnyTool]
     private let contributionTools: [AnyTool]
     private var workspaceToolsByID: [UUID: [AnyTool]]
@@ -48,14 +48,14 @@ import struct PositronicKit.Thread
             id: ascendant.id,
             name: ascendant.name,
             description: ascendant.description,
-            privateThreadID: ascendant.defaultTimelineID,
+            privateTimelineID: ascendant.defaultTimelineID,
             metadata: ascendant.metadata.mapValues { AnyCodable($0) }
         )
         identity = .init(
             id: agent.id,
             name: agent.name,
             description: agent.description,
-            privateTimelineID: agent.privateThreadID,
+            privateTimelineID: agent.privateTimelineID,
             primaryWorkspaceID: agent.primaryWorkspaceID,
             lastActiveAt: agent.lastActiveAt,
             createdAt: agent.createdAt,
@@ -80,16 +80,16 @@ import struct PositronicKit.Thread
             InMemoryWorkspacePersistence(),
             InMemoryToolPersistence()
         )
-        let runtimeRepository = InMemoryThreadRuntimeRepository()
+        let runtimeRepository = InMemoryTimelineRuntimeRepository()
         try await stores.0.saveAgent(agent)
         for configuration in timelines {
-            let thread = Thread(
+            let thread = TimelineRecord(
                 id: configuration.id,
                 title: configuration.title,
                 attachedAgentID: ascendant.id,
                 isPrivate: false
             )
-            try await runtimeRepository.saveThread(thread)
+            try await runtimeRepository.saveTimeline(thread)
             for workspaceID in configuration.attachments.map(\.workspaceID) {
                 guard let reference = references[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
                 guard reference.status == .available,
@@ -119,8 +119,8 @@ import struct PositronicKit.Thread
         )
 
         let factory = PositronicBackendWorkspaceFactory(service: services.workspace)
-        let createdKit = PositronicKit(configuration: .init(
-            provider: .init(languageModel: languageModel),
+        let createdKit = PKRuntime(configuration: .init(
+            languageModel: languageModel,
             persistence: .init(
                 runtimeRepository: runtimeRepository,
                 workspacePersistence: stores.2,
@@ -133,8 +133,8 @@ import struct PositronicKit.Thread
                 customization: RuntimeCustomization(turnContextSource: contributionSurface.turnContextSource),
                 runtimeToolPolicy: .init(
                     installFilesystemTools: false,
-                    installThreadObservationTools: true,
-                    installThreadSendTool: true
+                    installTimelineObservationTools: true,
+                    installsTimelineSendTool: true
                 ),
                 toolApprovalPolicy: AscendantToolApprovalPolicy(coordinator: services.permission)
             )
@@ -145,15 +145,15 @@ import struct PositronicKit.Thread
             let attachmentHost = services.capability(BackendWorkspaceAttachmentCapability.self)
             let attachmentService = DiscoveredWorkspaceAttachmentService(
                 discovery: host.discovery,
-                threadCapability: createdKit.threads,
+                threadCapability: createdKit.timelines,
                 workspaceCapability: createdKit.workspaces,
                 hostAttachment: attachmentHost,
                 allowedTimelineIDs: Set(timelines.map(\.id))
             )
             resolvedNetworkTools = [
-                ListNetworkObjectsTool(service: attachmentService).toAnyTool(),
-                InspectNetworkObjectTool(service: attachmentService).toAnyTool(),
-                AttachWorkspaceTool(service: attachmentService).toAnyTool(),
+                AnyTool(ListNetworkObjectsTool(service: attachmentService)),
+                AnyTool(InspectNetworkObjectTool(service: attachmentService)),
+                AnyTool(AttachWorkspaceTool(service: attachmentService)),
             ]
         } else {
             resolvedNetworkTools = []
@@ -176,7 +176,7 @@ import struct PositronicKit.Thread
 
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
         try requireUsable()
-        let threads = try await kit.threads.list(includeArchived: false)
+        let threads = try await kit.timelines.list(includeArchived: false)
         var projections: [AscendantBackendTimeline] = []
         for thread in threads {
             projections.append(await projection(thread))
@@ -299,22 +299,22 @@ import struct PositronicKit.Thread
 
     public func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         try requireUsable()
-        let thread = Thread(id: id, title: title, attachedAgentID: identity.id, isPrivate: false)
-        try await threadStore.saveThread(thread)
+        let thread = TimelineRecord(id: id, title: title, attachedAgentID: identity.id, isPrivate: false)
+        try await threadStore.saveTimeline(thread)
         workspaceIDsByTimeline[id] = []
         return await projection(thread)
     }
 
     public func removeTimeline(id: UUID) async {
         guard lifecycleFailure == nil else { return }
-        await kit.threads.open(id).cancel()
-        try? await threadStore.deleteThread(id: id)
+        await kit.timelines.open(id).cancel()
+        try? await threadStore.deleteTimeline(id: id)
         workspaceIDsByTimeline.removeValue(forKey: id)
     }
 
     public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         try requireUsable()
-        try await kit.threads.rename(id, title: title)
+        try await kit.timelines.rename(id, to: title)
         guard let thread = try await operatedTimelines().first(where: { $0.id == id }) else {
             throw NodeRuntimeError.missingTimeline(id)
         }
@@ -360,7 +360,7 @@ import struct PositronicKit.Thread
 
     public func cancel() async {
         for timeline in (try? await operatedTimelines()) ?? [] {
-            await kit.threads.open(timeline.id).cancel()
+            await kit.timelines.open(timeline.id).cancel()
         }
     }
 
@@ -391,14 +391,14 @@ import struct PositronicKit.Thread
             }) {
                 let workspaceIDs = workspaceIDsByTimeline[request.timelineID, default: []]
                 let workspaceTools = await availableWorkspaceTools(for: workspaceIDs)
-                let turnRequest = TurnRequest(
-                    threadID: request.timelineID,
+                let options = TurnOptions(
                     requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
-                    message: request.message,
                     tools: workspaceTools + networkTools + contributionTools,
                     maxModelRounds: 5
                 )
-                return try await kit.threads.open(request.timelineID).run(turnRequest)
+                let handle = try await kit.timelines.open(request.timelineID)
+                    .startTurn(request.message, options: options)
+                return handle.events()
             }
         }
         var finalText = ""
@@ -406,7 +406,7 @@ import struct PositronicKit.Thread
         var ids: [Int: String] = [:]
         var titles: [Int: String] = [:]
         var announced: Set<Int> = []
-        eventLoop: for try await event in stream {
+        eventLoop: for await event in stream {
             switch event {
             case .delta(.generation(let text)):
                 try await append(updates, kind: .assistantText, text: text)
@@ -455,7 +455,7 @@ import struct PositronicKit.Thread
         }
     }
 
-    private func projection(_ thread: Thread) async -> AscendantBackendTimeline {
+    private func projection(_ thread: TimelineRecord) async -> AscendantBackendTimeline {
         let attachedWorkspaceIDs = workspaceIDsByTimeline[thread.id, default: []]
         return .init(
             id: thread.id,
@@ -523,7 +523,7 @@ import struct PositronicKit.Thread
         let workspace = PositronicBackendWorkspace(reference: native, service: service)
         return native.tools.compactMap { tool -> AnyTool? in
             guard case let .custom(definition) = tool else { return nil }
-            return WorkspaceToolWrapper(workspace: workspace, definition: definition).toAnyTool()
+            return AnyTool(WorkspaceToolWrapper(workspace: workspace, definition: definition))
         }
     }
 
@@ -552,6 +552,13 @@ private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileP
     let service: any AscendantBackendWorkspaceService?
 
     var id: UUID { reference.id }
+    var isHealthy: Bool {
+        get async {
+            guard let service else { return false }
+            guard let value = await service.reference(id: reference.id) else { return false }
+            return value.status == .available
+        }
+    }
 
     func listTools() async throws -> [ToolReference] { reference.tools }
 
@@ -588,12 +595,6 @@ private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileP
         guard let service else { throw WorkspaceError.toolExecutionNotSupported }
         guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
         try await files.deleteFile(workspaceID: reference.id, path: path)
-    }
-
-    func healthCheck() async -> Bool {
-        guard let service else { return false }
-        guard let value = await service.reference(id: reference.id) else { return false }
-        return value.status == .available
     }
 
     private static func manifestValue(_ value: Any) -> ManifestJSONValue {

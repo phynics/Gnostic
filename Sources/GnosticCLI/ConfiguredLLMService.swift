@@ -47,13 +47,13 @@ public enum ConfiguredLLMService {
     private static func makeClients(for configuration: LLMConfiguration) -> LLMClientSet {
         switch configuration.activeProvider {
         case .openAI, .openAICompatible:
-            return makeClients(for: configuration, using: PKOpenAIProvider.self)
+            return makeClients(for: configuration, using: PKOpenAI.self)
         case .openRouter:
-            return makeClients(for: configuration, using: PKOpenRouterProvider.self)
+            return makeClients(for: configuration, using: PKOpenRouter.self)
         case .ollama:
-            return makeClients(for: configuration, using: PKOllamaProvider.self)
+            return makeClients(for: configuration, using: PKOllama.self)
         case .anthropic:
-            return makeClients(for: configuration, using: PKAnthropicProvider.self)
+            return makeClients(for: configuration, using: PKAnthropic.self)
         }
     }
 

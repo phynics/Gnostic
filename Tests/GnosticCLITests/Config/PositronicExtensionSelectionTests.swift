@@ -332,7 +332,7 @@ struct PositronicExtensionSelectionTests {
             )
             return FixtureContribution(
                 label: "fixture",
-                tools: [FixtureTool(callName: toolCallName).toAnyTool()]
+                tools: [AnyTool(FixtureTool(callName: toolCallName))]
             )
         }
     }
@@ -375,12 +375,12 @@ private struct FixtureContribution: PositronicContribution {
     func tools() -> [AnyTool] { toolList }
 }
 
-private struct FixtureTool: Tool, Sendable {
+private struct FixtureTool: PKTool, Sendable {
     let callName: String
 
     var identity: ToolReference { .known(id: callName) }
     var name: String { callName }
-    var description: String { "Fixture tool \(callName)." }
+    var toolDescription: String { "Fixture tool \(callName)." }
     var requiresPermission: Bool { false }
     var sideEffects: ToolSideEffects { .none }
     var parametersSchema: Schema { ToolParameterSchema.object {}.schemaDefinition }

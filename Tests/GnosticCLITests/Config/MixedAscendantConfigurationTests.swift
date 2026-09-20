@@ -328,7 +328,7 @@ struct MixedAscendantConfigurationTests {
             languageModel: model,
             contributions: [MixedFixtureContribution(
                 label: "fixture",
-                tools: [MixedFixtureTool(callName: "mixed_fixture_tool", requiresPermission: true).toAnyTool()]
+                tools: [AnyTool(MixedFixtureTool(callName: "mixed_fixture_tool", requiresPermission: true))]
             )]
         )
 
@@ -447,7 +447,7 @@ struct MixedAscendantConfigurationTests {
         PositronicExtension(name: "fixture") { _ in
             MixedFixtureContribution(
                 label: "fixture",
-                tools: [MixedFixtureTool(callName: "mixed_fixture_tool").toAnyTool()],
+                tools: [AnyTool(MixedFixtureTool(callName: "mixed_fixture_tool"))],
                 source: MixedContextSource(text: "mixed-context-marker", probe: probe)
             )
         }
@@ -544,7 +544,7 @@ private struct MixedContextSource: TurnContextSource {
     }
 }
 
-private struct MixedFixtureTool: Tool, Sendable {
+private struct MixedFixtureTool: PKTool, Sendable {
     let callName: String
     let requiresPermission: Bool
 
@@ -555,7 +555,7 @@ private struct MixedFixtureTool: Tool, Sendable {
 
     var identity: ToolReference { .known(id: callName) }
     var name: String { callName }
-    var description: String { "Mixed-configuration fixture tool \(callName)." }
+    var toolDescription: String { "Mixed-configuration fixture tool \(callName)." }
     var sideEffects: ToolSideEffects { .none }
     var parametersSchema: Schema { ToolParameterSchema.object {}.schemaDefinition }
     func canExecute() async -> Bool { true }
@@ -751,7 +751,9 @@ private final class MixedScriptedModel: LLMStreamClient, @unchecked Sendable {
         toolChoice _: LLMToolChoice?,
         responseFormat _: LLMResponseFormat?,
         generationParameters _: GenerationParameters?,
-        modelTier _: ModelTier
+        modelTier _: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await capture.record(messages: messages, tools: tools ?? [])
         if let toolCallName, messages.last?.role != .tool {

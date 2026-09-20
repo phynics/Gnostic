@@ -445,7 +445,7 @@ struct AscendantBriefTests {
 
     private func turnContextRequest() -> TurnContextRequest {
         TurnContextRequest(
-            threadID: timelineID,
+            timelineID: timelineID,
             turnID: UUID(),
             requestID: UUID(),
             agentID: ascendantID,

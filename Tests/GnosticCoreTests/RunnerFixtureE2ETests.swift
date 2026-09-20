@@ -5,7 +5,7 @@ import Foundation
 @testable import GnosticCore
 import PKContracts
 import PositronicKit
-import struct PositronicKit.Thread
+import struct PositronicKit.TimelineRecord
 import Testing
 
 @Suite("Gnostic runner fixture")
@@ -52,20 +52,20 @@ struct RunnerFixtureE2ETests {
         ))
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()
-        let runtimeRepository = InMemoryThreadRuntimeRepository()
+        let runtimeRepository = InMemoryTimelineRuntimeRepository()
         let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
             let encoded = try JSONEncoder().encode(invocation)
             let response = try await consumer.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
-        let kit = PositronicKit(configuration: .init(
-            provider: .init(languageModel: UnconfiguredLLMService()),
+        let kit = PKRuntime(configuration: .init(
+            languageModel: UnconfiguredLLMService(),
             persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store, workspaceBindingRepository: runtimeRepository),
             runtime: .init(workspaceCreator: factory)
         ))
-        let timeline = try await kit.threads.create()
+        let timeline = try await kit.timelines.create()
         let readvertised = TimelineRecorder()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces, readvertiseTimeline: { readvertised.record($0) })
+        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces, readvertiseTimeline: { readvertised.record($0) })
         _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
 
         guard let reference = try await kit.workspaces.get(workspaceID) else {
@@ -85,7 +85,7 @@ struct RunnerFixtureE2ETests {
         #expect((try await workspace.executeTool(id: "list_files", parameters: [:])).output == "README.md")
         #expect((try await workspace.executeTool(id: "read_file", parameters: [:])).output == "fixture contents")
         #expect((try await workspace.executeTool(id: "workspace_echo", parameters: ["value": AnyCodable("network")])).output == "network")
-        #expect(try await runtimeRepository.bindings(for: timeline.id).map(\.workspaceID) == [workspaceID])
+        #expect(try await runtimeRepository.bindings(for: timeline.id).map { $0.workspaceID } == [workspaceID])
     }
 
 }
@@ -118,8 +118,8 @@ private func start(_ manager: CommunicationManager) async throws {
 }
 
 private final class TimelineRecorder: @unchecked Sendable {
-    private(set) var timelines: [Thread] = []
-    func record(_ timeline: Thread) { timelines.append(timeline) }
+    private(set) var timelines: [TimelineRecord] = []
+    func record(_ timeline: TimelineRecord) { timelines.append(timeline) }
 }
 
 private func fixtureReference(id: UUID) -> WorkspaceReference {

@@ -138,7 +138,7 @@ final class GnosticWorkspaceBackendService: AscendantBackendWorkspaceService, As
             toolResult = try await proxy.executeTool(id: invocation.toolID, parameters: parameters)
         }
         return BackendWorkspaceResult(
-            message: toolResult.success ? toolResult.output : (toolResult.error ?? "Workspace tool failed.")
+            message: toolResult.isSuccess ? toolResult.output : (toolResult.error ?? "Workspace tool failed.")
         )
     }
 
