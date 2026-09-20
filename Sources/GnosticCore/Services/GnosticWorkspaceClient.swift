@@ -4,12 +4,15 @@ import Axoloty
 import Foundation
 
 /// The Gnostic-owned result of a remote Workspace tool invocation.
+///
+/// The wire shape mirrors the PositronicKit `ToolResult` payload carried by
+/// `me.atkn.gnostic.workspace.invoke`, including its `isSuccess` key.
 public struct GnosticWorkspaceToolResult: Codable, Sendable, Equatable {
     /// The protocol major carried by the result.
     public let protocolMajor: Int
 
     /// Whether the tool executed successfully.
-    public let success: Bool
+    public let isSuccess: Bool
 
     /// The successful tool output, or an empty string on failure.
     public let output: String
@@ -20,23 +23,23 @@ public struct GnosticWorkspaceToolResult: Codable, Sendable, Equatable {
     /// Creates an invocation result.
     ///
     /// - Parameters:
-    ///   - success: Whether the tool executed successfully.
+    ///   - isSuccess: Whether the tool executed successfully.
     ///   - output: The successful tool output.
     ///   - error: The failure message, or `nil` on success.
     ///   - protocolMajor: The protocol major carried by the result.
     public init(
-        success: Bool,
+        isSuccess: Bool,
         output: String,
         error: String? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
-        self.success = success
+        self.isSuccess = isSuccess
         self.output = output
         self.error = error
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, success, output, error }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, isSuccess, output, error }
 
     /// Decodes an invocation result.
     ///
@@ -44,7 +47,7 @@ public struct GnosticWorkspaceToolResult: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        success = try container.decode(Bool.self, forKey: .success)
+        isSuccess = try container.decode(Bool.self, forKey: .isSuccess)
         output = try container.decodeIfPresent(String.self, forKey: .output) ?? ""
         error = try container.decodeIfPresent(String.self, forKey: .error)
     }
@@ -126,7 +129,9 @@ public final class GnosticWorkspaceClient {
     ///     resolve it from the session catalog.
     /// - Throws: ``GnosticWorkspaceClientError`` when approval is missing, the
     ///   Workspace or Timeline cannot be resolved, the addressed provider does
-    ///   not own the Timeline, or the serve rejected the attach.
+    ///   not own the Timeline, the Timeline's Ascendant does not advertise
+    ///   ``GnosticCapability/workspaceAttachment``, or the serve rejected the
+    ///   attach.
     public func attach(
         workspaceID: UUID,
         to timelineID: UUID,
@@ -136,6 +141,7 @@ public final class GnosticWorkspaceClient {
         guard approved else { throw GnosticWorkspaceClientError.approvalRequired }
         _ = try await resolvedWorkspaceProvider(nil, for: workspaceID)
         let target = try await resolvedTimelineProvider(providerID, for: timelineID)
+        try await requireAttachmentCapability(forTimeline: timelineID, providerID: target)
         let payload = try GnosticWirePayload.encode(
             WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
             context: "workspace.attach request"
@@ -200,8 +206,9 @@ public final class GnosticWorkspaceClient {
     ///     from the session catalog.
     /// - Returns: The Gnostic-owned invocation result.
     /// - Throws: ``GnosticWorkspaceClientError`` when the Workspace cannot be
-    ///   resolved, the addressed provider does not own it, or the invocation
-    ///   failed.
+    ///   resolved, the addressed provider does not own it, the provider does not
+    ///   advertise ``GnosticCapability/workspaceToolInvocation``, or the
+    ///   invocation failed.
     public func invoke(
         workspaceID: UUID,
         toolID: String,
@@ -209,6 +216,7 @@ public final class GnosticWorkspaceClient {
         providerID: String? = nil
     ) async throws -> GnosticWorkspaceToolResult {
         let target = try await resolvedWorkspaceProvider(providerID, for: workspaceID)
+        try await requireInvocationCapability(providerID: target)
         let payload = try GnosticWirePayload.encode(
             WorkspaceInvocationPayload(
                 workspaceID: workspaceID,
@@ -277,6 +285,52 @@ public final class GnosticWorkspaceClient {
             throw GnosticWorkspaceClientError.providerMismatch
         }
         return providerID
+    }
+
+    private func requireAttachmentCapability(
+        forTimeline timelineID: UUID,
+        providerID: String
+    ) async throws {
+        let entries = await catalog.networkObjects()
+        let timelines = entries.filter {
+            $0.objectType == GnosticObjectType.timeline
+                && $0.objectID == timelineID
+                && $0.providerID.caseInsensitiveCompare(providerID) == .orderedSame
+        }
+        let ascendantIDs = Set(timelines.compactMap { entry -> UUID? in
+            guard case let .string(raw) = entry.knownProperties["attachedAscendantID"] else { return nil }
+            return UUID(uuidString: raw)
+        })
+        guard ascendantIDs.count == 1, let ascendantID = ascendantIDs.first else {
+            throw GnosticWorkspaceClientError.timelineUnavailable(timelineID)
+        }
+        guard entries.contains(where: { entry in
+            entry.objectType == GnosticObjectType.ascendant
+                && entry.objectID == ascendantID
+                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
+                && Self.capabilities(of: entry).contains(GnosticCapability.workspaceAttachment)
+        }) else {
+            throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceAttachment)
+        }
+    }
+
+    private func requireInvocationCapability(providerID: String) async throws {
+        let entries = await catalog.networkObjects()
+        guard entries.contains(where: { entry in
+            entry.objectType == GnosticObjectType.ascendant
+                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
+                && Self.capabilities(of: entry).contains(GnosticCapability.workspaceToolInvocation)
+        }) else {
+            throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceToolInvocation)
+        }
+    }
+
+    private static func capabilities(of entry: NetworkCatalogEntry) -> [String] {
+        guard case let .array(values) = entry.knownProperties["capabilities"] else { return [] }
+        return values.compactMap { value in
+            guard case let .string(capability) = value else { return nil }
+            return capability
+        }
     }
 
     private func call(

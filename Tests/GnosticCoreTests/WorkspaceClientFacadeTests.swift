@@ -28,10 +28,7 @@ struct WorkspaceClientFacadeTests {
             host: host,
             port: port
         )
-        defer {
-            fixture.registrations.forEach { $0.cancel() }
-            fixture.manager.stop()
-        }
+        defer { fixture.teardown() }
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
             try await session.discover()
@@ -57,7 +54,7 @@ struct WorkspaceClientFacadeTests {
                 toolID: "workspace_echo",
                 arguments: ["value": .string("hello")]
             )
-            #expect(result.success)
+            #expect(result.isSuccess)
             #expect(result.output == "hello")
 
             try await client.detach(workspaceID: fixture.workspaceID, from: fixture.timelineID)
@@ -65,6 +62,27 @@ struct WorkspaceClientFacadeTests {
             #expect(detached.count == 1)
             #expect(detached.first?.workspaceID == fixture.workspaceID)
             #expect(detached.first?.timelineID == fixture.timelineID)
+        }
+    }
+
+    @Test("invoke surfaces a failed tool result without a transport error")
+    func invokeSurfacesFailedToolResult() async throws {
+        let namespace = namespaced("tool-failure")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(invoke: .toolFailure)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            let result = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            #expect(!result.isSuccess)
+            #expect(result.error == "boom")
         }
     }
 
@@ -76,10 +94,7 @@ struct WorkspaceClientFacadeTests {
             host: host,
             port: port
         )
-        defer {
-            fixture.registrations.forEach { $0.cancel() }
-            fixture.manager.stop()
-        }
+        defer { fixture.teardown() }
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
             try await session.discover()
@@ -97,6 +112,276 @@ struct WorkspaceClientFacadeTests {
                 #expect(error.reasonCode == "approvalRequired")
             }
             #expect(await fixture.recorder.attachRequests.isEmpty)
+        }
+    }
+
+    @Test("a rejected attach maps to a structured call failure")
+    func rejectedAttachMapsToCallFailure() async throws {
+        let namespace = namespaced("attach-rejected")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(attach: .reject)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .callFailed(reasonCode: "workspaceAttachRejected", statusCode: 409, retryable: false)) {
+                try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
+            }
+        }
+    }
+
+    @Test("a rejected detach maps to a structured call failure")
+    func rejectedDetachMapsToCallFailure() async throws {
+        let namespace = namespaced("detach-rejected")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(detach: .reject)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .callFailed(reasonCode: "workspaceDetachRejected", statusCode: 409, retryable: false)) {
+                try await client.detach(workspaceID: fixture.workspaceID, from: fixture.timelineID)
+            }
+        }
+    }
+
+    @Test("a serve protocol failure maps to a structured call failure")
+    func serveProtocolFailureMapsToCallFailure() async throws {
+        let namespace = namespaced("attach-protocol-failure")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(attach: .protocolFailure)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .callFailed(reasonCode: "workspaceAttachConflict", statusCode: 409, retryable: false)) {
+                try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
+            }
+        }
+    }
+
+    @Test("a failed invocation maps to a structured call failure")
+    func failedInvocationMapsToCallFailure() async throws {
+        let namespace = namespaced("invoke-protocol-failure")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(invoke: .protocolFailure)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .callFailed(reasonCode: "workspaceInvocationFailed", statusCode: 500, retryable: false)) {
+                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            }
+        }
+    }
+
+    @Test("a malformed invocation result maps to an invalid-response failure")
+    func malformedInvocationResultIsRejected() async throws {
+        let namespace = namespaced("invoke-malformed")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(invoke: .malformedResult)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .callFailed(reasonCode: "invalidResponse", statusCode: 502, retryable: false)) {
+                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            }
+        }
+    }
+
+    @Test("a missing responder maps to a retryable timeout failure")
+    func missingResponderMapsToTimeout() async throws {
+        let namespace = namespaced("invoke-timeout")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(invoke: .timeout)
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .milliseconds(300))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true)) {
+                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            }
+        }
+    }
+
+    @Test("an explicit provider that does not own the timeline is rejected")
+    func explicitProviderMismatchIsRejected() async throws {
+        let namespace = namespaced("provider-mismatch")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError.providerMismatch) {
+                try await client.attach(
+                    workspaceID: fixture.workspaceID,
+                    to: fixture.timelineID,
+                    approved: true,
+                    providerID: UUID().uuidString
+                )
+            }
+        }
+    }
+
+    @Test("a response from a different provider is rejected")
+    func forgedResponseProviderIsRejected() async throws {
+        let namespace = namespaced("forged-provider")
+        let fixture = try await WorkspaceClientFacadeBridge.makeForgedAttachFixture(
+            namespace: namespace,
+            host: host,
+            port: port
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError.providerMismatch) {
+                try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
+            }
+        }
+    }
+
+    @Test("a workspace advertised by two providers is ambiguous")
+    func ambiguousWorkspaceIsRejected() async throws {
+        let namespace = namespaced("ambiguous-workspace")
+        let fixture = try await WorkspaceClientFacadeBridge.makeAmbiguousWorkspaceFixture(
+            namespace: namespace,
+            host: host,
+            port: port
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            #expect(await client.attachmentStatus(workspaceID: fixture.workspaceID) == .ambiguous)
+            #expect(await client.effectiveStatus(workspaceID: fixture.workspaceID) == .unsupported)
+
+            await #expect(throws: GnosticWorkspaceClientError.workspaceAmbiguous(fixture.workspaceID)) {
+                try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
+            }
+            await #expect(throws: GnosticWorkspaceClientError.workspaceAmbiguous(fixture.workspaceID)) {
+                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            }
+        }
+    }
+
+    @Test("a timeline advertised by two providers is ambiguous")
+    func ambiguousTimelineIsRejected() async throws {
+        let namespace = namespaced("ambiguous-timeline")
+        let fixture = try await WorkspaceClientFacadeBridge.makeAmbiguousTimelineFixture(
+            namespace: namespace,
+            host: host,
+            port: port
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError.timelineAmbiguous(fixture.timelineID)) {
+                try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
+            }
+            await #expect(throws: GnosticWorkspaceClientError.timelineAmbiguous(fixture.timelineID)) {
+                try await client.detach(workspaceID: fixture.workspaceID, from: fixture.timelineID)
+            }
+        }
+    }
+
+    @Test("attach requires the workspace-attachment capability")
+    func attachRequiresAttachmentCapability() async throws {
+        let namespace = namespaced("attach-capability")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(capabilities: [GnosticCapability.workspaceToolInvocation])
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .missingCapability(GnosticCapability.workspaceAttachment)) {
+                try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
+            }
+        }
+    }
+
+    @Test("invoke requires the workspace-tool-invocation capability")
+    func invokeRequiresInvocationCapability() async throws {
+        let namespace = namespaced("invoke-capability")
+        let fixture = try await WorkspaceClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            options: .init(capabilities: [GnosticCapability.workspaceAttachment])
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.workspaceClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticWorkspaceClientError
+                .missingCapability(GnosticCapability.workspaceToolInvocation)) {
+                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            }
         }
     }
 
@@ -151,6 +436,7 @@ struct WorkspaceClientFacadeTests {
         #expect(GnosticWorkspaceClientError.timelineUnavailable(id).reasonCode == "timelineUnavailable")
         #expect(GnosticWorkspaceClientError.timelineAmbiguous(id).reasonCode == "timelineAmbiguous")
         #expect(GnosticWorkspaceClientError.providerMismatch.reasonCode == "providerMismatch")
+        #expect(GnosticWorkspaceClientError.missingCapability("capability").reasonCode == "missingCapability")
         #expect(GnosticWorkspaceClientError
             .callFailed(reasonCode: "workspaceAttachRejected", statusCode: 409, retryable: false)
             .reasonCode == "workspaceAttachRejected")

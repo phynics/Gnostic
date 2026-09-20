@@ -26,6 +26,9 @@ public enum GnosticWorkspaceClientError: Error, Sendable, Equatable, LocalizedEr
     /// from a different provider than the addressed one.
     case providerMismatch
 
+    /// The resolved provider does not advertise the required capability.
+    case missingCapability(String)
+
     /// The serve rejected the operation with a structured protocol failure.
     ///
     /// `reasonCode` is the serve's stable code, `statusCode` its HTTP-like
@@ -42,6 +45,7 @@ public enum GnosticWorkspaceClientError: Error, Sendable, Equatable, LocalizedEr
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
         case .providerMismatch: "providerMismatch"
+        case .missingCapability: "missingCapability"
         case let .callFailed(reasonCode, _, _): reasonCode
         }
     }
@@ -63,6 +67,8 @@ public enum GnosticWorkspaceClientError: Error, Sendable, Equatable, LocalizedEr
             "Timeline \(id.uuidString.lowercased()) is advertised by more than one provider."
         case .providerMismatch:
             "The provider does not own the requested target, or the response came from another provider."
+        case let .missingCapability(capability):
+            "The selected provider does not advertise capability \(capability)."
         case let .callFailed(reasonCode, statusCode, _):
             "The serve rejected the operation: \(reasonCode) (status \(statusCode))."
         }
