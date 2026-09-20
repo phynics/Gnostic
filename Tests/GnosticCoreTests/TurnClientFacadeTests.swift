@@ -1,19 +1,21 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-@testable import GnosticCore
+import GnosticCore
 import Testing
 
-// Consumer-facing tests for the public turn client. This target does not depend
-// on the CLI executable, so compiling and passing here proves that an external
-// consumer can run a Turn, stream its updates, replay it, and answer a real
-// mediated permission request over a consumer session without the CLI module.
+// Consumer-facing tests for the public turn client. This file must compile
+// against the public GnosticCore API alone: it deliberately avoids testable
+// imports, so passing here proves that an external consumer can run a Turn,
+// stream its updates, replay it, and answer a real mediated permission request
+// over a consumer session without the CLI module or internal access.
 //
 // The "provider" below is a raw Axoloty host that advertises a Timeline and its
 // Ascendant and registers scripted call handlers. It is not a Gnostic Node; the
 // serve-side permission path is the production
 // ``AscendantPermissionCoordinator`` plus ``AscendantPermissionProvider``. The
-// consumer never advertises.
+// consumer never advertises. Test-only internal scaffolding lives in
+// `TurnClientFacadeServeBridge.swift`.
 
 @Suite("Public turn client", .timeLimit(.minutes(1)))
 @MainActor
@@ -39,14 +41,10 @@ struct TurnClientFacadeTests {
         )
         defer { responseObserver.cancel() }
 
-        let updateBridge = Task {
-            let events = await store.events()
-            for await event in events {
-                if let channel = try? AscendantTurnProvider.updateEvent(event) {
-                    provider.manager.publishChannel(channel)
-                }
-            }
-        }
+        let updateBridge = TurnClientFacadeServeBridge.forwardUpdates(
+            from: store,
+            to: provider.manager
+        )
         defer { updateBridge.cancel() }
 
         let scripted = [
@@ -138,31 +136,40 @@ struct TurnClientFacadeTests {
                 )
             }
 
-            var observedPermission: AscendantPermissionState?
-            var receivedKinds: [String] = []
-            for await update in updates {
-                receivedKinds.append(update.kind)
-                if let permission = update.permissionState, permission.permissionStatus == .pending {
-                    observedPermission = permission
-                    try client.respond(
-                        to: AscendantPermissionResponse(
-                            correlationID: permission.correlationID,
-                            timelineID: timelineID,
-                            clientTurnID: clientTurnID,
-                            approved: true
-                        ),
-                        providerID: providerID
-                    )
+            let collector = Task { @MainActor in
+                var kinds: [String] = []
+                var observed: AscendantPermissionState?
+                for await update in updates {
+                    kinds.append(update.kind)
+                    if let permission = update.permissionState, permission.permissionStatus == .pending {
+                        observed = permission
+                        try client.respond(
+                            to: AscendantPermissionResponse(
+                                correlationID: permission.correlationID,
+                                timelineID: timelineID,
+                                clientTurnID: clientTurnID,
+                                approved: true
+                            ),
+                            providerID: providerID
+                        )
+                    }
                 }
+                return CollectedRoundTrip(kinds: kinds, permission: observed)
             }
+            let outcome = await firstResult(collector, timeout: .seconds(10))
+            collector.cancel()
+            let roundTrip = try #require(
+                outcome,
+                "the mediated permission round trip did not complete within the deadline"
+            )
 
             let result = try await runTask.value
             #expect(result.text == "Hello")
-            #expect(receivedKinds.first == AscendantTurnUpdateKind.assistantText.rawValue)
-            #expect(receivedKinds.contains(AscendantTurnUpdateKind.permissionState.rawValue))
-            #expect(receivedKinds.last == AscendantTurnUpdateKind.completion.rawValue)
-            #expect(observedPermission?.title == "Run the tool")
-            #expect(observedPermission?.permissionStatus == .pending)
+            #expect(roundTrip.kinds.first == AscendantTurnUpdateKind.assistantText.rawValue)
+            #expect(roundTrip.kinds.contains(AscendantTurnUpdateKind.permissionState.rawValue))
+            #expect(roundTrip.kinds.last == AscendantTurnUpdateKind.completion.rawValue)
+            #expect(roundTrip.permission?.title == "Run the tool")
+            #expect(roundTrip.permission?.permissionStatus == .pending)
 
             let replay = try await client.replay(
                 timelineID: timelineID,
@@ -245,6 +252,29 @@ struct TurnClientFacadeTests {
             } catch let error as GnosticTurnClientError {
                 #expect(error == .callFailed(reasonCode: "turnConflict", statusCode: 409, retryable: false))
                 #expect(error.reasonCode == "turnConflict")
+            }
+        }
+    }
+
+    @Test("maps a transport timeout to a structured error")
+    func mapsTransportTimeoutToStructuredError() async throws {
+        let namespace = namespaced("timeout")
+        let provider = try await startProvider(namespace: namespace)
+        defer { provider.manager.stop() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.turnClient(timeout: .seconds(1), promptTimeout: .milliseconds(300))
+            do {
+                _ = try await client.run(
+                    message: "hi",
+                    timelineID: provider.timelineID,
+                    clientTurnID: "timeout-1",
+                    providerID: provider.providerID
+                )
+                Issue.record("a Turn with no responder did not time out")
+            } catch let error as GnosticTurnClientError {
+                #expect(error == .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true))
             }
         }
     }
@@ -382,6 +412,31 @@ struct TurnClientFacadeTests {
         let timelineID: UUID
     }
 
+    private struct CollectedRoundTrip: Sendable {
+        let kinds: [String]
+        let permission: AscendantPermissionState?
+    }
+
+    /// Returns the task's value, or `nil` once `timeout` elapses, so a missing
+    /// round trip fails with a named assertion instead of the suite time limit.
+    private func firstResult<T: Sendable>(
+        _ task: Task<T, Error>,
+        timeout: Duration
+    ) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask {
+                return try? await task.value
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+
     private func namespaced(_ label: String) -> String {
         "gnostic-turn-client-\(label)-\(UUID().uuidString.prefix(8))"
     }
@@ -412,7 +467,6 @@ struct TurnClientFacadeTests {
         capabilities: [String] = [GnosticCapability.textTurnInput]
     ) async throws -> AdvertisedProvider {
         let manager = try makeProvider(namespace: namespace, name: name)
-        try await manager.startAndWaitUntilReady()
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
             id: ascendantID,
@@ -435,7 +489,7 @@ struct TurnClientFacadeTests {
             createdAt: now,
             updatedAt: now
         )))
-        try await Task.sleep(for: .milliseconds(50))
+        try await manager.startAndWaitUntilReady()
         return AdvertisedProvider(
             manager: manager,
             providerID: manager.identity.objectId.string,

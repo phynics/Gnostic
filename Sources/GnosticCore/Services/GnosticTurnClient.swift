@@ -20,6 +20,11 @@ import Foundation
 /// catalog attributes to the Timeline. The catalog is consulted first; the
 /// client issues an active discover request only when the Timeline is absent.
 ///
+/// A refresh is keyed on the Timeline alone. When the Timeline is already
+/// present but its Ascendant projection has not been ingested yet, resolution
+/// reports ``GnosticTurnClientError/missingCapability(_:)`` without a second
+/// refresh; a caller can retry after the next catalog change.
+///
 /// ## Lifetime
 ///
 /// The client is valid only while its session is running. After
@@ -86,10 +91,13 @@ public final class GnosticTurnClient {
             providerID: target,
             timeout: promptTimeout
         )
-        return try JSONDecoder().decode(AscendantTurnResult.self, from: Data(response.result.utf8))
+        return try Self.decode(AscendantTurnResult.self, from: response.result)
     }
 
     /// Reads the retained updates for an identified Turn.
+    ///
+    /// This call applies the same target resolution and `textTurnInput`
+    /// capability gate as ``run(message:timelineID:clientTurnID:providerID:)``.
     ///
     /// - Parameters:
     ///   - timelineID: The Timeline the Turn ran on.
@@ -126,7 +134,7 @@ public final class GnosticTurnClient {
             providerID: target,
             timeout: timeout
         )
-        return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
+        return try Self.decode(AscendantTurnReplay.self, from: response.result)
     }
 
     /// Streams the live updates for one identified Turn.
@@ -135,6 +143,11 @@ public final class GnosticTurnClient {
     /// bounded and finishes after it yields the Turn's terminal update, so a
     /// `for await` loop exits at completion instead of waiting for transport
     /// teardown.
+    ///
+    /// The bounded buffer is latest-biased: under backpressure it drops the
+    /// oldest pending update. A caller that must observe every update reliably
+    /// should recover from ``replay(timelineID:clientTurnID:message:afterSequence:providerID:)``
+    /// instead of trusting the live stream to be lossless.
     ///
     /// - Parameters:
     ///   - clientTurnID: The identifier used to run the Turn.
@@ -263,11 +276,37 @@ public final class GnosticTurnClient {
                 statusCode: decoded?.statusCode ?? failure.code,
                 retryable: decoded?.retryable ?? false
             )
+        } catch let error as AxolotyError {
+            throw Self.transportFailure(error)
         }
         guard response.sourceId?.lowercased() == providerID.lowercased() else {
             throw GnosticTurnClientError.providerMismatch
         }
         return response
+    }
+
+    private static func transportFailure(_ error: AxolotyError) -> GnosticTurnClientError {
+        switch error {
+        case let .runtime(code, _):
+            switch code {
+            case .timedOut:
+                return .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true)
+            case .cancelled:
+                return .callFailed(reasonCode: "callCancelled", statusCode: 499, retryable: false)
+            default:
+                return .callFailed(reasonCode: "transportFailure", statusCode: 503, retryable: true)
+            }
+        default:
+            return .callFailed(reasonCode: "transportFailure", statusCode: 503, retryable: true)
+        }
+    }
+
+    private static func decode<T: Decodable>(_ type: T.Type, from result: String) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: Data(result.utf8))
+        } catch {
+            throw GnosticTurnClientError.callFailed(reasonCode: "invalidResponse", statusCode: 502, retryable: false)
+        }
     }
 
     private static func capabilities(of entry: NetworkCatalogEntry) -> [String] {
