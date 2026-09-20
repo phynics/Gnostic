@@ -29,7 +29,7 @@ terminal observation decision listed above.
 
 - [ADR 0007 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
 
-The delivered 0.3 compatibility declaration is [documented here](../Compatibility/0.3.0.md).
+The current compatibility declaration is [0.4.0](../Compatibility/0.4.0.md); it is additive over the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
 
 ## Extension guides
 

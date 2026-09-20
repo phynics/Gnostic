@@ -1,11 +1,14 @@
 # Gnostic
 
-Gnostic 0.3.0 hosts Ascendant backends and exposes them over Axoloty. The
+Gnostic 0.4.0 hosts Ascendant backends and exposes them over Axoloty. The
 bundled Ascendant backend is `positronic`. The bundled local Workspace backend
 is `echo`.
 
-The [0.3.0 compatibility declaration](Documentation/Compatibility/0.3.0.md)
-lists the protocol, manifest, migration, and intentional 0.2 breaks.
+The [0.4.0 compatibility declaration](Documentation/Compatibility/0.4.0.md)
+lists the public consumer clients and the dependency exception this release
+carries. The [0.3.0 declaration](Documentation/Compatibility/0.3.0.md) remains
+authoritative for the protocol, manifest, migration, and intentional 0.2
+breaks.
 
 ## Start a Node
 
@@ -111,6 +114,70 @@ A per-object deadvertisement removes only that provider's record and yields
 removes every record owned by the provider and yields
 `NetworkCatalogChange.providerEvicted`. Both are reflected by
 `networkObjects(includeIncompatible:)` and `object(id:providerID:)`.
+
+## Run Turns from a consumer
+
+`session.turnClient()` returns a `GnosticTurnClient` over the session's own
+connection. It runs a Turn, replays it by client turn ID, streams its updates,
+and answers permission requests.
+
+```swift
+let turns = try session.turnClient(promptTimeout: .seconds(120))
+let result = try await turns.run(
+    message: "Summarize the attached workspace.",
+    timelineID: timelineID,
+    clientTurnID: "summary-1"
+)
+
+// Re-read the same Turn without running it again.
+let replay = try await turns.replay(
+    timelineID: timelineID,
+    clientTurnID: "summary-1"
+)
+```
+
+Every call resolves the addressed Timeline from the catalog and requires its
+Ascendant to advertise `textTurnInput`; pass `providerID` to pin the serve
+explicitly. A stable `clientTurnID` names the Turn so the serve retains its
+updates: `replay` re-reads them, and `updates` streams them. Omitting it leaves
+the Turn unnamed and unreplayable. `replay` does not re-run the Turn, but a
+second `run` with the same `clientTurnID` does start another Turn. There is no
+`ascendant.turn.cancel` wire operation: cancelling the surrounding Swift `Task`
+stops only the local wait, not a Turn the serve already started.
+
+## Attach and invoke Workspaces from a consumer
+
+`session.workspaceClient()` returns a `GnosticWorkspaceClient` for the
+Workspace lifecycle a consumer drives.
+
+```swift
+let workspaces = try session.workspaceClient()
+try await workspaces.attach(
+    workspaceID: workspaceID,
+    to: timelineID,
+    approved: userApproved
+)
+
+let status = await workspaces.effectiveStatus(workspaceID: workspaceID)
+let result = try await workspaces.invoke(
+    workspaceID: workspaceID,
+    toolID: "echo",
+    arguments: ["message": .string("hello")]
+)
+
+try await workspaces.detach(workspaceID: workspaceID, from: timelineID)
+```
+
+`attach` refuses `approved: false` locally without a wire call, and requires the
+Timeline's Ascendant to advertise `workspaceAttachment`; `invoke` requires the
+Workspace provider to advertise `workspaceToolInvocation`. Attach and detach
+address the Timeline's serving provider, while invocation addresses the
+Workspace's advertising provider. `attachmentStatus(workspaceID:)` reports the
+Node's durable attachment intent; `effectiveStatus(workspaceID:)` reports
+whether that intent is usable now.
+
+Both clients are valid only while the session runs. After `session.stop()` later
+calls fail by transport timeout; create a new client from a new session.
 
 ## Use ACP
 
