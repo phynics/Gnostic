@@ -85,7 +85,7 @@ struct RunnerFixtureE2ETests {
         #expect((try await workspace.executeTool(id: "list_files", parameters: [:])).output == "README.md")
         #expect((try await workspace.executeTool(id: "read_file", parameters: [:])).output == "fixture contents")
         #expect((try await workspace.executeTool(id: "workspace_echo", parameters: ["value": AnyCodable("network")])).output == "network")
-        #expect(try await runtimeRepository.bindings(for: timeline.id).map { $0.workspaceID } == [workspaceID])
+        #expect(try await runtimeRepository.bindings(for: timeline.id).map(\.workspaceID) == [workspaceID])
     }
 
 }

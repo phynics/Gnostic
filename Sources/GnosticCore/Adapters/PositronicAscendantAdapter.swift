@@ -401,6 +401,25 @@ import struct PositronicKit.TimelineRecord
                 return handle.events()
             }
         }
+        return try await Self.consumeTurnEvents(
+            stream,
+            clientTurnID: request.clientTurnID,
+            timelineID: request.timelineID,
+            updates: updates
+        )
+    }
+
+    /// Consumes one admitted Turn's event stream and returns its final text.
+    ///
+    /// The stream is non-throwing, so every failure arrives as a terminal
+    /// `ErrorEvent`. A Turn whose terminal outcome was not durably recorded, or
+    /// whose generation failed, must fail rather than return an empty success.
+    nonisolated static func consumeTurnEvents(
+        _ stream: AsyncStream<TurnEvent>,
+        clientTurnID: String?,
+        timelineID: UUID,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
         var finalText = ""
         var failure: String?
         var ids: [Int: String] = [:]
@@ -411,7 +430,7 @@ import struct PositronicKit.TimelineRecord
             case .delta(.generation(let text)):
                 try await append(updates, kind: .assistantText, text: text)
             case .delta(.toolCall(let delta)):
-                let id = delta.id ?? ids[delta.index] ?? "\(request.clientTurnID ?? request.timelineID.uuidString):tool:\(delta.index)"
+                let id = delta.id ?? ids[delta.index] ?? "\(clientTurnID ?? timelineID.uuidString):tool:\(delta.index)"
                 ids[delta.index] = id
                 if let name = delta.name { titles[delta.index, default: ""] += name }
                 try await append(
@@ -434,8 +453,11 @@ import struct PositronicKit.TimelineRecord
                 break eventLoop
             case .error(.error(let message, _)):
                 failure = message
+            case .error(.durabilityFailure(let message, _)):
+                failure = message
             case .error(.toolCallError(let id, let name, let error)):
                 try await append(updates, kind: .toolState, toolState: .init(toolCallID: id, title: name, status: .failed, content: error))
+                failure = error
             case .error(.generationCancelled):
                 try await append(updates, kind: .cancellation, terminal: true)
                 throw AscendantBackendError.cancelled
@@ -469,7 +491,7 @@ import struct PositronicKit.TimelineRecord
         )
     }
 
-    private func append(
+    private nonisolated static func append(
         _ updates: any AscendantBackendUpdateSink,
         kind: AscendantTurnUpdateKind,
         text: String? = nil,
@@ -479,7 +501,7 @@ import struct PositronicKit.TimelineRecord
         try await updates.append(.init(kind: kind.rawValue, text: text, toolState: toolState, terminal: terminal))
     }
 
-    private func state(_ id: String, _ status: ToolExecutionStatus) -> AscendantToolState {
+    private nonisolated static func state(_ id: String, _ status: ToolExecutionStatus) -> AscendantToolState {
         switch status {
         case .attempting(let name, _):
             return .init(toolCallID: id, title: name, status: .inProgress)

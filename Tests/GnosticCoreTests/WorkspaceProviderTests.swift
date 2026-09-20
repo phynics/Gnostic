@@ -104,7 +104,7 @@ struct WorkspaceProviderTests {
         #expect(projectedSchema["required"] as? [String] == ["query"])
         let properties = try #require(projectedSchema["properties"] as? [String: Any])
         #expect((properties["query"] as? [String: Any])?["type"] as? String == "string")
-        #expect(try await runtimeRepository.bindings(for: timeline.id).map { $0.workspaceID } == [workspaceID])
+        #expect(try await runtimeRepository.bindings(for: timeline.id).map(\.workspaceID) == [workspaceID])
         #expect(recorder.ids == [timeline.id])
     }
 
