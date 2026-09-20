@@ -7,7 +7,7 @@ import PKContracts
 import PositronicKit
 import Testing
 
-@Suite("Opt-in Atlas integration end to end", .serialized, .timeLimit(.minutes(2)))
+@Suite("Opt-in Atlas integration end to end", .timeLimit(.minutes(2)))
 @MainActor
 struct AtlasOptInE2ETests {
     private let ascendantID = UUID(uuidString: "A1190000-0000-4000-8000-000000000101")!
@@ -78,7 +78,12 @@ struct AtlasOptInE2ETests {
         #expect(receipt.state.semanticRevision == 1)
         #expect(receipt.state.items.count == 1)
         #expect(receipt.state.watermark(for: workAID) == 1)
-        #expect(receipt.acceptedPatch.consumedWatermarks.contains(AtlasWatermark(shardID: workAID, sequence: 1)))
+        #expect(Set(receipt.acceptedPatch.consumedWatermarks) == Set([
+            AtlasWatermark(shardID: homeID, sequence: 0),
+            AtlasWatermark(shardID: workAID, sequence: 1),
+            AtlasWatermark(shardID: workBID, sequence: 0),
+            AtlasWatermark(shardID: workCID, sequence: 0),
+        ]))
         #expect(diagnostic.isSemantic)
         #expect(diagnostic.consumedReportCount == 1)
         #expect(diagnostic.operationCount == 1)
@@ -106,6 +111,46 @@ struct AtlasOptInE2ETests {
 
         let promptHome = try await projectPrompt(for: homeID, store: store)
         #expect(!promptHome.contains("work.response-style"))
+    }
+
+    @Test("applicability and disclosure are independent gates in a projected context")
+    func applicabilityAndDisclosureAreIndependentGates() async throws {
+        let store = InMemoryAtlasStore(ascendantID: ascendantID)
+        _ = try await store.register(AscendantShard(id: homeID, ascendantID: ascendantID, name: "Home", kind: .home))
+        _ = try await store.register(AscendantShard(id: workAID, ascendantID: ascendantID, name: "Work A", kind: .work))
+        _ = try await store.register(AscendantShard(id: workBID, ascendantID: ascendantID, name: "Work B", kind: .work))
+        _ = try await store.register(AscendantShard(id: workCID, ascendantID: ascendantID, name: "Work C", kind: .work))
+
+        try await seed(store, items: [
+            item(
+                key: "eligible",
+                source: workAID,
+                applicability: .shards([workAID, workBID]),
+                disclosure: .shards([workAID, workBID])
+            ),
+            item(
+                key: "applicable-not-disclosed",
+                source: workAID,
+                applicability: .shards([workAID, workBID]),
+                disclosure: .shards([workAID])
+            ),
+            item(
+                key: "not-applicable",
+                source: workAID,
+                applicability: .shards([workAID]),
+                disclosure: .shards([workAID])
+            ),
+        ])
+
+        let promptB = try await projectPrompt(for: workBID, store: store)
+        #expect(promptB.contains("eligible"))
+        #expect(!promptB.contains("applicable-not-disclosed"))
+        #expect(!promptB.contains("not-applicable"))
+
+        let promptC = try await projectPrompt(for: workCID, store: store)
+        #expect(!promptC.contains("eligible"))
+        #expect(!promptC.contains("applicable-not-disclosed"))
+        #expect(!promptC.contains("not-applicable"))
     }
 
     @Test("replay and conflict never record a second report")
@@ -151,7 +196,12 @@ struct AtlasOptInE2ETests {
         let receipt = try #require(outcome.receipt)
         #expect(receipt.state.stateVersion == 1)
         #expect(receipt.state.watermark(for: workAID) == 1)
-        #expect(receipt.acceptedPatch.consumedWatermarks.contains(AtlasWatermark(shardID: workAID, sequence: 1)))
+        #expect(Set(receipt.acceptedPatch.consumedWatermarks) == Set([
+            AtlasWatermark(shardID: homeID, sequence: 0),
+            AtlasWatermark(shardID: workAID, sequence: 1),
+            AtlasWatermark(shardID: workBID, sequence: 0),
+            AtlasWatermark(shardID: workCID, sequence: 0),
+        ]))
 
         let pending = await store.pendingReports()
         #expect(pending.count == 1)
@@ -190,41 +240,21 @@ struct AtlasOptInE2ETests {
         #expect(!receipt.acceptedPatch.patch.isSemantic)
     }
 
-    @Test("Atlas-origin activity is not recaptured as ordinary work")
+    @Test("Atlas-origin activity driven through the real seam is not recaptured")
     func atlasOriginIsNotRecaptured() async throws {
-        let store = InMemoryAtlasStore(ascendantID: ascendantID)
-        _ = try await store.register(AscendantShard(id: workAID, ascendantID: ascendantID, name: "Work A", kind: .work))
-        let correlator = AtlasTurnCorrelator()
-        let source = AtlasTurnContextSource(
-            store: store,
-            correlator: correlator,
-            shardID: workAID,
-            origin: .atlasIntegration
-        )
-        let recorder = AtlasShardReportRecorder(
-            store: store,
-            correlator: correlator,
-            shardID: workAID,
-            origin: .atlasIntegration
-        )
+        let integrationHarness = try await makeHarness(origin: .atlasIntegration)
+        _ = try await integrationHarness.runTurn(clientTurnID: "origin-turn", message: "integration work")
+        _ = try #require(await integrationHarness.inbox.next())
+        #expect((await integrationHarness.store.pendingReports()).isEmpty)
 
-        _ = try await withInvocation(clientTurnID: "origin-turn") {
-            try await source.contributions(for: makeContextRequest(message: "hello"))
-        }
-        try await recorder.observe(TerminalTurnRecord(
-            operationID: "origin-op",
-            ascendantID: ascendantID,
-            timelineID: timelineID,
-            clientTurnID: "origin-turn",
-            outcome: .succeeded
-        ))
-
-        #expect((await store.pendingReports()).isEmpty)
-        #expect(await correlator.pendingCount == 0)
+        let ordinaryHarness = try await makeHarness(origin: .ascendantTurn)
+        _ = try await ordinaryHarness.runTurn(clientTurnID: "ordinary-turn", message: "ordinary work")
+        _ = try #require(await ordinaryHarness.inbox.next())
+        #expect((await ordinaryHarness.store.pendingReports()).count == 1)
     }
 
-    @Test("a detached Shard and a rebound binding prevent stale brief reuse")
-    func detachAndRebindRejectStaleBriefs() async throws {
+    @Test("a detached Shard registration and a foreign binding are rejected")
+    func detachedRegistrationAndForeignBindingAreRejected() async throws {
         let store = InMemoryAtlasStore(ascendantID: ascendantID)
         _ = try await store.register(AscendantShard(id: homeID, ascendantID: ascendantID, name: "Home", kind: .home))
         _ = try await store.register(AscendantShard(id: workCID, ascendantID: ascendantID, name: "Work C", lifecycle: .detached))
@@ -342,7 +372,11 @@ struct AtlasOptInE2ETests {
             ),
             updates: NoopUpdateSink()
         )
-        #expect(await model.capturedToolNames().isEmpty)
+        let prompt = await model.capturedPromptText()
+        #expect(prompt.components(separatedBy: "<<<end-atlas-brief>>>").count == 2)
+        #expect(prompt.contains("\\<"))
+        #expect(!prompt.contains("<script>"))
+        #expect(!prompt.contains("grant-exec"))
     }
 
     @Test("an open-ended Turn records one report without a completion marker")
@@ -478,13 +512,13 @@ struct AtlasOptInE2ETests {
         }
     }
 
-    private func makeHarness() async throws -> Harness {
+    private func makeHarness(origin: AtlasOrigin = .ascendantTurn) async throws -> Harness {
         let store = InMemoryAtlasStore(ascendantID: ascendantID)
         _ = try await store.register(AscendantShard(id: homeID, ascendantID: ascendantID, name: "Home", kind: .home))
         _ = try await store.register(AscendantShard(id: workAID, ascendantID: ascendantID, name: "Work A", kind: .work))
         _ = try await store.register(AscendantShard(id: workBID, ascendantID: ascendantID, name: "Work B", kind: .work))
         _ = try await store.register(AscendantShard(id: workCID, ascendantID: ascendantID, name: "Work C", kind: .work))
-        let integration = AtlasTurnIntegration(store: store, shardID: workAID)
+        let integration = AtlasTurnIntegration(store: store, shardID: workAID, origin: origin)
         let inbox = TerminalInbox()
         let coordinator = AscendantTurnCoordinator(observers: [integration.observer, inbox])
         let model = RecordingLanguageModel()
@@ -514,6 +548,37 @@ struct AtlasOptInE2ETests {
         return await model.capturedPromptText()
     }
 
+    private func seed(_ store: InMemoryAtlasStore, items: [AtlasItem]) async throws {
+        guard !items.isEmpty else { return }
+        let capture = await store.capture()
+        _ = try await store.compareAndSwap(
+            capture: capture,
+            patch: AtlasPatch(
+                id: AtlasPatchID("seed-\(UUID().uuidString.lowercased())"),
+                capture: capture,
+                operations: items.map { AtlasPatchOperation.upsertItem($0) },
+                provenance: AtlasProvenance(ascendantID: ascendantID, shardID: homeID, origin: .host)
+            )
+        )
+    }
+
+    private func item(
+        key: String,
+        source: AscendantShardID,
+        applicability: AtlasApplicability,
+        disclosure: AtlasDisclosure
+    ) -> AtlasItem {
+        AtlasItem(
+            ascendantID: ascendantID,
+            sourceShardID: source,
+            key: key,
+            value: .text("value-\(key)"),
+            applicability: applicability,
+            disclosure: disclosure,
+            provenance: AtlasProvenance(ascendantID: ascendantID, shardID: source, origin: .host)
+        )
+    }
+
     private func makeAdapter(
         model: RecordingLanguageModel,
         contributions: [any PositronicContribution]
@@ -526,28 +591,6 @@ struct AtlasOptInE2ETests {
             languageModel: model,
             contributions: contributions
         )
-    }
-
-    private func makeContextRequest(message: String) -> TurnContextRequest {
-        TurnContextRequest(
-            threadID: timelineID,
-            turnID: UUID(),
-            requestID: UUID(),
-            agentID: ascendantID,
-            executionKind: .agentManaged,
-            message: message
-        )
-    }
-
-    private func withInvocation<T>(
-        clientTurnID: String,
-        body: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await PositronicTurnInvocationContext.$current.withValue(
-            PositronicTurnInvocation(ascendantID: ascendantID, timelineID: timelineID, turnID: clientTurnID)
-        ) {
-            try await body()
-        }
     }
 
     private func brief(from outcome: AscendantBriefOutcome) -> AscendantBrief? {
