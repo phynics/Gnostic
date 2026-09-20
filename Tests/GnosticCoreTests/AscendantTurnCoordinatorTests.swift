@@ -433,6 +433,7 @@ struct AscendantTurnCoordinatorTests {
 
         let first = try await coordinator.execute(request, ascendantID: ascendantID) { "answer" }
         await observer.waitForRecords(1)
+        await replayCheck.waitForCheck()
         let replay = try await coordinator.execute(request, ascendantID: ascendantID) { "must-not-run" }
 
         let records = await observer.records
@@ -823,6 +824,8 @@ private actor ObservationReplayCheck {
     private var coordinator: AscendantTurnCoordinator?
     private let request: AscendantTurnRequest
     private(set) var sawCommittedReplay = false
+    private var didCheck = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     init(request: AscendantTurnRequest) {
         self.request = request
@@ -833,12 +836,27 @@ private actor ObservationReplayCheck {
     }
 
     func check(_ record: TerminalTurnRecord) async {
+        defer { finishCheck() }
         guard record.clientTurnID == request.clientTurnID, let coordinator else { return }
         do {
             let replay = try await coordinator.execute(request, ascendantID: record.ascendantID) { "must-not-run" }
             sawCommittedReplay = replay.replayed
         } catch {
             sawCommittedReplay = false
+        }
+    }
+
+    private func finishCheck() {
+        didCheck = true
+        let continuations = waiters
+        waiters.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    func waitForCheck() async {
+        if didCheck { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
         }
     }
 }
