@@ -662,7 +662,9 @@ private final class RecordingLanguageModel: LLMStreamClient, @unchecked Sendable
         toolChoice _: LLMToolChoice?,
         responseFormat _: LLMResponseFormat?,
         generationParameters _: GenerationParameters?,
-        modelTier _: ModelTier
+        modelTier _: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await capture.record(messages: messages, tools: tools ?? [])
         let response = response

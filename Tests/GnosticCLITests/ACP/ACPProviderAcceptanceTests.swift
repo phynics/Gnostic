@@ -1035,7 +1035,9 @@ private final class AcceptanceFinalLanguageModel: LLMStreamClient, @unchecked Se
         toolChoice: LLMToolChoice?,
         responseFormat: LLMResponseFormat?,
         generationParameters: GenerationParameters?,
-        modelTier: ModelTier
+        modelTier: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await chatStream(messages: messages, tools: tools, toolChoice: toolChoice, responseFormat: responseFormat, generationParameters: generationParameters, modelTier: modelTier)
     }
@@ -1131,7 +1133,9 @@ private final class LegacyMigrationToolLanguageModel: LLMStreamClient, @unchecke
         toolChoice: LLMToolChoice?,
         responseFormat: LLMResponseFormat?,
         generationParameters: GenerationParameters?,
-        modelTier: ModelTier
+        modelTier: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await chatStream(messages: messages, tools: tools, toolChoice: toolChoice, responseFormat: responseFormat, generationParameters: generationParameters, modelTier: modelTier)
     }

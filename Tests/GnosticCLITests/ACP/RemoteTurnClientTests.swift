@@ -285,7 +285,9 @@ private final class HangingLanguageModel: LLMStreamClient, @unchecked Sendable {
         toolChoice: LLMToolChoice?,
         responseFormat: LLMResponseFormat?,
         generationParameters: GenerationParameters?,
-        modelTier: ModelTier
+        modelTier: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await chatStream(messages: messages, tools: tools, toolChoice: toolChoice, responseFormat: responseFormat, generationParameters: generationParameters, modelTier: modelTier)
     }

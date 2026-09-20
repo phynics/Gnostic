@@ -274,5 +274,5 @@ public struct EchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Senda
     public func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     public func listFiles(path _: String) async throws -> [String] { [] }
     public func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    public func healthCheck() async -> Bool { true }
+    public var isHealthy: Bool { true }
 }

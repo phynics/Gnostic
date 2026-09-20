@@ -21,8 +21,8 @@ provider pin.
 (`Sources/GnosticCore/Runtime/TimelineService.swift:66`). The Positronic adapter
 records the new Timeline in two in-memory places:
 
-- `PositronicAscendantAdapter.createTimeline` saves a `Thread` into an
-  `InMemoryThreadRuntimeRepository` constructed per adapter
+- `PositronicAscendantAdapter.createTimeline` saves a `TimelineRecord` into an
+  `InMemoryTimelineRuntimeRepository` constructed per adapter
   (`Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift:75`, `:265`).
 - `NodeRegistry.registerRuntimeTimeline` records `provenance: .runtime` in
   process memory (`Sources/GnosticCore/Runtime/NodeRegistry.swift:222`).
@@ -38,7 +38,7 @@ therefore list ACP sessions it can no longer serve, which is the gap found in
 [#239](https://github.com/phynics/Gnostic/issues/239).
 
 Conversation content is ephemeral for configured Timelines too. The adapter
-re-seeds `Thread` metadata at startup but never messages
+re-seeds `TimelineRecord` metadata at startup but never messages
 (`Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift:83`), and the
 per-turn update and replay store lives only for the serve lifetime
 (`Sources/GnosticCore/Runtime/AscendantTurnUpdateStore.swift:5`). Run an ACP
@@ -64,7 +64,7 @@ store loads at `NodeAssembly.buildBackends` time and merges with the configured
 manifest Timelines under the same lease and lifecycle-generation fencing the
 registry uses now. The manifest stays configuration-only and is never written
 back. The backend owns transcript and content and must be backed by a durable
-`ThreadRuntimeRepository`; without a durable repository the identity store
+`TimelineRuntimeRepository`; without a durable repository the identity store
 alone produces resumable-but-hollow sessions.
 
 ### Interim ACP behavior for orphaned sessions
@@ -83,7 +83,7 @@ Until durability lands, and after #247 removes the per-process provider pin:
    once the remote Timeline is confirmed absent, so a restarted ACP child does
    not retry indefinitely.
 4. `session/prompt` on an orphaned session fails with `timelineUnavailable`
-   before Turn admission and never creates a fresh backend Thread implicitly.
+   before Turn admission and never creates a fresh backend Timeline implicitly.
 5. The ACP contract documents that resume is stable across an ACP-child
    restart, not across a serve restart.
 
@@ -96,11 +96,11 @@ Until durability lands, and after #247 removes the per-process provider pin:
   conflate configuration with output.
 - **Backend as the owner of Gnostic Timeline identity.** ADR 0002 and
   `CONTEXT.md` state that a backend may project a Timeline into private state
-  but cannot redefine or erase Gnostic identity. PositronicKit `Thread` and
+  but cannot redefine or erase Gnostic identity. PositronicKit `TimelineRecord` and
   `AgentInstance` are backend-private; losing or replacing a backend would lose
   the Timeline.
 - **Registry-only durability.** `ACPSessionRegistry` is a CLI projection, not
-  the canonical domain store. It cannot reconstruct a backend Thread or
+  the canonical domain store. It cannot reconstruct a backend Timeline or
   transcript, and persisting identity there would duplicate it across layers
   while leaving `NodeRegistry` as the source of truth.
 - **Make runtime Timelines durable now.** Identity durability needs both a
@@ -115,7 +115,7 @@ Until durability lands, and after #247 removes the per-process provider pin:
 - `session/resume` and `session/list` reconcile against the live environment
   instead of trusting the durable ACP registry alone.
 - Full cross-restart sessions stay out of scope until a durable Gnostic
-  Timeline store, a durable backend `ThreadRuntimeRepository`, and a replay or
+  Timeline store, a durable backend `TimelineRuntimeRepository`, and a replay or
   idempotency durability decision all land.
 - This decision changes no source, wire, manifest, ACP method, protocol-major,
   or persisted-identity contract. The interim behavior is tracked by
@@ -124,7 +124,7 @@ Until durability lands, and after #247 removes the per-process provider pin:
 ## Reconsideration triggers
 
 Reconsider when a concrete user requirement for cross-restart ACP sessions is
-confirmed, when a durable `ThreadRuntimeRepository` becomes available, or when
+confirmed, when a durable `TimelineRuntimeRepository` becomes available, or when
 the ACP registry is asked to present sessions that a restarted serve cannot
 serve.
 

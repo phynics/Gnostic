@@ -78,9 +78,11 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
     public func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
 
     /// A proxy is healthy only while exactly one available advertisement exists.
-    public func healthCheck() async -> Bool {
-        if case .available = await catalog.workspaceAttachmentStatus(id: id) { return true }
-        return false
+    public var isHealthy: Bool {
+        get async {
+            if case .available = await catalog.workspaceAttachmentStatus(id: id) { return true }
+            return false
+        }
     }
 
     private func advertisedReference() async -> WorkspaceReference? {

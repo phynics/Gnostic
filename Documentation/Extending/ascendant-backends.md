@@ -135,7 +135,7 @@ it is not loaded dynamically. It may expose additional tools and one bounded
 struct NotesContribution: PositronicContribution {
     let label = "notes"
     func turnContextSource() -> (any TurnContextSource)? { NotesContextSource() }
-    func tools() -> [AnyTool] { [NotesTool().toAnyTool()] }
+    func tools() -> [AnyTool] { [AnyTool(NotesTool())] }
 }
 ```
 

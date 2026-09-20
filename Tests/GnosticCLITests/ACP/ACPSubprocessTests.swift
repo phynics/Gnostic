@@ -639,7 +639,7 @@ private struct PermissionedEchoWorkspace: WorkspaceToolProvider, WorkspaceFilePr
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { [] }
     func deleteFile(path _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
-    func healthCheck() async -> Bool { true }
+    var isHealthy: Bool { true }
 }
 
 private final class RepeatingToolLanguageModel: LLMStreamClient, @unchecked Sendable {
@@ -696,7 +696,9 @@ private final class RepeatingToolLanguageModel: LLMStreamClient, @unchecked Send
         toolChoice: LLMToolChoice?,
         responseFormat: LLMResponseFormat?,
         generationParameters: GenerationParameters?,
-        modelTier: ModelTier
+        modelTier: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         await chatStream(messages: messages, tools: tools, toolChoice: toolChoice, responseFormat: responseFormat, generationParameters: generationParameters, modelTier: modelTier)
     }

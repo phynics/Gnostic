@@ -3,7 +3,7 @@
 import Foundation
 import PKContracts
 import PositronicKit
-import struct PositronicKit.Thread
+import struct PositronicKit.TimelineRecord
 
 /// Failures that prevent a discovered workspace from being imported or attached.
 public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
@@ -22,11 +22,11 @@ public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
 @MainActor
 final class DiscoveredWorkspaceAttachmentService {
     private let discovery: any WorkspaceDiscovery
-    private let threadCapability: ThreadCapability
+    private let threadCapability: TimelineCapability
     private let workspaceCapability: WorkspaceCapability?
     private let hostAttachment: BackendWorkspaceAttachmentCapability?
     private let allowedTimelineIDs: Set<UUID>?
-    private let readvertiseTimeline: ((Thread) -> Void)?
+    private let readvertiseTimeline: ((TimelineRecord) -> Void)?
 
     /// Creates the attachment bridge using the runtime's discovery boundary.
     /// Backend construction supplies `hostAttachment` so Gnostic can commit
@@ -35,11 +35,11 @@ final class DiscoveredWorkspaceAttachmentService {
     /// coordinators behind its public v5 facade.
     init(
         discovery: any WorkspaceDiscovery,
-        threadCapability: ThreadCapability,
+        threadCapability: TimelineCapability,
         workspaceCapability: WorkspaceCapability? = nil,
         hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
         allowedTimelineIDs: Set<UUID>? = nil,
-        readvertiseTimeline: ((Thread) -> Void)? = nil
+        readvertiseTimeline: ((TimelineRecord) -> Void)? = nil
     ) {
         self.discovery = discovery
         self.threadCapability = threadCapability
@@ -54,11 +54,11 @@ final class DiscoveredWorkspaceAttachmentService {
     /// above so raw host values do not cross into adapter services.
     convenience init(
         catalog: NetworkCatalog,
-        threadCapability: ThreadCapability,
+        threadCapability: TimelineCapability,
         workspaceCapability: WorkspaceCapability? = nil,
         hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
         allowedTimelineIDs: Set<UUID>? = nil,
-        readvertiseTimeline: ((Thread) -> Void)? = nil
+        readvertiseTimeline: ((TimelineRecord) -> Void)? = nil
     ) {
         self.init(
             discovery: CatalogWorkspaceDiscovery(catalog: catalog),

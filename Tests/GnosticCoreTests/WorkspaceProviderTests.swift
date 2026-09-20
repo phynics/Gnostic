@@ -6,7 +6,7 @@ import Axoloty
 import JSONSchema
 import PKContracts
 import PositronicKit
-import struct PositronicKit.Thread
+import struct PositronicKit.TimelineRecord
 import Testing
 
 @Suite("Gnostic workspace provider")
@@ -21,11 +21,11 @@ struct WorkspaceProviderTests {
     @MainActor
     func attachmentRequiresApproval() async throws {
         let catalog = NetworkCatalog()
-        let kit = PositronicKit()
-        let timeline = try await kit.threads.create()
+        let kit = PKRuntime()
+        let timeline = try await kit.timelines.create()
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: catalog,
-            threadCapability: kit.threads,
+            threadCapability: kit.timelines,
             workspaceCapability: kit.workspaces
         )
 
@@ -37,8 +37,8 @@ struct WorkspaceProviderTests {
     @Test("network management API lists and inspects without attaching") @MainActor
     func networkManagementInspection() async throws {
         let catalog = NetworkCatalog()
-        let kit = PositronicKit()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces)
+        let kit = PKRuntime()
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces)
         #expect(await service.listNetworkObjects().isEmpty)
         #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
     }
@@ -47,12 +47,12 @@ struct WorkspaceProviderTests {
     func publicNetworkToolsMetadataAndInvalidInput() async throws {
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: NetworkCatalog(),
-            threadCapability: PositronicKit().threads,
-            workspaceCapability: PositronicKit().workspaces
+            threadCapability: PKRuntime().timelines,
+            workspaceCapability: PKRuntime().workspaces
         )
-        let list = ListNetworkObjectsTool(service: service).toAnyTool()
-        let inspect = InspectNetworkObjectTool(service: service).toAnyTool()
-        let attach = AttachWorkspaceTool(service: service).toAnyTool()
+        let list = AnyTool(ListNetworkObjectsTool(service: service))
+        let inspect = AnyTool(InspectNetworkObjectTool(service: service))
+        let attach = AnyTool(AttachWorkspaceTool(service: service))
         #expect(list.callName == "list_network_objects")
         #expect(inspect.callName == "inspect_network_object")
         #expect(attach.callName == "attach_workspace")
@@ -67,9 +67,9 @@ struct WorkspaceProviderTests {
         #expect((inspectSchema["required"] as? [String])?.sorted() == ["objectId", "providerId"])
         #expect((attachSchema["properties"] as? [String: Any])?.keys.sorted() == ["timelineId", "workspaceId"])
         #expect((attachSchema["required"] as? [String])?.sorted() == ["timelineId", "workspaceId"])
-        #expect((try await list.execute(parameters: [:])).success)
-        #expect(!(try await inspect.execute(parameters: [:])).success)
-        #expect(!(try await attach.execute(parameters: [:])).success)
+        #expect((try await list.execute(parameters: [:])).isSuccess)
+        #expect(!(try await inspect.execute(parameters: [:])).isSuccess)
+        #expect(!(try await attach.execute(parameters: [:])).isSuccess)
     }
 
     @Test("attachment imports a discovered runtime workspace, attaches it, and readvertises the timeline") @MainActor
@@ -81,15 +81,15 @@ struct WorkspaceProviderTests {
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let store = InMemoryWorkspacePersistence()
-        let runtimeRepository = InMemoryThreadRuntimeRepository()
-        let kit = PositronicKit(configuration: .init(
-            provider: .init(languageModel: UnconfiguredLLMService()),
+        let runtimeRepository = InMemoryTimelineRuntimeRepository()
+        let kit = PKRuntime(configuration: .init(
+            languageModel: UnconfiguredLLMService(),
             persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store),
             runtime: .init(workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
         ))
-        let timeline = try await kit.threads.create()
+        let timeline = try await kit.timelines.create()
         let recorder = TimelineRecorder()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.threads, workspaceCapability: kit.workspaces, readvertiseTimeline: { recorder.record($0) })
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces, readvertiseTimeline: { recorder.record($0) })
 
         let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
         #expect(reference.location == .runtime)
@@ -117,15 +117,15 @@ struct WorkspaceProviderTests {
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
 
-        let kit = PositronicKit()
-        let timeline = try await kit.threads.create(title: "Timeline")
+        let kit = PKRuntime()
+        let timeline = try await kit.timelines.create(title: "Timeline")
         let recorder = BackendAttachmentRecorder()
         let host = BackendWorkspaceAttachmentCapability { workspace, timeline in
             await recorder.record(workspaceID: workspace, timelineID: timeline)
         }
         let service = DiscoveredWorkspaceAttachmentService(
             catalog: catalog,
-            threadCapability: kit.threads,
+            threadCapability: kit.timelines,
             workspaceCapability: kit.workspaces,
             hostAttachment: host
         )
@@ -136,7 +136,7 @@ struct WorkspaceProviderTests {
             "timelineId": AnyCodable(timeline.id.uuidString),
         ])
 
-        #expect(result.success)
+        #expect(result.isSuccess)
         #expect(await recorder.workspaceID == workspaceID)
         #expect(await recorder.timelineID == timeline.id)
     }
@@ -160,7 +160,7 @@ struct WorkspaceProviderTests {
         let result = try await provider.invoke(
             WorkspaceInvocation(workspaceID: workspaceID, toolID: "search_notes", arguments: ["query": AnyCodable("wave 2")])
         )
-        #expect(result.success)
+        #expect(result.isSuccess)
         #expect(result.output == "found")
     }
 
@@ -234,9 +234,9 @@ struct WorkspaceProviderTests {
         let called = InvocationRecorder()
         let reference = WorkspaceReference(id: id, uri: WorkspaceURI(parsing: "workspace://remote")!, location: .runtime, tools: [.custom(WorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote"))])
         let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in await called.record(); return .success("unexpected") }
-        #expect(await proxy.healthCheck())
+        #expect(await proxy.isHealthy)
         await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "remote", objectIds: [id.uuidString]))
-        let isHealthy = await proxy.healthCheck()
+        let isHealthy = await proxy.isHealthy
         #expect(!isHealthy)
         await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "custom", parameters: [:]) }
         let wasCalled = await called.value
@@ -252,12 +252,12 @@ struct WorkspaceProviderTests {
         let recorder = InvocationRecorder()
         let reference = WorkspaceReference(id: id, uri: WorkspaceURI(parsing: "workspace://bad")!, location: .runtime, tools: [.custom(WorkspaceToolDefinition(id: "x", name: "X", description: "X"))])
         let proxy = AxolotyWorkspace(reference: reference, catalog: catalog) { _ in await recorder.record(); return .success("unexpected") }
-        let malformedHealth = await proxy.healthCheck()
+        let malformedHealth = await proxy.isHealthy
         #expect(!malformedHealth)
         await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "x", parameters: [:]) }
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "a", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "b", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Good", payload: "{\"objectId\":\"\(id.uuidString.lowercased())\",\"coreType\":\"CoatyObject\",\"objectType\":\"me.atkn.gnostic.Workspace\",\"name\":\"Good\",\"uri\":\"workspace://good\",\"isAvailable\":true,\"tools\":[]}")))
-        let ambiguousHealth = await proxy.healthCheck()
+        let ambiguousHealth = await proxy.isHealthy
         #expect(!ambiguousHealth)
         await #expect(throws: WorkspaceError.self) { try await proxy.executeTool(id: "x", parameters: [:]) }
         let invoked = await recorder.value
@@ -309,7 +309,7 @@ struct WorkspaceProviderTests {
         let payload = try JSONEncoder().encode(WorkspaceInvocation(workspaceID: id, toolID: "custom", arguments: [:]))
         let response = try await caller.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: payload, as: UTF8.self), timeout: .seconds(3))
         let result = try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
-        #expect(result.success)
+        #expect(result.isSuccess)
         #expect(result.output == "broker-result")
     }
 
@@ -394,7 +394,7 @@ private func encodeProtocolToolResult(_ output: String) throws -> String {
 
 private final class TimelineRecorder: @unchecked Sendable {
     private(set) var ids: [UUID] = []
-    func record(_ timeline: Thread) { ids.append(timeline.id) }
+    func record(_ timeline: TimelineRecord) { ids.append(timeline.id) }
 }
 
 private actor BackendAttachmentRecorder {
