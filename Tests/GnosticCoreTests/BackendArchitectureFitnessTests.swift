@@ -16,11 +16,17 @@ struct BackendArchitectureFitnessTests {
         for forbidden in [
             "import Axoloty",
             "import PositronicKit",
+            "import PKContracts",
             "CommunicationManager",
             "NetworkCatalog",
             "CoatyObject",
             "AgentInstance(",
-            "PositronicKit.Thread",
+            "PositronicKit.PKRuntime",
+            "PositronicKit.TimelineRecord",
+            "PositronicKit.TimelineCapability",
+            "PositronicKit.TimelineRuntimeRepository",
+            "PositronicKit.PKTool",
+            "PKContracts.",
         ] {
             #expect(!source.contains(forbidden), "The mandatory contract mentions forbidden type '\(forbidden)'.")
         }
