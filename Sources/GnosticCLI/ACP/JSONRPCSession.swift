@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import PKContracts
 
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
@@ -67,7 +68,7 @@ public actor JSONRPCSession {
     /// terminal state transition. In-flight handlers are awaited so the
     /// session does not report stopped while domain cleanup is still running.
     public func finish() async {
-        await withTaskCancellationShield {
+        await withCancellationShield {
             do {
                 try framer.finish()
             } catch {
@@ -146,7 +147,7 @@ public actor JSONRPCSession {
             respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "session is not initialized"))
             return
         }
-        await withTaskCancellationShield {
+        await withCancellationShield {
             state = .stopped
             await cancelAllAndWait()
         }
@@ -154,7 +155,7 @@ public actor JSONRPCSession {
     }
 
     private func exit(_ request: JSONRPCRequest) async {
-        await withTaskCancellationShield {
+        await withCancellationShield {
             await cancelAllAndWait()
             state = .stopped
         }
@@ -220,7 +221,7 @@ public actor JSONRPCSession {
         let tasks = Array(requests.values)
         requests.removeAll()
         tasks.forEach { $0.cancel() }
-        await withTaskCancellationShield {
+        await withCancellationShield {
             for task in tasks { await task.value }
         }
     }

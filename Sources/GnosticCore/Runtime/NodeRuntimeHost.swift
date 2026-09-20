@@ -122,7 +122,7 @@ final class NodeRuntimeHost {
         // Shutdown is a completion boundary, not a cancellation request. The
         // shield keeps a cancelled caller from skipping the cleanup handoff
         // before the coordinator owns it.
-        await withTaskCancellationShield {
+        await withCancellationShield {
             // Interrupt only a pending broker handshake before the coordinator
             // waits for startup. A running transport must first drain its tracked
             // deadvertisements during cleanup.
