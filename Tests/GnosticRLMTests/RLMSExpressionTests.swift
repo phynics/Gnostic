@@ -42,6 +42,13 @@ struct RLMSExpressionTests {
         #expect(try RLMSExpressionParser.parse(rewritten) == forms)
     }
 
+    @Test("escapes CRLF grapheme clusters in strings")
+    func writesCRLF() throws {
+        let expression = RLMSExpression.string("before\r\nafter")
+        #expect(expression.written == "\"before\\r\\nafter\"")
+        #expect(try RLMSExpressionParser.parse(expression.written) == [expression])
+    }
+
     @Test("rejects malformed programs")
     func malformed() {
         #expect(throws: RLMSExpressionParseError.unterminatedString) {

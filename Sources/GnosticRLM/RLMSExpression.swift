@@ -40,14 +40,14 @@ public indirect enum RLMSExpression: Sendable, Equatable {
 
     private static func writeString(_ value: String) -> String {
         var output = "\""
-        for character in value {
-            switch character {
-            case "\"": output += "\\\""
-            case "\\": output += "\\\\"
-            case "\n": output += "\\n"
-            case "\t": output += "\\t"
-            case "\r": output += "\\r"
-            default: output.append(character)
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x22: output += "\\\""
+            case 0x5C: output += "\\\\"
+            case 0x0A: output += "\\n"
+            case 0x09: output += "\\t"
+            case 0x0D: output += "\\r"
+            default: output.unicodeScalars.append(scalar)
             }
         }
         return output + "\""
