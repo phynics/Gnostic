@@ -218,7 +218,8 @@ Reconsider this decision when:
 - ACP standardizes a durable client-supplied session or Turn identifier that
   replaces or conflicts with the Gnostic `clientTurnID` replay contract;
 - an intended agent cannot request permissions through ACP, which removes the
-  Gnostic mediation point (the reason pi is deferred);
+  Gnostic mediation point (the reason the Pi ACP agent is deferred; see
+  `Tests/Fixtures/PiACPClient`);
 - an agent needs client-side `fs/*` or `terminal/*`, which would make Workspace
   routing necessary again;
 - a shipped second backend makes ADR 0005 extraction concrete; or
