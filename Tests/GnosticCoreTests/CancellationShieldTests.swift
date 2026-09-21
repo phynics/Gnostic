@@ -101,26 +101,26 @@ struct CancellationShieldTests {
         #expect(await shielded.value, "the shielded body observed its caller's cancellation")
     }
 
-    @Test("sources reach the 27-only shield only through the compatibility wrapper")
-    func sourcesDoNotCallTheShieldedPrimitiveDirectly() throws {
+    @Test("no source emits the 27-only cancellation shield")
+    func sourcesDoNotReferenceTheShieldedPrimitive() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let wrapper = "Sources/GnosticCore/Concurrency/CancellationShield.swift"
         let sources = root.appendingPathComponent("Sources")
         let paths = try FileManager.default.subpathsOfDirectory(atPath: sources.path)
-            .filter { $0.hasSuffix(".swift") && "Sources/\($0)" != wrapper }
+            .filter { $0.hasSuffix(".swift") }
         for path in paths {
             let source = try String(contentsOf: sources.appendingPathComponent(path), encoding: .utf8)
             #expect(
-                !source.contains("withTaskCancellationShield"),
-                "Sources/\(path) calls the 27-only shield directly; use withCancellationShield"
+                !source.contains("withTaskCancellationShield("),
+                "Sources/\(path) references the 27-only shield; its always-emitted body would leave a load-time dependency on the 27 runtime"
             )
         }
 
+        let wrapper = "Sources/GnosticCore/Concurrency/CancellationShield.swift"
         let wrapperSource = try String(contentsOf: root.appendingPathComponent(wrapper), encoding: .utf8)
         #expect(
-            wrapperSource.contains("#available(anyAppleOS 27.0, *)"),
-            "the wrapper must keep gating the 27-only shield behind an availability check"
+            !wrapperSource.contains("#available(anyAppleOS 27.0, *)"),
+            "the wrapper must not gate the 27-only shield behind an availability check; the reference is load-time"
         )
     }
 }

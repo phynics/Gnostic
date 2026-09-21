@@ -8,7 +8,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 
 // The released package version. A release bumps this constant, the CLI
 // version string, and adds the matching compatibility declaration.
-const PACKAGE_VERSION = "0.4.1";
+const PACKAGE_VERSION = "0.4.2";
 const COMPATIBILITY_FILE = `Documentation/Compatibility/${PACKAGE_VERSION}.md`;
 
 const REQUIRED_FILES = [
