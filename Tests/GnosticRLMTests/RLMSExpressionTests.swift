@@ -34,12 +34,34 @@ struct RLMSExpressionTests {
         #expect(forms == [.string("line\nquote\"tab\t")])
     }
 
+    @Test("bounds hexadecimal string escapes")
+    func parseBoundedHexEscapes() throws {
+        #expect(try RLMSExpressionParser.parse("\"a\\x01b\"") == [.string("a\u{1}b")])
+        #expect(try RLMSExpressionParser.parse("\"a\\x01;b\"") == [.string("a\u{1}b")])
+        #expect(try RLMSExpressionParser.parse("\"a\\x01ffffffb\"") == [.string("a\u{1}ffffffb")])
+    }
+
+    @Test("bounds braced Unicode escapes")
+    func parseBoundedBracedUnicodeEscapes() throws {
+        #expect(try RLMSExpressionParser.parse("\"\\u{1F600}\"") == [.string("\u{1F600}")])
+        #expect(throws: RLMSExpressionParseError.self) {
+            try RLMSExpressionParser.parse("\"\\u{000041b}\"")
+        }
+    }
+
     @Test("round-trips through the canonical writer")
     func roundTrip() throws {
         let source = "(finish \"answer\" (\"c-1\" \"c-2\"))"
         let forms = try RLMSExpressionParser.parse(source)
         let rewritten = forms.map(\.written).joined(separator: " ")
         #expect(try RLMSExpressionParser.parse(rewritten) == forms)
+    }
+
+    @Test("escapes CRLF grapheme clusters in strings")
+    func writesCRLF() throws {
+        let expression = RLMSExpression.string("before\r\nafter")
+        #expect(expression.written == "\"before\\r\\nafter\"")
+        #expect(try RLMSExpressionParser.parse(expression.written) == [expression])
     }
 
     @Test("rejects malformed programs")

@@ -31,7 +31,7 @@ final class RLMGuileRawWorker: @unchecked Sendable { // SAFETY: a test drives on
     private let errorOutput: FileHandle
     let runID: String
 
-    init(runID: String) throws {
+    init(runID: String, environment: [String: String] = RLMGuileWorkerConfiguration.scrubbedEnvironment) throws {
         guard let guile = RLMGuileTestSupport.guilePath else {
             throw RLMGuileRawWorkerError.unavailable
         }
@@ -44,7 +44,7 @@ final class RLMGuileRawWorker: @unchecked Sendable { // SAFETY: a test drives on
             "--max-address-space", "268435456",
             "--max-cpu", "10",
         ]
-        process.environment = RLMGuileWorkerConfiguration.scrubbedEnvironment
+        process.environment = environment
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()

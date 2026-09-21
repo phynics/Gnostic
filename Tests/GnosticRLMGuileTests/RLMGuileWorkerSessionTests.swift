@@ -115,10 +115,59 @@ struct RLMGuileWorkerSessionTests {
         try await session.start()
 
         let outcome = await session.evaluate(source: "(list (string->symbol \"1\") (string->symbol \"-1\") (string->symbol \"+1\") (string->symbol \".\") (string->symbol \".0\") (string->symbol \"[\"))")
-        #expect(outcome == .value(.list(Array(repeating: .symbol("gnostic-symbol"), count: 6))))
+        #expect(outcome == .value(.list(Array(repeating: .character("~"), count: 6))))
         #expect(await session.isRunning)
 
         await session.shutdown()
+    }
+
+    @Test("wire symbols use the documented ASCII identifier rule")
+    func unicodeSymbolsUsePlaceholder() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let source = #"(list (string->symbol "A") (string->symbol "z9") (string->symbol "a-b") (string->symbol "\xE9;") (string->symbol "\x3A9;") (string->symbol "caf\xE9;") (string->symbol "A_"))"#
+        let outcome = await session.evaluate(source: source)
+        #expect(outcome == .value(.list([
+            .symbol("A"), .symbol("z9"), .symbol("a-b"),
+            .character("~"), .character("~"), .character("~"), .character("~"),
+        ])))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("real symbols cannot collide with wire placeholder sentinels")
+    func sentinelNameDoesNotCollide() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(list (string->symbol \"gnostic-symbol\") (string->symbol \"gnostic-unsupported\") (string->symbol \"gnostic-truncated\"))")
+        #expect(outcome == .value(.list([
+            .symbol("gnostic-symbol"),
+            .symbol("gnostic-unsupported"),
+            .symbol("gnostic-truncated"),
+        ])))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("ready metadata sanitizes control characters before framing")
+    func readyMetadataIsWireSafe() throws {
+        var environment = RLMGuileWorkerConfiguration.scrubbedEnvironment
+        environment["A\u{8}B"] = "value"
+        let worker = try RLMGuileRawWorker(runID: "run\u{8}id", environment: environment)
+        defer { worker.shutdown() }
+
+        guard case let .ready(ready) = try worker.initialize() else {
+            Issue.record("worker did not report ready")
+            return
+        }
+        #expect(ready.runID == "run?id")
+        #expect(ready.environmentKeys.contains("A?B"))
     }
 
     @Test("finish answer with a control character remains structured")
@@ -265,7 +314,7 @@ struct RLMGuileWorkerSessionTests {
         await session.shutdown()
     }
 
-    @Test("oversized worker output is cut off by the parent")
+    @Test("oversized worker output terminates the worker at the parent limit")
     func outputLimit() async throws {
         let host = RLMGuileRecordingHost()
         let session = RLMGuileTestSupport.session(host: host) { configuration in

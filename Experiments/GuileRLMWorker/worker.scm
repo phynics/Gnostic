@@ -155,28 +155,43 @@
             (loop (+ index 1)))
           result))))
 
+(define marker-unsupported (integer->char 33))
+(define marker-truncated (integer->char 63))
+(define marker-symbol (integer->char 126))
+
+(define (ascii-letter? character)
+  (let ((code (char->integer character)))
+    (or (and (>= code 65) (<= code 90))
+        (and (>= code 97) (<= code 122)))))
+
+(define (ascii-digit? character)
+  (let ((code (char->integer character)))
+    (and (>= code 48) (<= code 57))))
+
+(define (valid-wire-symbol? name)
+  (and (> (string-length name) 0)
+       (ascii-letter? (string-ref name 0))
+       (let loop ((index 1))
+         (if (>= index (string-length name))
+             #t
+             (let ((character (string-ref name index)))
+               (and (or (ascii-letter? character)
+                        (ascii-digit? character)
+                        (char=? character #\-))
+                    (loop (+ index 1))))))))
+
 (define (wire-symbol value)
   (let ((name (symbol->string value)))
-    (if (or (= (string-length name) 0)
-            (not (char-alphabetic? (string-ref name 0))))
-        "gnostic-symbol"
-        (let loop ((index 0))
-          (if (>= index (string-length name))
-              name
-              (let* ((character (string-ref name index))
-                     (code (char->integer character)))
-                (if (not (or (char-alphabetic? character)
-                             (char-numeric? character)
-                             (char=? character #\-)))
-                    "gnostic-symbol"
-                    (loop (+ index 1)))))))))
+    (if (valid-wire-symbol? name)
+        (string->symbol name)
+        marker-symbol)))
 
 (define (scm->wire value)
   (let ((budget 4096))
     (define (convert datum depth)
       (cond
-        ((<= budget 0) 'gnostic-truncated)
-        ((> depth 32) 'gnostic-truncated)
+        ((<= budget 0) marker-truncated)
+        ((> depth 32) marker-truncated)
         ((boolean? datum)
          (set! budget (- budget 1)) datum)
         ((number? datum)
@@ -185,7 +200,7 @@
          (set! budget (- budget 1))
          (wire-string datum))
         ((symbol? datum)
-         (set! budget (- budget 1)) (string->symbol (wire-symbol datum)))
+         (set! budget (- budget 1)) (wire-symbol datum))
         ((null? datum)
          (set! budget (- budget 1)) '())
         ((unspecified? datum)
@@ -197,7 +212,7 @@
          (set! budget (- budget 1))
          (map (lambda (element) (convert element (+ depth 1))) (vector->list datum)))
         (else
-         (set! budget (- budget 1)) 'gnostic-unsupported)))
+         (set! budget (- budget 1)) marker-unsupported)))
     (convert value 0)))
 
 (define (make-run-module)
@@ -353,8 +368,8 @@
                      (if value value cell-allocation-limit)))
              (set! run-module (make-run-module))
              (write-frame (make-frame 'ready
-                                      'runID current-run-id
-                                      'environmentKeys (environment-keys)
+                                      'runID (wire-string current-run-id)
+                                      'environmentKeys (map wire-string (environment-keys))
                                       'openFileDescriptorCount (open-file-descriptor-count)
                                       'cpuLimitSeconds (limit-number 'cpu)
                                       'addressSpaceBytes (limit-number 'as)))
