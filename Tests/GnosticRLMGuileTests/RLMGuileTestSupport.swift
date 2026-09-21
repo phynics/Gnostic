@@ -63,15 +63,18 @@ actor RLMGuileRecordingHost: RLMGuileHost {
     private let cancellation: RLMCancellationToken?
     private let leafFailure: RLMFailure?
     private let blockingSeconds: Double
+    private let oversizedChunkBytes: Int
 
     init(
         cancellation: RLMCancellationToken? = nil,
         leafFailure: RLMFailure? = nil,
-        blockingSeconds: Double = 0
+        blockingSeconds: Double = 0,
+        oversizedChunkBytes: Int = 0
     ) {
         self.cancellation = cancellation
         self.leafFailure = leafFailure
         self.blockingSeconds = blockingSeconds
+        self.oversizedChunkBytes = oversizedChunkBytes
     }
 
     func service(_ operation: RLMHostOperation) async throws -> RLMHostObservation {
@@ -102,7 +105,9 @@ actor RLMGuileRecordingHost: RLMGuileHost {
                     path: "Sources/A.swift",
                     startLine: 1,
                     endLine: 2,
-                    content: "content \(identifier)",
+                    content: oversizedChunkBytes > 0
+                        ? String(repeating: "x", count: oversizedChunkBytes)
+                        : "content \(identifier)",
                     byteCount: 12,
                     digest: "digest"
                 )

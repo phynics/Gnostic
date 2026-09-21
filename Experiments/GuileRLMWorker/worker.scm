@@ -133,6 +133,14 @@
   #f)
 
 (define (finish answer evidence)
+  (if (not (string? answer))
+      (error "finish answer must be a string"))
+  (if (not (list? evidence))
+      (error "finish evidence must be a list of chunk identifiers"))
+  (for-each (lambda (identifier)
+              (if (not (string? identifier))
+                  (error "finish evidence entries must be chunk identifier strings")))
+            evidence)
   (throw 'gnostic-finish answer evidence))
 
 (define (scm->wire value)
@@ -158,7 +166,7 @@
          (set! budget (- budget 1)) '())
         ((pair? datum)
          (set! budget (- budget 1))
-         (cons (convert (car datum) (+ depth 1)) (convert (cdr datum) (+ depth 1))))
+         (cons (convert (car datum) (+ depth 1)) (convert (cdr datum) depth)))
         ((vector? datum)
          (set! budget (- budget 1))
          (map (lambda (element) (convert element (+ depth 1))) (vector->list datum)))

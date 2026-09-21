@@ -4,6 +4,12 @@ import Foundation
 import GnosticRLM
 import GnosticRLMGuile
 
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
+
 /// A raw, unvalidated framed client for the Guile worker.
 ///
 /// It deliberately bypasses `RLMGuileWorkerSession` so tests can prove that the
@@ -14,7 +20,11 @@ enum RLMGuileRawWorkerError: Error {
     case closed
 }
 
-final class RLMGuileRawWorker {
+private final class ResultBox: @unchecked Sendable { // SAFETY: the background reader writes once before signalling the semaphore the caller waits on.
+    var result: Result<RLMSchemeWorkerFrame, Error>?
+}
+
+final class RLMGuileRawWorker: @unchecked Sendable { // SAFETY: a test drives one helper at a time; the only cross-thread access is the single bounded background frame read.
     private let process: Process
     private let input: FileHandle
     private let output: FileHandle
@@ -25,6 +35,7 @@ final class RLMGuileRawWorker {
         guard let guile = RLMGuileTestSupport.guilePath else {
             throw RLMGuileRawWorkerError.unavailable
         }
+        _ = signal(SIGPIPE, SIG_IGN)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: guile)
         process.arguments = [
@@ -57,8 +68,21 @@ final class RLMGuileRawWorker {
         try input.write(contentsOf: Data(bytes))
     }
 
-    func receive() throws -> RLMSchemeWorkerFrame {
-        try readFrame()
+    func receive(timeout: TimeInterval = 10) throws -> RLMSchemeWorkerFrame {
+        let box = ResultBox()
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.result = Result { try self.readFrame() }
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: .now() + timeout) == .success else {
+            killForTest()
+            throw RLMGuileRawWorkerError.closed
+        }
+        guard let result = box.result else {
+            throw RLMGuileRawWorkerError.closed
+        }
+        return try result.get()
     }
 
     @discardableResult
@@ -90,8 +114,16 @@ final class RLMGuileRawWorker {
         }
     }
 
+    func killForTest() {
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+    }
+
     func shutdown() {
-        try? send(.shutdown(runID: runID))
+        if process.isRunning {
+            try? send(.shutdown(runID: runID))
+        }
         try? input.close()
         if process.isRunning {
             process.terminate()

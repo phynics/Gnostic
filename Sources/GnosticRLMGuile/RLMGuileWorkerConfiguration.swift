@@ -110,6 +110,7 @@ public enum RLMGuileEvaluationOutcome: Sendable, Equatable {
     case cellRejected(String)
     case timedOut
     case outputLimitReached
+    case hostResultRejected(String)
     case cancelled
     case fenced
     case workerExited(Int32)

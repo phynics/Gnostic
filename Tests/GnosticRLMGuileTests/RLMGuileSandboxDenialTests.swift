@@ -25,12 +25,16 @@ struct RLMGuileSandboxDenialTests {
 
         let denied = [
             "(eval '(+ 1 2))",
+            "(primitive-eval '(+ 1 2))",
             "(system \"echo hi\")",
+            "(open-pipe \"ls\" \"r\")",
             "(getenv \"HOME\")",
             "(open-input-file \"/etc/passwd\")",
             "(open-output-file \"/tmp/gnostic-raw-denied\")",
             "(dynamic-wind (lambda () 1) (lambda () 2) (lambda () 3))",
             "(call/cc (lambda (k) (k 1)))",
+            "(dynamic-link \"libc.so.6\")",
+            "(make-thread (lambda () 1))",
         ]
         for (index, source) in denied.enumerated() {
             let frame = try worker.evaluate(source, cellID: index + 2)
@@ -39,6 +43,18 @@ struct RLMGuileSandboxDenialTests {
                 continue
             }
             #expect(!failure.message.isEmpty)
+        }
+    }
+
+    @Test("a killed worker surfaces EOF instead of hanging")
+    func killedWorkerSurfacesEOF() throws {
+        let worker = try RLMGuileRawWorker(runID: "raw-crash")
+        defer { worker.shutdown() }
+        _ = try worker.initialize()
+
+        worker.killForTest()
+        #expect(throws: RLMGuileRawWorkerError.self) {
+            _ = try worker.receive()
         }
     }
 }

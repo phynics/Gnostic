@@ -196,6 +196,7 @@ public enum RLMSchemeValidationError: Error, Sendable, Equatable, CustomStringCo
     case invalidArity(symbol: String, expected: String, actual: Int)
     case unorderedHostCalls
     case invalidFinishPlacement
+    case invalidFinishArgument(String)
     case unsupportedValue(String)
 
     public var description: String {
@@ -220,6 +221,8 @@ public enum RLMSchemeValidationError: Error, Sendable, Equatable, CustomStringCo
             return "multiple host calls in one unordered expression"
         case .invalidFinishPlacement:
             return "finish appears in a non-terminal position"
+        case let .invalidFinishArgument(reason):
+            return "invalid finish argument: \(reason)"
         case let .unsupportedValue(reason):
             return "unsupported value: \(reason)"
         }
@@ -252,9 +255,9 @@ private struct Validator {
             guard case let .symbol(head) = elements[0], head == "define" else { continue }
             switch elements[1] {
             case let .symbol(name):
-                names.insert(name)
+                if isAllowedBoundName(name) { names.insert(name) }
             case let .list(parts):
-                if let first = parts.first, case let .symbol(name) = first {
+                if let first = parts.first, case let .symbol(name) = first, isAllowedBoundName(name) {
                     names.insert(name)
                 }
             default:
@@ -262,6 +265,12 @@ private struct Validator {
             }
         }
         return names
+    }
+
+    private static func isAllowedBoundName(_ name: String) -> Bool {
+        !RLMSchemeProfile.reservedNames.contains(name)
+            && !RLMSchemeProfile.disallowedSymbols.contains(name)
+            && !name.hasSuffix("!")
     }
 
     private mutating func walkSequence(
@@ -408,31 +417,28 @@ private struct Validator {
         allowFinish: Bool
     ) throws {
         for (index, clause) in clauses.enumerated() {
-            guard case let .list(parts) = clause, let test = parts.first else {
+            guard case let .list(parts) = clause, let first = parts.first else {
                 throw RLMSchemeValidationError.malformedProgram("cond clause must be a list")
             }
-            let body = Array(parts.dropFirst())
-            let isElse = Self.isSymbol(test, "else")
+            let isElse = Self.isSymbol(first, "else")
             if isElse, index != clauses.count - 1 {
                 throw RLMSchemeValidationError.malformedProgram("else must be the last cond clause")
             }
-            if !isElse {
-                try walkCondTest(test, depth: depth + 1)
+            if isElse {
+                try walkSequence(Array(parts.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+                continue
             }
-            try walkSequence(body, depth: depth + 1, allowFinish: allowFinish)
+            if parts.count >= 3, Self.isSymbol(parts[1], "=>") {
+                guard parts.count == 3 else {
+                    throw RLMSchemeValidationError.malformedProgram("cond => clause requires exactly one receiver")
+                }
+                try walk(parts[0], depth: depth + 1, allowFinish: false)
+                try walk(parts[2], depth: depth + 1, allowFinish: false)
+                continue
+            }
+            try walk(first, depth: depth + 1, allowFinish: false)
+            try walkSequence(Array(parts.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
         }
-    }
-
-    private mutating func walkCondTest(_ expression: RLMSExpression, depth: Int) throws {
-        if case let .list(elements) = expression,
-           elements.count == 3,
-           case let .symbol(arrow) = elements[1],
-           arrow == "=>" {
-            try walk(elements[0], depth: depth, allowFinish: false)
-            try walk(elements[2], depth: depth, allowFinish: false)
-            return
-        }
-        try walk(expression, depth: depth, allowFinish: false)
     }
 
     private mutating func walkDefine(
@@ -470,11 +476,70 @@ private struct Validator {
     }
 
     private mutating func validateDefinitionName(_ name: String) throws {
+        try validateBoundName(name)
+    }
+
+    private func validateBoundName(_ name: String) throws {
         if RLMSchemeProfile.reservedNames.contains(name) {
             throw RLMSchemeValidationError.reservedRedefinition(name)
         }
-        if name.hasSuffix("!") {
+        if RLMSchemeProfile.disallowedSymbols.contains(name) || name.hasSuffix("!") {
             throw RLMSchemeValidationError.disallowedSymbol(name)
+        }
+    }
+
+    private func validateFinishArguments(_ arguments: [RLMSExpression]) throws {
+        guard arguments.count == 2 else { return }
+        try validateFinishAnswer(arguments[0])
+        try validateFinishEvidence(arguments[1])
+    }
+
+    private func validateFinishAnswer(_ expression: RLMSExpression) throws {
+        switch expression {
+        case .string, .symbol, .list:
+            return
+        case .vector, .integer, .double, .boolean, .character:
+            throw RLMSchemeValidationError.invalidFinishArgument("finish answer must evaluate to a string")
+        }
+    }
+
+    private func validateFinishEvidence(_ expression: RLMSExpression) throws {
+        switch expression {
+        case .symbol:
+            return
+        case .vector, .string, .integer, .double, .boolean, .character:
+            throw RLMSchemeValidationError.invalidFinishArgument("finish evidence must evaluate to a list of chunk identifiers")
+        case let .list(elements):
+            guard let head = elements.first else {
+                throw RLMSchemeValidationError.invalidFinishArgument("finish evidence must evaluate to a list of chunk identifiers")
+            }
+            if case let .symbol(name) = head, name == "quote" {
+                try validateQuotedEvidence(elements)
+                return
+            }
+            if case let .symbol(name) = head, name == "list" {
+                for element in elements.dropFirst() {
+                    switch element {
+                    case .string, .symbol, .list:
+                        continue
+                    case .vector, .integer, .double, .boolean, .character:
+                        throw RLMSchemeValidationError.invalidFinishArgument("finish evidence entries must be chunk identifier strings")
+                    }
+                }
+                return
+            }
+            return
+        }
+    }
+
+    private func validateQuotedEvidence(_ elements: [RLMSExpression]) throws {
+        guard elements.count == 2, case let .list(values) = elements[1] else {
+            throw RLMSchemeValidationError.invalidFinishArgument("finish evidence must evaluate to a list of chunk identifiers")
+        }
+        for value in values {
+            guard case .string = value else {
+                throw RLMSchemeValidationError.invalidFinishArgument("finish evidence entries must be chunk identifier strings")
+            }
         }
     }
 
@@ -493,6 +558,9 @@ private struct Validator {
                 expected: "\(arity.lowerBound)...\(arity.upperBound)",
                 actual: arguments.count
             )
+        }
+        if case let .symbol(name) = head, name == "finish" {
+            try validateFinishArguments(arguments)
         }
 
         var effectful = 0
@@ -553,9 +621,10 @@ private struct Validator {
         }
         var effectful = 0
         for binding in bindings {
-            guard case let .list(parts) = binding, parts.count == 2, case .symbol = parts[0] else {
+            guard case let .list(parts) = binding, parts.count == 2, case let .symbol(name) = parts[0] else {
                 throw RLMSchemeValidationError.malformedProgram("binding must be (name value)")
             }
+            try validateBoundName(name)
             effectful += Self.countHostCalls(parts[1])
         }
         if effectful > 1 {
@@ -578,6 +647,7 @@ private struct Validator {
             guard case let .list(parts) = binding, parts.count == 2, case let .symbol(name) = parts[0] else {
                 throw RLMSchemeValidationError.malformedProgram("binding must be (name value)")
             }
+            try validateBoundName(name)
             try walk(parts[1], depth: depth + 1, allowFinish: false)
             scopes[scopes.count - 1].insert(name)
         }
@@ -592,6 +662,7 @@ private struct Validator {
             guard case let .list(parts) = binding, let first = parts.first, case let .symbol(name) = first else {
                 throw RLMSchemeValidationError.malformedProgram("binding must be (name value)")
             }
+            try validateBoundName(name)
             names.insert(name)
         }
         return names
@@ -606,9 +677,7 @@ private struct Validator {
             guard case let .symbol(name) = parameter else {
                 throw RLMSchemeValidationError.malformedProgram("parameter must be a symbol")
             }
-            if RLMSchemeProfile.reservedNames.contains(name) {
-                throw RLMSchemeValidationError.reservedRedefinition(name)
-            }
+            try validateBoundName(name)
             names.insert(name)
         }
         return names
@@ -645,8 +714,11 @@ private struct Validator {
             guard value.magnitude <= limits.maxIntegerMagnitude else {
                 throw RLMSchemeValidationError.unsupportedValue("integer literal out of range")
             }
-        case .double:
+        case let .double(value):
             usage.literalNumbers += 1
+            guard value.isFinite else {
+                throw RLMSchemeValidationError.unsupportedValue("non-finite number")
+            }
         case .boolean:
             usage.literalBooleans += 1
         case .symbol, .character:

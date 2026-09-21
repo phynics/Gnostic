@@ -199,8 +199,15 @@ public enum RLMSchemeWorkerCodec {
 
     /// Prefixes `payload` with its big-endian 32-bit byte length.
     public static func framed(_ payload: [UInt8]) throws -> [UInt8] {
-        guard payload.count <= maxFrameBytes else {
-            throw RLMSchemeProtocolError.frameTooLarge(limit: maxFrameBytes)
+        try framed(payload, maxFrameBytes: maxFrameBytes)
+    }
+
+    /// Prefixes `payload`, enforcing the smaller of `maxFrameBytes` and the
+    /// codec's hard cap.
+    public static func framed(_ payload: [UInt8], maxFrameBytes limit: Int) throws -> [UInt8] {
+        let effectiveLimit = min(max(limit, 0), maxFrameBytes)
+        guard payload.count <= effectiveLimit else {
+            throw RLMSchemeProtocolError.frameTooLarge(limit: effectiveLimit)
         }
         let length = UInt32(payload.count)
         var bytes: [UInt8] = [
@@ -215,6 +222,10 @@ public enum RLMSchemeWorkerCodec {
 
     public static func encode(_ frame: RLMSchemeWorkerFrame) throws -> [UInt8] {
         try framed(Array(expression(for: frame).written.utf8))
+    }
+
+    public static func encode(_ frame: RLMSchemeWorkerFrame, maxFrameBytes limit: Int) throws -> [UInt8] {
+        try framed(Array(expression(for: frame).written.utf8), maxFrameBytes: limit)
     }
 
     public static func decode(_ payload: [UInt8]) throws -> RLMSchemeWorkerFrame {

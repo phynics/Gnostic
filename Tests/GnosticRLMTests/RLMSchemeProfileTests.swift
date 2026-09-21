@@ -134,6 +134,62 @@ struct RLMSchemeProfileTests {
         }
     }
 
+    @Test("rejects disallowed symbols in definition, parameter, and binding positions")
+    func rejectsDisallowedBindings() {
+        let cases: [(String, RLMSchemeValidationError)] = [
+            ("(define system 1) (system \"echo hi\")", .disallowedSymbol("system")),
+            ("(define eval 1) (eval '(+ 1 2))", .disallowedSymbol("eval")),
+            ("(define (system x) x)", .disallowedSymbol("system")),
+            ("(lambda (system) (system \"x\"))", .disallowedSymbol("system")),
+            ("(let ((system 1)) (system \"x\"))", .disallowedSymbol("system")),
+            ("(let* ((system 1)) (system \"x\"))", .disallowedSymbol("system")),
+            ("(letrec ((system 1)) system)", .disallowedSymbol("system")),
+        ]
+        for (source, expected) in cases {
+            #expect(throws: expected) {
+                try RLMSchemeProfile.validate(source)
+            }
+        }
+    }
+
+    @Test("rejects malformed finish arguments before evaluation")
+    func rejectsMalformedFinish() {
+        #expect(throws: RLMSchemeValidationError.invalidFinishArgument("finish answer must evaluate to a string")) {
+            try RLMSchemeProfile.validate("(finish 42 (list \"c\"))")
+        }
+        #expect(throws: RLMSchemeValidationError.invalidFinishArgument("finish evidence entries must be chunk identifier strings")) {
+            try RLMSchemeProfile.validate("(finish \"a\" (list 1 2))")
+        }
+        #expect(throws: RLMSchemeValidationError.invalidFinishArgument("finish evidence must evaluate to a list of chunk identifiers")) {
+            try RLMSchemeProfile.validate("(finish \"a\" \"b\")")
+        }
+    }
+
+    @Test("accepts well-formed finish arguments")
+    func acceptsWellFormedFinish() throws {
+        _ = try RLMSchemeProfile.validate("(finish \"answer\" (list \"c-1\"))")
+        _ = try RLMSchemeProfile.validate("(finish \"answer\" '(\"c-1\" \"c-2\"))")
+        _ = try RLMSchemeProfile.validate("(define synthesis \"a\") (define chunk-ids (list \"c-1\")) (finish synthesis chunk-ids)")
+    }
+
+    @Test("accepts a cond => clause")
+    func acceptsCondArrow() throws {
+        let validation = try RLMSchemeProfile.validate(
+            "(define x 1) (cond ((= x 1) => (lambda (v) v)) (else 0))"
+        )
+        #expect(validation.usage.specialForms.contains("cond"))
+        #expect(throws: RLMSchemeValidationError.disallowedSymbol("=>")) {
+            try RLMSchemeProfile.validate("(=> 1 2)")
+        }
+    }
+
+    @Test("rejects non-finite literals in quoted data")
+    func rejectsNonFiniteQuoted() {
+        #expect(throws: RLMSchemeValidationError.unsupportedValue("non-finite number")) {
+            try RLMSchemeProfile.validate("'1e999")
+        }
+    }
+
     @Test("rejects malformed and empty cells")
     func rejectsMalformed() {
         #expect(throws: RLMSchemeValidationError.malformedProgram("unterminated string literal")) {
