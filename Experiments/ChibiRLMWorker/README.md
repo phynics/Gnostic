@@ -81,9 +81,11 @@ evaluation, and the parent applies the CPU and address-space rlimits.
 ## Wire rules
 
 Frame payloads are one restricted S-expression written with `write` and
-prefixed with a big-endian 32-bit byte length. The worker applies the Guile
-wire-sanitization rules, but represents the placeholder and unsupported
-outcomes as characters so a cell can not forge them:
+prefixed with a big-endian 32-bit byte length. The `wire-string` rule and the
+symbol grammar match the Guile reference worker. The placeholder, unsupported,
+and truncated sentinels are characters here instead of Guile's symbols, because
+a cell can forge any symbol; the two workers therefore agree on the value model
+but not on the sentinel type.
 
 - `wire-string`: printable ASCII plus LF, TAB, and CR; every other byte becomes
   `?`.
@@ -95,8 +97,9 @@ outcomes as characters so a cell can not forge them:
   value. The character markers are a distinct type, so a cell that creates a
   symbol literally named `gnostic-symbol`, `gnostic-unsupported`, or
   `gnostic-truncated` is not confused with a sanitized or unsupported value.
-- Unsupported non-number values become `#\!`; the conversion is bounded by a
-  4096-node budget and a depth of 32, and truncation becomes `#\?`.
+- Unsupported non-number values become `#\!`. The conversion is iterative over
+  list spines and vector elements, so the 4096-node budget and depth of 32 are
+  enforced without growing the C stack; truncation becomes `#\?`.
 
 ## Limits and differences from Guile
 
@@ -113,11 +116,13 @@ outcomes as characters so a cell can not forge them:
   is bounded by the parent wall deadline, which terminates the worker. A cell
   that exhausts the heap raises `out of memory`, which the worker maps to
   `resource limit exceeded` and survives.
-- Deep non-tail recursion overflows the C stack and terminates the worker; the
-  parent observes the exit and contains it.
+- Deep non-tail recursion can overflow the inherited C stack and terminate the
+  worker, or be cut by the parent wall deadline first, depending on the stack
+  limit; either way the parent contains it and the worker is terminated.
 
 ## Scope and deferrals
 
 macOS support and benchmark measurements are out of scope for this increment and
-are deferred to issue #181. This worker is Linux-only and unmeasured, and the
-issue checklist records those items as deferred.
+are deferred to issue #181. This worker is Linux-only and unmeasured; the
+deferral is recorded in PR #340 and accepted here, and the GitHub issue
+checklist is updated separately.

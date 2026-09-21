@@ -369,18 +369,25 @@ struct RLMChibiWorkerSessionTests {
         #expect(Date().timeIntervalSince(started) < 20)
     }
 
-    @Test("deep non-tail recursion is contained as a worker exit")
+    @Test("deep non-tail recursion is bounded and contained")
     func deepRecursionIsContained() async throws {
         let host = RLMChibiRecordingHost()
-        let session = RLMChibiTestSupport.session(host: host)
+        let session = RLMChibiTestSupport.session(host: host) { configuration in
+            configuration.wallDeadlineSeconds = 2
+            configuration.terminationGraceSeconds = 0.2
+        }
         try await session.start()
 
+        let started = Date()
         let outcome = await session.evaluate(source: "(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1))))) (deep 100000)")
-        guard case .workerExited = outcome else {
+        switch outcome {
+        case .workerExited, .timedOut:
+            break
+        default:
             Issue.record("expected deep recursion to be contained, got \(outcome)")
-            return
         }
         #expect(await session.isRunning == false)
+        #expect(Date().timeIntervalSince(started) < 10)
     }
 
     @Test("a three-argument leaf query is rejected before evaluation")
@@ -467,6 +474,51 @@ struct RLMChibiWorkerSessionTests {
         let source = "(list " + (0..<count).map(String.init).joined(separator: " ") + ")"
         let outcome = await session.evaluate(source: source)
         #expect(outcome == .value(.list((0..<count).map { .integer($0) })))
+
+        await session.shutdown()
+    }
+
+    @Test("large flat lists are converted without overflowing the C stack")
+    func largeFlatListIsConverted() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let count = 3000
+        let outcome = await session.evaluate(source: "(make-list \(count) 1)")
+        #expect(outcome == .value(.list(Array(repeating: .integer(1), count: count))))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("the conversion budget truncates a flat list without crashing")
+    func largeFlatListTruncates() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(make-list 5000 1)")
+        guard case let .value(.list(elements)?) = outcome else {
+            Issue.record("expected a truncated list value, got \(outcome)")
+            return
+        }
+        #expect(elements.count == 4096)
+        #expect(elements.last == .character("?"))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("large host-call argument lists are converted without crashing")
+    func largeHostCallArgumentList() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(length (corpus-read-many (make-list 1500 \"c\")))")
+        #expect(outcome == .value(.integer(1500)))
+        #expect(await session.isRunning)
 
         await session.shutdown()
     }

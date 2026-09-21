@@ -15,7 +15,6 @@ enum RLMChibiTestSupport {
         let candidates = [
             ProcessInfo.processInfo.environment["GNOSTIC_CHIBI"],
             "/usr/local/bin/chibi-scheme",
-            "/opt/homebrew/bin/chibi-scheme",
         ]
         for candidate in candidates {
             guard let candidate, FileManager.default.isExecutableFile(atPath: candidate) else { continue }
