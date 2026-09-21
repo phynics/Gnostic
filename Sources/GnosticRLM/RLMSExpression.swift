@@ -246,20 +246,40 @@ private struct Parser {
             case "\"": output.append("\"")
             case "\\": output.append("\\")
             case "x":
-                var hex = ""
-                while let digit = peek(), digit.isHexDigit {
-                    hex.append(digit)
-                    _ = advance()
-                }
+                let hex = consumeHexDigits(upTo: 2)
                 if peek() == ";" { _ = advance() }
-                guard let scalar = UInt32(hex, radix: 16), let unicode = Unicode.Scalar(scalar) else {
-                    throw RLMSExpressionParseError.invalidEscape("\\x" + hex)
+                output.unicodeScalars.append(try unicodeScalar(from: hex, escape: "\\x"))
+            case "u":
+                guard peek() == "{" else {
+                    throw RLMSExpressionParseError.invalidEscape("\\u")
                 }
-                output.unicodeScalars.append(unicode)
+                _ = advance()
+                let hex = consumeHexDigits(upTo: 6)
+                guard peek() == "}" else {
+                    throw RLMSExpressionParseError.invalidEscape("\\u{" + hex)
+                }
+                _ = advance()
+                output.unicodeScalars.append(try unicodeScalar(from: hex, escape: "\\u{"))
             default:
                 throw RLMSExpressionParseError.invalidEscape("\\" + String(escaped))
             }
         }
+    }
+
+    private mutating func consumeHexDigits(upTo limit: Int) -> String {
+        var hex = ""
+        while hex.count < limit, let digit = peek(), digit.isHexDigit {
+            hex.append(digit)
+            _ = advance()
+        }
+        return hex
+    }
+
+    private func unicodeScalar(from hex: String, escape: String) throws -> Unicode.Scalar {
+        guard let scalar = UInt32(hex, radix: 16), let unicode = Unicode.Scalar(scalar) else {
+            throw RLMSExpressionParseError.invalidEscape(escape + hex)
+        }
+        return unicode
     }
 
     private mutating func parseAtom() throws -> RLMSExpression {
