@@ -197,5 +197,8 @@ Timeline identity, Workspace attachment intent, Turn admission and
 serialization, idempotency and replay, permission correlation, and
 advertisement. Your backend sees a Timeline identifier and a message.
 
-See also [ADR 0002 — Gnostic identity versus backend state](../Architecture/ADRs/0002-gnostic-identity-vs-backend-state.md)
-and [ADR 0005 — Core PositronicKit dependency boundary](../Architecture/ADRs/0005-core-positronic-dependency-boundary.md).
+See also [ADR 0002 — Gnostic identity versus backend state](../Architecture/ADRs/0002-gnostic-identity-vs-backend-state.md),
+[ADR 0005 — Core PositronicKit dependency boundary](../Architecture/ADRs/0005-core-positronic-dependency-boundary.md),
+and [ADR 0010 — Letta as the first non-Positronic Ascendant backend](../Architecture/ADRs/0010-letta-ascendant-backend-evaluation.md).
+ADR 0010 records a fixture-backed, optional prototype that implements this
+contract outside `GnosticCore`.

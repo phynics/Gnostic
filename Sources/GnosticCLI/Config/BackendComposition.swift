@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import GnosticCore
+import GnosticLettaBackend
 import PositronicKit
 
 /// The single CLI composition source for Ascendant backend kinds.
@@ -30,10 +31,15 @@ public struct BackendComposition: Sendable {
 
     /// The CLI's production composition.
     ///
-    /// Carries the bundled Positronic backend. Its factory constructs the
-    /// configured language model only when a backend is materialized, so
-    /// configuration listing stays free of credentials and network access.
-    public static let `default` = BackendComposition()
+    /// Carries the bundled Positronic backend and the optional Letta backend.
+    /// Their factories construct a model or a remote client only when a
+    /// backend is materialized, so configuration listing stays free of
+    /// credentials and network access.
+    public static var `default`: BackendComposition {
+        var composition = BackendComposition()
+        composition.registerLettaBackend()
+        return composition
+    }
 
     /// Every backend kind this composition can build.
     public var registeredKinds: Set<String> { registry.registeredKinds }
@@ -93,6 +99,25 @@ public struct BackendComposition: Sendable {
         var copy = self
         copy.installPositronicBackend()
         return NodeRuntimeAdapters(ascendants: copy.registry)
+    }
+
+    /// Installs the optional Letta backend over this composition.
+    ///
+    /// The kind is registered with its advertised settings schema, so
+    /// `gnostic config backend keys` lists the Letta keys without constructing
+    /// a backend or contacting a Letta server.
+    private mutating func registerLettaBackend() {
+        registry.registerBackend(
+            kind: LettaAscendantBackend.kind,
+            settings: LettaAscendantBackend.settingsSchema
+        ) { ascendant, backend, services, timelines in
+            try LettaAscendantBackend(
+                ascendant: ascendant,
+                configuration: backend,
+                services: services,
+                timelines: timelines
+            )
+        }
     }
 
     /// Installs the bundled Positronic factory over this composition's
