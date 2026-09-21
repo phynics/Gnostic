@@ -41,6 +41,7 @@ The current compatibility declaration is [0.4.2](../Compatibility/0.4.2.md); it 
 
 - [Implementing an Ascendant backend](../Extending/ascendant-backends.md)
 - [Implementing a Workspace adapter](../Extending/workspace-adapters.md)
+- [ACP SDK evaluation](ACP-SDK-Evaluation.md)
 
 ## Architecture exceptions
 
