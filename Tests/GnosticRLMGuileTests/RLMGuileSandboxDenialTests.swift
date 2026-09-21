@@ -35,11 +35,41 @@ struct RLMGuileSandboxDenialTests {
             "(call/cc (lambda (k) (k 1)))",
             "(dynamic-link \"libc.so.6\")",
             "(make-thread (lambda () 1))",
+            "(throw 'x 1)",
+            "(catch #t (lambda () 1) (lambda args 2))",
+            "(values 1 2)",
+            "(call-with-values (lambda () (values 1 2)) +)",
+            "(call-with-prompt 'tag (lambda () 1) (lambda (k v) v))",
+            "(abort-to-prompt 'tag)",
         ]
         for (index, source) in denied.enumerated() {
             let frame = try worker.evaluate(source, cellID: index + 2)
             guard case let .failed(failure) = frame else {
                 Issue.record("expected the sandbox to reject \(source), got \(frame)")
+                continue
+            }
+            #expect(!failure.message.isEmpty)
+        }
+    }
+
+    @Test("a raw throw cannot forge a finished frame")
+    func throwBypassYieldsFailedFrame() throws {
+        let worker = try RLMGuileRawWorker(runID: "raw-throw")
+        defer { worker.shutdown() }
+
+        guard case .ready = try worker.initialize() else {
+            Issue.record("worker did not report ready")
+            return
+        }
+
+        let attempts = [
+            "(throw 'gnostic-finish 42 \"x\")",
+            "(throw 'gnostic-finish \"a\")",
+        ]
+        for (index, source) in attempts.enumerated() {
+            let frame = try worker.evaluate(source, cellID: index + 1)
+            guard case let .failed(failure) = frame else {
+                Issue.record("expected a failed frame for \(source), got \(frame)")
                 continue
             }
             #expect(!failure.message.isEmpty)
