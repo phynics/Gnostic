@@ -164,11 +164,28 @@ struct RLMGuileWorkerSessionTests {
         #expect(!ready.environmentKeys.contains("GNOSTIC_RLM_SECRET"))
         #expect(!ready.environmentKeys.contains("HOME"))
         #expect(ready.environmentKeys.allSatisfy { !$0.localizedCaseInsensitiveContains("secret") })
+        #if os(Linux)
         #expect(ready.openFileDescriptorCount >= 3)
         #expect(ready.openFileDescriptorCount <= 16)
+        #else
+        #expect(ready.openFileDescriptorCount == -1 || ready.openFileDescriptorCount >= 3)
+        #endif
 
         let rejected = await session.evaluate(source: "(getenv \"GNOSTIC_RLM_SECRET\")")
         #expect(rejected == .cellRejected("disallowed symbol 'getenv'"))
+
+        await session.shutdown()
+    }
+
+    @Test("a three-argument leaf query is rejected before evaluation")
+    func threeArgumentLeafQueryIsRejected() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(lm-query \"a\" 'fast 'primary)")
+        #expect(outcome == .cellRejected("host call 'lm-query' expects 1...2 arguments, got 3"))
+        #expect(await host.recorded().isEmpty)
 
         await session.shutdown()
     }

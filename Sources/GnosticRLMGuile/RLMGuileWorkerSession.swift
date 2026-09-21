@@ -278,7 +278,7 @@ public actor RLMGuileWorkerSession {
         }
     }
 
-    private static func operation(for call: RLMSchemeHostCall) -> RLMHostOperation? {
+    static func operation(for call: RLMSchemeHostCall) -> RLMHostOperation? {
         switch call.name {
         case "corpus-search":
             guard call.arguments.count == 2,
@@ -334,6 +334,7 @@ public actor RLMGuileWorkerSession {
     }
 
     private static func tier(from arguments: [RLMSExpression]) -> RLMLeafModelTier? {
+        guard (1...2).contains(arguments.count) else { return nil }
         guard arguments.count == 2 else { return .fast }
         guard case let .symbol(name) = arguments[1], let tier = RLMLeafModelTier(rawValue: name) else {
             return nil

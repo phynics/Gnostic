@@ -60,7 +60,17 @@ public struct RLMGuileWorkerConfiguration: Sendable, Equatable {
     }
 
     public static var defaultExecutablePath: String {
-        ProcessInfo.processInfo.environment["GNOSTIC_GUILE"] ?? "/usr/bin/guile"
+        let candidates = [
+            ProcessInfo.processInfo.environment["GNOSTIC_GUILE"],
+            "/usr/bin/guile",
+            "/opt/homebrew/bin/guile",
+            "/usr/local/bin/guile",
+        ]
+        for candidate in candidates {
+            guard let candidate, FileManager.default.isExecutableFile(atPath: candidate) else { continue }
+            return candidate
+        }
+        return "/usr/bin/guile"
     }
 
     /// A cleared environment that carries no credentials and no unrelated
