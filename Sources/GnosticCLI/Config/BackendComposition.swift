@@ -131,9 +131,13 @@ public struct BackendComposition: Sendable {
         ) { ascendant, backend, services, timelines in
             let configuration = PositronicBackendConfiguration(backend: backend)
             let selectedNames = try Self.selectedExtensionNames(for: ascendant, backend: backend)
-            let dedicatedModel: (any PositronicContributionModelService)? = selectedNames.isEmpty || configuration.provider == nil
-                ? nil
-                : PositronicContributionModelAdapter(client: ConfiguredLLMService.make(from: configuration))
+            let needsDedicatedModel = selectedNames.contains { extensions[$0]?.requiresModelService == true }
+            let modelClient: any LLMStreamClient = configuration.provider != nil
+                ? ConfiguredLLMService.make(from: configuration)
+                : UnconfiguredLLMService()
+            let dedicatedModel: (any PositronicContributionModelService)? = needsDedicatedModel && configuration.provider != nil
+                ? PositronicContributionModelAdapter(client: modelClient)
+                : nil
             let allowedWorkspaceIDs = Set(
                 timelines
                     .filter { $0.operatingAscendantID == ascendant.id }
@@ -154,15 +158,12 @@ public struct BackendComposition: Sendable {
                 extensions: extensions,
                 runtimeContext: runtimeContext
             )
-            let languageModel: any LLMStreamClient = configuration.provider != nil
-                ? ConfiguredLLMService.make(from: configuration)
-                : UnconfiguredLLMService()
             return try await PositronicAscendantAdapter(
                 ascendant: ascendant,
                 backend: backend,
                 services: services,
                 timelines: timelines,
-                languageModel: languageModel,
+                languageModel: modelClient,
                 contributions: contributions
             )
         }

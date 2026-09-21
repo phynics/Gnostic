@@ -107,7 +107,7 @@ public struct RLMRootLoop: Sendable {
         case let .cell(cell):
             guard cell.estimatedByteCount <= budget.maxSchemeCellBytes else {
                 metrics.rootCellRejections += 1
-                return terminate(.failed(.cellRejected("cell exceeds \(budget.maxSchemeCellBytes) bytes")))
+                return requestNextRootCell()
             }
             let tokens = tokenEstimator.estimateTokens(for: cell.textualDescription)
             do {
@@ -123,7 +123,7 @@ public struct RLMRootLoop: Sendable {
         case let .scheme(source):
             guard !source.isEmpty, source.utf8.count <= budget.maxSchemeCellBytes else {
                 metrics.rootCellRejections += 1
-                return terminate(.failed(.cellRejected("cell exceeds \(budget.maxSchemeCellBytes) bytes")))
+                return requestNextRootCell()
             }
             let tokens = tokenEstimator.estimateTokens(for: source)
             do {
@@ -146,6 +146,18 @@ public struct RLMRootLoop: Sendable {
         pendingIndex = 0
         phase = .evaluating
         return advanceEvaluation()
+    }
+
+    /// Rejects a worker cell and asks the root model for a bounded replacement.
+    ///
+    /// The root iteration containing the rejected cell is already consumed. The
+    /// next request therefore advances the same root iteration budget as any
+    /// other continuation.
+    public mutating func rejectScheduledCell(_ failure: RLMFailure) -> RLMLoopDirective {
+        guard phase == .scheduling else { return .lateResultFenced }
+        _ = failure
+        metrics.rootCellRejections += 1
+        return requestNextRootCell()
     }
 
     /// Accepts the observation produced by servicing the current operation.

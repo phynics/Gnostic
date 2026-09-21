@@ -27,6 +27,8 @@ public struct PositronicExtension: Sendable {
     public let name: String
     /// The settings keys this extension understands, before name-spacing.
     public let settingKeys: [AscendantBackendSettingsSchema.Key]
+    /// Whether the extension needs a dedicated model service at runtime.
+    public let requiresModelService: Bool
     /// Builds the contribution for one Ascendant.
     public let factory: Factory
 
@@ -40,6 +42,7 @@ public struct PositronicExtension: Sendable {
     public init(
         name: String,
         settingKeys: [AscendantBackendSettingsSchema.Key] = [],
+        requiresModelService: Bool = false,
         factory: @escaping Factory
     ) {
         // Scoping strips the `"\(name)."` prefix from an envelope, so a dot in
@@ -52,6 +55,7 @@ public struct PositronicExtension: Sendable {
         )
         self.name = name
         self.settingKeys = settingKeys
+        self.requiresModelService = requiresModelService
         self.factory = factory
     }
 }

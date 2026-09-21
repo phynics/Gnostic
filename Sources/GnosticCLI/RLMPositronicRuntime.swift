@@ -35,10 +35,19 @@ struct PositronicContributionModelAdapter: PositronicContributionModelService {
 private struct RLMRootModelAdapter: RLMRootModelClient {
     let model: any PositronicContributionModelService
 
+    private static let maximumHistoryRecords = 16
+    private static let maximumObservationCharacters = 2_048
+
     func nextCell(request: RLMRootRequest) async throws -> RLMRootModelStep {
-        let history = request.history.map { record in
-            "operation=\(record.operation.textualDescription)\nobservation=\(record.observation.textualDescription)"
+        let recentHistory = request.history.suffix(Self.maximumHistoryRecords)
+        let omittedHistory = request.history.count - recentHistory.count
+        let history = recentHistory.map { record in
+            let observation = record.observation.textualDescription
+            let boundedObservation = String(observation.prefix(Self.maximumObservationCharacters))
+            let truncation = boundedObservation.count < observation.count ? "\n[observation truncated]" : ""
+            return "operation=\(record.operation.textualDescription)\nobservation=\(boundedObservation)\(truncation)"
         }.joined(separator: "\n---\n")
+        let historyHeader = omittedHistory > 0 ? "[\(omittedHistory) older observations omitted]\n" : ""
         let prompt = """
         You are the root planner for a bounded recursive Workspace analysis.
         Return exactly one Scheme expression for the restricted RLM profile.
@@ -53,7 +62,7 @@ private struct RLMRootModelAdapter: RLMRootModelClient {
         Remaining root iterations: \(request.remaining.rootIterations)
         Remaining leaf calls: \(request.remaining.leafModelCalls)
         History:
-        \(history.isEmpty ? "(none)" : history)
+        \(historyHeader)\(history.isEmpty ? "(none)" : history)
         """
         let response = try await model.generate(prompt: prompt, tier: .primary)
         let source = Self.schemeSource(response)
@@ -83,24 +92,32 @@ private struct RLMRootModelAdapter: RLMRootModelClient {
 private struct RLMLeafModelAdapter: RLMLeafModelClient {
     let model: any PositronicContributionModelService
 
+    private static let maximumConcurrentQueries = 8
+
     func query(prompts: [String], tier: RLMLeafModelTier) async throws -> [String] {
         let modelTier: PositronicContributionModelTier = switch tier {
         case .primary: .primary
         case .utility: .utility
         case .fast: .fast
         }
-        return try await withThrowingTaskGroup(of: (Int, String).self, returning: [String].self) { group in
-            for (index, prompt) in prompts.enumerated() {
-                group.addTask {
-                    (index, try await model.generate(prompt: prompt, tier: modelTier))
+        var results: [(Int, String)] = []
+        for start in stride(from: 0, to: prompts.count, by: Self.maximumConcurrentQueries) {
+            let end = min(start + Self.maximumConcurrentQueries, prompts.count)
+            let batch = try await withThrowingTaskGroup(of: (Int, String).self, returning: [(Int, String)].self) { group in
+                for index in start..<end {
+                    group.addTask {
+                        (index, try await model.generate(prompt: prompts[index], tier: modelTier))
+                    }
                 }
+                var batchResults: [(Int, String)] = []
+                for try await result in group {
+                    batchResults.append(result)
+                }
+                return batchResults
             }
-            var results: [(Int, String)] = []
-            for try await result in group {
-                results.append(result)
-            }
-            return results.sorted { $0.0 < $1.0 }.map(\.1)
+            results.append(contentsOf: batch)
         }
+        return results.sorted { $0.0 < $1.0 }.map(\.1)
     }
 }
 
@@ -122,6 +139,8 @@ protocol RLMWorkerDriver: Sendable {
 
 struct GuileWorkerDriver: RLMWorkerDriver {
     let session: RLMGuileWorkerSession
+    let wallTimeLimit: Duration
+    let outputLimitBytes: Int
 
     func start() async throws { try await session.start() }
 
@@ -131,8 +150,8 @@ struct GuileWorkerDriver: RLMWorkerDriver {
         case let .finished(answer, evidenceIDs): .finished(answer: answer, evidenceIDs: evidenceIDs)
         case let .schemeFailed(message): .failed(.evaluatorFailed(message))
         case let .cellRejected(message): .failed(.cellRejected(message))
-        case .timedOut: .failed(.wallTimeLimitReached(limit: .seconds(0)))
-        case .outputLimitReached: .failed(.outputLimitReached(limit: RLMRunBudget.standard.maxSchemeOutputBytes))
+        case .timedOut: .failed(.wallTimeLimitReached(limit: wallTimeLimit))
+        case .outputLimitReached: .failed(.outputLimitReached(limit: outputLimitBytes))
         case let .hostResultRejected(message): .failed(.evaluatorFailed(message))
         case .cancelled: .cancelled
         case .fenced: .fenced
@@ -149,6 +168,8 @@ struct GuileWorkerDriver: RLMWorkerDriver {
 #if os(Linux)
 struct ChibiWorkerDriver: RLMWorkerDriver {
     let session: RLMChibiWorkerSession
+    let wallTimeLimit: Duration
+    let outputLimitBytes: Int
 
     func start() async throws { try await session.start() }
 
@@ -158,8 +179,8 @@ struct ChibiWorkerDriver: RLMWorkerDriver {
         case let .finished(answer, evidenceIDs): .finished(answer: answer, evidenceIDs: evidenceIDs)
         case let .schemeFailed(message): .failed(.evaluatorFailed(message))
         case let .cellRejected(message): .failed(.cellRejected(message))
-        case .timedOut: .failed(.wallTimeLimitReached(limit: .seconds(0)))
-        case .outputLimitReached: .failed(.outputLimitReached(limit: RLMRunBudget.standard.maxSchemeOutputBytes))
+        case .timedOut: .failed(.wallTimeLimitReached(limit: wallTimeLimit))
+        case .outputLimitReached: .failed(.outputLimitReached(limit: outputLimitBytes))
         case let .hostResultRejected(message): .failed(.evaluatorFailed(message))
         case .cancelled: .cancelled
         case .fenced: .fenced
@@ -180,6 +201,7 @@ actor RLMWorkerHostState {
     private let budget: RLMRunBudget
     private let progressSink: (any RLMProgressSink)?
     private var snapshot: RLMCorpusSnapshot?
+    private var leafModelCalls = 0
     private var records: [(RLMHostOperation, RLMHostObservation)] = []
 
     init(
@@ -220,6 +242,10 @@ actor RLMWorkerHostState {
             let chunks = snapshot.chunks(ids: Array(chunkIDs.prefix(budget.maxChunksPerRead)))
             observation = .corpusRead(chunks: chunks, bytesRead: chunks.reduce(0) { $0 + $1.byteCount })
         case let .leafQuery(prompts, tier):
+            guard leafModelCalls + prompts.count <= budget.maxLeafModelCalls else {
+                throw RLMFailure.leafCallLimitReached(limit: budget.maxLeafModelCalls)
+            }
+            leafModelCalls += prompts.count
             let responses = try await leafModel.query(prompts: prompts, tier: tier)
             observation = .leaf(
                 responses: responses,
@@ -275,8 +301,10 @@ actor RLMWorkerCellEvaluator: RLMSchemeCellEvaluator, RLMRecordedObservationProv
                 guard let snapshot else {
                     throw RLMFailure.evaluatorFailed("worker finished before snapshot binding")
                 }
-                let evidence = evidenceIDs.compactMap { id -> RLMEvidenceReference? in
-                    guard let chunk = snapshot.chunk(id: id) else { return nil }
+                let evidence = try evidenceIDs.map { id -> RLMEvidenceReference in
+                    guard let chunk = snapshot.chunk(id: id) else {
+                        throw RLMFailure.evidenceRejected(.unknownChunk(id))
+                    }
                     return RLMEvidenceReference(
                         chunkID: chunk.id,
                         path: chunk.path,
@@ -328,16 +356,26 @@ enum RLMWorkerFactory {
         }
         switch selection {
         case .guile:
-            return GuileWorkerDriver(session: RLMGuileWorkerSession(
-                configuration: RLMGuileWorkerConfiguration(runID: runID, workerScriptPath: scriptPath),
+            let configuration = RLMGuileWorkerConfiguration(runID: runID, workerScriptPath: scriptPath)
+            return GuileWorkerDriver(
+                session: RLMGuileWorkerSession(
+                configuration: configuration,
                 host: RLMGuileClosureHost(handler: { operation in try await host.service(operation) })
-            ))
+                ),
+                wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
+                outputLimitBytes: configuration.maxOutputBytes
+            )
         case .chibi:
             #if os(Linux)
-            return ChibiWorkerDriver(session: RLMChibiWorkerSession(
-                configuration: RLMChibiWorkerConfiguration(runID: runID, workerScriptPath: scriptPath),
+            let configuration = RLMChibiWorkerConfiguration(runID: runID, workerScriptPath: scriptPath)
+            return ChibiWorkerDriver(
+                session: RLMChibiWorkerSession(
+                configuration: configuration,
                 host: RLMChibiClosureHost(handler: { operation in try await host.service(operation) })
-            ))
+                ),
+                wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
+                outputLimitBytes: configuration.maxOutputBytes
+            )
             #else
             throw RLMFailure.evaluatorFailed("Chibi worker is unavailable on this platform")
             #endif
@@ -352,18 +390,12 @@ struct RLMRunAssembly {
 
 enum RLMRunAssemblyFactory {
     static func make(
-        question: String,
-        workspaceID: UUID,
-        source: any RLMCorpusSource,
         model: any PositronicContributionModelService,
         worker: RLMWorkerSelection,
         budget: RLMRunBudget,
         policy: RLMCorpusPolicy,
         progressSink: (any RLMProgressSink)?
     ) throws -> RLMRunAssembly {
-        _ = question
-        _ = workspaceID
-        _ = source
         let leafModel = RLMLeafModelAdapter(model: model)
         let host = RLMWorkerHostState(
             leafModel: leafModel,

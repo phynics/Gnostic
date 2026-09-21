@@ -206,7 +206,6 @@ struct PositronicExtensionSelectionTests {
         )
         let runtime = PositronicContributionRuntimeContext(
             workspaceReader: nil,
-            permission: AscendantBackendServices.empty.permission,
             modelService: nil,
             allowedWorkspaceIDs: [workspaceID]
         )

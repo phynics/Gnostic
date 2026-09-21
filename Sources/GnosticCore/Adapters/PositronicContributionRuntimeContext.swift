@@ -39,18 +39,15 @@ public protocol PositronicContributionWorkspaceReader: Sendable {
 /// path used by ordinary Positronic Ascendants.
 public struct PositronicContributionRuntimeContext: Sendable {
     public let workspaceReader: (any PositronicContributionWorkspaceReader)?
-    public let permission: any AscendantBackendPermissionService
     public let modelService: (any PositronicContributionModelService)?
     public let allowedWorkspaceIDs: Set<UUID>
 
     public init(
         workspaceReader: (any PositronicContributionWorkspaceReader)?,
-        permission: any AscendantBackendPermissionService,
         modelService: (any PositronicContributionModelService)?,
         allowedWorkspaceIDs: Set<UUID>
     ) {
         self.workspaceReader = workspaceReader
-        self.permission = permission
         self.modelService = modelService
         self.allowedWorkspaceIDs = allowedWorkspaceIDs
     }
@@ -64,7 +61,6 @@ public struct PositronicContributionRuntimeContext: Sendable {
     ) {
         self.init(
             workspaceReader: services.workspace.map(BackendWorkspaceFileReader.init(service:)),
-            permission: services.permission,
             modelService: modelService,
             allowedWorkspaceIDs: allowedWorkspaceIDs
         )

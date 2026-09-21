@@ -68,10 +68,14 @@ There is no fourth layer.
    second Ascendant. When a selected contribution needs host capabilities, the
    composition root may bind a `PositronicContributionRuntimeContext` to that
    Ascendant. The context contains only Gnostic-owned, typed capabilities: the
-   selected Ascendant's read-only Workspace file reader, mediated permission
-   service, an optional dedicated model service, and the attached Workspace IDs.
-   It carries no raw filesystem paths, Workspace implementation objects,
-   credentials, or process-wide registry.
+   selected Ascendant's read-only Workspace file reader, an optional dedicated
+   model service, and the attached Workspace IDs. Permission mediation remains
+   at the PositronicKit tool boundary: a contribution tool that declares
+   `requiresPermission` is approved by the host's `AscendantToolApprovalPolicy`
+   before its `execute` method can capture a Workspace or call a subordinate
+   model. The runtime context does not carry a second permission client, which
+   avoids a duplicate approval request. It carries no raw filesystem paths,
+   Workspace implementation objects, credentials, or process-wide registry.
 
 The following invariants hold across the layers:
 

@@ -117,9 +117,6 @@ struct AnalyzeWorkspaceCorpusTool: PKTool, Sendable {
         let assembly: RLMRunAssembly
         do {
             assembly = try RLMRunAssemblyFactory.make(
-                question: question,
-                workspaceID: workspaceID,
-                source: source,
                 model: model,
                 worker: worker,
                 budget: .standard,
@@ -198,10 +195,6 @@ struct AnalyzeWorkspaceCorpusTool: PKTool, Sendable {
                 throw ToolError.invalidArgument("pathPrefixes", expected: "array of strings", got: "array with non-string item")
             }
             prefixes = values.compactMap(\.asString)
-        } else if let text = raw.asString {
-            prefixes = text.split(separator: ",", omittingEmptySubsequences: true).map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
         } else {
             throw ToolError.invalidArgument("pathPrefixes", expected: "array of strings", got: "non-string and non-array")
         }
@@ -228,7 +221,8 @@ enum RLMPositronicExtension {
         name: "rlm",
         settingKeys: [
             .init(name: "worker", summary: "Bounded Scheme worker to use: guile or chibi."),
-        ]
+        ],
+        requiresModelService: true
     ) { scope in
         guard let runtime = scope.runtimeContext else {
             throw AscendantBackendError.invalidConfiguration("RLM extension has no bound runtime capability context")

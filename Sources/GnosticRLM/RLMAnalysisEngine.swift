@@ -156,7 +156,11 @@ public struct RLMAnalysisEngine: Sendable {
                     _ = loop.cancel()
                     return result(from: loop.termination, metrics: loop.runMetrics, snapshotID: snapshot.id, cancelled: true)
                 } catch let failure as RLMFailure {
-                    directive = loop.fail(failure)
+                    if case .cellRejected = failure {
+                        directive = loop.rejectScheduledCell(failure)
+                    } else {
+                        directive = loop.fail(failure)
+                    }
                 } catch {
                     directive = loop.fail(.evaluatorFailed(String(describing: error)))
                 }

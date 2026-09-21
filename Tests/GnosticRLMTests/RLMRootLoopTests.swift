@@ -136,11 +136,11 @@ struct RLMRootLoopTests {
         var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: budget)
         _ = loop.start()
         let cell = RLMScriptedCell([.corpusSearch(query: "retirement lease generation", limit: 4)])
-        guard case let .failed(failure) = loop.receiveRootStep(.cell(cell)) else {
-            Issue.record("expected a structured failure")
+        guard case .requestRootCell = loop.receiveRootStep(.cell(cell)) else {
+            Issue.record("expected the oversized cell to be rejected and retried")
             return
         }
-        #expect(failure == .cellRejected("cell exceeds 4 bytes"))
+        #expect(loop.runMetrics.rootCellRejections == 1)
     }
 
     @Test("services a search then finishes")
