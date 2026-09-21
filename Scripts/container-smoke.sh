@@ -9,6 +9,8 @@ node --version
 npm --version
 node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)'
 guile --version | grep -F "GNU Guile) 3.0."
+chibi-scheme -V | grep -F "chibi-scheme 0.12"
+test "$(chibi-scheme -p '(+ 2 3)')" = "5"
 test -w /workspace/.swiftpm-cache
 mosquitto -c /etc/mosquitto/gnostic.conf -d
 smoke_output=$(mktemp)
