@@ -24,7 +24,7 @@ struct JSONRPCSessionTests {
         #expect(try output.responses().last?.result != nil)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":3,"method":"unknown"}"#))
-        try await waitForResponseCount(3, output: output)
+        await waitForResponseCount(3, output: output)
         #expect(try output.responses().last?.error?.code == JSONRPCErrorCode.methodNotFound.rawValue)
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"#))
@@ -56,7 +56,7 @@ struct JSONRPCSessionTests {
 
         await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
         await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"session/prompt"}"#))
-        try await waitForResponseCount(2, output: output)
+        await waitForResponseCount(2, output: output)
         let response = try #require(output.responses().last)
         #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
         #expect(response.error?.data == .dictionary(["gnosticCode": .string("approvalRequired")]))
@@ -83,10 +83,26 @@ struct JSONRPCSessionTests {
         await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
         await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"long.running"}"#))
         await session.receive(frame(#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"id":2}}"#))
-        try await waitForResponseCount(2, output: output)
+        await waitForResponseCount(2, output: output)
         let response = try #require(output.responses().last)
         #expect(response.id == .number(2))
         #expect(response.error?.code == -32800)
+    }
+
+    @Test("a slow but healthy response is awaited instead of failing a wall-clock deadline")
+    func slowResponseIsAwaited() async throws {
+        let output = JSONRPCOutputCapture()
+        let session = JSONRPCSession(handler: { _ in
+            try await Task.sleep(for: .seconds(1.5))
+            return .boolean(true)
+        }, output: output.append)
+
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
+        await session.receive(frame(#"{"jsonrpc":"2.0","id":2,"method":"slow.running"}"#))
+        await waitForResponseCount(2, output: output)
+        let response = try #require(output.responses().last)
+        #expect(response.id == .number(2))
+        #expect(response.result != nil)
     }
 
     @Test("cancel rejects a floating identifier at the signed integer upper boundary")
@@ -141,14 +157,21 @@ private actor SessionSignal {
     }
 }
 
-private func waitForResponseCount(_ expected: Int, output: JSONRPCOutputCapture) async throws {
-    let clock = ContinuousClock()
-    let deadline = clock.now + .seconds(1)
-    while clock.now < deadline {
-        if try output.responses().count >= expected { return }
-        await Task.yield()
+private func waitForResponseCount(_ expected: Int, output: JSONRPCOutputCapture) async {
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask { await output.waitForResponseCount(expected) }
+        group.addTask {
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {
+                return
+            }
+            Issue.record("timed out after 30 seconds waiting for \(expected) JSON-RPC responses")
+        }
+        await group.next()
+        group.cancelAll()
+        await group.waitForAll()
     }
-    Issue.record("timed out waiting for \(expected) JSON-RPC responses")
 }
 
 private func frame(_ json: String) -> Data {
@@ -156,18 +179,60 @@ private func frame(_ json: String) -> Data {
 }
 
 private final class JSONRPCOutputCapture: @unchecked Sendable {
+    private struct Waiter {
+        let expected: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     private let lock = NSLock()
     private var data = Data()
+    private var waiters: [UUID: Waiter] = [:]
 
     func append(_ bytes: Data) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         data.append(bytes)
+        let count = frameCount
+        let ready = waiters.filter { count >= $0.value.expected }
+        ready.keys.forEach { waiters[$0] = nil }
+        lock.unlock()
+        ready.values.forEach { $0.continuation.resume() }
     }
 
     func responses() throws -> [JSONRPCResponse] {
         lock.lock(); defer { lock.unlock() }
         return try data.split(separator: 0x0A).map { line in
             try JSONDecoder().decode(JSONRPCResponse.self, from: Data(line))
+        }
+    }
+
+    func waitForResponseCount(_ expected: Int) async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if frameCount >= expected || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiters[id] = Waiter(expected: expected, continuation: continuation)
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            cancelWaiter(id)
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        lock.lock()
+        let waiter = waiters.removeValue(forKey: id)
+        lock.unlock()
+        waiter?.continuation.resume()
+    }
+
+    private var frameCount: Int {
+        data.reduce(into: 0) { count, byte in
+            if byte == 0x0A { count += 1 }
         }
     }
 }
