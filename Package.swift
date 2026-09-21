@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
         .library(name: "GnosticLettaBackend", targets: ["GnosticLettaBackend"]),
+        .library(name: "GnosticRLMGuile", targets: ["GnosticRLMGuile"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
@@ -58,6 +59,12 @@ let package = Package(
             ],
             path: "Tests/Support/GnosticLettaTestSupport"
         ),
+        .target(
+            name: "GnosticRLMGuile",
+            dependencies: [
+                "GnosticRLM",
+            ]
+        ),
         .testTarget(
             name: "GnosticPositronicAtlasTests",
             dependencies: [
@@ -89,6 +96,13 @@ let package = Package(
                 "GnosticLettaBackend",
                 "GnosticCore",
                 "GnosticLettaTestSupport",
+            ]
+        ),
+        .testTarget(
+            name: "GnosticRLMGuileTests",
+            dependencies: [
+                "GnosticRLMGuile",
+                "GnosticRLM",
             ]
         ),
         .executableTarget(

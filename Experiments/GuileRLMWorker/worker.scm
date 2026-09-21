@@ -1,0 +1,298 @@
+;;; Gnostic RLM Scheme 0 reference worker (GNU Guile 3.0).
+;;;
+;;; This worker is an experiment. It reads length-prefixed frames from stdin,
+;;; evaluates validated cells in one run-local sandbox module, and services
+;;; bounded host calls over the same framed channel. It is not enabled in any
+;;; production composition.
+
+(use-modules (ice-9 sandbox)
+             (ice-9 binary-ports)
+             (rnrs bytevectors))
+
+(define (parse-options args)
+  (if (null? args)
+      '()
+      (cons (cons (car args)
+                  (if (null? (cdr args)) "" (cadr args)))
+            (parse-options (if (null? (cdr args)) '() (cddr args))))))
+
+(define options (parse-options (cdr (command-line))))
+
+(define (option-number key default)
+  (let ((entry (assoc key options)))
+    (if entry (string->number (cdr entry)) default)))
+
+(define (apply-limit resource value)
+  (catch #t
+    (lambda () (setrlimit resource value value))
+    (lambda args #f)))
+
+(apply-limit 'as (option-number "--max-address-space" 268435456))
+(apply-limit 'cpu (option-number "--max-cpu" 30))
+
+(define input-port (current-input-port))
+(define output-port (current-output-port))
+
+(define (read-exact port count)
+  (let ((bytes (get-bytevector-n port count)))
+    (if (or (eof-object? bytes) (< (bytevector-length bytes) count))
+        #f
+        bytes)))
+
+(define (read-frame)
+  (let ((header (read-exact input-port 4)))
+    (if (not header)
+        #f
+        (let* ((length (bytevector-u32-ref header 0 (endianness big)))
+               (payload (read-exact input-port length)))
+          (if (not payload)
+              #f
+              (read (open-input-string (utf8->string payload))))))))
+
+(define (write-frame frame)
+  (let* ((text (call-with-output-string (lambda (port) (write frame port))))
+         (payload (string->utf8 text))
+         (length (bytevector-length payload))
+         (header (make-bytevector 4 0)))
+    (bytevector-u32-set! header 0 length (endianness big))
+    (put-bytevector output-port header)
+    (put-bytevector output-port payload)
+    (force-output output-port)))
+
+(define (make-frame type . fields)
+  (cons type fields))
+
+(define (frame-type frame)
+  (car frame))
+
+(define (frame-field frame key)
+  (let loop ((fields (cdr frame)))
+    (cond ((null? fields) #f)
+          ((eq? (car fields) key) (cadr fields))
+          (else (loop (cddr fields))))))
+
+(define current-run-id #f)
+(define current-call-id 0)
+(define cell-time-limit 0.25)
+(define cell-allocation-limit 33554432)
+
+(define (next-call-id)
+  (set! current-call-id (+ current-call-id 1))
+  current-call-id)
+
+(define (call-host name arguments)
+  (let ((call-id (next-call-id)))
+    (write-frame (make-frame 'hostCall
+                             'runID current-run-id
+                             'callID call-id
+                             'name (symbol->string name)
+                             'arguments arguments))
+    (let loop ()
+      (let ((frame (read-frame)))
+        (cond
+          ((not frame) (error "host channel closed"))
+          ((eq? (frame-type frame) 'hostResult)
+           (if (and (equal? (frame-field frame 'runID) current-run-id)
+                    (equal? (frame-field frame 'callID) call-id))
+               (frame-field frame 'value)
+               (loop)))
+          ((eq? (frame-type frame) 'hostError)
+           (error "host call failed" (frame-field frame 'message)))
+          (else (loop)))))))
+
+(define (hit->alist hit)
+  (list (cons 'chunk-id (list-ref hit 0))
+        (cons 'path (list-ref hit 1))
+        (cons 'start-line (list-ref hit 2))
+        (cons 'end-line (list-ref hit 3))
+        (cons 'preview (list-ref hit 4))))
+
+(define (corpus-search query limit)
+  (map hit->alist (call-host 'corpus-search (list query limit))))
+
+(define (corpus-read chunk-id)
+  (let ((chunks (call-host 'corpus-read (list chunk-id))))
+    (if (null? chunks)
+        (error "unknown chunk" chunk-id)
+        (list-ref (car chunks) 4))))
+
+(define (corpus-read-many chunk-ids)
+  (map (lambda (chunk) (list-ref chunk 4))
+       (call-host 'corpus-read-many (list chunk-ids))))
+
+(define (lm-query prompt . tier)
+  (car (call-host 'lm-query
+                  (if (null? tier) (list prompt) (list prompt (car tier))))))
+
+(define (lm-query-batched prompts . tier)
+  (call-host 'lm-query-batched
+             (if (null? tier) (list prompts) (list prompts (car tier)))))
+
+(define (progress message)
+  (call-host 'progress (list message))
+  #f)
+
+(define (finish answer evidence)
+  (throw 'gnostic-finish answer evidence))
+
+(define (scm->wire value)
+  (let ((budget 4096))
+    (define (convert datum depth)
+      (cond
+        ((<= budget 0) '())
+        ((> depth 32) '())
+        ((boolean? datum)
+         (set! budget (- budget 1)) datum)
+        ((number? datum)
+         (set! budget (- budget 1)) datum)
+        ((string? datum)
+         (set! budget (- budget 1))
+         (if (> (string-length datum) 4096) (substring datum 0 4096) datum))
+        ((symbol? datum)
+         (set! budget (- budget 1)) datum)
+        ((null? datum)
+         (set! budget (- budget 1)) '())
+        ((pair? datum)
+         (set! budget (- budget 1))
+         (cons (convert (car datum) (+ depth 1)) (convert (cdr datum) (+ depth 1))))
+        ((vector? datum)
+         (set! budget (- budget 1))
+         (map (lambda (element) (convert element (+ depth 1))) (vector->list datum)))
+        (else
+         (set! budget (- budget 1)) '())))
+    (convert value 0)))
+
+(define (make-run-module)
+  (let ((module (make-sandbox-module allowed-bindings)))
+    (module-define! module 'corpus-search corpus-search)
+    (module-define! module 'corpus-read corpus-read)
+    (module-define! module 'corpus-read-many corpus-read-many)
+    (module-define! module 'lm-query lm-query)
+    (module-define! module 'lm-query-batched lm-query-batched)
+    (module-define! module 'progress progress)
+    (module-define! module 'finish finish)
+    module))
+
+(define (names-of binding-set)
+  (cdr (car binding-set)))
+
+(define (entry-name binding)
+  (if (pair? binding) (cdr binding) binding))
+
+(define disallowed-names
+  (append (names-of macro-bindings)
+          (names-of clock-bindings)
+          (names-of regexp-bindings)))
+
+(define allowed-bindings
+  (map (lambda (binding-set)
+         (cons (car binding-set)
+               (filter (lambda (binding)
+                         (not (memq (entry-name binding) disallowed-names)))
+                       (cdr binding-set))))
+       all-pure-bindings))
+
+(define run-module #f)
+
+(define (eval-forms source module)
+  (call-with-input-string
+   source
+   (lambda (port)
+     (let loop ((value #f))
+       (let ((form (read port)))
+         (if (eof-object? form)
+             value
+             (loop (eval form module))))))))
+
+(define (eval-cell source)
+  (catch #t
+    (lambda ()
+      (let ((value (call-with-time-and-allocation-limits
+                    cell-time-limit
+                    cell-allocation-limit
+                    (lambda () (eval-forms source run-module)))))
+        (list 'value (scm->wire value))))
+    (lambda (key . args)
+      (cond
+        ((eq? key 'limit-exceeded)
+         (list 'failed "resource limit exceeded"))
+        ((eq? key 'gnostic-finish)
+         (list 'finished (car args) (cadr args)))
+        (else
+         (list 'failed (format #f "~a: ~a" key args)))))))
+
+(define (environment-keys)
+  (map (lambda (entry) (car (string-split entry #\=))) (environ)))
+
+(define (open-file-descriptor-count)
+  (catch #t
+    (lambda ()
+      (let ((directory (opendir "/proc/self/fd")))
+        (let loop ((count 0))
+          (let ((entry (readdir directory)))
+            (if (eof-object? entry)
+                (begin (closedir directory) count)
+                (loop (+ count 1)))))))
+    (lambda args -1)))
+
+(define (limit-number resource)
+  (catch #t
+    (lambda ()
+      (let ((value (getrlimit resource)))
+        (let ((soft (if (pair? value) (car value) value)))
+          (if (> soft 4611686018427387904) -1 soft))))
+    (lambda args -1)))
+
+(define (handle-evaluate frame)
+  (let ((cell-id (frame-field frame 'cellID))
+        (source (frame-field frame 'source)))
+    (let ((result (eval-cell source)))
+      (case (car result)
+        ((value)
+         (write-frame (make-frame 'evaluated
+                                  'runID current-run-id
+                                  'cellID cell-id
+                                  'output ""
+                                  'value (cadr result))))
+        ((finished)
+         (write-frame (make-frame 'finished
+                                  'runID current-run-id
+                                  'answer (cadr result)
+                                  'evidenceIDs (caddr result))))
+        (else
+         (write-frame (make-frame 'failed
+                                  'runID current-run-id
+                                  'cellID cell-id
+                                  'message (cadr result))))))))
+
+(define (main)
+  (let loop ()
+    (let ((frame (read-frame)))
+      (if (not frame)
+          (exit 0)
+          (case (frame-type frame)
+            ((initialize)
+             (set! current-run-id (frame-field frame 'runID))
+             (set! cell-time-limit
+                   (let ((value (frame-field frame 'timeLimitSeconds)))
+                     (if value value cell-time-limit)))
+             (set! cell-allocation-limit
+                   (let ((value (frame-field frame 'allocationLimitBytes)))
+                     (if value value cell-allocation-limit)))
+             (set! run-module (make-run-module))
+             (write-frame (make-frame 'ready
+                                      'runID current-run-id
+                                      'environmentKeys (environment-keys)
+                                      'openFileDescriptorCount (open-file-descriptor-count)
+                                      'cpuLimitSeconds (limit-number 'cpu)
+                                      'addressSpaceBytes (limit-number 'as)))
+             (loop))
+            ((evaluate)
+             (handle-evaluate frame)
+             (loop))
+            ((cancel shutdown)
+             (exit 0))
+            (else
+             (loop)))))))
+
+(main)

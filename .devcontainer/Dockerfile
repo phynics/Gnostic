@@ -13,6 +13,7 @@ RUN apt-get update \
         mosquitto \
         mosquitto-clients \
         ca-certificates \
+        guile-3.0 \
     && rm -rf /var/lib/apt/lists/*
 
 ARG NODE_VERSION=22.18.0
