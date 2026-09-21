@@ -212,6 +212,19 @@ struct RLMChibiWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("finite doubles and the full integer range pass through")
+    func inModelBoundsAreAccepted() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        #expect(await session.evaluate(source: "(* 1.5 1e308)") == .value(.double(1.5e308)))
+        #expect(await session.evaluate(source: "(- 0 (expt 2 63))") == .value(.integer(Int.min)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("host failures with control characters remain structured")
     func controlCharacterHostFailureIsStructured() async throws {
         let host = RLMChibiRecordingHost(leafFailure: .leafModelFailed("provider \u{8} failed"))
