@@ -10,7 +10,7 @@ import Testing
 struct CommandGlueTests {
     @Test("legacy bridge command is no longer registered")
     func bridgeCommandIsRemoved() {
-        #expect(GnosticCLI.configuration.version == "0.4.1")
+        #expect(GnosticCLI.configuration.version == "0.4.2")
         #expect(throws: (any Error).self) {
             _ = try GnosticCLI.parseAsRoot(["bridge"])
         }

@@ -34,7 +34,7 @@ ADR 0010 records the Letta backend as an optional, experimental prototype. The
 `GnosticLettaBackend` target stays outside `GnosticCore` and is registered
 through the composition source; it is not production support.
 
-The current compatibility declaration is [0.4.1](../Compatibility/0.4.1.md); it is additive over [0.4.0](../Compatibility/0.4.0.md) and the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
+The current compatibility declaration is [0.4.2](../Compatibility/0.4.2.md); it is additive over [0.4.1](../Compatibility/0.4.1.md), [0.4.0](../Compatibility/0.4.0.md) and the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
 
 ## Extension guides
 

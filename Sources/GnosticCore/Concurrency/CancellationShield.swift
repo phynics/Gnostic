@@ -3,34 +3,33 @@
 /// Runs `operation` with the calling task's cancellation suppressed, on every
 /// platform this package declares.
 ///
-/// The standard library's `withTaskCancellationShield` is annotated
-/// `@available(anyAppleOS 27.0, *)`, while this package's manifest supports the
-/// 26 line. Calling it directly still compiles on Linux, where the availability
-/// clause is vacuous, but fails to build for a 26 deployment target. Shutdown
-/// and cleanup paths need the shield on every supported platform, so they call
-/// this wrapper instead of the shielded primitive.
+/// The standard library's cancellation-shield primitive is annotated
+/// `@available(anyAppleOS 27.0, *)`, but it is also `@_alwaysEmitIntoClient`.
+/// Its body is emitted into every module that references it, together with the
+/// calls that body makes to the 27-only concurrency runtime entry points. Those
+/// entry points become strong undefined symbols that the loader resolves when
+/// the module loads, before any runtime availability branch can run, so a build
+/// that targets the 26 line fails to load even though the branch is unreachable.
+/// A runtime availability check cannot un-emit an always-emitted body, so this
+/// wrapper never references the primitive: it always runs `operation` in an
+/// unstructured task.
 ///
-/// `operation` runs in the caller's isolation on both paths: the standard
-/// library entry point is `nonisolated(nonsending)`, and the fallback hops back
-/// onto the caller's actor before it invokes the body.
+/// `operation` runs in the caller's isolation. The unstructured task is not a
+/// child of the caller, so the body is shielded from the caller's cancellation.
 package func withCancellationShield<Value: Sendable>(
     isolation: isolated (any Actor)? = #isolation,
     operation: nonisolated(nonsending) () async -> Value
 ) async -> Value {
-    if #available(anyAppleOS 27.0, *) {
-        return await withTaskCancellationShield(operation: operation)
-    }
-    return await withUnstructuredCancellationShield(isolation: isolation, operation: operation)
+    await withUnstructuredCancellationShield(isolation: isolation, operation: operation)
 }
 
-/// The pre-27 shield. An unstructured task is not a child of the caller, so it
-/// does not inherit cancellation and runs `operation` to completion even when
-/// the caller is already cancelled. Awaiting a non-throwing task's value is
-/// itself immune to cancellation, so the shielded body always finishes before
-/// this function returns.
+/// The cancellation shield used at every OS line.
 ///
-/// Only reachable at runtime below the 27 OS line, so it is validated through
-/// its own tests rather than through `withCancellationShield`.
+/// An unstructured task is not a child of the caller, so it does not inherit
+/// cancellation and runs `operation` to completion even when the caller is
+/// already cancelled. Awaiting a non-throwing task's value is itself immune to
+/// cancellation, so the shielded body always finishes before this function
+/// returns.
 func withUnstructuredCancellationShield<Value: Sendable>(
     isolation: isolated (any Actor)? = #isolation,
     operation: nonisolated(nonsending) () async -> Value
