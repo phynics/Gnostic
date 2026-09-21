@@ -1,0 +1,13 @@
+# Host-only SwiftPM and test output.
+.build
+.build*/
+.swiftpm/
+.swiftpm-cache
+.testing
+
+# Local tooling and worktree output.
+node_modules/
+.worktrees/
+.DS_Store
+*.xcodeproj
+xcuserdata/
