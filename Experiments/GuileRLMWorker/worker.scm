@@ -85,7 +85,7 @@
     (write-frame (make-frame 'hostCall
                              'runID current-run-id
                              'callID call-id
-                             'name (symbol->string name)
+                             'name (wire-string (symbol->string name))
                              'arguments (scm->wire arguments)))
     (let loop ()
       (let ((frame (read-frame)))
@@ -149,21 +149,27 @@
       (if (< index (string-length result))
           (let* ((character (string-ref result index))
                  (code (char->integer character)))
-            (if (or (< code 32) (= code 127))
+            (if (memv code '(7 8 11 12 127))
                 (string-set! result index #\?))
             (loop (+ index 1)))
           result))))
 
 (define (wire-symbol value)
-  (let ((result (string-copy (symbol->string value))))
-    (let loop ((index 0))
-      (if (< index (string-length result))
-          (let ((character (string-ref result index)))
-            (if (or (char-whitespace? character)
-                    (memv character '(#\( #\) #\" #\' #\` #\, #\; #\#)))
-                (string-set! result index #\?))
-            (loop (+ index 1)))
-          result))))
+  (let ((name (symbol->string value)))
+    (if (or (= (string-length name) 0)
+            (char-numeric? (string-ref name 0)))
+        "gnostic-symbol"
+        (let loop ((index 0))
+          (if (>= index (string-length name))
+              name
+              (let* ((character (string-ref name index))
+                     (code (char->integer character)))
+                (if (or (char-whitespace? character)
+                        (memv character '(#\( #\) #\" #\' #\` #\, #\; #\# #\[ #\] #\{ #\}))
+                        (< code 32)
+                        (>= code 127))
+                    "gnostic-symbol"
+                    (loop (+ index 1)))))))))
 
 (define (scm->wire value)
   (let ((budget 4096))
@@ -266,13 +272,13 @@
     (lambda (key . args)
       (cond
         ((eq? key 'limit-exceeded)
-         (list 'failed "resource limit exceeded"))
+         (list 'failed (wire-string "resource limit exceeded")))
         ((eq? key 'gnostic-finish)
          (list 'finished
                (if (>= (length args) 1) (car args) #f)
                (if (>= (length args) 2) (cadr args) '())))
         (else
-         (list 'failed (format #f "~a: ~a" key args)))))))
+         (list 'failed (wire-string (format #f "~a: ~a" key args))))))))
 
 (define (environment-keys)
   (map (lambda (entry) (car (string-split entry #\=))) (environ)))
@@ -324,12 +330,12 @@
                (write-frame (make-frame 'failed
                                         'runID current-run-id
                                         'cellID cell-id
-                                        'message "finish arguments must be a string and a list of strings")))))
+                                        'message (wire-string "finish arguments must be a string and a list of strings"))))))
         (else
          (write-frame (make-frame 'failed
                                   'runID current-run-id
                                   'cellID cell-id
-                                  'message (cadr result))))))))
+                                  'message (wire-string (cadr result)))))))))
 
 (define (main)
   (let loop ()

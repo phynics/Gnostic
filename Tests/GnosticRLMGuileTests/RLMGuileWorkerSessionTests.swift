@@ -56,17 +56,19 @@ struct RLMGuileWorkerSessionTests {
             (hits (corpus-search "q" 2))
             (chunks (corpus-read-many (list "c-1")))
             (answers (lm-query-batched (list "p1" "p2") 'fast))
-            (single (lm-query "p3" 'primary)))
+            (single (lm-query "p3" 'primary))
+            (utility (lm-query "p4" 'utility)))
           (progress "done")
           (finish (string-join answers ",") (list "c-1")))
         """)
         #expect(outcome == .finished(answer: "leaf:p1,leaf:p2", evidenceIDs: ["c-1"]))
 
         let recorded = await host.recorded()
-        #expect(recorded.count == 5)
+        #expect(recorded.count == 6)
         #expect(recorded.contains(.corpusRead(chunkIDs: ["c-1"])))
         #expect(recorded.contains(.leafQuery(prompts: ["p1", "p2"], tier: .fast)))
         #expect(recorded.contains(.leafQuery(prompts: ["p3"], tier: .primary)))
+        #expect(recorded.contains(.leafQuery(prompts: ["p4"], tier: .utility)))
         #expect(recorded.contains(.progress("done")))
 
         await session.shutdown()
@@ -96,24 +98,24 @@ struct RLMGuileWorkerSessionTests {
         try await session.start()
 
         let outcome = await session.evaluate(source: "(corpus-search \"a\\x08;\" 2)")
-        if case .protocolViolation = outcome {
-            Issue.record("control string caused a protocol violation")
+        #expect(await host.recorded().contains(.corpusSearch(query: "a?;", limit: 2)))
+        guard case .value = outcome else {
+            Issue.record("expected a decoded host result, got \(outcome)")
+            return
         }
         #expect(await session.isRunning)
 
         await session.shutdown()
     }
 
-    @Test("wire conversion keeps special symbols decodable")
+    @Test("wire conversion keeps bar-quoted symbols decodable")
     func specialSymbolIsDecodable() async throws {
         let host = RLMGuileRecordingHost()
         let session = RLMGuileTestSupport.session(host: host)
         try await session.start()
 
-        let outcome = await session.evaluate(source: "(corpus-search (string->symbol \"a b\") 2)")
-        if case .protocolViolation = outcome {
-            Issue.record("special symbol caused a protocol violation")
-        }
+        let outcome = await session.evaluate(source: "(list (string->symbol \"1\") (string->symbol \"[\"))")
+        #expect(outcome == .value(.list([.symbol("gnostic-symbol"), .symbol("gnostic-symbol")])))
         #expect(await session.isRunning)
 
         await session.shutdown()
@@ -127,6 +129,36 @@ struct RLMGuileWorkerSessionTests {
 
         let outcome = await session.evaluate(source: "(finish (string-append \"a\" \"\\x08;\") (list \"c-1\"))")
         #expect(outcome == .finished(answer: "a?;", evidenceIDs: ["c-1"]))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("wire conversion preserves parser-supported string escapes")
+    func newlineStringIsPreserved() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(string-append \"line1\" \"\\n\" \"line2\\t tabbed\")")
+        #expect(outcome == .value(.string("line1\nline2\t tabbed")))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("host failures with control characters remain structured")
+    func controlCharacterHostFailureIsStructured() async throws {
+        let host = RLMGuileRecordingHost(leafFailure: .leafModelFailed("provider \u{8} failed"))
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(lm-query \"prompt\")")
+        guard case let .schemeFailed(message) = outcome else {
+            Issue.record("expected a structured host failure, got \(outcome)")
+            return
+        }
+        #expect(message.contains("host call failed"))
         #expect(await session.isRunning)
 
         await session.shutdown()
