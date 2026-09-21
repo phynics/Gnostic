@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
+
+import Testing
+import GnosticRLM
+
+@Suite("RLM Guile sandbox denial", .enabled(if: RLMGuileTestSupport.isAvailable), .serialized)
+struct RLMGuileSandboxDenialTests {
+    @Test("the raw sandbox rejects dangerous forms without the parent validator")
+    func rejectsDangerousForms() throws {
+        let worker = try RLMGuileRawWorker(runID: "raw-sandbox")
+        defer { worker.shutdown() }
+
+        guard case .ready = try worker.initialize() else {
+            Issue.record("worker did not report ready")
+            return
+        }
+
+        let control = try worker.evaluate("(+ 1 2)", cellID: 1)
+        #expect(control == .evaluated(RLMSchemeEvaluated(
+            runID: "raw-sandbox",
+            cellID: 1,
+            value: .integer(3),
+            output: ""
+        )))
+
+        let denied = [
+            "(eval '(+ 1 2))",
+            "(system \"echo hi\")",
+            "(getenv \"HOME\")",
+            "(open-input-file \"/etc/passwd\")",
+            "(open-output-file \"/tmp/gnostic-raw-denied\")",
+            "(dynamic-wind (lambda () 1) (lambda () 2) (lambda () 3))",
+            "(call/cc (lambda (k) (k 1)))",
+        ]
+        for (index, source) in denied.enumerated() {
+            let frame = try worker.evaluate(source, cellID: index + 2)
+            guard case let .failed(failure) = frame else {
+                Issue.record("expected the sandbox to reject \(source), got \(frame)")
+                continue
+            }
+            #expect(!failure.message.isEmpty)
+        }
+    }
+}
