@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import Foundation
 import Testing
 import GnosticRLM
 import GnosticRLMChibi
@@ -115,7 +116,7 @@ struct RLMChibiWorkerSessionTests {
         try await session.start()
 
         let outcome = await session.evaluate(source: "(list (string->symbol \"1\") (string->symbol \"-1\") (string->symbol \"+1\") (string->symbol \".\") (string->symbol \".0\") (string->symbol \"[\"))")
-        #expect(outcome == .value(.list(Array(repeating: .symbol("gnostic-symbol"), count: 6))))
+        #expect(outcome == .value(.list(Array(repeating: .character("~"), count: 6))))
         #expect(await session.isRunning)
 
         await session.shutdown()
@@ -159,6 +160,53 @@ struct RLMChibiWorkerSessionTests {
             Issue.record("expected a decoded host result, got \(outcome)")
             return
         }
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("a genuine sentinel-named symbol is not confused with a sanitized symbol")
+    func sentinelNameDoesNotCollide() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(list (string->symbol \"gnostic-symbol\") (string->symbol \"gnostic-unsupported\") (string->symbol \"gnostic-truncated\"))")
+        #expect(outcome == .value(.list([
+            .symbol("gnostic-symbol"),
+            .symbol("gnostic-unsupported"),
+            .symbol("gnostic-truncated"),
+        ])))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("exact division yields an in-model double")
+    func ratioBecomesDouble() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(/ 1 3)")
+        #expect(outcome == .value(.double(1.0 / 3.0)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("out-of-model numbers become a structured unsupported marker")
+    func outOfModelNumbersAreStructured() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        #expect(await session.evaluate(source: "(expt 2 100)") == .value(.character("!")))
+        #expect(await session.evaluate(source: "(expt 2 62)") == .value(.integer(4_611_686_018_427_387_904)))
+        #expect(await session.evaluate(source: "(string->number \"1/2\")") == .value(.double(0.5)))
+        #expect(await session.evaluate(source: "(string->number \"1+2i\")") == .value(.boolean(false)))
+        #expect(await session.evaluate(source: "(sqrt -1)") == .value(.character("!")))
+        #expect(await session.evaluate(source: "(/ 1.0 0.0)") == .value(.character("!")))
         #expect(await session.isRunning)
 
         await session.shutdown()
@@ -267,7 +315,7 @@ struct RLMChibiWorkerSessionTests {
         #expect(await session.isRunning == false)
     }
 
-    @Test("credentials and unrelated file descriptors are absent from the worker")
+    @Test("credentials are absent from the worker environment")
     func credentialsAbsent() async throws {
         RLMChibiTestSupport.plantSecret("GNOSTIC_RLM_SECRET", value: "leak")
         let host = RLMChibiRecordingHost()
@@ -275,15 +323,64 @@ struct RLMChibiWorkerSessionTests {
         try await session.start()
 
         let ready = try #require(await session.ready)
+        #expect(ready.environmentKeys.contains("PATH"))
         #expect(!ready.environmentKeys.contains("GNOSTIC_RLM_SECRET"))
         #expect(!ready.environmentKeys.contains("HOME"))
         #expect(ready.environmentKeys.allSatisfy { !$0.localizedCaseInsensitiveContains("secret") })
-        #expect(ready.openFileDescriptorCount == -1)
 
         let rejected = await session.evaluate(source: "(getenv \"GNOSTIC_RLM_SECRET\")")
         #expect(rejected == .cellRejected("disallowed symbol 'getenv'"))
 
         await session.shutdown()
+    }
+
+    @Test("the worker process holds only its standard file descriptors")
+    func fileDescriptorsAbsent() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let processID = try #require(await session.processIdentifier)
+        let descriptors = try FileManager.default.contentsOfDirectory(atPath: "/proc/\(processID)/fd")
+        #expect(descriptors.count >= 3)
+        #expect(descriptors.count <= 16)
+
+        await session.shutdown()
+    }
+
+    @Test("the process CPU rlimit terminates a runaway worker")
+    func cpuLimitIsEnforced() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host) { configuration in
+            configuration.maxCPUSeconds = 1
+            configuration.cellTimeLimitSeconds = 30
+            configuration.wallDeadlineSeconds = 30
+            configuration.terminationGraceSeconds = 0.2
+        }
+        try await session.start()
+
+        let started = Date()
+        let outcome = await session.evaluate(source: "(define (spin n) (spin n)) (spin 0)")
+        guard case .workerExited = outcome else {
+            Issue.record("expected the CPU rlimit to terminate the worker, got \(outcome)")
+            return
+        }
+        #expect(await session.isRunning == false)
+        #expect(Date().timeIntervalSince(started) < 20)
+    }
+
+    @Test("deep non-tail recursion is contained as a worker exit")
+    func deepRecursionIsContained() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1))))) (deep 100000)")
+        guard case .workerExited = outcome else {
+            Issue.record("expected deep recursion to be contained, got \(outcome)")
+            return
+        }
+        #expect(await session.isRunning == false)
     }
 
     @Test("a three-argument leaf query is rejected before evaluation")

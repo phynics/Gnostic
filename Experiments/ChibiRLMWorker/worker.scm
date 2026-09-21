@@ -80,6 +80,10 @@
   (set! current-call-id (+ current-call-id 1))
   current-call-id)
 
+(define marker-unsupported (integer->char 33))
+(define marker-truncated (integer->char 63))
+(define marker-symbol (integer->char 126))
+
 (define (wire-string value)
   (list->string
    (map (lambda (character)
@@ -90,36 +94,53 @@
                 #\?)))
         (string->list value))))
 
-(define (wire-symbol value)
+(define (valid-wire-symbol? name)
+  (if (or (= (string-length name) 0)
+          (not (char-alphabetic? (string-ref name 0))))
+      #f
+      (let loop ((index 0))
+        (if (>= index (string-length name))
+            #t
+            (let ((character (string-ref name index)))
+              (if (or (char-alphabetic? character)
+                      (char-numeric? character)
+                      (char=? character #\-))
+                  (loop (+ index 1))
+                  #f))))))
+
+(define (wire-symbol-value value)
   (let ((name (symbol->string value)))
-    (if (or (= (string-length name) 0)
-            (not (char-alphabetic? (string-ref name 0))))
-        "gnostic-symbol"
-        (let loop ((index 0))
-          (if (>= index (string-length name))
-              name
-              (let ((character (string-ref name index)))
-                (if (or (char-alphabetic? character)
-                        (char-numeric? character)
-                        (char=? character #\-))
-                    (loop (+ index 1))
-                    "gnostic-symbol")))))))
+    (if (valid-wire-symbol? name)
+        (string->symbol name)
+        marker-symbol)))
+
+(define (fits-integer? value)
+  (<= (abs value) 9223372036854775807))
+
+(define (finite-flonum? value)
+  (and (= value value) (<= -1e308 value) (<= value 1e308)))
 
 (define (scm->wire value)
   (let ((budget 4096))
     (define (convert datum depth)
       (cond
-        ((<= budget 0) 'gnostic-truncated)
-        ((> depth 32) 'gnostic-truncated)
+        ((<= budget 0) marker-truncated)
+        ((> depth 32) marker-truncated)
         ((boolean? datum)
          (set! budget (- budget 1)) datum)
+        ((flonum? datum)
+         (set! budget (- budget 1))
+         (if (finite-flonum? datum) datum marker-unsupported))
+        ((integer? datum)
+         (set! budget (- budget 1))
+         (if (fits-integer? datum) datum marker-unsupported))
         ((number? datum)
-         (set! budget (- budget 1)) datum)
+         (set! budget (- budget 1)) marker-unsupported)
         ((string? datum)
          (set! budget (- budget 1))
          (wire-string datum))
         ((symbol? datum)
-         (set! budget (- budget 1)) (string->symbol (wire-symbol datum)))
+         (set! budget (- budget 1)) (wire-symbol-value datum))
         ((null? datum)
          (set! budget (- budget 1)) '())
         ((eq? datum (if #f #f))
@@ -131,7 +152,7 @@
          (set! budget (- budget 1))
          (map (lambda (element) (convert element (+ depth 1))) (vector->list datum)))
         (else
-         (set! budget (- budget 1)) 'gnostic-unsupported)))
+         (set! budget (- budget 1)) marker-unsupported)))
     (convert value 0)))
 
 (define (gnostic-raise message)
@@ -282,6 +303,40 @@
       (let ((halves (halve values)))
         (merge (sort (car halves) less?) (sort (cadr halves) less?)))))
 
+(define (read-characters path)
+  (call-with-current-continuation
+   (lambda (escape)
+     (with-exception-handler
+      (lambda (ignored) (escape #f))
+      (lambda ()
+        (let ((port (open-input-file path)))
+          (let loop ((characters '()))
+            (let ((character (read-char port)))
+              (if (eof-object? character)
+                  (begin (close-input-port port) (reverse characters))
+                  (loop (cons character characters)))))))))))
+
+(define (split-on-null characters)
+  (let loop ((rest characters) (current '()) (parts '()))
+    (cond ((null? rest) (reverse (cons (reverse current) parts)))
+          ((= (char->integer (car rest)) 0)
+           (loop (cdr rest) '() (cons (reverse current) parts)))
+          (else (loop (cdr rest) (cons (car rest) current) parts)))))
+
+(define (entry-key characters)
+  (let loop ((rest characters) (current '()))
+    (cond ((null? rest) (list->string (reverse current)))
+          ((= (char->integer (car rest)) 61) (list->string (reverse current)))
+          (else (loop (cdr rest) (cons (car rest) current))))))
+
+(define (environment-keys)
+  (let ((characters (read-characters "/proc/self/environ")))
+    (if (not characters)
+        '()
+        (map entry-key
+             (filter (lambda (entry) (not (null? entry)))
+                     (split-on-null characters))))))
+
 (define pure-operation-names
   '(+ - * / quotient remainder modulo abs min max
     expt sqrt gcd lcm floor ceiling round truncate
@@ -382,7 +437,7 @@
              (set! run-environment (make-run-environment))
              (write-frame (make-frame 'ready
                                       'runID current-run-id
-                                      'environmentKeys '()
+                                      'environmentKeys (environment-keys)
                                       'openFileDescriptorCount -1
                                       'cpuLimitSeconds (option-number "--max-cpu" -1)
                                       'addressSpaceBytes (option-number "--max-address-space" -1)))

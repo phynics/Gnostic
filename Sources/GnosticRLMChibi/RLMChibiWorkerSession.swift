@@ -54,6 +54,13 @@ public actor RLMChibiWorkerSession {
         process?.isRunning ?? false
     }
 
+    /// The running worker process identifier, or `nil` when the worker is not
+    /// running. Used by tests to inspect the child's file descriptors.
+    public var processIdentifier: Int32? {
+        guard let process, process.isRunning else { return nil }
+        return process.processIdentifier
+    }
+
     public var stderrTail: String {
         String(decoding: stderrBuffer.snapshot(), as: UTF8.self)
     }
@@ -199,6 +206,9 @@ public actor RLMChibiWorkerSession {
         if case .hostResultRejected = outcome {
             terminate()
         }
+        if case .workerExited = outcome {
+            terminate()
+        }
         return outcome
     }
 
@@ -262,13 +272,13 @@ public actor RLMChibiWorkerSession {
                     return .cancelled
                 }
             case let .evaluated(evaluated):
-                guard evaluated.cellID == cellID else { continue }
+                guard evaluated.runID == configuration.runID, evaluated.cellID == cellID else { continue }
                 return .value(evaluated.value)
             case let .finished(finished):
                 guard finished.runID == configuration.runID else { continue }
                 return .finished(answer: finished.answer, evidenceIDs: finished.evidenceIDs)
             case let .failed(failure):
-                guard failure.cellID == cellID else { continue }
+                guard failure.runID == configuration.runID, failure.cellID == cellID else { continue }
                 return .schemeFailed(failure.message)
             default:
                 continue

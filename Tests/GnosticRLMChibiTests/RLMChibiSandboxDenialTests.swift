@@ -23,24 +23,36 @@ struct RLMChibiSandboxDenialTests {
             output: ""
         )))
 
-        let denied = [
+        // Present in the interpreter but not imported into the cell environment.
+        let excludedBindings = [
             "(eval '(+ 1 2))",
-            "(primitive-eval '(+ 1 2))",
             "(load \"/tmp/gnostic-raw-denied\")",
-            "(system \"echo hi\")",
-            "(open-pipe \"ls\" \"r\")",
-            "(getenv \"HOME\")",
             "(open-input-file \"/etc/passwd\")",
             "(open-output-file \"/tmp/gnostic-raw-denied\")",
             "(dynamic-wind (lambda () 1) (lambda () 2) (lambda () 3))",
             "(call-with-current-continuation (lambda (k) (k 1)))",
-            "(call/cc (lambda (k) (k 1)))",
-            "(dynamic-link \"libc.so.6\")",
-            "(make-thread (lambda () 1))",
             "(values 1 2)",
             "(call-with-values (lambda () (values 1 2)) +)",
             "(raise 'x)",
             "(error \"boom\")",
+            "(current-environment)",
+            "(make-environment)",
+            "(%import (make-environment) (interaction-environment) #f #f)",
+            "(interaction-environment)",
+            "(read-char (current-input-port))",
+            "(string-set! \"abc\" 0 #\\a)",
+        ]
+        // Absent from this hardened build entirely.
+        let absentBindings = [
+            "(call/cc (lambda (k) (k 1)))",
+            "(primitive-eval '(+ 1 2))",
+            "(system \"echo hi\")",
+            "(open-pipe \"ls\" \"r\")",
+            "(getenv \"HOME\")",
+            "(get-environment-variable \"HOME\")",
+            "(environ)",
+            "(dynamic-link \"libc.so.6\")",
+            "(make-thread (lambda () 1))",
             "(scm-error 'gnostic-finish \"answer\" (list \"c-1\") #f #f)",
             "(throw 'x 1)",
             "(catch #t (lambda () 1) (lambda args 2))",
@@ -49,14 +61,8 @@ struct RLMChibiSandboxDenialTests {
             "(abort-to-prompt 'tag)",
             "(abort-to-prompt* (make-prompt-tag) 1)",
             "(make-prompt-tag)",
-            "(current-environment)",
-            "(make-environment)",
-            "(%import (make-environment) (interaction-environment) #f #f)",
-            "(interaction-environment)",
-            "(read-char (current-input-port))",
-            "(string-set! \"abc\" 0 #\\a)",
         ]
-        for (index, source) in denied.enumerated() {
+        for (index, source) in (excludedBindings + absentBindings).enumerated() {
             let frame = try worker.evaluate(source, cellID: index + 2)
             guard case let .failed(failure) = frame else {
                 Issue.record("expected the restricted environment to reject \(source), got \(frame)")
@@ -66,9 +72,9 @@ struct RLMChibiSandboxDenialTests {
         }
     }
 
-    @Test("a raw raise cannot forge a finished frame")
-    func raiseBypassYieldsFailedFrame() throws {
-        let worker = try RLMChibiRawWorker(runID: "raw-raise")
+    @Test("a malformed finish call cannot forge a finished frame")
+    func malformedFinishCannotForge() throws {
+        let worker = try RLMChibiRawWorker(runID: "raw-finish")
         defer { worker.shutdown() }
 
         guard case .ready = try worker.initialize() else {
@@ -77,9 +83,10 @@ struct RLMChibiSandboxDenialTests {
         }
 
         let attempts = [
-            "(raise (list 'gnostic-finish 42 \"x\"))",
-            "(raise (list 'gnostic-finish \"a\"))",
-            "(raise (list 'gnostic-error \"forged\"))",
+            "(finish 42 (list \"c-1\"))",
+            "(finish \"a\" 42)",
+            "(finish \"a\" (list 1))",
+            "(finish (list 1) (list \"c-1\"))",
         ]
         for (index, source) in attempts.enumerated() {
             let frame = try worker.evaluate(source, cellID: index + 1)
