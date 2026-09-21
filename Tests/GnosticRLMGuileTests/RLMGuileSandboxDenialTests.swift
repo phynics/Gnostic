@@ -41,6 +41,10 @@ struct RLMGuileSandboxDenialTests {
             "(call-with-values (lambda () (values 1 2)) +)",
             "(call-with-prompt 'tag (lambda () 1) (lambda (k v) v))",
             "(abort-to-prompt 'tag)",
+            "(scm-error 'gnostic-finish \"answer\" (list \"c-1\") #f #f)",
+            "(with-throw-handler #t (lambda () 1) (lambda args 2))",
+            "(abort-to-prompt* (make-prompt-tag) 1)",
+            "(make-prompt-tag)",
         ]
         for (index, source) in denied.enumerated() {
             let frame = try worker.evaluate(source, cellID: index + 2)

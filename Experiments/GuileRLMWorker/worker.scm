@@ -85,8 +85,8 @@
     (write-frame (make-frame 'hostCall
                              'runID current-run-id
                              'callID call-id
-                             'name (symbol->string name)
-                             'arguments arguments))
+                             'name (wire-string (symbol->string name))
+                             'arguments (scm->wire arguments)))
     (let loop ()
       (let ((frame (read-frame)))
         (cond
@@ -143,6 +143,34 @@
             evidence)
   (throw 'gnostic-finish answer evidence))
 
+(define (wire-string value)
+  (let ((result (string-copy value)))
+    (let loop ((index 0))
+      (if (< index (string-length result))
+          (let* ((character (string-ref result index))
+                 (code (char->integer character)))
+            (if (not (or (and (>= code 32) (<= code 126))
+                         (memv code '(9 10 13))))
+                (string-set! result index #\?))
+            (loop (+ index 1)))
+          result))))
+
+(define (wire-symbol value)
+  (let ((name (symbol->string value)))
+    (if (or (= (string-length name) 0)
+            (not (char-alphabetic? (string-ref name 0))))
+        "gnostic-symbol"
+        (let loop ((index 0))
+          (if (>= index (string-length name))
+              name
+              (let* ((character (string-ref name index))
+                     (code (char->integer character)))
+                (if (not (or (char-alphabetic? character)
+                             (char-numeric? character)
+                             (char=? character #\-)))
+                    "gnostic-symbol"
+                    (loop (+ index 1)))))))))
+
 (define (scm->wire value)
   (let ((budget 4096))
     (define (convert datum depth)
@@ -155,11 +183,9 @@
          (set! budget (- budget 1)) datum)
         ((string? datum)
          (set! budget (- budget 1))
-         (if (> (string-length datum) 4096)
-             (list 'gnostic-truncated-string (substring datum 0 4096))
-             datum))
+         (wire-string datum))
         ((symbol? datum)
-         (set! budget (- budget 1)) datum)
+         (set! budget (- budget 1)) (string->symbol (wire-symbol datum)))
         ((null? datum)
          (set! budget (- budget 1)) '())
         ((unspecified? datum)
@@ -202,7 +228,8 @@
             with-exception-handler
             raise raise-exception
             dynamic-wind
-            call/cc call-with-current-continuation)))
+            call/cc call-with-current-continuation
+            scm-error with-throw-handler abort-to-prompt* make-prompt-tag)))
 
 (define allowed-bindings
   (map (lambda (binding-set)
@@ -245,13 +272,13 @@
     (lambda (key . args)
       (cond
         ((eq? key 'limit-exceeded)
-         (list 'failed "resource limit exceeded"))
+         (list 'failed (wire-string "resource limit exceeded")))
         ((eq? key 'gnostic-finish)
          (list 'finished
                (if (>= (length args) 1) (car args) #f)
                (if (>= (length args) 2) (cadr args) '())))
         (else
-         (list 'failed (format #f "~a: ~a" key args)))))))
+         (list 'failed (wire-string (format #f "~a: ~a" key args))))))))
 
 (define (environment-keys)
   (map (lambda (entry) (car (string-split entry #\=))) (environ)))
@@ -298,17 +325,17 @@
            (if (valid-finish? answer evidence)
                (write-frame (make-frame 'finished
                                         'runID current-run-id
-                                        'answer answer
-                                        'evidenceIDs evidence))
+                                        'answer (wire-string answer)
+                                        'evidenceIDs (map wire-string evidence)))
                (write-frame (make-frame 'failed
                                         'runID current-run-id
                                         'cellID cell-id
-                                        'message "finish arguments must be a string and a list of strings")))))
+                                        'message (wire-string "finish arguments must be a string and a list of strings"))))))
         (else
          (write-frame (make-frame 'failed
                                   'runID current-run-id
                                   'cellID cell-id
-                                  'message (cadr result))))))))
+                                  'message (wire-string (cadr result)))))))))
 
 (define (main)
   (let loop ()
