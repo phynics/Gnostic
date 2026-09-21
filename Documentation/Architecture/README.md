@@ -17,6 +17,7 @@ whether its decision is delivered or remains a target.
 6. [ADR 0006 — Runtime effect ownership and terminal observation](ADRs/0006-runtime-effect-ownership-and-terminal-observation.md)
 7. [ADR 0008 — Runtime-created Timeline durability across serve restarts](ADRs/0008-runtime-created-timeline-durability.md)
 8. [ADR 0009 — Multi-configuration Ascendant hosting on one Node](ADRs/0009-multi-configuration-ascendant-hosting.md)
+9. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md)
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
@@ -28,6 +29,10 @@ terminal observation decision listed above.
 ## Historical and disposition records
 
 - [ADR 0007 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
+
+ADR 0010 records the Letta backend as an optional, experimental prototype. The
+`GnosticLettaBackend` target stays outside `GnosticCore` and is registered
+through the composition source; it is not production support.
 
 The current compatibility declaration is [0.4.2](../Compatibility/0.4.2.md); it is additive over [0.4.1](../Compatibility/0.4.1.md), [0.4.0](../Compatibility/0.4.0.md) and the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
 
