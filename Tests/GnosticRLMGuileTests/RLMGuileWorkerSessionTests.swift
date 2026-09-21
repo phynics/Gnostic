@@ -114,8 +114,8 @@ struct RLMGuileWorkerSessionTests {
         let session = RLMGuileTestSupport.session(host: host)
         try await session.start()
 
-        let outcome = await session.evaluate(source: "(list (string->symbol \"1\") (string->symbol \"[\"))")
-        #expect(outcome == .value(.list([.symbol("gnostic-symbol"), .symbol("gnostic-symbol")])))
+        let outcome = await session.evaluate(source: "(list (string->symbol \"1\") (string->symbol \"-1\") (string->symbol \"+1\") (string->symbol \".\") (string->symbol \".0\") (string->symbol \"[\"))")
+        #expect(outcome == .value(.list(Array(repeating: .symbol("gnostic-symbol"), count: 6))))
         #expect(await session.isRunning)
 
         await session.shutdown()
@@ -142,6 +142,23 @@ struct RLMGuileWorkerSessionTests {
 
         let outcome = await session.evaluate(source: "(string-append \"line1\" \"\\n\" \"line2\\t tabbed\")")
         #expect(outcome == .value(.string("line1\nline2\t tabbed")))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("wire conversion replaces non printable and non ASCII strings")
+    func nonPrintableStringsAreReplaced() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(corpus-search \"a\\x01;\\x0e;\\xa0;\\xad;b\" 2)")
+        #expect(await host.recorded().contains(.corpusSearch(query: "a?;?;?;?;b", limit: 2)))
+        guard case .value = outcome else {
+            Issue.record("expected a decoded host result, got \(outcome)")
+            return
+        }
         #expect(await session.isRunning)
 
         await session.shutdown()

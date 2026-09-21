@@ -149,7 +149,8 @@
       (if (< index (string-length result))
           (let* ((character (string-ref result index))
                  (code (char->integer character)))
-            (if (memv code '(7 8 11 12 127))
+            (if (not (or (and (>= code 32) (<= code 126))
+                         (memv code '(9 10 13))))
                 (string-set! result index #\?))
             (loop (+ index 1)))
           result))))
@@ -157,17 +158,16 @@
 (define (wire-symbol value)
   (let ((name (symbol->string value)))
     (if (or (= (string-length name) 0)
-            (char-numeric? (string-ref name 0)))
+            (not (char-alphabetic? (string-ref name 0))))
         "gnostic-symbol"
         (let loop ((index 0))
           (if (>= index (string-length name))
               name
               (let* ((character (string-ref name index))
                      (code (char->integer character)))
-                (if (or (char-whitespace? character)
-                        (memv character '(#\( #\) #\" #\' #\` #\, #\; #\# #\[ #\] #\{ #\}))
-                        (< code 32)
-                        (>= code 127))
+                (if (not (or (char-alphabetic? character)
+                             (char-numeric? character)
+                             (char=? character #\-)))
                     "gnostic-symbol"
                     (loop (+ index 1)))))))))
 
