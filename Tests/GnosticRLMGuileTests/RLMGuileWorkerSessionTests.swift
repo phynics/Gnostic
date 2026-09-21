@@ -72,6 +72,23 @@ struct RLMGuileWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("a non-literal host argument becomes a structured scheme failure")
+    func nonLiteralHostArgumentFailsStructurally() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(corpus-search (lambda () 1) 2)")
+        guard case let .schemeFailed(message) = outcome else {
+            Issue.record("expected a structured scheme failure, got \(outcome)")
+            return
+        }
+        #expect(message.contains("host call failed"))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("infinite evaluation is bounded and the worker survives")
     func infiniteEvaluationIsBounded() async throws {
         let host = RLMGuileRecordingHost()

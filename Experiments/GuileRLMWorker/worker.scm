@@ -86,7 +86,7 @@
                              'runID current-run-id
                              'callID call-id
                              'name (symbol->string name)
-                             'arguments arguments))
+                             'arguments (scm->wire arguments)))
     (let loop ()
       (let ((frame (read-frame)))
         (cond
@@ -202,7 +202,8 @@
             with-exception-handler
             raise raise-exception
             dynamic-wind
-            call/cc call-with-current-continuation)))
+            call/cc call-with-current-continuation
+            scm-error with-throw-handler abort-to-prompt* make-prompt-tag)))
 
 (define allowed-bindings
   (map (lambda (binding-set)
