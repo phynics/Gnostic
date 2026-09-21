@@ -89,6 +89,66 @@ struct RLMGuileWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("wire conversion keeps control strings decodable")
+    func controlStringIsDecodable() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(corpus-search \"a\\x08;\" 2)")
+        if case .protocolViolation = outcome {
+            Issue.record("control string caused a protocol violation")
+        }
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("wire conversion keeps special symbols decodable")
+    func specialSymbolIsDecodable() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(corpus-search (string->symbol \"a b\") 2)")
+        if case .protocolViolation = outcome {
+            Issue.record("special symbol caused a protocol violation")
+        }
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("finish answer with a control character remains structured")
+    func finishControlStringIsDecodable() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(finish (string-append \"a\" \"\\x08;\") (list \"c-1\"))")
+        #expect(outcome == .finished(answer: "a?;", evidenceIDs: ["c-1"]))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
+    @Test("long valid host strings remain serviced")
+    func longHostStringIsPreserved() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let query = String(repeating: "a", count: 5_000)
+        let outcome = await session.evaluate(source: "(corpus-search \"\(query)\" 2)")
+        if case .protocolViolation = outcome {
+            Issue.record("long host string caused a protocol violation")
+        }
+        #expect(await host.recorded().contains(.corpusSearch(query: query, limit: 2)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("infinite evaluation is bounded and the worker survives")
     func infiniteEvaluationIsBounded() async throws {
         let host = RLMGuileRecordingHost()

@@ -143,6 +143,28 @@
             evidence)
   (throw 'gnostic-finish answer evidence))
 
+(define (wire-string value)
+  (let ((result (string-copy value)))
+    (let loop ((index 0))
+      (if (< index (string-length result))
+          (let* ((character (string-ref result index))
+                 (code (char->integer character)))
+            (if (or (< code 32) (= code 127))
+                (string-set! result index #\?))
+            (loop (+ index 1)))
+          result))))
+
+(define (wire-symbol value)
+  (let ((result (string-copy (symbol->string value))))
+    (let loop ((index 0))
+      (if (< index (string-length result))
+          (let ((character (string-ref result index)))
+            (if (or (char-whitespace? character)
+                    (memv character '(#\( #\) #\" #\' #\` #\, #\; #\#)))
+                (string-set! result index #\?))
+            (loop (+ index 1)))
+          result))))
+
 (define (scm->wire value)
   (let ((budget 4096))
     (define (convert datum depth)
@@ -155,11 +177,9 @@
          (set! budget (- budget 1)) datum)
         ((string? datum)
          (set! budget (- budget 1))
-         (if (> (string-length datum) 4096)
-             (list 'gnostic-truncated-string (substring datum 0 4096))
-             datum))
+         (wire-string datum))
         ((symbol? datum)
-         (set! budget (- budget 1)) datum)
+         (set! budget (- budget 1)) (string->symbol (wire-symbol datum)))
         ((null? datum)
          (set! budget (- budget 1)) '())
         ((unspecified? datum)
@@ -299,8 +319,8 @@
            (if (valid-finish? answer evidence)
                (write-frame (make-frame 'finished
                                         'runID current-run-id
-                                        'answer answer
-                                        'evidenceIDs evidence))
+                                        'answer (wire-string answer)
+                                        'evidenceIDs (map wire-string evidence)))
                (write-frame (make-frame 'failed
                                         'runID current-run-id
                                         'cellID cell-id
