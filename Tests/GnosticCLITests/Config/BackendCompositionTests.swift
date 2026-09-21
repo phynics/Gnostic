@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticCore
+import GnosticLettaBackend
 import Testing
 
 @testable import GnosticCLI
@@ -181,12 +182,15 @@ struct BackendCompositionTests {
         #expect(recorder.count == 0)
     }
 
-    @Test("the production composition exposes Positronic without building a model")
-    func productionCompositionListsPositronic() {
+    @Test("the production composition exposes Positronic and Letta without building a model")
+    func productionCompositionListsBackends() {
         let composition = BackendComposition.default
-        #expect(composition.registeredKinds == [AscendantAdapterRegistry.positronicKind])
+        #expect(composition.registeredKinds == [AscendantAdapterRegistry.positronicKind, LettaAscendantBackend.kind])
         let schema = composition.settingsSchema(for: AscendantAdapterRegistry.positronicKind)
         #expect(schema?.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions"])
+        let lettaSchema = composition.settingsSchema(for: LettaAscendantBackend.kind)
+        #expect(lettaSchema?.settingNames == ["serverURL", "model", "agentID", "agentName", "maxSteps"])
+        #expect(lettaSchema?.secretNames == ["apiKey"])
     }
 
     @Test("an unregistered kind is still rejected")

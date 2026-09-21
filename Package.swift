@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
+        .library(name: "GnosticLettaBackend", targets: ["GnosticLettaBackend"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
@@ -43,6 +44,20 @@ let package = Package(
         .target(
             name: "GnosticRLM"
         ),
+        .target(
+            name: "GnosticLettaBackend",
+            dependencies: [
+                "GnosticCore",
+            ]
+        ),
+        .target(
+            name: "GnosticLettaTestSupport",
+            dependencies: [
+                "GnosticCore",
+                "GnosticLettaBackend",
+            ],
+            path: "Tests/Support/GnosticLettaTestSupport"
+        ),
         .testTarget(
             name: "GnosticPositronicAtlasTests",
             dependencies: [
@@ -68,6 +83,14 @@ let package = Package(
                 "GnosticRLM",
             ]
         ),
+        .testTarget(
+            name: "GnosticLettaBackendTests",
+            dependencies: [
+                "GnosticLettaBackend",
+                "GnosticCore",
+                "GnosticLettaTestSupport",
+            ]
+        ),
         .executableTarget(
             name: "GnosticRunner",
             dependencies: [
@@ -89,6 +112,7 @@ let package = Package(
             name: "GnosticCLI",
             dependencies: [
                 "GnosticCore",
+                "GnosticLettaBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
@@ -104,6 +128,8 @@ let package = Package(
             dependencies: [
                 "GnosticCLI",
                 "GnosticCore",
+                "GnosticLettaBackend",
+                "GnosticLettaTestSupport",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PKContracts", package: "PositronicKit"),
