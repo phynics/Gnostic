@@ -219,6 +219,68 @@ struct RLMGuileWorkerSessionTests {
 
         await session.shutdown()
     }
+
+    @Test("a disallowed definition cannot seed a later cell")
+    func disallowedDefinitionDoesNotPersist() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let first = await session.evaluate(source: "(define system 1)")
+        #expect(first == .cellRejected("disallowed symbol 'system'"))
+
+        let second = await session.evaluate(source: "(system \"echo hi\")")
+        #expect(second == .cellRejected("disallowed symbol 'system'"))
+
+        await session.shutdown()
+    }
+
+    @Test("a runtime-malformed finish is a structured failure")
+    func runtimeMalformedFinish() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(define bad (list 1 2)) (finish \"a\" bad)")
+        guard case let .schemeFailed(message) = outcome else {
+            Issue.record("expected a structured failure, got \(outcome)")
+            return
+        }
+        #expect(message.contains("finish evidence entries must be chunk identifier strings"))
+
+        await session.shutdown()
+    }
+
+    @Test("flat lists longer than the depth budget are preserved")
+    func longFlatListPreserved() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let count = 100
+        let source = "(list " + (0..<count).map(String.init).joined(separator: " ") + ")"
+        let outcome = await session.evaluate(source: source)
+        #expect(outcome == .value(.list((0..<count).map { .integer($0) })))
+
+        await session.shutdown()
+    }
+
+    @Test("an oversized host result is surfaced instead of swallowed")
+    func oversizedHostResult() async throws {
+        let host = RLMGuileRecordingHost(oversizedChunkBytes: 10_000)
+        let session = RLMGuileTestSupport.session(host: host) { configuration in
+            configuration.maxOutputBytes = 4_096
+            configuration.wallDeadlineSeconds = 10
+        }
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(corpus-read \"c-1\")")
+        guard case .hostResultRejected = outcome else {
+            Issue.record("expected a surfaced host-result rejection, got \(outcome)")
+            return
+        }
+        #expect(await session.isRunning == false)
+    }
 }
 
 @Suite("RLM Guile worker configuration")

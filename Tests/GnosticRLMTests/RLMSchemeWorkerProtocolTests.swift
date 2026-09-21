@@ -72,6 +72,21 @@ struct RLMSchemeWorkerProtocolTests {
         #expect(finished == .finished(RLMSchemeFinished(runID: "r", answer: "a", evidenceIDs: ["c-1"])))
     }
 
+    @Test("the capped encoder rejects payloads over the configured limit")
+    func cappedEncoder() throws {
+        let frame = RLMSchemeWorkerFrame.cancel(runID: "r")
+        let defaultEncoded = try RLMSchemeWorkerCodec.encode(frame)
+        let cappedEncoded = try RLMSchemeWorkerCodec.encode(frame, maxFrameBytes: 1_024)
+        #expect(cappedEncoded == defaultEncoded)
+        #expect(throws: RLMSchemeProtocolError.frameTooLarge(limit: 4)) {
+            try RLMSchemeWorkerCodec.encode(frame, maxFrameBytes: 4)
+        }
+        #expect(throws: RLMSchemeProtocolError.frameTooLarge(limit: 2)) {
+            try RLMSchemeWorkerCodec.framed([1, 2, 3], maxFrameBytes: 2)
+        }
+        #expect(try RLMSchemeWorkerCodec.framed([1, 2, 3], maxFrameBytes: 3).count == 7)
+    }
+
     @Test("rejects oversized, unknown, and incomplete frames")
     func rejectsBadFrames() {
         #expect(throws: RLMSchemeProtocolError.frameTooLarge(limit: RLMSchemeWorkerCodec.maxFrameBytes)) {

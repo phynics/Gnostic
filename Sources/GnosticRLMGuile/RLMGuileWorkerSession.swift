@@ -59,6 +59,7 @@ public actor RLMGuileWorkerSession {
     public func start() async throws {
         guard !hasStarted else { return }
         hasStarted = true
+        Self.ignoreBrokenPipeSignal()
 
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: configuration.executablePath) else {
@@ -183,6 +184,9 @@ public actor RLMGuileWorkerSession {
         if case .protocolViolation = outcome {
             terminate()
         }
+        if case .hostResultRejected = outcome {
+            terminate()
+        }
         return outcome
     }
 
@@ -223,17 +227,25 @@ public actor RLMGuileWorkerSession {
                 guard call.runID == configuration.runID else { continue }
                 switch await service(call) {
                 case let .value(value):
-                    try? send(.hostResult(RLMSchemeHostResult(
-                        runID: configuration.runID,
-                        callID: call.callID,
-                        value: value
-                    )))
+                    do {
+                        try send(.hostResult(RLMSchemeHostResult(
+                            runID: configuration.runID,
+                            callID: call.callID,
+                            value: value
+                        )), maxFrameBytes: configuration.maxOutputBytes)
+                    } catch {
+                        return .hostResultRejected("\(error)")
+                    }
                 case let .failure(message):
-                    try? send(.hostError(RLMSchemeHostError(
-                        runID: configuration.runID,
-                        callID: call.callID,
-                        message: message
-                    )))
+                    do {
+                        try send(.hostError(RLMSchemeHostError(
+                            runID: configuration.runID,
+                            callID: call.callID,
+                            message: message
+                        )), maxFrameBytes: configuration.maxOutputBytes)
+                    } catch {
+                        return .hostResultRejected("\(error)")
+                    }
                 case .cancelled:
                     return .cancelled
                 }
@@ -405,10 +417,14 @@ public actor RLMGuileWorkerSession {
     }
 
     private func send(_ frame: RLMSchemeWorkerFrame) throws {
+        try send(frame, maxFrameBytes: RLMSchemeWorkerCodec.maxFrameBytes)
+    }
+
+    private func send(_ frame: RLMSchemeWorkerFrame, maxFrameBytes limit: Int) throws {
         guard let inputHandle else {
             throw RLMGuileWorkerError.alreadyShutDown
         }
-        let bytes = try RLMSchemeWorkerCodec.encode(frame)
+        let bytes = try RLMSchemeWorkerCodec.encode(frame, maxFrameBytes: limit)
         try inputHandle.write(contentsOf: Data(bytes))
     }
 
@@ -420,6 +436,10 @@ public actor RLMGuileWorkerSession {
     private func workerExitCode() -> Int32 {
         guard let process, !process.isRunning else { return -1 }
         return process.terminationStatus
+    }
+
+    private static func ignoreBrokenPipeSignal() {
+        _ = signal(SIGPIPE, SIG_IGN)
     }
 
     private func terminate() {

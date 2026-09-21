@@ -133,6 +133,14 @@
   #f)
 
 (define (finish answer evidence)
+  (if (not (string? answer))
+      (error "finish answer must be a string"))
+  (if (not (list? evidence))
+      (error "finish evidence must be a list of chunk identifiers"))
+  (for-each (lambda (identifier)
+              (if (not (string? identifier))
+                  (error "finish evidence entries must be chunk identifier strings")))
+            evidence)
   (throw 'gnostic-finish answer evidence))
 
 (define (scm->wire value)
@@ -158,7 +166,7 @@
          (set! budget (- budget 1)) '())
         ((pair? datum)
          (set! budget (- budget 1))
-         (cons (convert (car datum) (+ depth 1)) (convert (cdr datum) (+ depth 1))))
+         (cons (convert (car datum) (+ depth 1)) (convert (cdr datum) depth)))
         ((vector? datum)
          (set! budget (- budget 1))
          (map (lambda (element) (convert element (+ depth 1))) (vector->list datum)))
@@ -186,7 +194,15 @@
 (define disallowed-names
   (append (names-of macro-bindings)
           (names-of clock-bindings)
-          (names-of regexp-bindings)))
+          (names-of regexp-bindings)
+          '(throw catch values call-with-values
+            call-with-prompt abort-to-prompt
+            call-with-composable-continuation
+            call-with-escape-continuation
+            with-exception-handler
+            raise raise-exception
+            dynamic-wind
+            call/cc call-with-current-continuation)))
 
 (define allowed-bindings
   (map (lambda (binding-set)
@@ -208,6 +224,16 @@
              value
              (loop (eval form module))))))))
 
+(define (string-list? value)
+  (and (list? value)
+       (let loop ((rest value))
+         (cond ((null? rest) #t)
+               ((string? (car rest)) (loop (cdr rest)))
+               (else #f)))))
+
+(define (valid-finish? answer evidence)
+  (and (string? answer) (string-list? evidence)))
+
 (define (eval-cell source)
   (catch #t
     (lambda ()
@@ -221,7 +247,9 @@
         ((eq? key 'limit-exceeded)
          (list 'failed "resource limit exceeded"))
         ((eq? key 'gnostic-finish)
-         (list 'finished (car args) (cadr args)))
+         (list 'finished
+               (if (>= (length args) 1) (car args) #f)
+               (if (>= (length args) 2) (cadr args) '())))
         (else
          (list 'failed (format #f "~a: ~a" key args)))))))
 
@@ -265,10 +293,17 @@
                                   'output ""
                                   'value (cadr result))))
         ((finished)
-         (write-frame (make-frame 'finished
-                                  'runID current-run-id
-                                  'answer (cadr result)
-                                  'evidenceIDs (caddr result))))
+         (let ((answer (cadr result))
+               (evidence (caddr result)))
+           (if (valid-finish? answer evidence)
+               (write-frame (make-frame 'finished
+                                        'runID current-run-id
+                                        'answer answer
+                                        'evidenceIDs evidence))
+               (write-frame (make-frame 'failed
+                                        'runID current-run-id
+                                        'cellID cell-id
+                                        'message "finish arguments must be a string and a list of strings")))))
         (else
          (write-frame (make-frame 'failed
                                   'runID current-run-id
