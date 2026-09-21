@@ -141,6 +141,9 @@ let package = Package(
             dependencies: [
                 "GnosticCore",
                 "GnosticLettaBackend",
+                "GnosticRLM",
+                "GnosticRLMGuile",
+                "GnosticRLMChibi",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),

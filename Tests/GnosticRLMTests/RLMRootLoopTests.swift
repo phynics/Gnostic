@@ -73,6 +73,20 @@ struct RLMRootLoopTests {
         #expect(loop.isTerminated)
     }
 
+    @Test("a Scheme cell uses the worker scheduling directive")
+    func schemeCellSchedulesWorker() async throws {
+        let snapshot = try await makeSnapshot()
+        var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: .standard)
+        _ = loop.start()
+
+        guard case let .scheduleScheme(source) = loop.receiveRootStep(.scheme(source: "(finish answer (list))")) else {
+            Issue.record("expected a Scheme scheduling directive")
+            return
+        }
+        #expect(source.contains("finish"))
+        #expect(loop.phase == .scheduling)
+    }
+
     @Test("unknown evidence fails structurally")
     func unknownEvidenceFails() async throws {
         let snapshot = try await makeSnapshot()

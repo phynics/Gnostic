@@ -69,18 +69,23 @@ public struct PositronicExtensionScope: Sendable {
     public let settings: [String: ManifestJSONValue]
     /// The extension's secrets, keyed without the name-space prefix.
     public let secrets: [String: ManifestJSONValue]
+    /// Host capabilities bound to this Ascendant, when the composition root
+    /// offers them to the selected extension.
+    public let runtimeContext: PositronicContributionRuntimeContext?
 
     /// Creates the scoped configuration for one extension invocation.
     public init(
         ascendant: NodeManifest.Ascendant,
         name: String,
         settings: [String: ManifestJSONValue],
-        secrets: [String: ManifestJSONValue]
+        secrets: [String: ManifestJSONValue],
+        runtimeContext: PositronicContributionRuntimeContext? = nil
     ) {
         self.ascendant = ascendant
         self.name = name
         self.settings = settings
         self.secrets = secrets
+        self.runtimeContext = runtimeContext
     }
 
     /// Reads one string setting.

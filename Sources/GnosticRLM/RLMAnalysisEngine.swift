@@ -85,6 +85,10 @@ public struct RLMAnalysisEngine: Sendable {
             )
         }
 
+        if let evaluator = evaluator as? any RLMSnapshotAwareEvaluator {
+            await evaluator.bind(snapshot: snapshot)
+        }
+
         let generation = fence.current
         var loop = RLMRootLoop(
             question: question,
@@ -137,9 +141,35 @@ public struct RLMAnalysisEngine: Sendable {
                     directive = loop.fail(.evaluatorFailed(String(describing: error)))
                 }
 
+            case let .scheduleScheme(source):
+                do {
+                    guard let evaluator = evaluator as? any RLMSchemeCellEvaluator else {
+                        directive = loop.fail(.evaluatorFailed("no Scheme cell evaluator is installed"))
+                        continue
+                    }
+                    let operations = try await evaluator.scheduleScheme(source)
+                    if let fenced = acceptContinuation(generation: generation, loop: &loop, snapshotID: snapshot.id) {
+                        return fenced
+                    }
+                    directive = loop.receiveScheduledOperations(operations)
+                } catch is CancellationError {
+                    _ = loop.cancel()
+                    return result(from: loop.termination, metrics: loop.runMetrics, snapshotID: snapshot.id, cancelled: true)
+                } catch let failure as RLMFailure {
+                    directive = loop.fail(failure)
+                } catch {
+                    directive = loop.fail(.evaluatorFailed(String(describing: error)))
+                }
+
             case let .service(operation):
                 do {
-                    let observation = try await service(operation, snapshot: snapshot)
+                    let observation: RLMHostObservation
+                    if let provider = evaluator as? any RLMRecordedObservationProvider,
+                       let recorded = await provider.recordedObservation(for: operation) {
+                        observation = recorded
+                    } else {
+                        observation = try await service(operation, snapshot: snapshot)
+                    }
                     if let fenced = acceptContinuation(generation: generation, loop: &loop, snapshotID: snapshot.id) {
                         return fenced
                     }

@@ -84,6 +84,8 @@ public struct RLMScriptedCell: Sendable, Equatable {
 /// A root model response: either one cell or a signal that no valid cell exists.
 public enum RLMRootModelStep: Sendable, Equatable {
     case cell(RLMScriptedCell)
+    /// A validated-at-the-worker-boundary Scheme cell.
+    case scheme(source: String)
     case invalid(reason: String)
 }
 
@@ -149,6 +151,23 @@ public protocol RLMProgressSink: Sendable {
 /// evaluator is scripted, so orchestration is proven without an interpreter.
 public protocol RLMCellEvaluator: Sendable {
     func schedule(_ cell: RLMScriptedCell) async throws -> [RLMHostOperation]
+}
+
+/// Evaluates a Scheme cell in a supervised worker process.
+public protocol RLMSchemeCellEvaluator: RLMCellEvaluator {
+    func scheduleScheme(_ source: String) async throws -> [RLMHostOperation]
+}
+
+/// Allows a worker-backed evaluator to hand observations already produced by
+/// its host bridge back to the engine. This prevents corpus and leaf requests
+/// from running a second time when the Scheme worker has already awaited them.
+public protocol RLMRecordedObservationProvider: Sendable {
+    func recordedObservation(for operation: RLMHostOperation) async -> RLMHostObservation?
+}
+
+/// Binds an evaluator to the immutable snapshot captured by the engine.
+public protocol RLMSnapshotAwareEvaluator: Sendable {
+    func bind(snapshot: RLMCorpusSnapshot) async
 }
 
 /// The Phase 0 evaluator: it replays the operations carried by the cell.

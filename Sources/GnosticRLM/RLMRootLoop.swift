@@ -4,6 +4,7 @@
 public enum RLMLoopDirective: Sendable, Equatable {
     case requestRootCell(RLMRootRequest)
     case scheduleCell(RLMScriptedCell)
+    case scheduleScheme(source: String)
     case service(RLMHostOperation)
     case completed(answer: String, evidence: [RLMEvidenceReference])
     case failed(RLMFailure)
@@ -119,6 +120,22 @@ public struct RLMRootLoop: Sendable {
             metrics.estimatedModelTokens += tokens
             phase = .scheduling
             return .scheduleCell(cell)
+        case let .scheme(source):
+            guard !source.isEmpty, source.utf8.count <= budget.maxSchemeCellBytes else {
+                metrics.rootCellRejections += 1
+                return terminate(.failed(.cellRejected("cell exceeds \(budget.maxSchemeCellBytes) bytes")))
+            }
+            let tokens = tokenEstimator.estimateTokens(for: source)
+            do {
+                try ledger.consumeEstimatedModelTokens(tokens)
+            } catch let failure as RLMFailure {
+                return terminate(.failed(failure))
+            } catch {
+                return terminate(.failed(.rootModelFailed(String(describing: error))))
+            }
+            metrics.estimatedModelTokens += tokens
+            phase = .scheduling
+            return .scheduleScheme(source: source)
         }
     }
 

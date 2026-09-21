@@ -65,7 +65,13 @@ There is no fourth layer.
    additional tools and at most one bounded Turn context source. The surface is
    resolved once at construction and collision-checked against the Workspace and
    network tools, so a contribution cannot override another tool or leak into a
-   second Ascendant.
+   second Ascendant. When a selected contribution needs host capabilities, the
+   composition root may bind a `PositronicContributionRuntimeContext` to that
+   Ascendant. The context contains only Gnostic-owned, typed capabilities: the
+   selected Ascendant's read-only Workspace file reader, mediated permission
+   service, an optional dedicated model service, and the attached Workspace IDs.
+   It carries no raw filesystem paths, Workspace implementation objects,
+   credentials, or process-wide registry.
 
 The following invariants hold across the layers:
 
@@ -78,6 +84,9 @@ The following invariants hold across the layers:
   selection by Ascendant ID reaches the addressed Ascendant. Selection with no
   ID on a Node operating more than one Ascendant fails with
   `ambiguousAscendant`.
+- Contribution runtime capabilities are bound at startup per Ascendant. An
+  absent context preserves the ordinary contribution construction path, and a
+  contribution cannot discover another Ascendant's Workspace or model service.
 - `GnosticCore` must not depend on an experiment target. `Atlas`, `RLM`, and
   `Letta` are optional or experimental boundaries outside Core. Core may host
   their adapters through the flat `AscendantBackend` contract, but the Core
