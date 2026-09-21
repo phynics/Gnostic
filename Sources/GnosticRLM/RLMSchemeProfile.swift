@@ -699,5 +699,3 @@ private struct Validator {
         }
     }
 }
-
-
