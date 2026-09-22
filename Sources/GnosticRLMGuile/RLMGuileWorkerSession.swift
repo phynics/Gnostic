@@ -192,6 +192,9 @@ public actor RLMGuileWorkerSession {
         if case .hostResultRejected = outcome {
             terminate()
         }
+        if case .workerExited = outcome {
+            terminate()
+        }
         // Definitions are committed only after a cell evaluates successfully,
         // so a cell that fails at runtime cannot make its names available to a
         // later repair attempt.
@@ -264,13 +267,13 @@ public actor RLMGuileWorkerSession {
                     return .cancelled
                 }
             case let .evaluated(evaluated):
-                guard evaluated.cellID == cellID else { continue }
+                guard evaluated.runID == configuration.runID, evaluated.cellID == cellID else { continue }
                 return .value(evaluated.value)
             case let .finished(finished):
                 guard finished.runID == configuration.runID else { continue }
                 return .finished(answer: finished.answer, evidenceIDs: finished.evidenceIDs)
             case let .failed(failure):
-                guard failure.cellID == cellID else { continue }
+                guard failure.runID == configuration.runID, failure.cellID == cellID else { continue }
                 return .schemeFailed(failure.message)
             default:
                 continue
