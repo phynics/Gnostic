@@ -37,6 +37,7 @@ public struct BackendComposition: Sendable {
     /// credentials and network access.
     public static var `default`: BackendComposition {
         var composition = BackendComposition()
+        composition.registerPositronicExtension(RLMPositronicExtension.value)
         composition.registerLettaBackend()
         return composition
     }
@@ -128,21 +129,41 @@ public struct BackendComposition: Sendable {
             kind: AscendantAdapterRegistry.positronicKind,
             settings: PositronicAscendantAdapter.settingsSchema
         ) { ascendant, backend, services, timelines in
+            let configuration = PositronicBackendConfiguration(backend: backend)
+            let selectedNames = try Self.selectedExtensionNames(for: ascendant, backend: backend)
+            let needsDedicatedModel = selectedNames.contains { extensions[$0]?.requiresModelService == true }
+            let modelClient: any LLMStreamClient = configuration.provider != nil
+                ? ConfiguredLLMService.make(from: configuration)
+                : UnconfiguredLLMService()
+            let dedicatedModel: (any PositronicContributionModelService)? = needsDedicatedModel && configuration.provider != nil
+                ? PositronicContributionModelAdapter(client: modelClient)
+                : nil
+            let allowedWorkspaceIDs = Set(
+                timelines
+                    .filter { $0.operatingAscendantID == ascendant.id }
+                    .flatMap(\.attachments)
+                    .filter { $0.scope == .local }
+                    .map(\.workspaceID)
+            )
+            let runtimeContext: PositronicContributionRuntimeContext? = selectedNames.isEmpty
+                ? nil
+                : PositronicContributionRuntimeContext(
+                    services: services,
+                    modelService: dedicatedModel,
+                    allowedWorkspaceIDs: allowedWorkspaceIDs
+                )
             let contributions = try Self.contributions(
                 for: ascendant,
                 backend: backend,
-                extensions: extensions
+                extensions: extensions,
+                runtimeContext: runtimeContext
             )
-            let configuration = PositronicBackendConfiguration(backend: backend)
-            let languageModel: any LLMStreamClient = configuration.provider != nil
-                ? ConfiguredLLMService.make(from: configuration)
-                : UnconfiguredLLMService()
             return try await PositronicAscendantAdapter(
                 ascendant: ascendant,
                 backend: backend,
                 services: services,
                 timelines: timelines,
-                languageModel: languageModel,
+                languageModel: modelClient,
                 contributions: contributions
             )
         }
@@ -160,7 +181,8 @@ public struct BackendComposition: Sendable {
     static func contributions(
         for ascendant: NodeManifest.Ascendant,
         backend: AscendantBackendConfiguration,
-        extensions: [String: PositronicExtension]
+        extensions: [String: PositronicExtension],
+        runtimeContext: PositronicContributionRuntimeContext? = nil
     ) throws -> [any PositronicContribution] {
         let names = try selectedExtensionNames(for: ascendant, backend: backend)
         return try names.map { name in
@@ -170,7 +192,12 @@ public struct BackendComposition: Sendable {
                 )
             }
             return try extensionValue.factory(
-                scope(for: extensionValue, ascendant: ascendant, backend: backend)
+                scope(
+                    for: extensionValue,
+                    ascendant: ascendant,
+                    backend: backend,
+                    runtimeContext: runtimeContext
+                )
             )
         }
     }
@@ -207,13 +234,15 @@ public struct BackendComposition: Sendable {
     private static func scope(
         for extensionValue: PositronicExtension,
         ascendant: NodeManifest.Ascendant,
-        backend: AscendantBackendConfiguration
+        backend: AscendantBackendConfiguration,
+        runtimeContext: PositronicContributionRuntimeContext? = nil
     ) -> PositronicExtensionScope {
         PositronicExtensionScope(
             ascendant: ascendant,
             name: extensionValue.name,
             settings: scoped(backend.settings, to: extensionValue.name),
-            secrets: scoped(backend.secrets, to: extensionValue.name)
+            secrets: scoped(backend.secrets, to: extensionValue.name),
+            runtimeContext: runtimeContext
         )
     }
 

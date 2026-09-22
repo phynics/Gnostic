@@ -195,6 +195,36 @@ struct PositronicExtensionSelectionTests {
         #expect(probe.records.compactMap { $0.settings["value"]?.stringValue } == ["A", "B"])
     }
 
+    @Test("the selected extension receives only its Ascendant runtime context")
+    @MainActor
+    func runtimeContextIsScopedToSelectedAscendant() throws {
+        let workspaceID = UUID()
+        let ascendant = makeAscendant(name: "Scoped runtime")
+        let backend = NodeManifest.BackendConfiguration(
+            kind: "positronic",
+            settings: ["extensions": .array([.string("fixture")])]
+        )
+        let runtime = PositronicContributionRuntimeContext(
+            workspaceReader: nil,
+            modelService: nil,
+            allowedWorkspaceIDs: [workspaceID]
+        )
+        let received = Mutex<Set<UUID>>([])
+        let extensionValue = PositronicExtension(name: "fixture") { scope in
+            received.withLock { $0 = scope.runtimeContext?.allowedWorkspaceIDs ?? [] }
+            return FixtureContribution(label: "fixture")
+        }
+
+        _ = try BackendComposition.contributions(
+            for: ascendant,
+            backend: backend,
+            extensions: ["fixture": extensionValue],
+            runtimeContext: runtime
+        )
+
+        #expect(received.withLock { $0 } == [workspaceID])
+    }
+
     // MARK: - Schema advertisement
 
     @Test("the Positronic schema advertises the selection key and name-spaced extension keys")
@@ -282,6 +312,13 @@ struct PositronicExtensionSelectionTests {
         )
 
         #expect(contributions.isEmpty)
+    }
+
+    @Test("the default composition registers RLM without selecting it")
+    func defaultRLMIsOptIn() {
+        let composition = BackendComposition.default
+        #expect(composition.registeredPositronicExtensions.contains("rlm"))
+        #expect(composition.settingsSchema(for: AscendantAdapterRegistry.positronicKind)?.settingNames.contains("rlm.worker") == true)
     }
 
     @Test("an existing manifest without the key behaves exactly as today")

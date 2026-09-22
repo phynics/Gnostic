@@ -187,7 +187,7 @@ struct BackendCompositionTests {
         let composition = BackendComposition.default
         #expect(composition.registeredKinds == [AscendantAdapterRegistry.positronicKind, LettaAscendantBackend.kind])
         let schema = composition.settingsSchema(for: AscendantAdapterRegistry.positronicKind)
-        #expect(schema?.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions"])
+        #expect(schema?.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions", "rlm.worker"])
         let lettaSchema = composition.settingsSchema(for: LettaAscendantBackend.kind)
         #expect(lettaSchema?.settingNames == ["serverURL", "model", "agentID", "agentName", "maxSteps"])
         #expect(lettaSchema?.secretNames == ["apiKey"])

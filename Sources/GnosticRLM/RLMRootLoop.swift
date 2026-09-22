@@ -4,6 +4,7 @@
 public enum RLMLoopDirective: Sendable, Equatable {
     case requestRootCell(RLMRootRequest)
     case scheduleCell(RLMScriptedCell)
+    case scheduleScheme(source: String)
     case service(RLMHostOperation)
     case completed(answer: String, evidence: [RLMEvidenceReference])
     case failed(RLMFailure)
@@ -106,7 +107,7 @@ public struct RLMRootLoop: Sendable {
         case let .cell(cell):
             guard cell.estimatedByteCount <= budget.maxSchemeCellBytes else {
                 metrics.rootCellRejections += 1
-                return terminate(.failed(.cellRejected("cell exceeds \(budget.maxSchemeCellBytes) bytes")))
+                return requestNextRootCell()
             }
             let tokens = tokenEstimator.estimateTokens(for: cell.textualDescription)
             do {
@@ -119,6 +120,22 @@ public struct RLMRootLoop: Sendable {
             metrics.estimatedModelTokens += tokens
             phase = .scheduling
             return .scheduleCell(cell)
+        case let .scheme(source):
+            guard !source.isEmpty, source.utf8.count <= budget.maxSchemeCellBytes else {
+                metrics.rootCellRejections += 1
+                return requestNextRootCell()
+            }
+            let tokens = tokenEstimator.estimateTokens(for: source)
+            do {
+                try ledger.consumeEstimatedModelTokens(tokens)
+            } catch let failure as RLMFailure {
+                return terminate(.failed(failure))
+            } catch {
+                return terminate(.failed(.rootModelFailed(String(describing: error))))
+            }
+            metrics.estimatedModelTokens += tokens
+            phase = .scheduling
+            return .scheduleScheme(source: source)
         }
     }
 
@@ -129,6 +146,18 @@ public struct RLMRootLoop: Sendable {
         pendingIndex = 0
         phase = .evaluating
         return advanceEvaluation()
+    }
+
+    /// Rejects a worker cell and asks the root model for a bounded replacement.
+    ///
+    /// The root iteration containing the rejected cell is already consumed. The
+    /// next request therefore advances the same root iteration budget as any
+    /// other continuation.
+    public mutating func rejectScheduledCell(_ failure: RLMFailure) -> RLMLoopDirective {
+        guard phase == .scheduling else { return .lateResultFenced }
+        _ = failure
+        metrics.rootCellRejections += 1
+        return requestNextRootCell()
     }
 
     /// Accepts the observation produced by servicing the current operation.
