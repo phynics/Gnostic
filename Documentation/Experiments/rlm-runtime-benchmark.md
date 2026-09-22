@@ -52,8 +52,11 @@ and this provenance field.
 
 These values are one smoke run, not a confidence interval. The benchmark
 records mechanics and semantic parity; it does not infer that Chibi is the
-product choice from lower startup or RSS. The recorded outcome is
-`CONTINUE_EXPERIMENT` because answer quality, monetary cost, and macOS Chibi
-packaging remain unmeasured. See
-[ADR 0012](../Architecture/ADRs/0012-rlm-runtime-selection.md) for the
-promotion gate and the reason issue #180 remains blocked.
+product choice from lower startup or RSS. The artifact's recorded outcome is
+`CONTINUE_EXPERIMENT`, the historical #181 result. That single-promotion gate
+is superseded for the executor direction by
+[ADR 0012](../Architecture/ADRs/0012-rlm-runtime-selection.md): Guile and Chibi
+are both offered behind one shared seam, the default executor is chosen from
+measured impact in issue #354, and issue #180 waits on that decision. This
+benchmark stays valid as historical baseline evidence, but it is not promotion
+evidence.
