@@ -12,6 +12,10 @@ concurrency:
 permissions:
   contents: read
 
+# The smoke targets need only the image and a build, not `make verify`, so they
+# run in a parallel job. Each job builds the image from
+# .devcontainer/Dockerfile itself; the duplicated image build costs runner
+# minutes but not wall-clock time.
 jobs:
   verify:
     name: validation matrix
@@ -24,7 +28,7 @@ jobs:
       # image is rebuilt by the first `make` target below and then served from
       # the runner's local layer cache for the rest of the job.
       - name: Restore SwiftPM and build caches
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             /tmp/gnostic-swift-build
@@ -48,6 +52,52 @@ jobs:
       - name: make verify
         run: make verify
 
+      # Only main saves. A pull request entry is restorable only from its own
+      # branch, and each ~1 GB entry pushes main's toward eviction.
+      - name: Save SwiftPM and build caches
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            /tmp/gnostic-swift-build
+            ~/.cache/gnostic/swiftpm
+          key: swift-6.4.0-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: testing-logs-${{ github.job }}
+          path: .testing/
+          # .testing is a dot-directory; without this the upload silently
+          # finds nothing and a failed run has no diagnosable output.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore SwiftPM and build caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            /tmp/gnostic-swift-build
+            ~/.cache/gnostic/swiftpm
+          key: swift-6.4.0-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            swift-6.4.0-${{ hashFiles('Package.resolved') }}-
+            swift-6.4.0-
+
+      # acp-smoke locates the gnostic executable before `swift test` builds
+      # it, so a cold or stale cache needs an explicit build first.
+      - name: make build
+        run: make build
+
       - name: make runner-smoke
         run: make runner-smoke
 
@@ -58,10 +108,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: testing-logs
+          name: testing-logs-${{ github.job }}
           path: .testing/
-          # .testing is a dot-directory; without this the upload silently
-          # finds nothing and a failed run has no diagnosable output.
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
