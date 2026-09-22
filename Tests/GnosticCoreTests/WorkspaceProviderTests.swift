@@ -335,7 +335,7 @@ struct WorkspaceProviderTests {
 
     @Test("multiplexed tool listing ends on the terminal page for tool and non-tool Workspaces") @MainActor
     func multiplexedToolListingEndsOnTerminalPage() async throws {
-        let namespace = "gnostic-multiplexed-tool-listing-\(UUID().uuidString.lowercased())"
+        let namespace = "gnostic-mux-tools-\(UUID().uuidString.lowercased())"
         let consumer = makeBrokerManager("consumer", namespace: namespace)
         let remote = makeBrokerManager("remote", namespace: namespace)
         defer { consumer.stop(); remote.stop() }
@@ -360,7 +360,7 @@ struct WorkspaceProviderTests {
 
     @Test("an owner's tool object wins over empty answers from other responders on the same node") @MainActor
     func toolObjectWinsOverEmptyAnswers() async throws {
-        let namespace = "gnostic-tool-listing-precedence-\(UUID().uuidString.lowercased())"
+        let namespace = "gnostic-tools-order-\(UUID().uuidString.lowercased())"
         let consumer = makeBrokerManager("consumer", namespace: namespace)
         let remote = makeBrokerManager("remote", namespace: namespace)
         defer { consumer.stop(); remote.stop() }
