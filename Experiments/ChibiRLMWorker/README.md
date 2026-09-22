@@ -100,6 +100,10 @@ values have the same wire shape in both workers.
 - Unsupported non-number values become `#\!`. The conversion is iterative over
   list spines and vector elements, so the 4096-node budget and depth of 32 are
   enforced without growing the C stack; truncation becomes `#\?`.
+- Every string field the worker emits crosses `wire-string`, including the
+  ready-frame `runID` and `environmentKeys` and each result frame's `runID`, so
+  this worker stays in wire parity with Guile when a host-supplied identity or
+  environment key contains a control character.
 
 ## Limits and differences from Guile
 

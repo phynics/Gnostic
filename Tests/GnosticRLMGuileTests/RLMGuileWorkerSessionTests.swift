@@ -185,6 +185,67 @@ struct RLMGuileWorkerSessionTests {
         #expect(ready.environmentKeys.contains("A?B"))
     }
 
+    @Test("result frames sanitize the run identity before framing")
+    func resultFramesSanitizeRunIdentity() throws {
+        let worker = try RLMGuileRawWorker(runID: "run\u{8}id")
+        defer { worker.shutdown() }
+
+        guard case .ready = try worker.initialize() else {
+            Issue.record("worker did not report ready")
+            return
+        }
+
+        let evaluatedFrame = try worker.evaluate("(+ 1 2)", cellID: 1)
+        guard case let .evaluated(evaluated) = evaluatedFrame else {
+            Issue.record("expected an evaluated frame, got \(evaluatedFrame)")
+            return
+        }
+        #expect(evaluated.runID == "run?id")
+        #expect(evaluated.value == .integer(3))
+
+        let finishedFrame = try worker.evaluate("(finish \"answer\" (list \"c-1\"))", cellID: 2)
+        guard case let .finished(finished) = finishedFrame else {
+            Issue.record("expected a finished frame, got \(finishedFrame)")
+            return
+        }
+        #expect(finished.runID == "run?id")
+        #expect(finished.answer == "answer")
+        #expect(finished.evidenceIDs == ["c-1"])
+    }
+
+    @Test("host results preserve a CRLF string across the wire")
+    func crlfHostResultIsPreserved() async throws {
+        let host = RLMGuileClosureHost { operation in
+            switch operation {
+            case .corpusRead:
+                return .corpusRead(
+                    chunks: [
+                        RLMCorpusChunk(
+                            id: "c-1",
+                            path: "Sources/A.swift",
+                            startLine: 1,
+                            endLine: 2,
+                            content: "before\r\nafter",
+                            byteCount: 13,
+                            digest: "digest"
+                        )
+                    ],
+                    bytesRead: 13
+                )
+            default:
+                return .progress
+            }
+        }
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(corpus-read \"c-1\")")
+        #expect(outcome == .value(.string("before\r\nafter")))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("finish answer with a control character remains structured")
     func finishControlStringIsDecodable() async throws {
         let host = RLMGuileRecordingHost()

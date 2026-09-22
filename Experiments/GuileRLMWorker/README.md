@@ -28,3 +28,10 @@ Numbers are accepted only when they are finite real values or signed 64-bit
 integers. Ratios, complex values, non-finite values, and integers outside the
 signed 64-bit range become `#\!`. This keeps Guile's result frames identical
 to Chibi's for the common profile, including the numeric edge cases.
+
+Every string field the worker emits crosses `wire-string`, not only cell
+values. The `ready` frame's `runID` and `environmentKeys`, each result frame's
+`runID`, `finished` answers and evidence identifiers, failure messages, and
+host-call names are all sanitized before framing. A host-supplied identity or
+environment key that contains a control character therefore cannot make a
+frame undecodable.

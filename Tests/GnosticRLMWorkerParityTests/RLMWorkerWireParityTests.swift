@@ -16,8 +16,9 @@ struct RLMWorkerWireParityTests {
         (let* (
             (hits (corpus-search "wire parity" 1))
             (chunks (corpus-read-many (list "c-1")))
-            (numbers (list (/ 1.0 3.0) (expt 2 100) (sqrt -1))))
-          (list hits chunks numbers
+            (numbers (list (/ 1.0 3.0) (expt 2 100) (sqrt -1)))
+            (control (string-append "a" "\u{08}" "b")))
+          (list hits chunks numbers control
                 (list (string->symbol "gnostic-unsupported")
                       (string->symbol "valid-symbol"))))
         """
@@ -48,6 +49,38 @@ struct RLMWorkerWireParityTests {
         if guileValue != chibiValue {
             Issue.record("wire values differ: Guile=\(guileValue?.written ?? "nil") Chibi=\(chibiValue?.written ?? "nil")")
         }
+    }
+
+    @Test("both workers sanitize ready-frame environment metadata")
+    func readyFrameSanitizesEnvironment() async throws {
+        var environment = RLMGuileWorkerConfiguration.scrubbedEnvironment
+        environment["A\u{8}B"] = "value"
+        environment["C\u{7}D"] = "value"
+
+        let guileHost = RLMGuileClosureHost { operation in
+            try RLMWorkerWireParitySupport.observation(for: operation)
+        }
+        let chibiHost = RLMChibiClosureHost { operation in
+            try RLMWorkerWireParitySupport.observation(for: operation)
+        }
+        let guile = RLMWorkerWireParitySupport.guileSession(host: guileHost, environment: environment)
+        let chibi = RLMWorkerWireParitySupport.chibiSession(host: chibiHost, environment: environment)
+        try await guile.start()
+        try await chibi.start()
+
+        let guileReady = try #require(await guile.ready)
+        let chibiReady = try #require(await chibi.ready)
+        await guile.shutdown()
+        await chibi.shutdown()
+
+        #expect(guileReady.runID == "parity-guile")
+        #expect(chibiReady.runID == "parity-chibi")
+        #expect(guileReady.environmentKeys.contains("A?B"))
+        #expect(chibiReady.environmentKeys.contains("A?B"))
+        #expect(guileReady.environmentKeys.contains("C?D"))
+        #expect(chibiReady.environmentKeys.contains("C?D"))
+        #expect(!guileReady.environmentKeys.contains("A\u{8}B"))
+        #expect(!chibiReady.environmentKeys.contains("A\u{8}B"))
     }
 }
 
@@ -92,23 +125,33 @@ private enum RLMWorkerWireParitySupport {
             && FileManager.default.fileExists(atPath: chibiScriptPath)
     }
 
-    static func guileSession(host: any RLMGuileHost) -> RLMGuileWorkerSession {
+    static func guileSession(
+        host: any RLMGuileHost,
+        runID: String = "parity-guile",
+        environment: [String: String] = RLMGuileWorkerConfiguration.scrubbedEnvironment
+    ) -> RLMGuileWorkerSession {
         RLMGuileWorkerSession(
             configuration: RLMGuileWorkerConfiguration(
-                runID: "parity-guile",
+                runID: runID,
                 workerScriptPath: guileScriptPath,
-                executablePath: guilePath ?? "/usr/bin/guile"
+                executablePath: guilePath ?? "/usr/bin/guile",
+                environment: environment
             ),
             host: host
         )
     }
 
-    static func chibiSession(host: any RLMChibiHost) -> RLMChibiWorkerSession {
+    static func chibiSession(
+        host: any RLMChibiHost,
+        runID: String = "parity-chibi",
+        environment: [String: String] = RLMChibiWorkerConfiguration.scrubbedEnvironment
+    ) -> RLMChibiWorkerSession {
         RLMChibiWorkerSession(
             configuration: RLMChibiWorkerConfiguration(
-                runID: "parity-chibi",
+                runID: runID,
                 workerScriptPath: chibiScriptPath,
-                executablePath: chibiPath ?? "/usr/local/bin/chibi-scheme"
+                executablePath: chibiPath ?? "/usr/local/bin/chibi-scheme",
+                environment: environment
             ),
             host: host
         )
