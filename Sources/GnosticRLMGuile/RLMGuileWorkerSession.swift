@@ -51,6 +51,14 @@ public actor RLMGuileWorkerSession {
         process?.isRunning ?? false
     }
 
+    /// The supervised child process identifier while the worker is running.
+    /// Benchmark and diagnostics code may use it for host-owned resource
+    /// sampling; the worker protocol never receives this value.
+    public var processIdentifier: Int32? {
+        guard let process, process.isRunning else { return nil }
+        return process.processIdentifier
+    }
+
     public var stderrTail: String {
         String(decoding: stderrBuffer.snapshot(), as: UTF8.self)
     }
@@ -586,6 +594,8 @@ public actor RLMGuileWorkerSession {
     ) {}
 
     public var isRunning: Bool { false }
+
+    public var processIdentifier: Int32? { nil }
 
     public var stderrTail: String { "" }
 

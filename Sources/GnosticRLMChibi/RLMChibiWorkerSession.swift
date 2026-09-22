@@ -609,6 +609,8 @@ public actor RLMChibiWorkerSession {
 
     public var isRunning: Bool { false }
 
+    public var processIdentifier: Int32? { nil }
+
     public var stderrTail: String { "" }
 
     public private(set) var ready: RLMSchemeReady?
