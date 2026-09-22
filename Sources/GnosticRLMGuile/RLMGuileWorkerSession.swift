@@ -67,7 +67,6 @@ public actor RLMGuileWorkerSession {
     public func start() async throws {
         guard !hasStarted else { return }
         hasStarted = true
-        Self.ignoreBrokenPipeSignal()
 
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: configuration.executablePath) else {
@@ -440,7 +439,9 @@ public actor RLMGuileWorkerSession {
             throw RLMGuileWorkerError.alreadyShutDown
         }
         let bytes = try RLMSchemeWorkerCodec.encode(frame, maxFrameBytes: limit)
-        try inputHandle.write(contentsOf: Data(bytes))
+        try RLMGuileProcessSignals.withoutBrokenPipeSignal {
+            try inputHandle.write(contentsOf: Data(bytes))
+        }
     }
 
     private func closeInput() {
@@ -451,10 +452,6 @@ public actor RLMGuileWorkerSession {
     private func workerExitCode() -> Int32 {
         guard let process, !process.isRunning else { return -1 }
         return process.terminationStatus
-    }
-
-    private static func ignoreBrokenPipeSignal() {
-        _ = signal(SIGPIPE, SIG_IGN)
     }
 
     private func terminate() {
