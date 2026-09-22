@@ -72,14 +72,16 @@ let package = Package(
             dependencies: [
                 "GnosticRLM",
                 "GnosticRLMProcessWorker",
-            ]
+            ],
+            resources: [.copy("Resources/worker.scm")]
         ),
         .target(
             name: "GnosticRLMChibi",
             dependencies: [
                 "GnosticRLM",
                 "GnosticRLMProcessWorker",
-            ]
+            ],
+            resources: [.copy("Resources/worker.scm")]
         ),
         .executableTarget(
             name: "GnosticRLMBenchmark",
@@ -87,6 +89,7 @@ let package = Package(
                 "GnosticRLM",
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
+                "GnosticRLMProcessWorker",
             ]
         ),
         .testTarget(
@@ -175,6 +178,7 @@ let package = Package(
                 "GnosticRLM",
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
+                "GnosticRLMProcessWorker",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),

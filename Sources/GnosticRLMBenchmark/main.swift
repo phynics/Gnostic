@@ -4,6 +4,7 @@ import Foundation
 import GnosticRLM
 import GnosticRLMChibi
 import GnosticRLMGuile
+import GnosticRLMProcessWorker
 
 #if os(Linux)
 import Glibc
@@ -197,32 +198,34 @@ private struct RLMRuntimeBenchmark {
 
     private func makeGuileDriver() -> (any BenchmarkWorkerDriver, BenchmarkHost) {
         let host = BenchmarkHost()
-        let session = RLMGuileWorkerSession(
-            configuration: RLMGuileWorkerConfiguration(
-                runID: "benchmark-guile",
-                workerScriptPath: Self.scriptPath("GuileRLMWorker/worker.scm"),
-                executablePath: RLMGuileWorkerConfiguration.defaultExecutablePath
-            ),
-            host: RLMGuileClosureHost { operation in
-                try await host.service(operation)
-            }
+        let configuration = RLMGuileWorkerConfiguration(
+            runID: "benchmark-guile",
+            workerScriptPath: RLMGuileWorkerConfiguration.defaultWorkerScriptPath ?? "",
+            executablePath: RLMGuileWorkerConfiguration.defaultExecutablePath
         )
-        return (GuileBenchmarkDriver(session: session), host)
+        let driver = RLMProcessWorkerDriver<RLMGuileExecutor>(
+            configuration: configuration,
+            host: RLMGuileClosureHost { operation in try await host.service(operation) },
+            wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
+            outputLimitBytes: configuration.maxOutputBytes
+        )
+        return (BenchmarkProcessDriver(driver: driver), host)
     }
 
     private func makeChibiDriver() -> (any BenchmarkWorkerDriver, BenchmarkHost) {
         let host = BenchmarkHost()
-        let session = RLMChibiWorkerSession(
-            configuration: RLMChibiWorkerConfiguration(
-                runID: "benchmark-chibi",
-                workerScriptPath: Self.scriptPath("ChibiRLMWorker/worker.scm"),
-                executablePath: RLMChibiWorkerConfiguration.defaultExecutablePath
-            ),
-            host: RLMChibiClosureHost { operation in
-                try await host.service(operation)
-            }
+        let configuration = RLMChibiWorkerConfiguration(
+            runID: "benchmark-chibi",
+            workerScriptPath: RLMChibiWorkerConfiguration.defaultWorkerScriptPath ?? "",
+            executablePath: RLMChibiWorkerConfiguration.defaultExecutablePath
         )
-        return (ChibiBenchmarkDriver(session: session), host)
+        let driver = RLMProcessWorkerDriver<RLMChibiExecutor>(
+            configuration: configuration,
+            host: RLMChibiClosureHost { operation in try await host.service(operation) },
+            wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
+            outputLimitBytes: configuration.maxOutputBytes
+        )
+        return (BenchmarkProcessDriver(driver: driver), host)
     }
 
     private static func corpusSource() -> RLMInMemoryCorpusSource {
@@ -232,16 +235,6 @@ private struct RLMRuntimeBenchmark {
             "Documentation/retirement.md": "Retirement invalidates the lease and fences stale completions.\n",
             "README.md": "Gnostic runtime lifecycle fixture.\n",
         ])
-    }
-
-    private static func scriptPath(_ relativePath: String) -> String {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Experiments")
-            .appendingPathComponent(relativePath)
-            .path
     }
 
     private static func timestamp() -> String {
@@ -292,62 +285,37 @@ private struct BenchmarkEvaluation: Sendable {
     let semanticDigest: String?
 }
 
-private struct GuileBenchmarkDriver: BenchmarkWorkerDriver {
-    let session: RLMGuileWorkerSession
-
-    func start() async throws { try await session.start() }
-
-    func evaluate(source: String) async -> BenchmarkEvaluation {
-        switch await session.evaluate(source: source) {
+private extension BenchmarkEvaluation {
+    init(_ evaluation: RLMWorkerEvaluation) {
+        switch evaluation {
         case let .value(value):
-            return BenchmarkEvaluation(outcome: "value", semanticDigest: value.map { RLMDigest.sha256Hex($0.written) })
+            self.init(outcome: "value", semanticDigest: value.map { RLMDigest.sha256Hex($0.written) })
         case let .finished(answer, evidence):
-            return BenchmarkEvaluation(outcome: "finished", semanticDigest: RLMDigest.sha256Hex(answer + "|" + evidence.joined(separator: ",")))
-        case let .schemeFailed(message): return BenchmarkEvaluation(outcome: "scheme-failed: \(message)", semanticDigest: nil)
-        case let .cellRejected(message): return BenchmarkEvaluation(outcome: "cell-rejected: \(message)", semanticDigest: nil)
-        case .timedOut: return BenchmarkEvaluation(outcome: "timed-out", semanticDigest: nil)
-        case .outputLimitReached: return BenchmarkEvaluation(outcome: "output-limit", semanticDigest: nil)
-        case let .hostResultRejected(message): return BenchmarkEvaluation(outcome: "host-result-rejected: \(message)", semanticDigest: nil)
-        case .cancelled: return BenchmarkEvaluation(outcome: "cancelled", semanticDigest: nil)
-        case .fenced: return BenchmarkEvaluation(outcome: "fenced", semanticDigest: nil)
-        case let .workerExited(code): return BenchmarkEvaluation(outcome: "worker-exited: \(code)", semanticDigest: nil)
-        case let .protocolViolation(message): return BenchmarkEvaluation(outcome: "protocol-violation: \(message)", semanticDigest: nil)
-        case .unsupportedPlatform: return BenchmarkEvaluation(outcome: "unsupported-platform", semanticDigest: nil)
+            self.init(outcome: "finished", semanticDigest: RLMDigest.sha256Hex(answer + "|" + evidence.joined(separator: ",")))
+        case let .failed(failure):
+            self.init(outcome: "failed: \(failure)", semanticDigest: nil)
+        case .cancelled:
+            self.init(outcome: "cancelled", semanticDigest: nil)
+        case .fenced:
+            self.init(outcome: "fenced", semanticDigest: nil)
+        case .unsupported:
+            self.init(outcome: "unsupported-platform", semanticDigest: nil)
         }
     }
-
-    func cancel() async { await session.cancel() }
-    func shutdown() async { await session.shutdown() }
-    var processIdentifier: Int32? { get async { await session.processIdentifier } }
 }
 
-private struct ChibiBenchmarkDriver: BenchmarkWorkerDriver {
-    let session: RLMChibiWorkerSession
+private struct BenchmarkProcessDriver<Executor: RLMWorkerExecutor>: BenchmarkWorkerDriver {
+    let driver: RLMProcessWorkerDriver<Executor>
 
-    func start() async throws { try await session.start() }
+    func start() async throws { try await driver.start() }
 
     func evaluate(source: String) async -> BenchmarkEvaluation {
-        switch await session.evaluate(source: source) {
-        case let .value(value):
-            return BenchmarkEvaluation(outcome: "value", semanticDigest: value.map { RLMDigest.sha256Hex($0.written) })
-        case let .finished(answer, evidence):
-            return BenchmarkEvaluation(outcome: "finished", semanticDigest: RLMDigest.sha256Hex(answer + "|" + evidence.joined(separator: ",")))
-        case let .schemeFailed(message): return BenchmarkEvaluation(outcome: "scheme-failed: \(message)", semanticDigest: nil)
-        case let .cellRejected(message): return BenchmarkEvaluation(outcome: "cell-rejected: \(message)", semanticDigest: nil)
-        case .timedOut: return BenchmarkEvaluation(outcome: "timed-out", semanticDigest: nil)
-        case .outputLimitReached: return BenchmarkEvaluation(outcome: "output-limit", semanticDigest: nil)
-        case let .hostResultRejected(message): return BenchmarkEvaluation(outcome: "host-result-rejected: \(message)", semanticDigest: nil)
-        case .cancelled: return BenchmarkEvaluation(outcome: "cancelled", semanticDigest: nil)
-        case .fenced: return BenchmarkEvaluation(outcome: "fenced", semanticDigest: nil)
-        case let .workerExited(code): return BenchmarkEvaluation(outcome: "worker-exited: \(code)", semanticDigest: nil)
-        case let .protocolViolation(message): return BenchmarkEvaluation(outcome: "protocol-violation: \(message)", semanticDigest: nil)
-        case .unsupportedPlatform: return BenchmarkEvaluation(outcome: "unsupported-platform", semanticDigest: nil)
-        }
+        BenchmarkEvaluation(await driver.evaluate(source: source))
     }
 
-    func cancel() async { await session.cancel() }
-    func shutdown() async { await session.shutdown() }
-    var processIdentifier: Int32? { get async { await session.processIdentifier } }
+    func cancel() async { await driver.cancel() }
+    func shutdown() async { await driver.shutdown() }
+    var processIdentifier: Int32? { get async { await driver.processIdentifier } }
 }
 
 private actor BenchmarkHost {

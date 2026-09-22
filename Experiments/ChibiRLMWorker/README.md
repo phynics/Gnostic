@@ -3,6 +3,12 @@
 `worker.scm` is the Chibi Scheme 0.12 worker for the `gnostic-rlm-scheme-0`
 profile. It is an experiment and is not enabled in any production composition.
 
+The script ships with the Chibi executor as a bundled resource at
+[`Sources/GnosticRLMChibi/Resources/worker.scm`](../../Sources/GnosticRLMChibi/Resources/worker.scm).
+The parent resolves it from the bundle, so a deployed binary does not depend on
+its working directory; `GNOSTIC_CHIBI_WORKER` overrides the location during
+development.
+
 The worker reads length-prefixed frames on stdin, evaluates parent-validated
 cells in one run-local restricted environment, and services bounded host calls
 over the same framed channel. The parent owns cell validation, host calls,

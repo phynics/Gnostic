@@ -26,12 +26,7 @@ enum RLMGuileTestSupport {
     }
 
     static var workerScriptPath: String {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Experiments/GuileRLMWorker/worker.scm")
-            .path
+        RLMGuileWorkerConfiguration.defaultWorkerScriptPath ?? ""
     }
 
     /// A stub worker that emits a stale-run frame before the matching one.
