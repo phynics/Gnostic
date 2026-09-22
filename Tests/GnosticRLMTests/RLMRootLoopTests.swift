@@ -249,4 +249,91 @@ struct RLMRootLoopTests {
         #expect(loop.cancel() == .cancelled)
         #expect(loop.termination == .cancelled)
     }
+
+    @Test("a recoverable cell failure is fed back to the root model for repair")
+    func recoverableFailureRequestsRepair() async throws {
+        let snapshot = try await makeSnapshot()
+        var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: .standard)
+        _ = loop.start()
+        _ = loop.receiveRootStep(.scheme(source: "(finish \"a\" (list))"))
+        guard case let .requestRootCell(request) = loop.rejectScheduledCell(
+            .cellRuntimeFailed("unbound variable: helper")
+        ) else {
+            Issue.record("expected a repair request")
+            return
+        }
+        #expect(loop.runMetrics.runtimeFailures == 1)
+        #expect(loop.runMetrics.repairs == 1)
+        #expect(request.repairs.count == 1)
+        #expect(request.repairs[0].reason == "runtime failed: unbound variable: helper")
+    }
+
+    @Test("a rejected cell is counted separately from a runtime failure")
+    func rejectionAndRuntimeFailureAreCountedSeparately() async throws {
+        let snapshot = try await makeSnapshot()
+        var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: .standard)
+        _ = loop.start()
+        _ = loop.receiveRootStep(.scheme(source: "(finish \"a\" (list))"))
+        _ = loop.rejectScheduledCell(.cellRejected("disallowed symbol 'system'"))
+        #expect(loop.runMetrics.rootCellRejections == 1)
+        #expect(loop.runMetrics.runtimeFailures == 0)
+        #expect(loop.runMetrics.repairs == 1)
+    }
+
+    @Test("repairs are bounded and the last failure terminates the run")
+    func repairsAreBounded() async throws {
+        let snapshot = try await makeSnapshot()
+        var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: .standard)
+        _ = loop.start()
+        for _ in 0 ..< RLMRunBudget.standard.maxCellRepairs {
+            _ = loop.receiveRootStep(.scheme(source: "(finish \"a\" (list))"))
+            guard case .requestRootCell = loop.rejectScheduledCell(.cellRuntimeFailed("boom")) else {
+                Issue.record("expected a repair request within the repair budget")
+                return
+            }
+        }
+        _ = loop.receiveRootStep(.scheme(source: "(finish \"a\" (list))"))
+        guard case let .failed(failure) = loop.rejectScheduledCell(.cellRuntimeFailed("boom")) else {
+            Issue.record("expected termination once the repair budget is exhausted")
+            return
+        }
+        #expect(failure == .cellRuntimeFailed("boom"))
+        #expect(loop.runMetrics.repairs == RLMRunBudget.standard.maxCellRepairs)
+        #expect(loop.isTerminated)
+    }
+
+    @Test("a non-recoverable failure stays terminal and earns no repair")
+    func nonRecoverableFailureIsTerminal() async throws {
+        let snapshot = try await makeSnapshot()
+        var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: .standard)
+        _ = loop.start()
+        _ = loop.receiveRootStep(.scheme(source: "(finish \"a\" (list))"))
+        guard case let .failed(failure) = loop.rejectScheduledCell(
+            .evaluatorFailed("worker exited with status 1")
+        ) else {
+            Issue.record("expected a worker failure to terminate the run")
+            return
+        }
+        #expect(failure == .evaluatorFailed("worker exited with status 1"))
+        #expect(loop.runMetrics.repairs == 0)
+        #expect(loop.isTerminated)
+    }
+
+    @Test("a repair signal is bounded to a single line")
+    func repairSignalIsBounded() async throws {
+        let snapshot = try await makeSnapshot()
+        var loop = RLMRootLoop(question: "q", snapshot: snapshot, budget: .standard)
+        _ = loop.start()
+        _ = loop.receiveRootStep(.scheme(source: "(finish \"a\" (list))"))
+        let sprawling = "line one\nline two\t" + String(repeating: "x", count: 2_000)
+        guard case let .requestRootCell(request) = loop.rejectScheduledCell(
+            .cellRuntimeFailed(sprawling)
+        ) else {
+            Issue.record("expected a repair request")
+            return
+        }
+        let reason = try #require(request.repairs.first?.reason)
+        #expect(!reason.contains("\n"))
+        #expect(reason.count <= 560)
+    }
 }

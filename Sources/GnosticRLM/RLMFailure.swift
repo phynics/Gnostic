@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-/// A structured, host-owned terminal failure for one RLM run.
+/// A structured, host-owned failure for one RLM run.
 ///
-/// Every case is terminal. A caller classifies a failed run by matching the
-/// case instead of parsing a message, and no case carries provider secrets,
-/// corpus content, or model output.
+/// Callers classify a failed run by matching the case instead of parsing a
+/// message. Cell failures are bounded repair signals; all other cases are
+/// terminal. No case carries provider secrets, corpus content, or model output.
 public enum RLMFailure: Error, Sendable, Equatable, CustomStringConvertible {
     /// A host budget request contained a negative or otherwise invalid value.
     case invalidToolArguments(String)
@@ -36,6 +36,8 @@ public enum RLMFailure: Error, Sendable, Equatable, CustomStringConvertible {
     case wallTimeLimitReached(limit: Duration)
     /// A generated cell was rejected before evaluation.
     case cellRejected(String)
+    /// A generated cell evaluated but raised a recoverable Scheme error.
+    case cellRuntimeFailed(String)
     /// A returned evidence reference did not belong to the committed snapshot.
     case evidenceRejected(RLMEvidenceRejection)
     /// The root model client failed.
@@ -50,6 +52,34 @@ public enum RLMFailure: Error, Sendable, Equatable, CustomStringConvertible {
     case lateResultFenced
     /// No terminal `finish` occurred within the root iteration budget.
     case noTerminalResult
+
+    /// Whether this failure can be fed back to the root model for one repair.
+    public var isRecoverableCellFailure: Bool {
+        switch self {
+        case .cellRejected, .cellRuntimeFailed:
+            true
+        default:
+            false
+        }
+    }
+
+    /// A bounded, single-line description safe to place in root-model history.
+    public var repairDescription: String? {
+        guard isRecoverableCellFailure else { return nil }
+        let prefix: String
+        let message: String
+        switch self {
+        case let .cellRejected(reason):
+            prefix = "validation rejected"
+            message = reason
+        case let .cellRuntimeFailed(reason):
+            prefix = "runtime failed"
+            message = reason
+        default:
+            return nil
+        }
+        return "\(prefix): \(Self.bound(message, to: 512))"
+    }
 
     public var description: String {
         switch self {
@@ -83,6 +113,8 @@ public enum RLMFailure: Error, Sendable, Equatable, CustomStringConvertible {
             return "Wall time limit reached: \(limit)"
         case let .cellRejected(reason):
             return "Generated cell rejected: \(reason)"
+        case let .cellRuntimeFailed(message):
+            return "Generated cell runtime failed: \(message)"
         case let .evidenceRejected(rejection):
             return "Evidence rejected: \(rejection)"
         case let .rootModelFailed(message):
@@ -98,6 +130,14 @@ public enum RLMFailure: Error, Sendable, Equatable, CustomStringConvertible {
         case .noTerminalResult:
             return "RLM run produced no terminal result"
         }
+    }
+
+    private static func bound(_ message: String, to maximum: Int) -> String {
+        let singleLine = message
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        guard singleLine.count > maximum else { return singleLine }
+        return String(singleLine.prefix(maximum)) + "…"
     }
 }
 

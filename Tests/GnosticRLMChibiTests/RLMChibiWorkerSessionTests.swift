@@ -597,4 +597,28 @@ struct RLMChibiWorkerConfigurationTests {
         #expect(environment.keys.allSatisfy { !$0.localizedCaseInsensitiveContains("secret") })
         #expect(environment.keys.allSatisfy { !$0.localizedCaseInsensitiveContains("token") })
     }
+
+    @Test("a definition from a failed cell is not visible to the repair attempt")
+    func failedCellDoesNotCommitDefinitions() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        // The cell defines `helper`, then fails while evaluating its value.
+        let failed = await session.evaluate(source: "(define helper (car (list)))")
+        guard case .schemeFailed = failed else {
+            Issue.record("expected a runtime failure, got \(failed)")
+            return
+        }
+
+        // The repair attempt must not see a name the failed cell never bound.
+        let repair = await session.evaluate(source: "(+ helper 1)")
+        guard case .cellRejected = repair else {
+            Issue.record("expected the uncommitted definition to be rejected, got \(repair)")
+            return
+        }
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
 }

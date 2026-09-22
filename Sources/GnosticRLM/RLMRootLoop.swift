@@ -44,6 +44,7 @@ public struct RLMRootLoop: Sendable {
     private var ledger: RLMRunBudgetLedger
     private var metrics: RLMRunMetrics
     private var history: [RLMObservationRecord] = []
+    private var repairs: [RLMRepairRecord] = []
     private var iteration = 0
     private var pendingOperations: [RLMHostOperation] = []
     private var pendingIndex = 0
@@ -148,15 +149,36 @@ public struct RLMRootLoop: Sendable {
         return advanceEvaluation()
     }
 
-    /// Rejects a worker cell and asks the root model for a bounded replacement.
+    /// Feeds one recoverable cell failure back to the root model for repair.
     ///
-    /// The root iteration containing the rejected cell is already consumed. The
+    /// Only a recoverable cell failure earns a repair. Every other failure is
+    /// terminal here, so fencing, cancellation, worker and protocol faults, and
+    /// run-budget exhaustion keep the behaviour they had before repair existed.
+    ///
+    /// The root iteration containing the failed cell is already consumed. The
     /// next request therefore advances the same root iteration budget as any
-    /// other continuation.
+    /// other continuation, and the repair budget bounds how many times a run may
+    /// take that path at all.
     public mutating func rejectScheduledCell(_ failure: RLMFailure) -> RLMLoopDirective {
         guard phase == .scheduling else { return .lateResultFenced }
-        _ = failure
-        metrics.rootCellRejections += 1
+        guard failure.isRecoverableCellFailure else { return terminate(.failed(failure)) }
+
+        switch failure {
+        case .cellRejected:
+            metrics.rootCellRejections += 1
+        case .cellRuntimeFailed:
+            metrics.runtimeFailures += 1
+        default:
+            break
+        }
+
+        guard metrics.repairs < budget.maxCellRepairs else {
+            return terminate(.failed(failure))
+        }
+        metrics.repairs += 1
+        if let reason = failure.repairDescription {
+            repairs.append(RLMRepairRecord(iteration: iteration, reason: reason))
+        }
         return requestNextRootCell()
     }
 
@@ -256,7 +278,8 @@ public struct RLMRootLoop: Sendable {
                 question: question,
                 metadata: snapshot.metadata,
                 remaining: ledger.remaining,
-                history: history
+                history: history,
+                repairs: repairs
             )
         )
     }

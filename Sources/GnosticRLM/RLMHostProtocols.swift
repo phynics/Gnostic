@@ -109,23 +109,43 @@ public struct RLMObservationRecord: Sendable, Equatable {
     }
 }
 
+/// One recoverable cell failure fed back to the root model for repair.
+///
+/// A repair record is not an observation: no host operation ran, so there is
+/// nothing to pair it with. It carries only the bounded, content-free reason
+/// the cell did not produce observations, and the iteration it happened in.
+public struct RLMRepairRecord: Sendable, Equatable {
+    public let iteration: Int
+    /// A bounded, single-line reason produced by `RLMFailure.repairDescription`.
+    public let reason: String
+
+    public init(iteration: Int, reason: String) {
+        self.iteration = iteration
+        self.reason = reason
+    }
+}
+
 /// The bounded context handed to a root model on each iteration.
 public struct RLMRootRequest: Sendable, Equatable {
     public let question: String
     public let metadata: RLMCorpusMetadata
     public let remaining: RLMRunBudgetRemaining
     public let history: [RLMObservationRecord]
+    /// Bounded repair signals from cells that failed before producing output.
+    public let repairs: [RLMRepairRecord]
 
     public init(
         question: String,
         metadata: RLMCorpusMetadata,
         remaining: RLMRunBudgetRemaining,
-        history: [RLMObservationRecord]
+        history: [RLMObservationRecord],
+        repairs: [RLMRepairRecord] = []
     ) {
         self.question = question
         self.metadata = metadata
         self.remaining = remaining
         self.history = history
+        self.repairs = repairs
     }
 }
 

@@ -5,6 +5,8 @@ public struct RLMRunMetrics: Sendable, Equatable {
     public let snapshotID: String
     public internal(set) var rootIterations = 0
     public internal(set) var rootCellRejections = 0
+    public internal(set) var runtimeFailures = 0
+    public internal(set) var repairs = 0
     public internal(set) var leafModelCalls = 0
     public internal(set) var leafPrompts = 0
     public internal(set) var corpusFiles = 0

@@ -156,7 +156,10 @@ public struct RLMAnalysisEngine: Sendable {
                     _ = loop.cancel()
                     return result(from: loop.termination, metrics: loop.runMetrics, snapshotID: snapshot.id, cancelled: true)
                 } catch let failure as RLMFailure {
-                    if case .cellRejected = failure {
+                    // Only generated Scheme earns a repair. A scripted cell is
+                    // built by the host, so a failure there is a harness fault
+                    // and stays terminal on the `.scheduleCell` path above.
+                    if failure.isRecoverableCellFailure {
                         directive = loop.rejectScheduledCell(failure)
                     } else {
                         directive = loop.fail(failure)

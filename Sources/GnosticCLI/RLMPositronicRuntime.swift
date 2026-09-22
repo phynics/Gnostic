@@ -37,6 +37,7 @@ private struct RLMRootModelAdapter: RLMRootModelClient {
 
     private static let maximumHistoryRecords = 16
     private static let maximumObservationCharacters = 2_048
+    private static let maximumRepairRecords = 4
 
     func nextCell(request: RLMRootRequest) async throws -> RLMRootModelStep {
         let recentHistory = request.history.suffix(Self.maximumHistoryRecords)
@@ -48,6 +49,10 @@ private struct RLMRootModelAdapter: RLMRootModelClient {
             return "operation=\(record.operation.textualDescription)\nobservation=\(boundedObservation)\(truncation)"
         }.joined(separator: "\n---\n")
         let historyHeader = omittedHistory > 0 ? "[\(omittedHistory) older observations omitted]\n" : ""
+        let recentRepairs = request.repairs.suffix(Self.maximumRepairRecords)
+        let repairs = recentRepairs
+            .map { "iteration \($0.iteration): \($0.reason)" }
+            .joined(separator: "\n")
         let prompt = """
         You are the root planner for a bounded recursive Workspace analysis.
         Return exactly one Scheme expression for the restricted RLM profile.
@@ -63,6 +68,8 @@ private struct RLMRootModelAdapter: RLMRootModelClient {
         Remaining leaf calls: \(request.remaining.leafModelCalls)
         History:
         \(historyHeader)\(history.isEmpty ? "(none)" : history)
+        Previous cells that failed and must not be repeated:
+        \(repairs.isEmpty ? "(none)" : repairs)
         """
         let response = try await model.generate(prompt: prompt, tier: .primary)
         let source = Self.schemeSource(response)
@@ -148,7 +155,7 @@ struct GuileWorkerDriver: RLMWorkerDriver {
         switch await session.evaluate(source: source) {
         case let .value(value): .value(value)
         case let .finished(answer, evidenceIDs): .finished(answer: answer, evidenceIDs: evidenceIDs)
-        case let .schemeFailed(message): .failed(.evaluatorFailed(message))
+        case let .schemeFailed(message): .failed(RLMWorkerFailureClassifier.classify(message))
         case let .cellRejected(message): .failed(.cellRejected(message))
         case .timedOut: .failed(.wallTimeLimitReached(limit: wallTimeLimit))
         case .outputLimitReached: .failed(.outputLimitReached(limit: outputLimitBytes))
@@ -177,7 +184,7 @@ struct ChibiWorkerDriver: RLMWorkerDriver {
         switch await session.evaluate(source: source) {
         case let .value(value): .value(value)
         case let .finished(answer, evidenceIDs): .finished(answer: answer, evidenceIDs: evidenceIDs)
-        case let .schemeFailed(message): .failed(.evaluatorFailed(message))
+        case let .schemeFailed(message): .failed(RLMWorkerFailureClassifier.classify(message))
         case let .cellRejected(message): .failed(.cellRejected(message))
         case .timedOut: .failed(.wallTimeLimitReached(limit: wallTimeLimit))
         case .outputLimitReached: .failed(.outputLimitReached(limit: outputLimitBytes))
@@ -194,6 +201,15 @@ struct ChibiWorkerDriver: RLMWorkerDriver {
     func shutdown() async { await session.shutdown() }
 }
 #endif
+
+enum RLMWorkerFailureClassifier {
+    static func classify(_ message: String) -> RLMFailure {
+        if message.contains("host call failed") || message == "resource limit exceeded" {
+            return .evaluatorFailed(message)
+        }
+        return .cellRuntimeFailed(message)
+    }
+}
 
 actor RLMWorkerHostState {
     private let leafModel: any RLMLeafModelClient
