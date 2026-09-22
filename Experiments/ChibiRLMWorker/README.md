@@ -92,6 +92,10 @@ values have the same wire shape in both workers.
 - A symbol matching `^[A-Za-z][A-Za-z0-9-]*$` passes through. Any other symbol
   becomes the character `#\~`, which no cell value can produce because every
   genuine character becomes `#\!`.
+- Numbers are accepted only when they are finite real values or signed 64-bit
+  integers. Ratios, complex values, non-finite values, and integers outside the
+  signed 64-bit range become `#\!`. This is the same numeric contract used by
+  the Guile reference worker.
 - Numbers outside the parent model become the character `#\!`: a non-finite
   flonum, an integer beyond the signed 64-bit range, or a ratio or complex
   value. The character markers are a distinct type, so a cell that creates a

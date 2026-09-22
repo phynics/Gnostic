@@ -161,9 +161,10 @@ struct RLMGuileWorkerSessionTests {
         let session = RLMGuileTestSupport.session(host: host)
         try await session.start()
 
-        let outcome = await session.evaluate(source: "(list (/ 1 3) (expt 2 100) (sqrt -1) (/ 1.0 3.0))")
+        let outcome = await session.evaluate(source: "(list (/ 1 3) (expt 2 100) (sqrt -1) (/ 1.0 3.0) (/ 1.0 0.0) (- (/ 1.0 0.0) (/ 1.0 0.0)) (- (expt 2 63) 1) (expt 2 63) (- 0 (expt 2 63)) (- 0 (expt 2 63) 1))")
         #expect(outcome == .value(.list([
             .character("!"), .character("!"), .character("!"), .double(1.0 / 3.0),
+            .character("!"), .character("!"), .integer(Int.max), .character("!"), .integer(Int.min), .character("!"),
         ])))
         #expect(await session.isRunning)
 

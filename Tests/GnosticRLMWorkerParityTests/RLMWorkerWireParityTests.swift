@@ -12,14 +12,26 @@ import GnosticRLMGuile
 struct RLMWorkerWireParityTests {
     @Test("Guile and Chibi produce the same value frame for one corpus fixture")
     func valueFrameMatches() async throws {
+        // The pinned Chibi build disables ratios and complex values while
+        // preserving exact integer arithmetic, so these expressions exercise
+        // the shared wire contract deterministically in both workers.
         let source = """
         (let* (
             (hits (corpus-search "wire parity" 1))
             (chunks (corpus-read-many (list "c-1")))
-            (numbers (list (/ 1.0 3.0) (expt 2 100) (sqrt -1))))
+            (numbers (list (/ 1.0 3.0)
+                          (expt 2 100)
+                          (sqrt -1)
+                          (/ 1.0 0.0)
+                          (- (/ 1.0 0.0) (/ 1.0 0.0))
+                          (- (expt 2 63) 1)
+                          (expt 2 63)
+                          (- 0 (expt 2 63))
+                          (- 0 (expt 2 63) 1))))
           (list hits chunks numbers
-                (list (string->symbol "gnostic-unsupported")
-                      (string->symbol "valid-symbol"))))
+                (list (string->symbol "wire-parity")
+                      (string->symbol "A_"))
+                (cons 'head 'tail)))
         """
 
         let guileHost = RLMGuileClosureHost { operation in

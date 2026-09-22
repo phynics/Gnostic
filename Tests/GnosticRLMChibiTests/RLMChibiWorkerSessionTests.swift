@@ -224,6 +224,11 @@ struct RLMChibiWorkerSessionTests {
         #expect(await session.evaluate(source: "(string->number \"1+2i\")") == .value(.boolean(false)))
         #expect(await session.evaluate(source: "(sqrt -1)") == .value(.character("!")))
         #expect(await session.evaluate(source: "(/ 1.0 0.0)") == .value(.character("!")))
+        #expect(await session.evaluate(source: "(- (/ 1.0 0.0) (/ 1.0 0.0))") == .value(.character("!")))
+        #expect(await session.evaluate(source: "(- (expt 2 63) 1)") == .value(.integer(Int.max)))
+        #expect(await session.evaluate(source: "(expt 2 63)") == .value(.character("!")))
+        #expect(await session.evaluate(source: "(- 0 (expt 2 63))") == .value(.integer(Int.min)))
+        #expect(await session.evaluate(source: "(- 0 (expt 2 63) 1)") == .value(.character("!")))
         #expect(await session.isRunning)
 
         await session.shutdown()
