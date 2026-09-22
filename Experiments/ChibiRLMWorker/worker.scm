@@ -21,6 +21,32 @@
 (define input-port (current-input-port))
 (define output-port (current-output-port))
 
+;;; Frame I/O below reads and writes bytes through the character ports, so it
+;;; is correct only while a character is exactly one byte. That holds because
+;;; this worker runs against a Chibi built with UTF-8 strings disabled.
+;;;
+;;; This build cannot be ported to binary ports: `SEXP_USE_MODULES=0` and
+;;; `SEXP_USE_STATIC_LIBS_EMPTY=1` leave `read-u8`, `write-u8`,
+;;; `read-bytevector`, `write-bytevector`, the bytevector ports and
+;;; `string->utf8` out of the image entirely, and re-adding them means
+;;; re-opening the sandbox surface those two flags exist to close.
+;;;
+;;; So the dependency is asserted here instead of assumed. With UTF-8 strings
+;;; on, `read-char` rejects a length-prefix byte >= 128 and `write-char`
+;;; re-encodes one into a multibyte sequence, which corrupts the 4-byte header
+;;; rather than failing visibly. Fail at startup instead: the host sees a
+;;; non-zero exit and this message, not a silently mangled frame.
+(let* ((probe (string (integer->char 233)))
+       (characters (string-length probe))
+       (bytes (string-size probe)))
+  (if (not (= characters bytes))
+      (error
+       (string-append
+        "Chibi RLM worker requires a build with UTF-8 strings disabled: "
+        "frame I/O addresses bytes through character ports. Rebuild with "
+        "SEXP_USE_UTF8_STRINGS unset, or port frame I/O to binary ports "
+        "(which this build does not provide)."))))
+
 (define (read-byte)
   (let ((character (read-char input-port)))
     (if (eof-object? character) #f (char->integer character))))

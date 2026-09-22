@@ -212,6 +212,23 @@ struct RLMChibiWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("strings are byte strings, which is the intrinsic Guile parity gap")
+    func stringsAreByteStrings() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        // "caf\u{E9}" is 4 characters and 5 UTF-8 bytes. Guile answers 4; this
+        // build answers 5 because SEXP_USE_UTF8_STRINGS is unset. Frame I/O
+        // depends on that, and the worker refuses to start if it changes, so
+        // this pins the divergence rather than treating it as a defect. See
+        // Experiments/ChibiRLMWorker/README.md, "String semantics differ from Guile".
+        #expect(await session.evaluate(source: "(string-length \"caf\u{E9}\")") == .value(.integer(5)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("out-of-model numbers become a structured unsupported marker")
     func outOfModelNumbersAreStructured() async throws {
         let host = RLMChibiRecordingHost()
