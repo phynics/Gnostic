@@ -40,16 +40,15 @@ run.
 ## Captured run
 
 The committed artifact was captured on Linux x86_64 by the benchmark harness at
-commit `cd3bd13988bb08584decbafe6e4a8c23f6ac3d12`, recorded in the artifact's
-`gitCommit` field. The documentation and decision record were added in the
-following commit; rerunning `make benchmark` refreshes both the measurements
+commit `b8e8c3dd226867cebd0520f2b18643eb560569db`, recorded in the artifact's
+`gitCommit` field. Rerunning `make benchmark` refreshes both the measurements
 and this provenance field.
 
 | Runtime | Startup ms | Evaluation ms | Cancel ms | Sampled peak RSS | Sampled CPU ms | Semantic result |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| scripted engine | 0 | 4.26 | — | — | — | completed |
-| Guile | 149.43 | 6.39 | 145.98 | 11.8 MiB | 0 | matching worker digest |
-| Chibi | 114.97 | 3.44 | 503.98 | 7.3 MiB | 10 | matching worker digest |
+| scripted engine | 0 | 5.66 | — | — | — | completed |
+| Guile | 191.00 | 8.34 | 191.19 | 11.7 MiB | 10 | matching worker digest |
+| Chibi | 162.32 | 4.02 | 504.35 | 7.3 MiB | 0 | matching worker digest |
 
 These values are one smoke run, not a confidence interval. The benchmark
 records mechanics and semantic parity; it does not infer that Chibi is the
