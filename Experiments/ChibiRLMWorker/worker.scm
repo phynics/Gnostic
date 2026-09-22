@@ -203,7 +203,7 @@
 (define (call-host name arguments)
   (let ((call-id (next-call-id)))
     (write-frame (make-frame 'hostCall
-                             'runID current-run-id
+                             'runID (wire-string current-run-id)
                              'callID call-id
                              'name (wire-string (symbol->string name))
                              'arguments (scm->wire arguments)))
@@ -428,7 +428,7 @@
       (case (car result)
         ((value)
          (write-frame (make-frame 'evaluated
-                                  'runID current-run-id
+                                  'runID (wire-string current-run-id)
                                   'cellID cell-id
                                   'output ""
                                   'value (cadr result))))
@@ -437,16 +437,16 @@
                (evidence (caddr result)))
            (if (valid-finish? answer evidence)
                (write-frame (make-frame 'finished
-                                        'runID current-run-id
+                                        'runID (wire-string current-run-id)
                                         'answer (wire-string answer)
                                         'evidenceIDs (map wire-string evidence)))
                (write-frame (make-frame 'failed
-                                        'runID current-run-id
+                                        'runID (wire-string current-run-id)
                                         'cellID cell-id
                                         'message (wire-string "finish arguments must be a string and a list of strings"))))))
         (else
          (write-frame (make-frame 'failed
-                                  'runID current-run-id
+                                  'runID (wire-string current-run-id)
                                   'cellID cell-id
                                   'message (wire-string (cadr result)))))))))
 
@@ -460,8 +460,8 @@
              (set! current-run-id (frame-field frame 'runID))
              (set! run-environment (make-run-environment))
              (write-frame (make-frame 'ready
-                                      'runID current-run-id
-                                      'environmentKeys (environment-keys)
+                                      'runID (wire-string current-run-id)
+                                      'environmentKeys (map wire-string (environment-keys))
                                       'openFileDescriptorCount -1
                                       'cpuLimitSeconds (option-number "--max-cpu" -1)
                                       'addressSpaceBytes (option-number "--max-address-space" -1)))
