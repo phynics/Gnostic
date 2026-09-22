@@ -65,4 +65,45 @@ struct RLMBoundaryFitnessTests {
             }
         }
     }
+
+    private static func swiftSources(in target: String) throws -> [(path: String, source: String)] {
+        let root = repositoryRoot().appendingPathComponent("Sources/\(target)")
+        return try FileManager.default.subpathsOfDirectory(atPath: root.path)
+            .filter { $0.hasSuffix(".swift") }
+            .map { relativePath in
+                (
+                    path: "\(target)/\(relativePath)",
+                    source: try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+                )
+            }
+    }
+
+    @Test("executor packages hold no process supervision of their own")
+    func executorPackagesDelegateSupervision() throws {
+        // One shared session supervises every worker. A runtime package that
+        // spawns or reads a process has grown a second copy of it (#350).
+        let forbidden = ["Process(", "Pipe(", "Thread.detachNewThread", "FileHandle"]
+        for target in ["GnosticRLMGuile", "GnosticRLMChibi"] {
+            let files = try Self.swiftSources(in: target)
+            #expect(!files.isEmpty)
+            for file in files {
+                for token in forbidden {
+                    #expect(!file.source.contains(token), "\(file.path) must not contain '\(token)'")
+                }
+            }
+        }
+    }
+
+    @Test("the shared worker session names no executor")
+    func sharedSessionIsExecutorAgnostic() throws {
+        // Runtime differences belong in an executor's launch spec, not in
+        // branches inside the shared session.
+        let files = try Self.swiftSources(in: "GnosticRLMProcessWorker")
+        #expect(!files.isEmpty)
+        for file in files {
+            for token in ["Guile", "Chibi", "guile", "chibi", "prlimit"] {
+                #expect(!file.source.contains(token), "\(file.path) must not contain '\(token)'")
+            }
+        }
+    }
 }
