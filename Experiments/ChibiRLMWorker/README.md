@@ -57,11 +57,55 @@ and the session reports `unsupportedPlatform` outside Linux. See
 | `SEXP_USE_MATH=1` | Re-enabled: the profile admits `sqrt`, `floor`, `ceiling`, `round`, and `truncate`. |
 | `SEXP_USE_RATIOS=0` | Disables exact ratios, so exact division produces a flonum instead of a ratio value. |
 | `SEXP_USE_COMPLEX=0` | Disables complex numbers, so `sqrt` of a negative real does not produce a complex value. |
+| `SEXP_USE_UTF8_STRINGS` | Left unset. Strings are byte strings, so a character is exactly one byte. Frame I/O depends on this; see [String semantics](#string-semantics-differ-from-guile). |
 
 `SEXP_USE_NO_FEATURES=1` alone does not link in 0.12: `vm.c` references
 `sexp_fixnum_to_bignum` when flonums and bignums are both off. Re-enabling
 flonums and bignums keeps the reviewed set buildable and satisfies the numeric
 part of the profile.
+
+## String semantics differ from Guile
+
+This build leaves `SEXP_USE_UTF8_STRINGS` unset, so strings are byte strings.
+A cell that runs string operations over non-ASCII text gets byte counts here
+and character counts on the Guile worker:
+
+| Expression | Chibi (this build) | Guile |
+| --- | --- | --- |
+| `(string-length "café")` | `5` | `4` |
+
+Measured through each worker's decode path, which is the only comparison that
+reflects what a cell sees: the Guile worker decodes the frame payload with
+`utf8->string`, so `café` arrives as 4 characters, while this worker maps the
+5 payload bytes to 5 characters. Note that re-checking with a bare
+`guile -c '(string-length "café")'` reports `5`, because Guile reads that
+source under the container's C locale rather than as UTF-8; it does not
+reproduce the worker path.
+
+**This gap is intrinsic to the reviewed flag set, not an unimplemented
+feature.** Enabling UTF-8 strings breaks the worker's frame I/O, which reads
+and writes bytes through the character ports: `read-char` rejects a
+length-prefix byte >= 128 and `write-char` re-encodes one into a multibyte
+sequence, corrupting the 4-byte header.
+
+The obvious repair, porting frame I/O to binary ports as the Guile worker
+does, is not available. `SEXP_USE_MODULES=0` and `SEXP_USE_STATIC_LIBS_EMPTY=1`
+leave `read-u8`, `write-u8`, `read-bytevector`, `write-bytevector`, the
+bytevector ports, `utf8->string` and `string->utf8` out of the image; the
+install ships `init-7.scm` alone. Those procedures are module-provided rather
+than feature-gated, so enabling `SEXP_USE_UTF8_STRINGS` does not restore them.
+Recovering them means re-enabling the module system and the static C libraries,
+which are two of the four flags this profile's containment rests on.
+
+Byte-exact framing under UTF-8 would therefore need a new wire format with an
+ASCII-safe header, changing the Swift host and the Guile worker as well. That
+is not in scope here: the divergence only reaches a generated cell that runs
+string operations over non-ASCII corpus text, and `wire-string` already
+replaces non-ASCII with `?` on the outbound path.
+
+`worker.scm` asserts the one-byte-per-character invariant at startup and exits
+non-zero if a future build enables UTF-8 strings, so the dependency fails
+loudly instead of corrupting frames.
 
 ## Restricted environment
 
