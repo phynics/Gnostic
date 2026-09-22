@@ -73,6 +73,17 @@ public struct RLMGuileWorkerConfiguration: Sendable, Equatable {
         return "/usr/bin/guile"
     }
 
+    /// The Guile worker script bundled with this executor.
+    ///
+    /// Resolving the script from the bundle is what makes a deployed binary
+    /// independent of the current working directory. A `nil` result means the
+    /// resource is missing from the build, which is a packaging fault rather
+    /// than a runtime condition.
+    public static var defaultWorkerScriptPath: String? {
+        Bundle.module.url(forResource: "worker", withExtension: "scm")?.path
+    }
+
+
     /// A cleared environment that carries no credentials and no unrelated
     /// host configuration.
     public static var scrubbedEnvironment: [String: String] {

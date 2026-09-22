@@ -103,19 +103,12 @@ private enum RLMWorkerWireParitySupport {
         return candidates.compactMap { $0 }.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     }
 
-    static var scriptDirectory: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-    }
-
     static var guileScriptPath: String {
-        scriptDirectory.appendingPathComponent("Experiments/GuileRLMWorker/worker.scm").path
+        RLMGuileWorkerConfiguration.defaultWorkerScriptPath ?? ""
     }
 
     static var chibiScriptPath: String {
-        scriptDirectory.appendingPathComponent("Experiments/ChibiRLMWorker/worker.scm").path
+        RLMChibiWorkerConfiguration.defaultWorkerScriptPath ?? ""
     }
 
     static var isAvailable: Bool {

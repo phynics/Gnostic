@@ -46,6 +46,7 @@ private struct RLMEvidenceOutput: Codable, Sendable {
 }
 
 private struct RLMAnalysisMetricsOutput: Codable, Sendable {
+    let executor: String
     let rootIterations: Int
     let leafModelCalls: Int
     let corpusFiles: Int
@@ -150,6 +151,7 @@ struct AnalyzeWorkspaceCorpusTool: PKTool, Sendable {
                     RLMEvidenceOutput(chunkID: $0.chunkID, path: $0.path, startLine: $0.startLine, endLine: $0.endLine)
                 },
                 metrics: RLMAnalysisMetricsOutput(
+                    executor: worker.rawValue,
                     rootIterations: result.metrics.rootIterations,
                     leafModelCalls: result.metrics.leafModelCalls,
                     corpusFiles: result.metrics.corpusFiles,

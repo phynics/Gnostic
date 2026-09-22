@@ -24,12 +24,7 @@ enum RLMChibiTestSupport {
     }
 
     static var workerScriptPath: String {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Experiments/ChibiRLMWorker/worker.scm")
-            .path
+        RLMChibiWorkerConfiguration.defaultWorkerScriptPath ?? ""
     }
 
     static var isAvailable: Bool {

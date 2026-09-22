@@ -74,6 +74,17 @@ public struct RLMChibiWorkerConfiguration: Sendable, Equatable {
         return "/usr/local/bin/chibi-scheme"
     }
 
+    /// The Chibi worker script bundled with this executor.
+    ///
+    /// Resolving the script from the bundle is what makes a deployed binary
+    /// independent of the current working directory. A `nil` result means the
+    /// resource is missing from the build, which is a packaging fault rather
+    /// than a runtime condition.
+    public static var defaultWorkerScriptPath: String? {
+        Bundle.module.url(forResource: "worker", withExtension: "scm")?.path
+    }
+
+
     /// The host utility that applies the process CPU and address-space rlimits
     /// before the Chibi interpreter starts.
     public static var defaultLimitExecutablePath: String {
