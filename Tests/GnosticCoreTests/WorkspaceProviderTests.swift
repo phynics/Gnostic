@@ -497,7 +497,6 @@ private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: St
     )
 }
 
-@MainActor
 /// Well under the listing timeout, with headroom for a loaded broker.
 private let toolListingBound: Duration = .seconds(3)
 
@@ -521,6 +520,7 @@ private struct PlainWorkspace: WorkspaceProvider {
     var isHealthy: Bool { true }
 }
 
+@MainActor
 private func makeBrokerManager(_ name: String, namespace: String = "gnostic-workspace-tests") -> CommunicationManager {
     let options = CommunicationOptions(namespace: namespace, shouldEnableCrossNamespacing: false, mqttClientOptions: MQTTClientOptions(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false), shouldAutoStart: false)
     return try! CommunicationManager(identity: Identity(name: name), communicationOptions: options, commonOptions: nil)
