@@ -33,9 +33,9 @@ The committed artifact was captured on Linux x86_64 at main commit
 
 | Runtime | Startup ms | Evaluation ms | Cancel ms | Sampled peak RSS | Sampled CPU ms | Semantic result |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| scripted engine | 0 | 9.24 | — | — | — | completed |
-| Guile | 299.17 | 24.40 | 237.96 | 11.7 MiB | 0 | matching worker digest |
-| Chibi | 186.67 | 6.40 | 505.87 | 7.3 MiB | 0 | matching worker digest |
+| scripted engine | 0 | 4.26 | — | — | — | completed |
+| Guile | 149.43 | 6.39 | 145.98 | 11.8 MiB | 0 | matching worker digest |
+| Chibi | 114.97 | 3.44 | 503.98 | 7.3 MiB | 10 | matching worker digest |
 
 These values are one smoke run, not a confidence interval. The benchmark
 records mechanics and semantic parity; it does not infer that Chibi is the

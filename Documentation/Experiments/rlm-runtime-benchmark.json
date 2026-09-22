@@ -1,0 +1,81 @@
+{
+  "benchmark" : "bounded-repository-fixture-v1",
+  "decisionRationale" : "The repository gate has deterministic operational data, but no live provider quality, monetary cost, or macOS Chibi data. Promotion is bounded until those measurements are captured with the same fixture and model family.",
+  "generatedAtUTC" : "2026-09-22T01:57:32Z",
+  "gitCommit" : "cd3bd13988bb08584decbafe6e4a8c23f6ac3d12",
+  "host" : {
+    "architecture" : "x86_64",
+    "operatingSystem" : "linux"
+  },
+  "measurements" : [
+    {
+      "contextReadBytes" : 302,
+      "corpusBytes" : 210,
+      "corpusChunks" : 4,
+      "corpusFiles" : 4,
+      "estimatedModelTokens" : 144,
+      "evaluationMilliseconds" : 4.263552,
+      "evaluationOutcome" : "completed",
+      "leafModelCalls" : 1,
+      "leafPrompts" : 2,
+      "rootIterations" : 4,
+      "runtime" : "scripted-engine",
+      "sampleCount" : 0,
+      "semanticResultDigest" : "272dea90b8170758abf8e0e536f4c4b6a206f21cdf6b4ca099d74ed94c0bda47",
+      "startupMilliseconds" : 0,
+      "status" : "measured"
+    },
+    {
+      "cancellationMilliseconds" : 145.983967,
+      "cancellationOutcome" : "cancelled",
+      "contextReadBytes" : 74,
+      "evaluationMilliseconds" : 6.391278,
+      "evaluationOutcome" : "finished",
+      "hostOperations" : 3,
+      "leafPrompts" : 2,
+      "runtime" : "guile",
+      "sampleCount" : 2,
+      "sampledCPUTimeMilliseconds" : 0,
+      "sampledPeakRSSBytes" : 12333056,
+      "semanticResultDigest" : "cf64bfab7a6a6ebaf273c6a7ed2e8cdc9d93207807ca7305cb640ebbcd106966",
+      "startupMilliseconds" : 149.434421,
+      "status" : "measured"
+    },
+    {
+      "cancellationMilliseconds" : 503.983046,
+      "cancellationOutcome" : "cancelled",
+      "contextReadBytes" : 74,
+      "evaluationMilliseconds" : 3.443612,
+      "evaluationOutcome" : "finished",
+      "hostOperations" : 3,
+      "leafPrompts" : 2,
+      "runtime" : "chibi",
+      "sampleCount" : 2,
+      "sampledCPUTimeMilliseconds" : 10,
+      "sampledPeakRSSBytes" : 7614464,
+      "semanticResultDigest" : "cf64bfab7a6a6ebaf273c6a7ed2e8cdc9d93207807ca7305cb640ebbcd106966",
+      "startupMilliseconds" : 114.965619,
+      "status" : "measured"
+    }
+  ],
+  "outcome" : "CONTINUE_EXPERIMENT",
+  "schemaVersion" : 1,
+  "unavailableMeasurements" : [
+    {
+      "name" : "ordinary-positronic-analysis",
+      "reason" : "requires provider credentials and a stable live model configuration; excluded from the deterministic repository gate"
+    },
+    {
+      "name" : "ordinary-positronic-bounded-retrieval",
+      "reason" : "no bounded-retrieval implementation exists in the current product; this comparison remains a follow-up experiment"
+    },
+    {
+      "name" : "live-answer-quality-and-cost",
+      "reason" : "not measurable without provider credentials, a fixed model family, and an approved evaluation corpus"
+    },
+    {
+      "name" : "macos-chibi-packaging",
+      "reason" : "Chibi is Linux-only in the pinned build and macOS evidence is deferred by issue #181"
+    }
+  ]
+}
