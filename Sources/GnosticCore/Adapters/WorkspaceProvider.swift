@@ -106,7 +106,9 @@ public actor GnosticWorkspaceProvider {
     }
 
     /// Responds to a bounded page of public Workspace tool objects. Tool
-    /// objects are queryable but are deliberately never advertised.
+    /// objects are queryable but are deliberately never advertised. A page at
+    /// or past the end of the catalog gets an explicit empty answer, which is
+    /// the terminal signal for `GnosticSubscription.queryTools`.
     public func query(_ request: QueryResponderRequest) throws {
         guard request.snapshot.objectTypes?.contains(Self.toolObjectType) == true else { return }
         guard let filter = request.snapshot.objectFilter,
@@ -114,7 +116,7 @@ public actor GnosticWorkspaceProvider {
         let page: Int = GnosticWorkspaceToolQuery.value(Int.self, key: "page", in: request.snapshot.objectFilter) ?? 0
         guard page >= 0 else { return }
         let definitions = definitions.values.sorted { $0.id < $1.id }
-        guard let definition = definitions.dropFirst(page).first else { return }
+        guard let definition = definitions.dropFirst(page).first else { return try request.retrieve(objects: []) }
         try request.retrieve(object: GnosticWorkspaceToolObject(workspaceID: workspaceID, definition: definition, page: page))
     }
 

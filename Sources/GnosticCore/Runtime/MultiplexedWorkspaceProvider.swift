@@ -65,7 +65,9 @@ public actor MultiplexedWorkspaceProvider {
 
     /// Responds with one public tool object per query page. The page size is
     /// intentionally one because a tool schema is dynamic and cannot be
-    /// safely combined with another schema under the wire budget.
+    /// safely combined with another schema under the wire budget. A page at or
+    /// past the end of an owned Workspace's catalog gets an explicit empty
+    /// answer so the querier stops without waiting for its timeout.
     public func handleQuery(_ request: QueryResponderRequest) async throws {
         guard await isAvailable(), request.snapshot.objectTypes?.contains(GnosticObjectType.workspaceTool) == true else { return }
         guard let filter = request.snapshot.objectFilter,
@@ -74,12 +76,13 @@ public actor MultiplexedWorkspaceProvider {
               filter.lowercased().contains(workspaceID.uuidString.lowercased()),
               let page: Int = GnosticWorkspaceToolQuery.value(Int.self, key: "page", in: request.snapshot.objectFilter),
               page >= 0,
-              let workspace = workspaces[workspaceID] as? any WorkspaceToolProvider else { return }
+              let owned = workspaces[workspaceID] else { return }
+        guard let workspace = owned as? any WorkspaceToolProvider else { return try request.retrieve(objects: []) }
         let definitions = (try await workspace.listTools()).compactMap { reference -> WorkspaceToolDefinition? in
             guard case let .custom(definition) = reference else { return nil }
             return definition
         }.sorted { $0.id < $1.id }
-        guard let definition = definitions.dropFirst(page).first else { return }
+        guard let definition = definitions.dropFirst(page).first else { return try request.retrieve(objects: []) }
         try request.retrieve(object: GnosticWorkspaceToolObject(workspaceID: workspaceID, definition: definition, page: page))
     }
 

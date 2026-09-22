@@ -172,8 +172,9 @@ public final class GnosticSubscription {
     }
 
     /// Retrieves one public Workspace tool object per bounded query page.
-    /// Querying stops at the first empty page or at the fixed page ceiling;
-    /// no response contains an unbounded collection.
+    /// Querying stops at the owning provider's explicit empty page, at a page
+    /// nobody answers within `timeout`, or at the fixed page ceiling; no
+    /// response contains an unbounded collection.
     public func queryTools(
         using communicationManager: CommunicationManager,
         workspaceID: UUID,
@@ -192,12 +193,15 @@ public final class GnosticSubscription {
         }
     }
 
+    /// Ingests the first response and reports whether it carried objects. An
+    /// empty response is the provider's terminal page; a timeout means no
+    /// provider answered.
     private func receiveOne(from stream: AsyncStream<ResponseEventSnapshot>, timeout: Duration) async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
             group.addTask { [catalog] in
                 for await response in stream {
                     await catalog.ingest(response)
-                    return true
+                    return !(response.objects ?? response.object.map { [$0] } ?? []).isEmpty
                 }
                 return false
             }
