@@ -62,15 +62,23 @@ let package = Package(
             path: "Tests/Support/GnosticLettaTestSupport"
         ),
         .target(
+            name: "GnosticRLMProcessWorker",
+            dependencies: [
+                "GnosticRLM",
+            ]
+        ),
+        .target(
             name: "GnosticRLMGuile",
             dependencies: [
                 "GnosticRLM",
+                "GnosticRLMProcessWorker",
             ]
         ),
         .target(
             name: "GnosticRLMChibi",
             dependencies: [
                 "GnosticRLM",
+                "GnosticRLMProcessWorker",
             ]
         ),
         .executableTarget(

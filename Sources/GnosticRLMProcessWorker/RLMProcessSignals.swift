@@ -14,7 +14,7 @@ import Darwin
 /// `SIGPIPE` pending while it is blocked, so the pending signal is drained
 /// before the mask is restored. Restoring the mask with a pending `SIGPIPE`
 /// would deliver it and terminate the process.
-package enum RLMChibiProcessSignals {
+package enum RLMProcessSignals {
     package static func withoutBrokenPipeSignal<T>(_ operation: () throws -> T) rethrows -> T {
         var blocked = sigset_t()
         sigemptyset(&blocked)

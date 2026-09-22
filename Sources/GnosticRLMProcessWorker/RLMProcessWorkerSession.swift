@@ -9,15 +9,20 @@ import Glibc
 import Darwin
 #endif
 
-/// One disposable Guile worker process with a run-local Scheme environment.
+/// One disposable worker process with a run-local Scheme environment, for any
+/// executor.
 ///
 /// The session owns process supervision, the framed protocol, parent-side cell
 /// validation, host-call servicing, and the cancellation and wall-time fences.
-/// Process death is the authoritative termination boundary.
+/// Process death is the authoritative termination boundary. The executor
+/// supplies only its launch; see `RLMWorkerExecutor`.
+///
+/// An executor whose reviewed build does not support the current platform
+/// reports `unsupportedPlatform` and never spawns a process.
 #if os(macOS) || os(Linux)
-public actor RLMGuileWorkerSession {
-    private let configuration: RLMGuileWorkerConfiguration
-    private let host: any RLMGuileHost
+public actor RLMProcessWorkerSession<Executor: RLMWorkerExecutor> {
+    private let spec: RLMWorkerLaunchSpec
+    private let host: any RLMWorkerHost
     private let cancellation: RLMCancellationToken
     private let fence: RLMRunFence
 
@@ -37,11 +42,11 @@ public actor RLMGuileWorkerSession {
     public private(set) var ready: RLMSchemeReady?
 
     public init(
-        configuration: RLMGuileWorkerConfiguration,
-        host: any RLMGuileHost,
+        configuration: Executor.Configuration,
+        host: any RLMWorkerHost,
         cancellation: RLMCancellationToken = RLMCancellationToken()
     ) {
-        self.configuration = configuration
+        self.spec = Executor.launchSpec(for: configuration)
         self.host = host
         self.cancellation = cancellation
         self.fence = RLMRunFence()
@@ -51,9 +56,9 @@ public actor RLMGuileWorkerSession {
         process?.isRunning ?? false
     }
 
-    /// The supervised child process identifier while the worker is running.
-    /// Benchmark and diagnostics code may use it for host-owned resource
-    /// sampling; the worker protocol never receives this value.
+    /// The running worker process identifier, or `nil` when the worker is not
+    /// running. Used by diagnostics and benchmark sampling to inspect the
+    /// child process.
     public var processIdentifier: Int32? {
         guard let process, process.isRunning else { return nil }
         return process.processIdentifier
@@ -65,26 +70,34 @@ public actor RLMGuileWorkerSession {
 
     /// Spawns the worker and completes the initialize handshake.
     public func start() async throws {
+        guard Executor.isSupportedOnCurrentPlatform else {
+            throw RLMWorkerError<Executor>.unsupportedPlatform
+        }
         guard !hasStarted else { return }
         hasStarted = true
 
         let fileManager = FileManager.default
-        guard fileManager.isExecutableFile(atPath: configuration.executablePath) else {
-            throw RLMGuileWorkerError.executableMissing(configuration.executablePath)
-        }
-        guard fileManager.fileExists(atPath: configuration.workerScriptPath) else {
-            throw RLMGuileWorkerError.workerScriptMissing(configuration.workerScriptPath)
+        for requirement in spec.requirements {
+            switch requirement {
+            case let .executable(path):
+                guard fileManager.isExecutableFile(atPath: path) else {
+                    throw RLMWorkerError<Executor>.executableMissing(path)
+                }
+            case let .limitTool(path):
+                guard fileManager.isExecutableFile(atPath: path) else {
+                    throw RLMWorkerError<Executor>.limitToolMissing(path)
+                }
+            case let .workerScript(path):
+                guard fileManager.fileExists(atPath: path) else {
+                    throw RLMWorkerError<Executor>.workerScriptMissing(path)
+                }
+            }
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: configuration.executablePath)
-        process.arguments = [
-            "--no-auto-compile",
-            "-s", configuration.workerScriptPath,
-            "--max-address-space", String(configuration.maxAddressSpaceBytes),
-            "--max-cpu", String(configuration.maxCPUSeconds),
-        ]
-        process.environment = configuration.environment
+        process.executableURL = URL(fileURLWithPath: spec.launchPath)
+        process.arguments = spec.arguments
+        process.environment = spec.environment
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -96,7 +109,7 @@ public actor RLMGuileWorkerSession {
         do {
             try process.run()
         } catch {
-            throw RLMGuileWorkerError.spawnFailed("\(error)")
+            throw RLMWorkerError<Executor>.spawnFailed("\(error)")
         }
 
         self.process = process
@@ -112,32 +125,35 @@ public actor RLMGuileWorkerSession {
             failure: readerFailure,
             stderrBuffer: stderrBuffer,
             readerGroup: readerGroup,
-            maxFrameBytes: configuration.maxOutputBytes
+            maxFrameBytes: spec.maxOutputBytes
         )
 
         try send(.initialize(RLMSchemeInitialize(
-            runID: configuration.runID,
-            profile: configuration.profile,
-            maxHeapBytes: configuration.maxHeapBytes,
-            maxOutputBytes: configuration.maxOutputBytes,
-            timeLimitSeconds: configuration.cellTimeLimitSeconds,
-            allocationLimitBytes: configuration.cellAllocationLimitBytes
+            runID: spec.runID,
+            profile: spec.profile,
+            maxHeapBytes: spec.maxHeapBytes,
+            maxOutputBytes: spec.maxOutputBytes,
+            timeLimitSeconds: spec.cellTimeLimitSeconds,
+            allocationLimitBytes: spec.cellAllocationLimitBytes
         )))
 
-        let readyFrame = await nextFrame(deadline: configuration.startupDeadlineSeconds)
+        let readyFrame = await nextFrame(deadline: spec.startupDeadlineSeconds)
         guard case let .ready(frame)? = readyFrame else {
             terminate()
-            throw RLMGuileWorkerError.initializationFailed("worker did not report ready")
+            throw RLMWorkerError<Executor>.initializationFailed("worker did not report ready")
         }
-        guard frame.runID == configuration.runID else {
+        guard frame.runID == spec.runID else {
             terminate()
-            throw RLMGuileWorkerError.initializationFailed("worker run identity mismatch")
+            throw RLMWorkerError<Executor>.initializationFailed("worker run identity mismatch")
         }
         ready = frame
     }
 
     /// Validates and evaluates one cell in the run-local environment.
-    public func evaluate(source: String, cellID: Int? = nil) async -> RLMGuileEvaluationOutcome {
+    public func evaluate(source: String, cellID: Int? = nil) async -> RLMWorkerEvaluationOutcome {
+        guard Executor.isSupportedOnCurrentPlatform else {
+            return .unsupportedPlatform
+        }
         guard hasStarted, process?.isRunning == true else {
             return .workerExited(workerExitCode())
         }
@@ -153,7 +169,7 @@ public actor RLMGuileWorkerSession {
         do {
             validation = try RLMSchemeProfile.validate(
                 source,
-                limits: configuration.validationLimits,
+                limits: spec.validationLimits,
                 definitions: definitions
             )
         } catch {
@@ -165,7 +181,7 @@ public actor RLMGuileWorkerSession {
 
         do {
             try send(.evaluate(RLMSchemeEvaluate(
-                runID: configuration.runID,
+                runID: spec.runID,
                 cellID: id,
                 source: source
             )))
@@ -209,18 +225,20 @@ public actor RLMGuileWorkerSession {
 
     /// Fences the run, cancels in-flight work, and destroys the worker.
     public func cancel() {
+        guard Executor.isSupportedOnCurrentPlatform else { return }
         fence.invalidate()
         cancellation.cancel()
-        try? send(.cancel(runID: configuration.runID))
+        try? send(.cancel(runID: spec.runID))
         terminate()
     }
 
     /// Sends a shutdown frame and waits for the bounded grace boundary.
     public func shutdown() async {
+        guard Executor.isSupportedOnCurrentPlatform else { return }
         if process?.isRunning == true {
-            try? send(.shutdown(runID: configuration.runID))
+            try? send(.shutdown(runID: spec.runID))
             closeInput()
-            let deadline = Date().addingTimeInterval(configuration.terminationGraceSeconds)
+            let deadline = Date().addingTimeInterval(spec.terminationGraceSeconds)
             while let process, process.isRunning, Date() < deadline {
                 usleep(5_000)
             }
@@ -228,7 +246,7 @@ public actor RLMGuileWorkerSession {
         terminate()
     }
 
-    private func performEvaluation(cellID: Int, generation: UInt64) async -> RLMGuileEvaluationOutcome {
+    private func performEvaluation(cellID: Int, generation: UInt64) async -> RLMWorkerEvaluationOutcome {
         while true {
             if cancellation.isCancelled {
                 return .cancelled
@@ -241,25 +259,25 @@ public actor RLMGuileWorkerSession {
             }
             switch frame {
             case let .hostCall(call):
-                guard call.runID == configuration.runID else { continue }
+                guard call.runID == spec.runID else { continue }
                 switch await service(call) {
                 case let .value(value):
                     do {
                         try send(.hostResult(RLMSchemeHostResult(
-                            runID: configuration.runID,
+                            runID: spec.runID,
                             callID: call.callID,
                             value: value
-                        )), maxFrameBytes: configuration.maxOutputBytes)
+                        )), maxFrameBytes: spec.maxOutputBytes)
                     } catch {
                         return .hostResultRejected("\(error)")
                     }
                 case let .failure(message):
                     do {
                         try send(.hostError(RLMSchemeHostError(
-                            runID: configuration.runID,
+                            runID: spec.runID,
                             callID: call.callID,
                             message: message
-                        )), maxFrameBytes: configuration.maxOutputBytes)
+                        )), maxFrameBytes: spec.maxOutputBytes)
                     } catch {
                         return .hostResultRejected("\(error)")
                     }
@@ -267,13 +285,13 @@ public actor RLMGuileWorkerSession {
                     return .cancelled
                 }
             case let .evaluated(evaluated):
-                guard evaluated.runID == configuration.runID, evaluated.cellID == cellID else { continue }
+                guard evaluated.runID == spec.runID, evaluated.cellID == cellID else { continue }
                 return .value(evaluated.value)
             case let .finished(finished):
-                guard finished.runID == configuration.runID else { continue }
+                guard finished.runID == spec.runID else { continue }
                 return .finished(answer: finished.answer, evidenceIDs: finished.evidenceIDs)
             case let .failed(failure):
-                guard failure.runID == configuration.runID, failure.cellID == cellID else { continue }
+                guard failure.runID == spec.runID, failure.cellID == cellID else { continue }
                 return .schemeFailed(failure.message)
             default:
                 continue
@@ -307,7 +325,7 @@ public actor RLMGuileWorkerSession {
         }
     }
 
-    static func operation(for call: RLMSchemeHostCall) -> RLMHostOperation? {
+    package static func operation(for call: RLMSchemeHostCall) -> RLMHostOperation? {
         switch call.name {
         case "corpus-search":
             guard call.arguments.count == 2,
@@ -401,12 +419,12 @@ public actor RLMGuileWorkerSession {
     }
 
     private func withWallDeadline(
-        _ operation: @escaping @Sendable () async -> RLMGuileEvaluationOutcome
-    ) async -> RLMGuileEvaluationOutcome {
-        await withTaskGroup(of: RLMGuileEvaluationOutcome.self) { group in
+        _ operation: @escaping @Sendable () async -> RLMWorkerEvaluationOutcome
+    ) async -> RLMWorkerEvaluationOutcome {
+        await withTaskGroup(of: RLMWorkerEvaluationOutcome.self) { group in
             group.addTask { await operation() }
             group.addTask {
-                try? await Task.sleep(for: .seconds(self.configuration.wallDeadlineSeconds))
+                try? await Task.sleep(for: .seconds(self.spec.wallDeadlineSeconds))
                 return .timedOut
             }
             let first = await group.next() ?? .workerExited(-1)
@@ -439,10 +457,10 @@ public actor RLMGuileWorkerSession {
 
     private func send(_ frame: RLMSchemeWorkerFrame, maxFrameBytes limit: Int) throws {
         guard let inputHandle else {
-            throw RLMGuileWorkerError.alreadyShutDown
+            throw RLMWorkerError<Executor>.alreadyShutDown
         }
         let bytes = try RLMSchemeWorkerCodec.encode(frame, maxFrameBytes: limit)
-        try RLMGuileProcessSignals.withoutBrokenPipeSignal {
+        try RLMProcessSignals.withoutBrokenPipeSignal {
             try inputHandle.write(contentsOf: Data(bytes))
         }
     }
@@ -460,7 +478,7 @@ public actor RLMGuileWorkerSession {
     private func terminate() {
         if let process, process.isRunning {
             process.terminate()
-            let deadline = Date().addingTimeInterval(configuration.terminationGraceSeconds)
+            let deadline = Date().addingTimeInterval(spec.terminationGraceSeconds)
             while process.isRunning, Date() < deadline {
                 usleep(5_000)
             }
@@ -470,7 +488,7 @@ public actor RLMGuileWorkerSession {
         }
         closeInput()
         continuation?.finish()
-        _ = readerGroup.group.wait(timeout: .now() + configuration.terminationGraceSeconds)
+        _ = readerGroup.group.wait(timeout: .now() + spec.terminationGraceSeconds)
         continuation = nil
         iteratorBox = nil
         process = nil
@@ -498,15 +516,15 @@ public actor RLMGuileWorkerSession {
 
     private final class FailureBox: @unchecked Sendable { // SAFETY: the NSLock serializes the single reader-thread write against actor reads.
         private let lock = NSLock()
-        private var value: RLMGuileEvaluationOutcome?
+        private var value: RLMWorkerEvaluationOutcome?
 
-        func set(_ outcome: RLMGuileEvaluationOutcome) {
+        func set(_ outcome: RLMWorkerEvaluationOutcome) {
             lock.lock()
             value = outcome
             lock.unlock()
         }
 
-        func get() -> RLMGuileEvaluationOutcome? {
+        func get() -> RLMWorkerEvaluationOutcome? {
             lock.lock()
             defer { lock.unlock() }
             return value
@@ -593,10 +611,10 @@ public actor RLMGuileWorkerSession {
     }
 }
 #else
-public actor RLMGuileWorkerSession {
+public actor RLMProcessWorkerSession<Executor: RLMWorkerExecutor> {
     public init(
-        configuration: RLMGuileWorkerConfiguration,
-        host: any RLMGuileHost,
+        configuration: Executor.Configuration,
+        host: any RLMWorkerHost,
         cancellation: RLMCancellationToken = RLMCancellationToken()
     ) {}
 
@@ -609,10 +627,10 @@ public actor RLMGuileWorkerSession {
     public private(set) var ready: RLMSchemeReady?
 
     public func start() async throws {
-        throw RLMGuileWorkerError.unsupportedPlatform
+        throw RLMWorkerError<Executor>.unsupportedPlatform
     }
 
-    public func evaluate(source: String, cellID: Int? = nil) async -> RLMGuileEvaluationOutcome {
+    public func evaluate(source: String, cellID: Int? = nil) async -> RLMWorkerEvaluationOutcome {
         .unsupportedPlatform
     }
 

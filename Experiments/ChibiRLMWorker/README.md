@@ -10,8 +10,11 @@ process supervision, credentials, and every limit; the worker receives no
 credential and needs no network access. Process death is the authoritative
 termination boundary.
 
-The parent-side client lives in
-[`RLMChibiWorkerSession.swift`](../../Sources/GnosticRLMChibi/RLMChibiWorkerSession.swift).
+The parent-side client is the shared
+[`RLMProcessWorkerSession.swift`](../../Sources/GnosticRLMProcessWorker/RLMProcessWorkerSession.swift),
+which supervises every executor. What is specific to Chibi, the `prlimit`
+wrapper, `CHIBI_MAX_ALLOC` and the Linux-only platform gate, lives in
+[`RLMChibiExecutor.swift`](../../Sources/GnosticRLMChibi/RLMChibiExecutor.swift).
 The shared frame codec and profile validator live in
 [`RLMSchemeProfile.swift`](../../Sources/GnosticRLM/RLMSchemeProfile.swift).
 

@@ -12,7 +12,9 @@ credential and needs no network access. Process death is the authoritative
 termination boundary.
 
 The Guile interpreter is a container system dependency. The parent-side client
-lives in `Sources/GnosticRLMGuile`, and the shared frame codec and profile
+is the shared session in `Sources/GnosticRLMProcessWorker`, which supervises
+every executor; what is specific to Guile, its launch arguments and platform
+support, lives in `Sources/GnosticRLMGuile`. The shared frame codec and profile
 validator live in `Sources/GnosticRLM`.
 
 ## Shared wire values
