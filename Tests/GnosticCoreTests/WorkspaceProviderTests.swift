@@ -313,6 +313,34 @@ struct WorkspaceProviderTests {
         #expect(result.output == "broker-result")
     }
 
+    @Test("tool listing ends on the provider's terminal page instead of the query timeout", arguments: [0, 2]) @MainActor
+    func toolListingEndsOnTerminalPage(toolCount: Int) async throws {
+        let namespace = "gnostic-tool-listing-\(UUID().uuidString.lowercased())"
+        let consumer = makeBrokerManager("consumer", namespace: namespace)
+        let remote = makeBrokerManager("remote", namespace: namespace)
+        defer { consumer.stop(); remote.stop() }
+        try await startBrokerManager(consumer)
+        try await startBrokerManager(remote)
+        let workspaceID = UUID()
+        let tools = (0..<toolCount).map { GnosticWorkspaceToolDefinition(id: "tool-\($0)", name: "Tool \($0)", description: "Listed") }
+        let provider = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: tools) { _, _ in .success("unused") }
+        let registration = await provider.registerQuery(on: remote)
+        defer { registration.cancel() }
+
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure {
+            await subscription.queryTools(using: consumer, workspaceID: workspaceID, timeout: .seconds(5))
+        }
+
+        #expect(elapsed < .seconds(2))
+        let listed = await catalog.networkObjects()
+            .filter { $0.objectType == GnosticObjectType.workspaceTool }
+            .compactMap(\.workspaceTool?.id)
+        #expect(listed.sorted() == tools.map(\.id))
+    }
+
     @Test("workspace invocation selects the attached provider and rejects forged returns") @MainActor
     func brokerWorkspaceInvocationPreservesProviderIdentity() async throws {
         let namespace = "gnostic-workspace-routing-\(UUID().uuidString.lowercased())"
