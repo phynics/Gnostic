@@ -65,6 +65,18 @@ private struct RLMRuntimeBenchmark {
                     name: "macos-chibi-packaging",
                     reason: "Chibi is Linux-only in the pinned build and macOS evidence is deferred by issue #181"
                 ),
+                UnavailableMeasurement(
+                    name: "generated-cell-repair-rate",
+                    reason: "the fixture uses a fixed valid cell and does not measure root-model repair attempts; this remains a follow-up under issue #181"
+                ),
+                UnavailableMeasurement(
+                    name: "malicious-program-safety",
+                    reason: "worker conformance and malicious-program suites are owned by issues #178 and #179; this benchmark does not replay or aggregate those fixtures"
+                ),
+                UnavailableMeasurement(
+                    name: "heap-and-loop-containment",
+                    reason: "worker limits and containment suites are covered by issues #178 and #179, while this short fixture records no stress distribution or heap profile"
+                ),
             ]
         )
     }

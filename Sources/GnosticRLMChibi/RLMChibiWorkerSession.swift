@@ -55,7 +55,8 @@ public actor RLMChibiWorkerSession {
     }
 
     /// The running worker process identifier, or `nil` when the worker is not
-    /// running. Used by tests to inspect the child's file descriptors.
+    /// running. Used by diagnostics and benchmark sampling to inspect the
+    /// child process.
     public var processIdentifier: Int32? {
         guard let process, process.isRunning else { return nil }
         return process.processIdentifier

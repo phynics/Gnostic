@@ -82,6 +82,12 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GnosticRLMBenchmarkTests",
+            dependencies: [
+                "GnosticRLMBenchmark",
+            ]
+        ),
+        .testTarget(
             name: "GnosticPositronicAtlasTests",
             dependencies: [
                 "GnosticPositronicAtlas",

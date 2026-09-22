@@ -26,8 +26,11 @@ captured Linux run are described in
 The captured operational result shows that both workers complete the fixture
 and produce the same semantic digest. It does not establish a product runtime
 choice because ordinary Positronic analysis, bounded retrieval, live answer
-quality, monetary cost, and macOS Chibi packaging are not available in the
-deterministic repository gate.
+quality, monetary cost, generated-cell repair rates, malicious-program safety,
+heap/loop containment stress data, and macOS Chibi packaging are not available
+in the deterministic repository gate. Worker conformance and malicious-program
+coverage remain owned by issues #178 and #179; this benchmark records those
+evidence gaps explicitly rather than treating its short fixture as proof.
 
 ## Evidence boundary
 
@@ -41,8 +44,9 @@ smoke measurements, not a profiler or a capacity guarantee.
 The next promotion decision requires the same scenario manifest, a fixed
 provider/model family, representative Gnostic questions with human or
 approved evaluator scoring, monetary telemetry, and reproducible macOS
-packaging evidence. Until those inputs exist, `CONTINUE_EXPERIMENT` is the
-bounded outcome and issue #180 remains blocked.
+packaging evidence. Repair-rate measurements and stress evidence for heap and
+loop containment are also required. Until those inputs exist,
+`CONTINUE_EXPERIMENT` is the bounded outcome and issue #180 remains blocked.
 
 ## Rejected alternatives
 

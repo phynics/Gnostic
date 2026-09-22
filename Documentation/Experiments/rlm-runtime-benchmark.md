@@ -14,6 +14,13 @@ four small in-memory text files, one fixed question, and fixed leaf responses.
 The scripted engine, Guile worker, and Chibi worker all inspect the same
 conceptual lease and generation-fence material.
 
+For a deterministic replay, set `GNOSTIC_BENCHMARK_TIMESTAMP` and
+`GNOSTIC_BENCHMARK_COMMIT` before running the executable. `make benchmark`
+sets the commit override from `git rev-parse HEAD`; the timestamp defaults to
+the current UTC time unless explicitly provided. The committed artifact is
+checked by `GnosticRLMBenchmarkTests` for its schema, outcome, and Guile/Chibi
+semantic digest parity.
+
 The worker fixture measures startup, evaluation, cancellation, host-call and
 leaf-prompt counts, sampled peak RSS, sampled child CPU time, and a semantic
 result digest. The child process is sampled at worker-ready and after fixture
@@ -25,6 +32,10 @@ child process, so process-resource fields are intentionally `null`. The
 ordinary Positronic and bounded-retrieval comparisons remain explicit
 unavailable measurements because the repository gate has no provider
 credentials, fixed live model family, or bounded-retrieval implementation.
+The artifact also records that this fixture does not measure generated-cell
+repair rates, malicious-program safety, or heap/loop containment; those
+concerns are owned by the worker issues and are not inferred from this smoke
+run.
 
 ## Captured run
 
