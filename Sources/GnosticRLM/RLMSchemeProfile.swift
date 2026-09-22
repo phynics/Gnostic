@@ -453,7 +453,7 @@ private struct Validator {
         switch target {
         case let .symbol(name):
             try validateDefinitionName(name)
-            usage.userDefinitions.insert(name)
+            recordDefinition(name, depth: depth)
             guard arguments.count == 2 else {
                 throw RLMSchemeValidationError.invalidArity(symbol: "define", expected: "2", actual: arguments.count)
             }
@@ -464,7 +464,7 @@ private struct Validator {
                 throw RLMSchemeValidationError.malformedProgram("define requires a symbol or a procedure header")
             }
             try validateDefinitionName(name)
-            usage.userDefinitions.insert(name)
+            recordDefinition(name, depth: depth)
             let parameters = try parameterNames(.list(Array(parts.dropFirst())))
             scopes.append(parameters)
             defer { scopes.removeLast() }
@@ -473,6 +473,16 @@ private struct Validator {
         default:
             throw RLMSchemeValidationError.malformedProgram("define requires a symbol or a procedure header")
         }
+    }
+
+    /// Records a definition for later cells only when it is top-level.
+    ///
+    /// Internal definitions bind over one body. Exporting their names would let
+    /// a later cell resolve a symbol that is not bound in the run module, so a
+    /// body-local `define` must not widen the accepted symbol surface.
+    private mutating func recordDefinition(_ name: String, depth: Int) {
+        guard depth == 0 else { return }
+        usage.userDefinitions.insert(name)
     }
 
     private mutating func validateDefinitionName(_ name: String) throws {
