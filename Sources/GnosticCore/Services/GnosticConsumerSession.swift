@@ -290,6 +290,26 @@ public final class GnosticConsumerSession {
         await catalog.changes()
     }
 
+    /// Observes the raw wire events this session receives.
+    ///
+    /// This is a bounded, best-effort diagnostic view of the connection: it
+    /// reports advertisements, deadvertisements, discover/query responses,
+    /// call/return traffic, and channel traffic (including channels whose
+    /// identifiers the caller does not know in advance). The stream retains at
+    /// most 64 pending events and drops the oldest when an observer falls
+    /// behind, so it never blocks the runtime. Events are not persisted or
+    /// replayed, and this API is not a contract for automation; use the typed
+    /// clients for behavior.
+    ///
+    /// Observation begins at ``start()`` and stops at ``stop()``. The stream
+    /// does not end with the session, so callers cancel their iteration at
+    /// shutdown.
+    ///
+    /// - Returns: A bounded, latest-biased stream of raw wire events.
+    public func rawEvents() async -> AsyncStream<GnosticRawWireEvent> {
+        await manager.observeRawEventStream()
+    }
+
     /// Creates a public turn client over this session's connected transport.
     ///
     /// The session keeps ownership of the connection. The returned client

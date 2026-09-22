@@ -209,6 +209,114 @@ struct ConsumerSessionFacadeTests {
         await session.stop()
     }
 
+    @Test("facade exposes bounded raw advertise events with object metadata")
+    func observesRawAdvertiseEvent() async throws {
+        let namespace = namespaced("raw-advertise")
+        let provider = try makeProvider(namespace: namespace)
+        try await provider.startAndWaitUntilReady()
+        defer { provider.stop() }
+
+        let workspaceID = UUID()
+        try await withSession(broker: .init(host: host, port: anonymousPort, namespace: namespace)) { session in
+            let rawEvents = await session.rawEvents()
+            async let observed = firstRawEvent(in: rawEvents, timeout: .seconds(5)) { event in
+                event.kind == .advertise && event.targetObjectId == workspaceID
+            }
+
+            provider.publishAdvertise(
+                GnosticWorkspaceObject(workspace: makeWorkspace(id: workspaceID, uri: "workspace://raw-advertise"))
+            )
+
+            let event = try #require(await observed)
+            #expect(event.objectType == GnosticObjectType.workspace)
+            #expect(event.sourceId == provider.identity.objectId.string)
+            #expect(event.channelId == nil)
+            #expect(event.payload.utf8.count <= GnosticRawWireEvent.maximumPayloadBytes)
+        }
+    }
+
+    @Test("facade exposes raw discover responses")
+    func observesRawDiscoverResponse() async throws {
+        let namespace = namespaced("raw-discover")
+        let provider = try makeProvider(namespace: namespace)
+        try await provider.startAndWaitUntilReady()
+        defer { provider.stop() }
+
+        let workspaceID = UUID()
+        provider.publishAdvertise(
+            GnosticWorkspaceObject(workspace: makeWorkspace(id: workspaceID, uri: "workspace://raw-discover"))
+        )
+
+        try await withSession(broker: .init(host: host, port: anonymousPort, namespace: namespace)) { session in
+            let rawEvents = await session.rawEvents()
+            async let observed = firstRawEvent(in: rawEvents, timeout: .seconds(5)) { event in
+                event.kind == .resolve && event.targetObjectId == workspaceID
+            }
+
+            try await session.discover()
+
+            let event = try #require(await observed)
+            #expect(event.objectType == GnosticObjectType.workspace)
+            #expect(event.correlationId != nil)
+        }
+    }
+
+    @Test("facade observes raw traffic on an arbitrary channel")
+    func observesRawChannelEvent() async throws {
+        let namespace = namespaced("raw-channel")
+        let provider = try makeProvider(namespace: namespace)
+        try await provider.startAndWaitUntilReady()
+        defer { provider.stop() }
+
+        try await withSession(broker: .init(host: host, port: anonymousPort, namespace: namespace)) { session in
+            let channelID = "me.atkn.gnostic.test.channel.\(UUID().uuidString.lowercased())"
+            let rawEvents = await session.rawEvents()
+            async let observed = firstRawEvent(in: rawEvents, timeout: .seconds(5)) { event in
+                event.kind == .channel && event.channelId == channelID
+            }
+
+            let object = GnosticWorkspaceObject(workspace: makeWorkspace(id: UUID(), uri: "workspace://raw-channel"))
+            provider.publishChannel(try .with(object: object, channelId: channelID))
+
+            let event = try #require(await observed)
+            #expect(event.objectType == GnosticObjectType.workspace)
+            #expect(event.sourceId == provider.identity.objectId.string)
+        }
+    }
+
+    @Test("facade emits one raw event per channel delivery")
+    func rawChannelEventIsNotDuplicated() async throws {
+        let namespace = namespaced("raw-channel-dedup")
+        let provider = try makeProvider(namespace: namespace)
+        try await provider.startAndWaitUntilReady()
+        defer { provider.stop() }
+
+        try await withSession(broker: .init(host: host, port: anonymousPort, namespace: namespace)) { session in
+            let channelID = "me.atkn.gnostic.test.channel.\(UUID().uuidString.lowercased())"
+            let rawEvents = await session.rawEvents()
+            async let collected = collectRawEvents(in: rawEvents, timeout: .milliseconds(800)) { event in
+                event.channelId == channelID
+            }
+
+            let object = GnosticWorkspaceObject(workspace: makeWorkspace(id: UUID(), uri: "workspace://raw-channel-dedup"))
+            provider.publishChannel(try .with(object: object, channelId: channelID))
+
+            #expect(await collected.count == 1)
+        }
+    }
+
+    @Test("raw event envelope bounds diagnostic payloads")
+    func rawEventEnvelopeBoundsPayload() {
+        let event = GnosticRawWireEvent(
+            kind: .call,
+            sourceId: "source",
+            correlationId: "correlation",
+            payload: String(repeating: "x", count: GnosticRawWireEvent.maximumPayloadBytes + 100)
+        )
+
+        #expect(event.payload.utf8.count == GnosticRawWireEvent.maximumPayloadBytes)
+    }
+
     // MARK: - Helpers
 
     private func namespaced(_ label: String) -> String {
@@ -261,6 +369,55 @@ struct ConsumerSessionFacadeTests {
             group.addTask {
                 for await change in stream where predicate(change) {
                     return change
+                }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+
+    nonisolated private func collectRawEvents(
+        in stream: AsyncStream<GnosticRawWireEvent>,
+        timeout: Duration,
+        where predicate: @escaping @Sendable (GnosticRawWireEvent) -> Bool
+    ) async -> [GnosticRawWireEvent] {
+        await withTaskGroup(of: [GnosticRawWireEvent].self) { group in
+            group.addTask {
+                var matches: [GnosticRawWireEvent] = []
+                for await event in stream where predicate(event) {
+                    matches.append(event)
+                }
+                return matches
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return []
+            }
+            // Whichever finishes first wins the race. The collector only ends
+            // when the stream ends or it is cancelled, so cancel it and then
+            // read its partial matches.
+            var result = await group.next() ?? []
+            group.cancelAll()
+            if let partial = await group.next(), !partial.isEmpty { result = partial }
+            return result
+        }
+    }
+
+    nonisolated private func firstRawEvent(
+        in stream: AsyncStream<GnosticRawWireEvent>,
+        timeout: Duration,
+        where predicate: @escaping @Sendable (GnosticRawWireEvent) -> Bool
+    ) async -> GnosticRawWireEvent? {
+        await withTaskGroup(of: GnosticRawWireEvent?.self) { group in
+            group.addTask {
+                for await event in stream where predicate(event) {
+                    return event
                 }
                 return nil
             }
