@@ -172,8 +172,6 @@ public actor RLMChibiWorkerSession {
         } catch {
             return .cellRejected("\(error)")
         }
-        definitions.formUnion(validation.usage.userDefinitions)
-
         let id = cellID ?? nextCellID
         nextCellID = max(nextCellID, id + 1)
         let generation = fence.current
@@ -209,6 +207,15 @@ public actor RLMChibiWorkerSession {
         }
         if case .workerExited = outcome {
             terminate()
+        }
+        // Definitions are committed only after a cell evaluates successfully,
+        // so a cell that fails at runtime cannot make its names available to a
+        // later repair attempt.
+        switch outcome {
+        case .value, .finished:
+            definitions.formUnion(validation.usage.userDefinitions)
+        default:
+            break
         }
         return outcome
     }

@@ -24,6 +24,28 @@ struct RLMRunBudgetTests {
         #expect(narrowed.maxWallDuration == .seconds(5))
     }
 
+    @Test("narrowing preserves the host repair limit")
+    func narrowingPreservesRepairLimit() {
+        let host = RLMRunBudget(
+            maxWallDuration: .seconds(30),
+            maxRootIterations: 4,
+            maxLeafModelCalls: 8,
+            maxEstimatedModelTokens: 100,
+            maxCorpusFiles: 10,
+            maxCorpusFileBytes: 100,
+            maxCorpusBytes: 1_000,
+            maxCorpusBytesRead: 100,
+            maxSchemeCellBytes: 100,
+            maxSchemeOutputBytes: 100,
+            maxEvidenceReferences: 4,
+            maxChunksPerRead: 2,
+            maxSearchLimit: 4,
+            maxCellRepairs: 1
+        )
+
+        #expect(host.narrowed(by: .init(maxRootIterations: 2)).maxCellRepairs == 1)
+    }
+
     @Test("negative request values are invalid")
     func negativeRejected() {
         #expect(throws: RLMFailure.invalidToolArguments("budget request values must not be negative")) {

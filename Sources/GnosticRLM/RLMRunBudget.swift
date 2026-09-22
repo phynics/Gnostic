@@ -19,6 +19,8 @@ public struct RLMRunBudget: Sendable, Equatable {
     public let maxEvidenceReferences: Int
     public let maxChunksPerRead: Int
     public let maxSearchLimit: Int
+    /// How many recoverable cell failures may be fed back for repair in one run.
+    public let maxCellRepairs: Int
 
     public init(
         maxWallDuration: Duration,
@@ -33,7 +35,8 @@ public struct RLMRunBudget: Sendable, Equatable {
         maxSchemeOutputBytes: Int,
         maxEvidenceReferences: Int,
         maxChunksPerRead: Int,
-        maxSearchLimit: Int
+        maxSearchLimit: Int,
+        maxCellRepairs: Int = 3
     ) {
         self.maxWallDuration = maxWallDuration
         self.maxRootIterations = maxRootIterations
@@ -48,6 +51,7 @@ public struct RLMRunBudget: Sendable, Equatable {
         self.maxEvidenceReferences = maxEvidenceReferences
         self.maxChunksPerRead = maxChunksPerRead
         self.maxSearchLimit = maxSearchLimit
+        self.maxCellRepairs = maxCellRepairs
     }
 
     public static let standard = RLMRunBudget(
@@ -150,7 +154,8 @@ extension RLMRunBudget {
             maxSchemeOutputBytes: request.maxSchemeOutputBytes.map { min(maxSchemeOutputBytes, $0) } ?? maxSchemeOutputBytes,
             maxEvidenceReferences: request.maxEvidenceReferences.map { min(maxEvidenceReferences, $0) } ?? maxEvidenceReferences,
             maxChunksPerRead: request.maxChunksPerRead.map { min(maxChunksPerRead, $0) } ?? maxChunksPerRead,
-            maxSearchLimit: request.maxSearchLimit.map { min(maxSearchLimit, $0) } ?? maxSearchLimit
+            maxSearchLimit: request.maxSearchLimit.map { min(maxSearchLimit, $0) } ?? maxSearchLimit,
+            maxCellRepairs: maxCellRepairs
         )
     }
 
