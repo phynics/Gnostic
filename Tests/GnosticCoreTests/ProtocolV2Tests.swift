@@ -42,6 +42,7 @@ struct ProtocolV2Tests {
         #expect(AscendantInteroperabilityCapability.streamedUpdates.rawValue == GnosticCapability.streamedTurnUpdates)
         #expect(AscendantInteroperabilityCapability.replay.rawValue == GnosticCapability.turnReplay)
         #expect(AscendantInteroperabilityCapability.permissionMediation.rawValue == GnosticCapability.permissionMediation)
+        #expect(AscendantInteroperabilityCapability.timelineManagement.rawValue == GnosticCapability.timelineManagement)
         #expect(AscendantInteroperabilityCapability.workspaceAttachment.rawValue == GnosticCapability.workspaceAttachment)
         #expect(AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue == GnosticCapability.workspaceToolInvocation)
     }

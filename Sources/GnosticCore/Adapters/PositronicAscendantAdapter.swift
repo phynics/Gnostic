@@ -66,6 +66,7 @@ import struct PositronicKit.TimelineRecord
                     AscendantInteroperabilityCapability.streamedUpdates.rawValue,
                     AscendantInteroperabilityCapability.replay.rawValue,
                     AscendantInteroperabilityCapability.permissionMediation.rawValue,
+                    AscendantInteroperabilityCapability.timelineManagement.rawValue,
                     AscendantInteroperabilityCapability.workspaceAttachment.rawValue,
                     AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue,
                 ]),

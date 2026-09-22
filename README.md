@@ -182,6 +182,33 @@ whether that intent is usable now.
 Both clients are valid only while the session runs. After `session.stop()` later
 calls fail by transport timeout; create a new client from a new session.
 
+## Create and rename Timelines from a consumer
+
+`session.timelineClient()` returns a `GnosticTimelineClient` over the session's
+own connection. It creates a Timeline under a discovered Ascendant and renames a
+discovered Timeline, using the existing `timeline.create` and `timeline.update`
+serve handlers.
+
+```swift
+let timelines = try session.timelineClient()
+
+let created = try await timelines.create(
+    title: "Research",
+    ascendantID: ascendantID
+)
+
+let renamed = try await timelines.update(
+    timelineID: created.timelineID,
+    title: "Research notes"
+)
+```
+
+Every call resolves the serving provider from the catalog and requires the
+Ascendant to advertise `timelineManagement`; discovery is refreshed only when
+the target is absent. The client reuses the session transport, so a consumer
+never opens a second connection for the same broker identity. Timeline deletion
+is not exposed because no delete operation exists in the Gnostic wire contract.
+
 ## Use ACP
 
 `gnostic acp` is the supported ACP v1 stdio interface. It maps ACP sessions to
