@@ -83,9 +83,9 @@ evaluation, and the parent applies the CPU and address-space rlimits.
 Frame payloads are one restricted S-expression written with `write` and
 prefixed with a big-endian 32-bit byte length. The `wire-string` rule and the
 symbol grammar match the Guile reference worker. The placeholder, unsupported,
-and truncated sentinels are characters here instead of Guile's symbols, because
-a cell can forge any symbol; the two workers therefore agree on the value model
-but not on the sentinel type.
+and truncated sentinels are characters in both workers, because a cell can forge
+any symbol. Improper lists are preserved as dotted pairs, so association-list
+values have the same wire shape in both workers.
 
 - `wire-string`: printable ASCII plus LF, TAB, and CR; every other byte becomes
   `?`.

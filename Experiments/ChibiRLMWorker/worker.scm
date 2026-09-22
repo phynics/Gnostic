@@ -94,19 +94,26 @@
                 #\?)))
         (string->list value))))
 
+(define (ascii-letter? character)
+  (let ((code (char->integer character)))
+    (or (and (>= code 65) (<= code 90))
+        (and (>= code 97) (<= code 122)))))
+
+(define (ascii-digit? character)
+  (let ((code (char->integer character)))
+    (and (>= code 48) (<= code 57))))
+
 (define (valid-wire-symbol? name)
-  (if (or (= (string-length name) 0)
-          (not (char-alphabetic? (string-ref name 0))))
-      #f
-      (let loop ((index 0))
-        (if (>= index (string-length name))
-            #t
-            (let ((character (string-ref name index)))
-              (if (or (char-alphabetic? character)
-                      (char-numeric? character)
-                      (char=? character #\-))
-                  (loop (+ index 1))
-                  #f))))))
+  (and (> (string-length name) 0)
+       (ascii-letter? (string-ref name 0))
+       (let loop ((index 1))
+         (if (>= index (string-length name))
+             #t
+             (let ((character (string-ref name index)))
+               (and (or (ascii-letter? character)
+                        (ascii-digit? character)
+                        (char=? character #\-))
+                    (loop (+ index 1))))))))
 
 (define (wire-symbol-value value)
   (let ((name (symbol->string value)))
@@ -145,12 +152,17 @@
         ((pair? datum) (convert-list datum depth))
         ((vector? datum) (convert-vector datum depth))
         (else marker-unsupported)))
+    (define (rebuild-list reversed-elements tail)
+      (let loop ((remaining reversed-elements) (result tail))
+        (if (null? remaining)
+            result
+            (loop (cdr remaining) (cons (car remaining) result)))))
     (define (convert-list datum depth)
       (let loop ((rest datum) (elements '()))
         (cond
           ((null? rest) (reverse elements))
           ((not (pair? rest))
-           (reverse (cons (convert rest (+ depth 1)) elements)))
+           (rebuild-list elements (convert rest (+ depth 1))))
           ((<= budget 0)
            (reverse (cons marker-truncated elements)))
           (else

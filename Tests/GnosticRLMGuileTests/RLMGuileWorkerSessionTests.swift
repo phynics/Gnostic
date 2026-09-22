@@ -155,6 +155,21 @@ struct RLMGuileWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("out-of-model numbers become a structured unsupported marker")
+    func outOfModelNumbersAreStructured() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let outcome = await session.evaluate(source: "(list (/ 1 3) (expt 2 100) (sqrt -1) (/ 1.0 3.0))")
+        #expect(outcome == .value(.list([
+            .character("!"), .character("!"), .character("!"), .double(1.0 / 3.0),
+        ])))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("ready metadata sanitizes control characters before framing")
     func readyMetadataIsWireSafe() throws {
         var environment = RLMGuileWorkerConfiguration.scrubbedEnvironment

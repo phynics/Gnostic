@@ -14,3 +14,17 @@ termination boundary.
 The Guile interpreter is a container system dependency. The parent-side client
 lives in `Sources/GnosticRLMGuile`, and the shared frame codec and profile
 validator live in `Sources/GnosticRLM`.
+
+## Shared wire values
+
+Guile and Chibi use the same restricted wire-value contract. Strings contain
+printable ASCII plus TAB, LF, and CR; other characters become `?`. Symbols use
+an ASCII identifier beginning with a letter and continuing with letters,
+digits, or `-`; invalid symbols become the character `#\~`. A value that is
+unsupported by the parent model becomes `#\!`, and a conversion that exceeds
+the bounded value budget becomes `#\?`.
+
+Numbers are accepted only when they are finite real values or signed 64-bit
+integers. Ratios, complex values, non-finite values, and integers outside the
+signed 64-bit range become `#\!`. This keeps Guile's result frames identical
+to Chibi's for the common profile, including the numeric edge cases.
