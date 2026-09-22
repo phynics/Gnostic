@@ -122,6 +122,23 @@ struct RLMChibiWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("wire symbols use the documented ASCII identifier rule")
+    func unicodeSymbolsUsePlaceholder() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host)
+        try await session.start()
+
+        let source = #"(list (string->symbol "A") (string->symbol "z9") (string->symbol "a-b") (string->symbol "\xE9;") (string->symbol "\x3A9;") (string->symbol "caf\xE9;") (string->symbol "A_"))"#
+        let outcome = await session.evaluate(source: source)
+        #expect(outcome == .value(.list([
+            .symbol("A"), .symbol("z9"), .symbol("a-b"),
+            .character("~"), .character("~"), .character("~"), .character("~"),
+        ])))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("finish answer with a control character remains structured")
     func finishControlStringIsDecodable() async throws {
         let host = RLMChibiRecordingHost()

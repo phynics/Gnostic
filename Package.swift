@@ -119,6 +119,14 @@ let package = Package(
                 "GnosticRLM",
             ]
         ),
+        .testTarget(
+            name: "GnosticRLMWorkerParityTests",
+            dependencies: [
+                "GnosticRLMGuile",
+                "GnosticRLMChibi",
+                "GnosticRLM",
+            ]
+        ),
         .executableTarget(
             name: "GnosticRunner",
             dependencies: [
