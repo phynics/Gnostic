@@ -357,12 +357,15 @@ public final class DiscoverResponderRequest: @unchecked Sendable { // SAFETY: sn
     public func resolve(object: CoatyObject) throws { try resolveAction(object) }
 }
 
-public final class QueryResponderRequest: @unchecked Sendable { // SAFETY: snapshot is immutable; the retrieve closure runs on the owning actor.
+public final class QueryResponderRequest: @unchecked Sendable { // SAFETY: snapshot is immutable; the dispatch awaits the handler, and handlers call retrieve before returning, so the closure never runs concurrently with the dispatch that reads its results.
     public let snapshot: QueryEventSnapshot
     private let retrieveAction: ([CoatyObject]) throws -> Void
     fileprivate init(snapshot: QueryEventSnapshot, retrieve: @escaping ([CoatyObject]) throws -> Void) {
         self.snapshot = snapshot; retrieveAction = retrieve
     }
+    /// Answers the query. An empty list is an explicit answer: the responder
+    /// owns the queried scope and has nothing (more) to return, which lets the
+    /// querier stop without waiting for the query timeout.
     public func retrieve(objects: [CoatyObject]) throws { try retrieveAction(objects) }
     public func retrieve(object: CoatyObject) throws { try retrieve(objects: [object]) }
 }
@@ -542,17 +545,26 @@ private actor CompatibilityDispatch {
             coreTypes: (json["coreTypes"] as? [String])?.compactMap(CoreType.init(rawValue:)),
             objectFilter: json["objectFilter"].flatMap(rawString)
         )
+        // A handler that answers with objects wins. A handler that answers
+        // with an empty list only produces an empty Retrieve when no other
+        // handler has objects; a handler that never answers stays silent.
+        var answeredEmpty = false
         for handler in queryHandlers.values {
+            var answered = false
             var retrievedObjects: [CoatyObject] = []
             let request = QueryResponderRequest(snapshot: snapshot) { objects in
+                answered = true
                 retrievedObjects.append(contentsOf: objects)
             }
             try await handler(request)
-            guard !retrievedObjects.isEmpty else { continue }
+            guard !retrievedObjects.isEmpty else {
+                answeredEmpty = answeredEmpty || answered
+                continue
+            }
             let rawObjects = try retrievedObjects.map { try JSONSerialization.jsonObject(with: Data(jsonRaw($0))) }
             return .response(try jsonObject(["objects": rawObjects]))
         }
-        return .noResponse
+        return answeredEmpty ? .response(try jsonObject(["objects": [Any]()])) : .noResponse
     }
 }
 
