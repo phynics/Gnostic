@@ -48,7 +48,7 @@ public enum RLMSchemeProfile {
 
     public static let specialForms: Set<String> = [
         "quote", "if", "cond", "and", "or", "begin",
-        "lambda", "let", "let*", "letrec", "define",
+        "lambda", "let", "let*", "letrec", "letrec*", "define",
     ]
 
     public static let hostCalls: Set<String> = [
@@ -267,6 +267,29 @@ private struct Validator {
         return names
     }
 
+    /// Returns the definitions at the start of one local body.
+    ///
+    /// Internal definitions bind throughout their body, but definitions that
+    /// occur after an expression do not make a forward reference valid.
+    private static func collectLeadingDefinitions(_ expressions: [RLMSExpression]) -> Set<String> {
+        var names = Set<String>()
+        for expression in expressions {
+            guard case let .list(elements) = expression, elements.count >= 2 else { break }
+            guard case let .symbol(head) = elements[0], head == "define" else { break }
+            switch elements[1] {
+            case let .symbol(name):
+                if isAllowedBoundName(name) { names.insert(name) }
+            case let .list(parts):
+                if let first = parts.first, case let .symbol(name) = first, isAllowedBoundName(name) {
+                    names.insert(name)
+                }
+            default:
+                break
+            }
+        }
+        return names
+    }
+
     private static func isAllowedBoundName(_ name: String) -> Bool {
         !RLMSchemeProfile.reservedNames.contains(name)
             && !RLMSchemeProfile.disallowedSymbols.contains(name)
@@ -282,6 +305,22 @@ private struct Validator {
             let isLast = index == expressions.count - 1
             try walk(expression, depth: depth, allowFinish: allowFinish && isLast)
         }
+    }
+
+    /// Walks a `<body>` that may open with internal `define`s.
+    ///
+    /// Internal definitions bind over the whole body, so their names are
+    /// collected first and scoped for every form in the body. Only names that
+    /// `walkDefine` would accept are pre-seeded, so a disallowed symbol cannot
+    /// become resolveable through an internal definition.
+    private mutating func walkBody(
+        _ expressions: [RLMSExpression],
+        depth: Int,
+        allowFinish: Bool
+    ) throws {
+        scopes.append(Self.collectLeadingDefinitions(expressions))
+        defer { scopes.removeLast() }
+        try walkSequence(expressions, depth: depth, allowFinish: allowFinish)
     }
 
     private mutating func walk(
@@ -377,8 +416,11 @@ private struct Validator {
             }
             try walkCondClauses(arguments, depth: depth, allowFinish: allowFinish)
 
-        case "and", "or", "begin":
+        case "and", "or":
             try walkSequence(arguments, depth: depth, allowFinish: allowFinish)
+
+        case "begin":
+            try walkBody(arguments, depth: depth, allowFinish: allowFinish)
 
         case "lambda":
             guard arguments.count >= 2 else {
@@ -387,21 +429,58 @@ private struct Validator {
             let parameters = try parameterNames(arguments[0])
             scopes.append(parameters)
             defer { scopes.removeLast() }
-            try walkSequence(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+            try walkBody(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
 
-        case "let", "let*", "letrec":
+        case "let":
             guard arguments.count >= 2 else {
                 throw RLMSchemeValidationError.invalidArity(symbol: name, expected: "2 or more", actual: arguments.count)
             }
-            if name == "let*" {
-                scopes.append([])
-                try walkSequentialBindings(arguments[0], depth: depth)
+            if case let .symbol(loopName) = arguments[0] {
+                guard arguments.count >= 3 else {
+                    throw RLMSchemeValidationError.invalidArity(symbol: name, expected: "3 or more", actual: arguments.count)
+                }
+                try validateBoundName(loopName)
+                try walkBindings(arguments[1], depth: depth)
+                scopes.append(try bindingNames(arguments[1]))
+                scopes.append([loopName])
+                defer {
+                    scopes.removeLast()
+                    scopes.removeLast()
+                }
+                try walkBody(Array(arguments.dropFirst(2)), depth: depth + 1, allowFinish: allowFinish)
             } else {
                 try walkBindings(arguments[0], depth: depth)
                 scopes.append(try bindingNames(arguments[0]))
+                defer { scopes.removeLast() }
+                try walkBody(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
             }
-            try walkSequence(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
-            scopes.removeLast()
+
+        case "let*":
+            guard arguments.count >= 2 else {
+                throw RLMSchemeValidationError.invalidArity(symbol: name, expected: "2 or more", actual: arguments.count)
+            }
+            scopes.append([])
+            defer { scopes.removeLast() }
+            try walkSequentialBindings(arguments[0], depth: depth)
+            try walkBody(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+
+        case "letrec":
+            guard arguments.count >= 2 else {
+                throw RLMSchemeValidationError.invalidArity(symbol: name, expected: "2 or more", actual: arguments.count)
+            }
+            scopes.append(try bindingNames(arguments[0]))
+            defer { scopes.removeLast() }
+            try walkBindings(arguments[0], depth: depth)
+            try walkBody(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+
+        case "letrec*":
+            guard arguments.count >= 2 else {
+                throw RLMSchemeValidationError.invalidArity(symbol: name, expected: "2 or more", actual: arguments.count)
+            }
+            scopes.append([])
+            defer { scopes.removeLast() }
+            try walkSequentialBindings(arguments[0], depth: depth)
+            try walkBody(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
 
         case "define":
             try walkDefine(arguments, depth: depth, allowFinish: allowFinish)
@@ -425,7 +504,7 @@ private struct Validator {
                 throw RLMSchemeValidationError.malformedProgram("else must be the last cond clause")
             }
             if isElse {
-                try walkSequence(Array(parts.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+                try walkBody(Array(parts.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
                 continue
             }
             if parts.count >= 3, Self.isSymbol(parts[1], "=>") {
@@ -437,7 +516,7 @@ private struct Validator {
                 continue
             }
             try walk(first, depth: depth + 1, allowFinish: false)
-            try walkSequence(Array(parts.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+            try walkBody(Array(parts.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
         }
     }
 
@@ -468,7 +547,7 @@ private struct Validator {
             let parameters = try parameterNames(.list(Array(parts.dropFirst())))
             scopes.append(parameters)
             defer { scopes.removeLast() }
-            try walkSequence(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
+            try walkBody(Array(arguments.dropFirst()), depth: depth + 1, allowFinish: allowFinish)
 
         default:
             throw RLMSchemeValidationError.malformedProgram("define requires a symbol or a procedure header")

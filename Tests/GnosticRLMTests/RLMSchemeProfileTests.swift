@@ -64,6 +64,14 @@ struct RLMSchemeProfileTests {
             ("(string-match \"a\" \"abc\")", .disallowedSymbol("string-match")),
             ("(make-thread (lambda () 1))", .disallowedSymbol("make-thread")),
             ("(display \"x\")", .disallowedSymbol("display")),
+            ("(throw 'x 1)", .disallowedSymbol("throw")),
+            ("(catch #t (lambda () 1) (lambda args 2))", .disallowedSymbol("catch")),
+            ("(values 1 2)", .disallowedSymbol("values")),
+            ("(call-with-values (lambda () 1) +)", .disallowedSymbol("call-with-values")),
+            ("(scm-error 'gnostic-finish \"answer\" (list \"c-1\") #f #f)", .disallowedSymbol("scm-error")),
+            ("(with-throw-handler #t (lambda () 1) (lambda args 2))", .disallowedSymbol("with-throw-handler")),
+            ("(abort-to-prompt* (make-prompt-tag) 1)", .disallowedSymbol("abort-to-prompt*")),
+            ("(make-prompt-tag)", .disallowedSymbol("make-prompt-tag")),
             ("#\\a", .unsupportedValue("character literals are not in the profile")),
         ]
         for (source, expected) in corpus {
@@ -211,5 +219,88 @@ struct RLMSchemeProfileTests {
 
         let topLevel = try RLMSchemeProfile.analyze("(define top 1) top")
         #expect(topLevel.userDefinitions == ["top"])
+
+        let spliced = try RLMSchemeProfile.analyze("(begin (define spliced 1) spliced)")
+        #expect(spliced.userDefinitions == ["spliced"])
+    }
+
+    @Test("accepts letrec self and mutual recursion")
+    func acceptsLetrecRecursion() throws {
+        let selfRecursive = try RLMSchemeProfile.validate(
+            "(letrec ((fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))) (fact 5))"
+        )
+        #expect(selfRecursive.usage.specialForms.contains("letrec"))
+        #expect(selfRecursive.usage.specialForms.contains("lambda"))
+
+        let mutual = try RLMSchemeProfile.validate(
+            "(letrec ((ev? (lambda (n) (if (= n 0) #t (od? (- n 1))))) (od? (lambda (n) (if (= n 0) #f (ev? (- n 1)))))) (ev? 4))"
+        )
+        #expect(mutual.hostCallCount == 0)
+    }
+
+    @Test("accepts letrec* sequential bindings")
+    func acceptsLetrecStar() throws {
+        let validation = try RLMSchemeProfile.validate("(letrec* ((x 1) (y (+ x 1))) y)")
+        #expect(validation.usage.specialForms.contains("letrec*"))
+        #expect(throws: RLMSchemeValidationError.disallowedSymbol("later")) {
+            try RLMSchemeProfile.validate("(letrec* ((first later) (later 1)) first)")
+        }
+    }
+
+    @Test("accepts a named let for local recursion")
+    func acceptsNamedLet() throws {
+        let validation = try RLMSchemeProfile.validate(
+            "(let loop ((n 5) (acc 1)) (if (= n 0) acc (loop (- n 1) (* acc n))))"
+        )
+        #expect(validation.usage.specialForms.contains("let"))
+        #expect(validation.usage.maxDepth > 1)
+    }
+
+    @Test("accepts internal defines in begin, lambda, and let bodies")
+    func acceptsInternalDefines() throws {
+        _ = try RLMSchemeProfile.validate("(begin (define x 1) (define y 2) (+ x y))")
+        _ = try RLMSchemeProfile.validate("(define (f) (define x 1) (+ x 1))")
+        _ = try RLMSchemeProfile.validate("(lambda () (define x 1) x)")
+        _ = try RLMSchemeProfile.validate("(let ((seed 1)) (define x (+ seed 1)) x)")
+        _ = try RLMSchemeProfile.validate(
+            "(define (f) (define (ev? n) (if (= n 0) #t (od? (- n 1)))) (define (od? n) (if (= n 0) #f (ev? (- n 1)))) (ev? 2))"
+        )
+    }
+
+    @Test("does not resolve an internal definition outside its body")
+    func rejectsInternalDefineOutsideBody() {
+        #expect(throws: RLMSchemeValidationError.disallowedSymbol("hidden")) {
+            try RLMSchemeProfile.validate("(define (f) (define hidden 1) hidden) hidden")
+        }
+        #expect(throws: RLMSchemeValidationError.disallowedSymbol("helper")) {
+            try RLMSchemeProfile.validate("(lambda () helper (define helper 1))")
+        }
+    }
+
+    @Test("rejects disallowed symbols introduced through new binding forms")
+    func rejectsSmuggledDisallowedSymbols() {
+        let cases: [(String, RLMSchemeValidationError)] = [
+            ("(define (f) (define system 1) (system \"echo hi\"))", .disallowedSymbol("system")),
+            ("(begin (define eval 1) (eval '(+ 1 2)))", .disallowedSymbol("eval")),
+            ("(let loop ((system 1)) (system \"echo hi\"))", .disallowedSymbol("system")),
+            ("(let system ((x 1)) (system x))", .disallowedSymbol("system")),
+            ("(letrec* ((system 1)) system)", .disallowedSymbol("system")),
+            ("(begin (define finish 1) finish)", .reservedRedefinition("finish")),
+        ]
+        for (source, expected) in cases {
+            #expect(throws: expected) {
+                try RLMSchemeProfile.validate(source)
+            }
+        }
+    }
+
+    @Test("keeps finish terminal through bodies and named let")
+    func rejectsFinishInNewForms() {
+        #expect(throws: RLMSchemeValidationError.invalidFinishPlacement) {
+            try RLMSchemeProfile.validate("(begin (define x (finish \"a\" (list))) x)")
+        }
+        #expect(throws: RLMSchemeValidationError.invalidFinishPlacement) {
+            try RLMSchemeProfile.validate("(let loop ((n 1)) (finish \"a\" (list)) n)")
+        }
     }
 }
