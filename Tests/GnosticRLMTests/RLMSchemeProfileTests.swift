@@ -199,4 +199,17 @@ struct RLMSchemeProfileTests {
             try RLMSchemeProfile.validate("   ; nothing")
         }
     }
+
+    @Test("keeps internal definitions out of later-cell definitions")
+    func internalDefinitionsStayLocal() throws {
+        let procedure = try RLMSchemeProfile.analyze("(define (f) (define hidden 1) 2)")
+        #expect(procedure.userDefinitions == ["f"])
+        #expect(!procedure.userDefinitions.contains("hidden"))
+
+        let local = try RLMSchemeProfile.analyze("(let ((seed 1)) (define hidden 2) 3)")
+        #expect(local.userDefinitions.isEmpty)
+
+        let topLevel = try RLMSchemeProfile.analyze("(define top 1) top")
+        #expect(topLevel.userDefinitions == ["top"])
+    }
 }
