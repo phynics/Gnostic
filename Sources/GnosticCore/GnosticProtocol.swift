@@ -185,6 +185,7 @@ public enum GnosticCapability {
     public static let turnCancellation = "me.atkn.gnostic.capability.turn.cancel"
     public static let turnReplay = "me.atkn.gnostic.capability.turn.replay"
     public static let permissionMediation = "me.atkn.gnostic.capability.permission.mediation"
+    public static let timelineManagement = "me.atkn.gnostic.capability.timeline.management"
     public static let workspaceAttachment = "me.atkn.gnostic.capability.workspace.attach"
     public static let workspaceToolInvocation = "me.atkn.gnostic.capability.workspace.tool"
 
@@ -193,6 +194,7 @@ public enum GnosticCapability {
         streamedTurnUpdates,
         turnReplay,
         permissionMediation,
+        timelineManagement,
         workspaceAttachment,
         workspaceToolInvocation,
     ]

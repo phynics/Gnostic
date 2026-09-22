@@ -111,6 +111,7 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
                     AscendantInteroperabilityCapability.streamedUpdates.rawValue,
                     AscendantInteroperabilityCapability.cancellation.rawValue,
                     AscendantInteroperabilityCapability.permissionMediation.rawValue,
+                    AscendantInteroperabilityCapability.timelineManagement.rawValue,
                     AscendantInteroperabilityCapability.workspaceAttachment.rawValue,
                     AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue,
                 ]),

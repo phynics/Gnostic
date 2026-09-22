@@ -361,6 +361,28 @@ public final class GnosticConsumerSession {
         )
     }
 
+    /// Creates a public Timeline client over this session's connected transport.
+    ///
+    /// The session keeps ownership of the connection. The returned client
+    /// shares the session's subscription and catalog, so it creates and renames
+    /// remote Timelines without a second connection or a hosted Node; neither
+    /// the session nor the client advertises.
+    ///
+    /// - Parameter timeout: The bounded window for discovery refreshes and
+    ///   each Timeline call.
+    /// - Returns: A Timeline client bound to this session's transport.
+    /// - Throws: ``GnosticConsumerSessionError/notStarted`` when the session is
+    ///   not running.
+    public func timelineClient(timeout: Duration = .seconds(5)) throws -> GnosticTimelineClient {
+        guard state == .running else { throw GnosticConsumerSessionError.notStarted }
+        return GnosticTimelineClient(
+            manager: manager,
+            catalog: catalog,
+            subscription: subscription,
+            timeout: timeout
+        )
+    }
+
     /// Stops subscriptions and the transport with ordered cleanup.
     ///
     /// Safe to call before ``start()`` and safe to call more than once. A

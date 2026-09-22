@@ -15,6 +15,8 @@ public enum AscendantInteroperabilityCapability: String, Codable, Sendable, Equa
     case replay = "me.atkn.gnostic.capability.turn.replay"
     /// Host-mediated approval for tool calls that require it.
     case permissionMediation = "me.atkn.gnostic.capability.permission.mediation"
+    /// Creating and renaming Timelines through the existing lifecycle operations.
+    case timelineManagement = "me.atkn.gnostic.capability.timeline.management"
     /// Attaching a Workspace to a Timeline.
     case workspaceAttachment = "me.atkn.gnostic.capability.workspace.attach"
     /// Invoking a tool advertised by an attached Workspace.
