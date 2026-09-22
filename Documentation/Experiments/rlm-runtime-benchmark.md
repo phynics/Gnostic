@@ -28,8 +28,11 @@ credentials, fixed live model family, or bounded-retrieval implementation.
 
 ## Captured run
 
-The committed artifact was captured on Linux x86_64 at main commit
-`62a5ce953539a97288c1b2c9676c1a18e385079b`.
+The committed artifact was captured on Linux x86_64 by the benchmark harness at
+commit `cd3bd13988bb08584decbafe6e4a8c23f6ac3d12`, recorded in the artifact's
+`gitCommit` field. The documentation and decision record were added in the
+following commit; rerunning `make benchmark` refreshes both the measurements
+and this provenance field.
 
 | Runtime | Startup ms | Evaluation ms | Cancel ms | Sampled peak RSS | Sampled CPU ms | Semantic result |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
