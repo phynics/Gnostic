@@ -34,6 +34,15 @@ enum RLMGuileTestSupport {
             .path
     }
 
+    /// A stub worker that emits a stale-run frame before the matching one.
+    static var staleFrameWorkerScriptPath: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/RLMWorkerStubs/guile-stale-frame-worker.scm")
+            .path
+    }
+
     static var isAvailable: Bool {
         guilePath != nil && FileManager.default.fileExists(atPath: workerScriptPath)
     }

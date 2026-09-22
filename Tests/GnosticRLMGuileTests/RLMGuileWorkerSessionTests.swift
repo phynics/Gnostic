@@ -28,6 +28,23 @@ struct RLMGuileWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("an evaluated frame from another run is dropped on run identity")
+    func staleEvaluatedFrameIsFenced() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host) { configuration in
+            configuration.workerScriptPath = RLMGuileTestSupport.staleFrameWorkerScriptPath
+        }
+        try await session.start()
+
+        // The stub answers each evaluate twice: first with a frame carrying the
+        // same cell id under a different run identity, then with the matching
+        // frame. Matching on cell id alone would return 1.
+        let outcome = await session.evaluate(source: "(+ 1 1)", cellID: 7)
+        #expect(outcome == .value(.integer(42)))
+
+        await session.shutdown()
+    }
+
     @Test("disallowed cells are rejected in the parent before evaluation")
     func rejectsBeforeEvaluation() async throws {
         let host = RLMGuileRecordingHost()
