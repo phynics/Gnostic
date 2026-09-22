@@ -357,7 +357,7 @@ public final class DiscoverResponderRequest: @unchecked Sendable { // SAFETY: sn
     public func resolve(object: CoatyObject) throws { try resolveAction(object) }
 }
 
-public final class QueryResponderRequest: @unchecked Sendable { // SAFETY: snapshot is immutable; the retrieve closure runs on the owning actor.
+public final class QueryResponderRequest: @unchecked Sendable { // SAFETY: snapshot is immutable; the dispatch awaits the handler, and handlers call retrieve before returning, so the closure never runs concurrently with the dispatch that reads its results.
     public let snapshot: QueryEventSnapshot
     private let retrieveAction: ([CoatyObject]) throws -> Void
     fileprivate init(snapshot: QueryEventSnapshot, retrieve: @escaping ([CoatyObject]) throws -> Void) {

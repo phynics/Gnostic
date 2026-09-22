@@ -327,18 +327,61 @@ struct WorkspaceProviderTests {
         let registration = await provider.registerQuery(on: remote)
         defer { registration.cancel() }
 
-        let catalog = NetworkCatalog()
-        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
-        let clock = ContinuousClock()
-        let elapsed = await clock.measure {
-            await subscription.queryTools(using: consumer, workspaceID: workspaceID, timeout: .seconds(5))
-        }
+        let listing = await listTools(workspaceID: workspaceID, using: consumer)
 
-        #expect(elapsed < .seconds(2))
-        let listed = await catalog.networkObjects()
-            .filter { $0.objectType == GnosticObjectType.workspaceTool }
-            .compactMap(\.workspaceTool?.id)
-        #expect(listed.sorted() == tools.map(\.id))
+        #expect(listing.elapsed < toolListingBound)
+        #expect(listing.toolIDs == tools.map(\.id))
+    }
+
+    @Test("multiplexed tool listing ends on the terminal page for tool and non-tool Workspaces") @MainActor
+    func multiplexedToolListingEndsOnTerminalPage() async throws {
+        let namespace = "gnostic-multiplexed-tool-listing-\(UUID().uuidString.lowercased())"
+        let consumer = makeBrokerManager("consumer", namespace: namespace)
+        let remote = makeBrokerManager("remote", namespace: namespace)
+        defer { consumer.stop(); remote.stop() }
+        try await startBrokerManager(consumer)
+        try await startBrokerManager(remote)
+        let echoID = UUID()
+        let plainID = UUID()
+        let echo = EchoWorkspace(reference: WorkspaceReference(id: echoID, uri: WorkspaceURI(parsing: "echo://listing")!, location: .runtime))
+        let plain = PlainWorkspace(reference: WorkspaceReference(id: plainID, uri: WorkspaceURI(parsing: "workspace://plain")!, location: .runtime))
+        let provider = MultiplexedWorkspaceProvider(workspaces: [echoID: echo, plainID: plain])
+        let registration = await provider.registerQuery(on: remote)
+        defer { registration.cancel() }
+
+        let echoListing = await listTools(workspaceID: echoID, using: consumer)
+        #expect(echoListing.elapsed < toolListingBound)
+        #expect(echoListing.toolIDs == [EchoWorkspace.toolID])
+
+        let plainListing = await listTools(workspaceID: plainID, using: consumer)
+        #expect(plainListing.elapsed < toolListingBound)
+        #expect(plainListing.toolIDs.isEmpty)
+    }
+
+    @Test("an owner's tool object wins over empty answers from other responders on the same node") @MainActor
+    func toolObjectWinsOverEmptyAnswers() async throws {
+        let namespace = "gnostic-tool-listing-precedence-\(UUID().uuidString.lowercased())"
+        let consumer = makeBrokerManager("consumer", namespace: namespace)
+        let remote = makeBrokerManager("remote", namespace: namespace)
+        defer { consumer.stop(); remote.stop() }
+        try await startBrokerManager(consumer)
+        try await startBrokerManager(remote)
+        let workspaceID = UUID()
+        let provider = GnosticWorkspaceProvider(
+            workspaceID: workspaceID,
+            tools: [GnosticWorkspaceToolDefinition(id: "owned", name: "Owned", description: "Listed")]
+        ) { _, _ in .success("unused") }
+        // Handler order is unspecified, so several empty responders make it
+        // likely that at least one runs before the owner.
+        var registrations = [await provider.registerQuery(on: remote)]
+        for _ in 0..<4 {
+            registrations.append(await remote.registerQueryResponder { request in try request.retrieve(objects: []) })
+        }
+        defer { registrations.forEach { $0.cancel() } }
+
+        let listing = await listTools(workspaceID: workspaceID, using: consumer)
+
+        #expect(listing.toolIDs == ["owned"])
     }
 
     @Test("workspace invocation selects the attached provider and rejects forged returns") @MainActor
@@ -455,6 +498,29 @@ private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: St
 }
 
 @MainActor
+/// Well under the listing timeout, with headroom for a loaded broker.
+private let toolListingBound: Duration = .seconds(3)
+
+@MainActor
+private func listTools(workspaceID: UUID, using consumer: CommunicationManager) async -> (elapsed: Duration, toolIDs: [String]) {
+    let catalog = NetworkCatalog()
+    let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+    let elapsed = await ContinuousClock().measure {
+        await subscription.queryTools(using: consumer, workspaceID: workspaceID, timeout: .seconds(10))
+    }
+    let toolIDs = await catalog.networkObjects()
+        .filter { $0.objectType == GnosticObjectType.workspaceTool }
+        .compactMap(\.workspaceTool?.id)
+        .sorted()
+    return (elapsed, toolIDs)
+}
+
+/// A Workspace that exposes no tool capability.
+private struct PlainWorkspace: WorkspaceProvider {
+    let reference: WorkspaceReference
+    var isHealthy: Bool { true }
+}
+
 private func makeBrokerManager(_ name: String, namespace: String = "gnostic-workspace-tests") -> CommunicationManager {
     let options = CommunicationOptions(namespace: namespace, shouldEnableCrossNamespacing: false, mqttClientOptions: MQTTClientOptions(host: "127.0.0.1", port: 1883, shouldTryMDNSDiscovery: false, autoReconnect: false), shouldAutoStart: false)
     return try! CommunicationManager(identity: Identity(name: name), communicationOptions: options, commonOptions: nil)
