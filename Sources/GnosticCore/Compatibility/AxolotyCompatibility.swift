@@ -581,6 +581,7 @@ public final class CommunicationManager {
     private var deadvertiseContinuations: [UUID: AsyncStream<DeadvertiseEventSnapshot>.Continuation] = [:]
     private var responseContinuations: [UUID: (correlationID: String, continuation: AsyncStream<ResponseEventSnapshot>.Continuation)] = [:]
     private var channelContinuations: [UUID: (channelID: String, continuation: AsyncStream<ChannelEventSnapshot>.Continuation)] = [:]
+    private var rawEventContinuations: [UUID: AsyncStream<GnosticRawWireEvent>.Continuation] = [:]
     private let dispatch: CompatibilityDispatch
     private var eventTasks: [Task<Void, Never>] = []
     private var pendingAdvertisements: [String: [UInt8]] = [:]
@@ -634,10 +635,22 @@ public final class CommunicationManager {
         let calls = try builder.events(matching: .family(.call), buffering: .dropOldest(capacity: 64))
         let permissionChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.permission.response"), buffering: .dropOldest(capacity: 64))
         let turnChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.turn.update"), buffering: .dropOldest(capacity: 64))
+        // The remaining families and a family-wide channel selector feed the
+        // diagnostic raw stream. A consumer cannot know an arbitrary channel
+        // identifier in advance, so the channel selector matches the family
+        // instead of one identifier.
+        let discovers = try builder.events(matching: .family(.discover), buffering: .dropOldest(capacity: 64))
+        let queries = try builder.events(matching: .family(.query), buffering: .dropOldest(capacity: 64))
+        let updates = try builder.events(matching: .family(.update), buffering: .dropOldest(capacity: 64))
+        let completes = try builder.events(matching: .family(.complete), buffering: .dropOldest(capacity: 64))
+        let allChannels = try builder.events(matching: .family(.channel), buffering: .dropOldest(capacity: 64))
         let transport = try MQTTBinding(configuration: .init(host: mqtt.host, port: mqtt.port, usesTLS: mqtt.enableSSL, username: mqtt.username, password: mqtt.password))
         self.transport = transport
         self.runtime = AxolotyRuntime(definition: try builder.finish(), transport: transport)
-        self.eventStreams = [advertise, deadvertise, resolve, retrieves, returns, calls, permissionChannel, turnChannel]
+        self.eventStreams = [
+            advertise, deadvertise, resolve, retrieves, returns, calls, permissionChannel, turnChannel,
+            discovers, queries, updates, completes, allChannels,
+        ]
         Task { await dispatch.attach(runtime: self.runtime) }
     }
 
@@ -672,6 +685,11 @@ public final class CommunicationManager {
             (.call, nil, eventStreams[5]),
             (.channel, "me.atkn.gnostic.ascendant.permission.response", eventStreams[6]),
             (.channel, "me.atkn.gnostic.ascendant.turn.update", eventStreams[7]),
+            (.discover, nil, eventStreams[8]),
+            (.query, nil, eventStreams[9]),
+            (.update, nil, eventStreams[10]),
+            (.complete, nil, eventStreams[11]),
+            (.channel, nil, eventStreams[12]),
         ]
         for (family, channelID, stream) in entries {
             eventTasks.append(Task { @MainActor [weak self] in
@@ -743,6 +761,21 @@ public final class CommunicationManager {
     public func observeAdvertiseStream() async -> AsyncStream<AdvertiseEventSnapshot> { subscribeAdvertise(objectType: nil) }
     public func observeDeadvertiseStream() async -> AsyncStream<DeadvertiseEventSnapshot> { subscribeDeadvertise() }
     public func observeChannelStream(channelId: String) async throws -> AsyncStream<ChannelEventSnapshot> { subscribeChannel(channelID: channelId) }
+
+    /// Observes every raw wire event this manager receives, projected into a
+    /// bounded, latest-biased diagnostic envelope.
+    ///
+    /// The stream is best-effort: it drops the oldest pending event when an
+    /// observer falls behind, never blocks the runtime, and never persists or
+    /// replays an event. It does not end with the manager, so callers cancel
+    /// their iteration at shutdown.
+    public func observeRawEventStream() async -> AsyncStream<GnosticRawWireEvent> {
+        let pair = AsyncStream<GnosticRawWireEvent>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        let id = UUID()
+        rawEventContinuations[id] = pair.continuation
+        pair.continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.rawEventContinuations[id] = nil } }
+        return pair.stream
+    }
 
     public func publishDiscover(_ event: DiscoverEvent) async -> AsyncStream<ResponseEventSnapshot> {
         let id = UUID(); let responseStream = subscribeResponse(correlationID: id.uuidString.lowercased())
@@ -858,6 +891,12 @@ public final class CommunicationManager {
     }
 
     private func emit(_ value: RuntimeEventValue, family: RuntimeEventFamily, channelID: String? = nil) {
+        // A channel event reaches both the identifier-scoped pump and the
+        // family-wide pump. Project the raw diagnostic once, from the
+        // family-wide pump (no identifier), so an event is not duplicated.
+        if family != .channel || channelID == nil {
+            emitRaw(value, family: family, channelID: channelID)
+        }
         // The typed stream conversion is kept below the transport/runtime
         // boundary. Unsupported family values are simply not projected.
         switch family {
@@ -873,6 +912,72 @@ public final class CommunicationManager {
             if let channelID, let event = convertChannel(value, channelID: channelID) { channelContinuations.values.forEach { if $0.channelID == channelID { _ = $0.continuation.yield(event) } } }
         default: break
         }
+    }
+
+    /// Projects one normalized runtime event into the bounded diagnostic
+    /// envelope. Nothing is computed when no raw observer is registered, so an
+    /// unobserved session pays no projection cost.
+    private func emitRaw(_ value: RuntimeEventValue, family: RuntimeEventFamily, channelID: String?) {
+        guard !rawEventContinuations.isEmpty else { return }
+        guard let event = rawEvent(value, family: family, channelID: channelID) else { return }
+        for continuation in rawEventContinuations.values { _ = continuation.yield(event) }
+    }
+
+    private func rawEvent(_ value: RuntimeEventValue, family: RuntimeEventFamily, channelID: String?) -> GnosticRawWireEvent? {
+        guard let kind = GnosticRawWireEventKind(family: family) else { return nil }
+        let sourceId = uuid(value.context.sourceID).uuidString.lowercased()
+        let correlationId = value.context.correlationID.map { uuid($0).uuidString.lowercased() }
+        let channel = value.context.channelIdentifier ?? channelID
+        var objectType: String?
+        var targetObjectId: UUID?
+        switch family {
+        case .advertise:
+            if let object = objectSnapshot(value.value) {
+                objectType = object.objectType
+                targetObjectId = UUID(uuidString: object.objectId)
+            }
+        case .resolve, .retrieve, .returnEvent:
+            if let object = convertResponse(value, family: family).flatMap({ $0.object ?? $0.objects?.first }) {
+                objectType = object.objectType
+                targetObjectId = UUID(uuidString: object.objectId)
+            }
+        case .channel:
+            if let channel, let event = convertChannel(value, channelID: channel),
+               let object = event.object ?? event.objects?.first {
+                objectType = object.objectType
+                targetObjectId = UUID(uuidString: object.objectId)
+            }
+        case .call:
+            targetObjectId = Self.filterTargetObjectID(convertCall(value)?.filter)
+        default:
+            break
+        }
+        return GnosticRawWireEvent(
+            kind: kind,
+            sourceId: sourceId,
+            correlationId: correlationId,
+            objectType: objectType,
+            targetObjectId: targetObjectId,
+            channelId: channel,
+            payload: String(decoding: value.value, as: UTF8.self)
+        )
+    }
+
+    /// Reads the addressed object identity from an Axoloty object filter.
+    private static func filterTargetObjectID(_ filter: String?) -> UUID? {
+        guard let filter,
+              let data = filter.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let conditions = root["conditions"] as? [Any],
+              conditions.count == 2,
+              let property = conditions[0] as? String,
+              property == "objectId",
+              let expression = conditions[1] as? [Any],
+              expression.count == 2,
+              let operatorCode = expression[0] as? Int,
+              operatorCode == 7,
+              let value = expression[1] as? String else { return nil }
+        return UUID(uuidString: value)
     }
 
     private func convertAdvertise(_ value: RuntimeEventValue) -> AdvertiseEventSnapshot? { guard let object = objectSnapshot(value.value) else { return nil }; return .init(sourceId: uuid(value.context.sourceID).uuidString.lowercased(), object: object) }
@@ -1008,4 +1113,25 @@ public final class Container {
     public func startAndWaitUntilReady() async throws { try await communicationManager?.startAndWaitUntilReady() }
     public func shutdown() { communicationManager?.stop() }
     func shutdownAndWait() async { await communicationManager?.stopAndWait() }
+}
+
+private extension GnosticRawWireEventKind {
+    /// Maps an Axoloty runtime family to its diagnostic kind. Families Gnostic
+    /// does not observe are not projected.
+    init?(family: RuntimeEventFamily) {
+        switch family {
+        case .advertise: self = .advertise
+        case .deadvertise: self = .deadvertise
+        case .discover: self = .discover
+        case .resolve: self = .resolve
+        case .query: self = .query
+        case .retrieve: self = .retrieve
+        case .update: self = .update
+        case .complete: self = .complete
+        case .call: self = .call
+        case .returnEvent: self = .returnEvent
+        case .channel: self = .channel
+        case .associate, .ioValue: return nil
+        }
+    }
 }

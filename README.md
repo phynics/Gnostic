@@ -118,6 +118,27 @@ removes every record owned by the provider and yields
 `NetworkCatalogChange.providerEvicted`. Both are reflected by
 `networkObjects(includeIncompatible:)` and `object(id:providerID:)`.
 
+### Observe raw wire events for diagnostics
+
+`session.rawEvents()` returns a bounded, best-effort stream of
+`GnosticRawWireEvent` values for the session's own connection. It covers
+advertisements, deadvertisements, discover and query responses, call/return
+traffic, and channel traffic, including channels whose identifiers the caller
+does not know in advance.
+
+```swift
+let raw = await session.rawEvents()
+for await event in raw {
+    // event.kind, event.sourceId, event.correlationId,
+    // event.objectType, event.targetObjectId, event.channelId, event.payload
+}
+```
+
+The stream retains at most 64 pending events and drops the oldest when an
+observer falls behind, so it never blocks the runtime. It is diagnostic-only:
+events are not persisted or replayed, and the envelope is not a contract for
+automation. Use the typed clients for behavior.
+
 ## Run Turns from a consumer
 
 `session.turnClient()` returns a `GnosticTurnClient` over the session's own
