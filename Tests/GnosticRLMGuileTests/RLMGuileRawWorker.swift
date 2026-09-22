@@ -35,7 +35,6 @@ final class RLMGuileRawWorker: @unchecked Sendable { // SAFETY: a test drives on
         guard let guile = RLMGuileTestSupport.guilePath else {
             throw RLMGuileRawWorkerError.unavailable
         }
-        _ = signal(SIGPIPE, SIG_IGN)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: guile)
         process.arguments = [
@@ -65,7 +64,9 @@ final class RLMGuileRawWorker: @unchecked Sendable { // SAFETY: a test drives on
 
     func send(_ frame: RLMSchemeWorkerFrame) throws {
         let bytes = try RLMSchemeWorkerCodec.encode(frame)
-        try input.write(contentsOf: Data(bytes))
+        try RLMGuileProcessSignals.withoutBrokenPipeSignal {
+            try input.write(contentsOf: Data(bytes))
+        }
     }
 
     func receive(timeout: TimeInterval = 10) throws -> RLMSchemeWorkerFrame {

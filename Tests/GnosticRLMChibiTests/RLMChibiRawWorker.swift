@@ -36,7 +36,6 @@ final class RLMChibiRawWorker: @unchecked Sendable { // SAFETY: a test drives on
         guard let chibi = RLMChibiTestSupport.chibiPath else {
             throw RLMChibiRawWorkerError.unavailable
         }
-        _ = signal(SIGPIPE, SIG_IGN)
         var environment = RLMChibiWorkerConfiguration.scrubbedEnvironment
         environment["CHIBI_MAX_ALLOC"] = String(64 * 1_024 * 1_024)
         let process = Process()
@@ -67,7 +66,9 @@ final class RLMChibiRawWorker: @unchecked Sendable { // SAFETY: a test drives on
 
     func send(_ frame: RLMSchemeWorkerFrame) throws {
         let bytes = try RLMSchemeWorkerCodec.encode(frame)
-        try input.write(contentsOf: Data(bytes))
+        try RLMChibiProcessSignals.withoutBrokenPipeSignal {
+            try input.write(contentsOf: Data(bytes))
+        }
     }
 
     func receive(timeout: TimeInterval = 10) throws -> RLMSchemeWorkerFrame {
