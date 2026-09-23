@@ -32,6 +32,12 @@ struct RLMSchemeProfileTests {
         #expect(validation.usage.maxDepth > 1)
     }
 
+    @Test("accepts string-split with an ordinary string delimiter")
+    func acceptsStringDelimiter() throws {
+        let validation = try RLMSchemeProfile.validate("(string-split \"a--b\" \"--\")")
+        #expect(validation.usage.pureOperations == ["string-split"])
+    }
+
     @Test("records user definitions for later cells")
     func recordsDefinitions() throws {
         let usage = try RLMSchemeProfile.analyze("(define findings (list 1 2 3))")

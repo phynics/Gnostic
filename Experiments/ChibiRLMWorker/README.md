@@ -127,6 +127,12 @@ special forms, and host calls with `%import`. Cells are evaluated with
 from the cell environment and fails as an undefined variable even when the
 parent validator is bypassed.
 
+The shared profile defines `string-split` with a non-empty string delimiter;
+leading, adjacent, and trailing delimiters produce empty fields. Its `sort`
+operation is stable for both lists and vectors, and returns the same sequence
+type it receives. The [parity corpus](../../Tests/GnosticRLMWorkerParityTests/RLMWorkerWireParityTests.swift)
+characterizes these contracts on both workers.
+
 Chibi has no binding for `setrlimit`, and `guard` is not part of this build, so
 the worker uses `with-exception-handler` and a captured continuation for
 evaluation, and the parent applies the CPU and address-space rlimits.

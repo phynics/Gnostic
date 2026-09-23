@@ -229,6 +229,43 @@
          (set! budget (- budget 1)) marker-unsupported)))
     (convert value 0)))
 
+;; The profile uses ordinary string literals as delimiters. Keep this shim out
+;; of the worker's own environment inspection, which uses Guile's native
+;; character-set `string-split`.
+(define (profile-string-delimiter-matches? value delimiter index delimiter-length)
+  (let loop ((offset 0))
+    (cond ((= offset delimiter-length) #t)
+          ((char=? (string-ref value (+ index offset))
+                   (string-ref delimiter offset))
+           (loop (+ offset 1)))
+          (else #f))))
+
+(define (profile-string-split value delimiter)
+  (if (not (string? value))
+      (error "string-split value must be a string"))
+  (if (not (string? delimiter))
+      (error "string-split delimiter must be a string"))
+  (let ((value-length (string-length value))
+        (delimiter-length (string-length delimiter)))
+    (if (= delimiter-length 0)
+        (error "string-split delimiter must not be empty"))
+    (let loop ((index 0) (start 0) (parts '()))
+      (cond ((> (+ index delimiter-length) value-length)
+             (reverse (cons (substring value start value-length) parts)))
+            ((profile-string-delimiter-matches?
+              value delimiter index delimiter-length)
+             (loop (+ index delimiter-length)
+                   (+ index delimiter-length)
+                   (cons (substring value start index) parts)))
+            (else
+             (loop (+ index 1) start parts))))))
+
+;; Guile's restricted sandbox bindings omit `inexact?`, although the profile
+;; lists it. Preserve Scheme predicate behavior for numbers and return false
+;; for non-numbers, matching Chibi's implementation.
+(define (profile-inexact? value)
+  (and (number? value) (not (exact? value))))
+
 (define (make-run-module)
   (let ((module (make-sandbox-module allowed-bindings)))
     (module-define! module 'corpus-search corpus-search)
@@ -238,6 +275,8 @@
     (module-define! module 'lm-query-batched lm-query-batched)
     (module-define! module 'progress progress)
     (module-define! module 'finish finish)
+    (module-define! module 'string-split profile-string-split)
+    (module-define! module 'inexact? profile-inexact?)
     module))
 
 (define (names-of binding-set)
@@ -258,7 +297,8 @@
             raise raise-exception
             dynamic-wind
             call/cc call-with-current-continuation
-            scm-error with-throw-handler abort-to-prompt* make-prompt-tag)))
+            scm-error with-throw-handler abort-to-prompt* make-prompt-tag
+            string-split)))
 
 (define allowed-bindings
   (map (lambda (binding-set)
