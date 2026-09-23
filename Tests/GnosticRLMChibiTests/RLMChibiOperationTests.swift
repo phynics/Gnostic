@@ -6,6 +6,15 @@ import GnosticRLM
 
 @Suite("RLM Chibi host-call mapping")
 struct RLMChibiOperationTests {
+    @Test("Chibi requests a recoverable per-cell timeout interrupt")
+    func cellTimeoutInterruptIsInLaunchSpec() {
+        let configuration = RLMChibiWorkerConfiguration(
+            runID: "r",
+            workerScriptPath: "/worker.scm"
+        )
+        #expect(RLMChibiExecutor.launchSpec(for: configuration).cellTimeoutInterruptSignal == .user1)
+    }
+
     @Test("a one-argument leaf query defaults to the fast tier")
     func defaultTier() {
         let operation = RLMChibiWorkerSession.operation(for: RLMSchemeHostCall(

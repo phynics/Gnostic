@@ -34,14 +34,16 @@ build verifies its SHA256
 `sha256sum -c` before extraction. Chibi is a pinned system dependency outside
 SwiftPM, so the repository SBOM target does not cover it.
 
-The build applies the reviewed hardening set, then builds a static binary and
-installs the one runtime file it needs:
+The build applies the reviewed hardening set and the cell-timeout patch, then
+builds a static binary and installs the one runtime file it needs:
 
 1. Patch `include/chibi/features.h`.
-2. Build the `chibi-scheme-static` target with the `SEXP_USE_DL=0` variable and
+2. Apply [`patches/cell-timeout.patch`](patches/cell-timeout.patch) to Chibi's
+   `main.c` and `vm.c`.
+3. Build the `chibi-scheme-static` target with the `SEXP_USE_DL=0` variable and
    `PREFIX=/usr/local`.
-3. Install `chibi-scheme-static` as `/usr/local/bin/chibi-scheme`.
-4. Install `lib/init-7.scm` as `/usr/local/share/chibi/init-7.scm`.
+4. Install `chibi-scheme-static` as `/usr/local/bin/chibi-scheme`.
+5. Install `lib/init-7.scm` as `/usr/local/share/chibi/init-7.scm`.
 
 The patch is the authoritative flag list; see the `CHIBI_SHA256` step in
 [`.devcontainer/Dockerfile`](../../.devcontainer/Dockerfile).
@@ -56,7 +58,11 @@ and the session reports `unsupportedPlatform` outside Linux. See
 | Flag | Effect |
 | --- | --- |
 | `SEXP_USE_DL=0` | Removes dynamic loading. `load` and `include-shared` cannot load shared objects, and the FFI entry points are absent. |
-| `SEXP_USE_NO_FEATURES=1` | Disables features that are not explicitly enabled: interpreter threads, UTF-8 strings, type definitions, the simplifier, and full source info. |
+| `SEXP_USE_NO_FEATURES=1` | Disables features that are not explicitly enabled, including UTF-8 strings, type definitions, the simplifier, and full source info. |
+| `SEXP_USE_GREEN_THREADS=1` | Re-enabled only for the VM's fuel-based interrupt poll. The worker does not import thread procedures into the cell environment. |
+| `SEXP_USE_CHECK_STACK=1` | Enables checked VM stack bounds so a recursive cell can return a recoverable error. |
+| `SEXP_USE_GROW_STACK=0` | Keeps the VM stack fixed; recursive cells cannot grow it past the configured size. |
+| `SEXP_INIT_STACK_SIZE=8192` | Sets the fixed VM stack capacity in slots; a worker-side guard limits one cell to 512 additional slots. |
 | `SEXP_USE_MODULES=0` | Removes the module system and the `import` binding. |
 | `SEXP_USE_STATIC_LIBS_EMPTY=1` | Builds no statically compiled C libraries, so the process, filesystem, socket, and FFI libraries do not exist. |
 | `SEXP_USE_LIMITED_MALLOC=1` | Replaces the allocator with a cap read once from `CHIBI_MAX_ALLOC`. |
@@ -166,26 +172,25 @@ values have the same wire shape in both workers.
 
 ## Limits and differences from Guile
 
-- The parent applies `RLIMIT_CPU` and `RLIMIT_AS` with `prlimit`, and proves the
-  CPU limit by terminating a runaway worker. It enforces the wall deadline and
-  the output cap, sends the cancel frame, and kills the process.
-- `CHIBI_MAX_ALLOC` is set from `maxHeapBytes`. It caps the Scheme heap
-  high-water mark, not the process RSS.
+- The host sends `SIGUSR1` at the per-cell time limit. The patched VM consumes
+  the interrupt at a fuel checkpoint, and the worker reports
+  `cell time limit exceeded` while keeping its run-local environment alive.
+  Deep non-tail recursion is checked against the 512-slot per-cell VM stack
+  bound and reports `cell recursion limit exceeded`. The parent wall deadline
+  remains the authoritative kill backstop for blocked host calls, uninterruptible C work,
+  or an interrupt failure.
+- `CHIBI_MAX_ALLOC` is set from `maxHeapBytes`. It caps the Scheme heap for the
+  worker's lifetime, not per cell and not the process RSS. Large-allocation
+  fixtures fail recoverably under this process-wide cap, but unlike Guile's
+  32 MiB per-cell allocation limit, the Chibi cap is cumulative across cells.
+  This remains a bounded executor difference, not a per-cell accounting claim.
 - The worker reads its own environment from `/proc/self/environ`, so the `ready`
   frame reports the real scrubbed key set. It can not enumerate its open file
   descriptors, so `openFileDescriptorCount` is `-1`; a parent-side test reads
   `/proc/<pid>/fd` to prove the child holds only its standard descriptors.
-- There is no separate per-cell time or allocation facility. A cell that loops
-  is bounded by the parent wall deadline, which terminates the worker. A cell
-  that exhausts the heap raises `out of memory`, which the worker maps to
-  `resource limit exceeded` and survives.
-- Deep non-tail recursion can overflow the inherited C stack and terminate the
-  worker, or be cut by the parent wall deadline first, depending on the stack
-  limit; either way the parent contains it and the worker is terminated.
 
 ## Scope and deferrals
 
-macOS support and benchmark measurements are out of scope for this increment and
-are deferred to issue #181. This worker is Linux-only and unmeasured; the
-deferral is recorded in PR #340 and accepted here, and the GitHub issue
-checklist is updated separately.
+macOS support is deferred to issue #353, and live impact measurements belong to
+issue #354. This worker remains Linux-only; #181's captured benchmark is
+historical operational evidence, not a runtime-selection result.

@@ -1,0 +1,106 @@
+diff --git a/main.c b/main.c
+index 7d1930f..eacd027 100644
+--- a/main.c
++++ b/main.c
+@@ -10,0 +11,44 @@
++#include <signal.h>
++
++#if SEXP_USE_GREEN_THREADS
++volatile sig_atomic_t gnostic_cell_timeout_armed = 0;
++volatile sig_atomic_t gnostic_cell_timeout_pending = 0;
++volatile sig_atomic_t gnostic_cell_timeout_expired = 0;
++volatile sig_atomic_t gnostic_cell_timeout_reason = 0;
++sexp_sint_t gnostic_cell_timeout_stack_limit = 0;
++
++static void gnostic_cell_timeout_signal (int signal_number) {
++  (void) signal_number;
++  if (gnostic_cell_timeout_armed) {
++    gnostic_cell_timeout_reason = 1;
++    gnostic_cell_timeout_pending = 1;
++  }
++}
++
++static sexp gnostic_cell_timeout_arm (sexp ctx, sexp self, sexp_sint_t n) {
++  (void) ctx; (void) self; (void) n;
++  gnostic_cell_timeout_pending = 0;
++  gnostic_cell_timeout_expired = 0;
++  gnostic_cell_timeout_reason = 0;
++  gnostic_cell_timeout_armed = 1;
++  gnostic_cell_timeout_stack_limit = sexp_context_top(ctx) + 512;
++  return SEXP_VOID;
++}
++
++static sexp gnostic_cell_timeout_clear (sexp ctx, sexp self, sexp_sint_t n) {
++  (void) ctx; (void) self; (void) n;
++  gnostic_cell_timeout_armed = 0;
++  gnostic_cell_timeout_pending = 0;
++  gnostic_cell_timeout_expired = 0;
++  gnostic_cell_timeout_reason = 0;
++  return SEXP_VOID;
++}
++
++static sexp gnostic_cell_timeout_reason_op (sexp ctx, sexp self, sexp_sint_t n) {
++  int reason = gnostic_cell_timeout_expired ? gnostic_cell_timeout_reason : 0;
++  (void) ctx; (void) self; (void) n;
++  gnostic_cell_timeout_expired = 0;
++  gnostic_cell_timeout_reason = 0;
++  return sexp_make_fixnum(reason);
++}
++#endif
+@@ -277,0 +322,23 @@
++#if SEXP_USE_GREEN_THREADS
++  {
++    struct sigaction action;
++    sigset_t timeout_signal_set;
++    memset(&action, 0, sizeof(action));
++    action.sa_handler = gnostic_cell_timeout_signal;
++    action.sa_flags = SA_RESTART;
++    sigemptyset(&action.sa_mask);
++    if (sigaction(SIGUSR1, &action, NULL) != 0
++        || sigemptyset(&timeout_signal_set) != 0
++        || sigaddset(&timeout_signal_set, SIGUSR1) != 0
++        || sigprocmask(SIG_UNBLOCK, &timeout_signal_set, NULL) != 0) {
++      fprintf(stderr, "could not configure the per-cell timeout signal\n");
++      exit_failure();
++    }
++    sexp_define_foreign(*ctx, *env, "gnostic-arm-cell-timeout!", 0,
++                        gnostic_cell_timeout_arm);
++    sexp_define_foreign(*ctx, *env, "gnostic-clear-cell-timeout!", 0,
++                        gnostic_cell_timeout_clear);
++    sexp_define_foreign(*ctx, *env, "gnostic-cell-timeout-reason", 0,
++                        gnostic_cell_timeout_reason_op);
++  }
++#endif
+diff --git a/vm.c b/vm.c
+index 5ad9452..841bbd6 100644
+--- a/vm.c
++++ b/vm.c
+@@ -10,0 +11,9 @@
++#include <signal.h>
++
++#if SEXP_USE_GREEN_THREADS
++extern volatile sig_atomic_t gnostic_cell_timeout_armed;
++extern volatile sig_atomic_t gnostic_cell_timeout_pending;
++extern volatile sig_atomic_t gnostic_cell_timeout_expired;
++extern volatile sig_atomic_t gnostic_cell_timeout_reason;
++extern sexp_sint_t gnostic_cell_timeout_stack_limit;
++#endif
+@@ -1106 +1115,6 @@ sexp sexp_apply (sexp ctx, sexp proc, sexp args) {
+-    if (sexp_context_interruptp(ctx)) {
++    if (sexp_context_interruptp(ctx) || gnostic_cell_timeout_pending) {
++      if (gnostic_cell_timeout_pending) {
++        gnostic_cell_timeout_pending = 0;
++        gnostic_cell_timeout_armed = 0;
++        gnostic_cell_timeout_expired = 1;
++      }
+       fuel = sexp_context_refuel(ctx);
+@@ -1305,0 +1319,9 @@ sexp sexp_apply (sexp ctx, sexp proc, sexp args) {
++#if SEXP_USE_GREEN_THREADS
++    if (gnostic_cell_timeout_armed && top > gnostic_cell_timeout_stack_limit) {
++      gnostic_cell_timeout_armed = 0;
++      gnostic_cell_timeout_expired = 1;
++      gnostic_cell_timeout_reason = 2;
++      _ARG1 = sexp_global(ctx, SEXP_G_INTERRUPT_ERROR);
++      goto call_error_handler;
++    }
++#endif
