@@ -231,14 +231,6 @@ public actor NodeRegistry {
         return record
     }
 
-    public func removeRuntimeTimeline(id: UUID) {
-        guard let record = timelines[id], record.provenance == .runtime else { return }
-        timelines.removeValue(forKey: id)
-        attachmentIntents.removeValue(forKey: id)
-        timelineMetadata.removeValue(forKey: id)
-        if let ascendantID = record.operatorID { bumpRevision(for: ascendantID) }
-    }
-
     /// Registers an adapter-created runtime timeline under an already selected operator.
     public func registerRuntimeTimeline(
         _ timeline: AscendantRuntimeTimeline,

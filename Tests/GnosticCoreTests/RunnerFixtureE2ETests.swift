@@ -53,7 +53,7 @@ struct RunnerFixtureE2ETests {
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()
         let runtimeRepository = InMemoryTimelineRuntimeRepository()
-        let factory = AxolotyWorkspaceFactory(catalog: catalog) { invocation in
+        let factory = RemoteWorkspaceFactory(catalog: catalog) { invocation in
             let encoded = try JSONEncoder().encode(invocation)
             let response = try await consumer.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))

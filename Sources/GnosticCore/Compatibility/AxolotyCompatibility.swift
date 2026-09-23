@@ -126,16 +126,6 @@ public struct CoatyObjectSnapshot: Codable, Equatable, Sendable {
     public func withPayload(_ payload: String?) -> Self {
         .init(objectId: objectId, coreType: coreType, objectType: objectType, name: name, externalId: externalId, parentObjectId: parentObjectId, locationId: locationId, isDeactivated: isDeactivated, payload: payload)
     }
-
-    public func decodeObject() -> CoatyObject? {
-        guard let payload else { return nil }
-        return try? JSONDecoder().decode(CoatyObject.self, from: Data(payload.utf8))
-    }
-
-    public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {
-        guard let payload else { return nil }
-        return try? JSONDecoder().decode(type, from: Data(payload.utf8))
-    }
 }
 
 public struct AdvertiseEventSnapshot: Codable, Equatable, Sendable {
@@ -148,40 +138,11 @@ public struct AdvertiseEventSnapshot: Codable, Equatable, Sendable {
     }
 }
 
-public struct AdvertiseEvent: Decodable, @unchecked Sendable { // SAFETY: wraps an immutable decoded CoatyObject snapshot.
+public struct AdvertiseEvent: @unchecked Sendable { // SAFETY: wraps an immutable CoatyObject reference.
     public let object: CoatyObject
 
     public static func with(object: CoatyObject) throws -> Self { .init(object: object) }
     private init(object: CoatyObject) { self.object = object }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        object = try container.decode(CoatyObject.self, forKey: .object)
-        if let raw = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(object)) as? [String: Any],
-           let tools = raw["tools"] as? [[String: Any]], tools.contains(where: { $0["id"] == nil }) {
-            throw AxolotyError.invalidArgument(argument: "object", reason: "advertised tool identifiers are required")
-        }
-    }
-
-    private enum CodingKeys: String, CodingKey { case object }
-}
-
-public enum PayloadCoder {
-    public static func decode<T: Decodable>(_ payload: String) throws -> T {
-        try JSONDecoder().decode(T.self, from: Data(payload.utf8))
-    }
-
-    public static func decode(_ payload: String) throws -> AdvertiseEvent {
-        guard let root = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any],
-              let object = root["object"] as? [String: Any] else {
-            throw AxolotyError.invalidArgument(argument: "payload", reason: "advertise object is required")
-        }
-        if let tools = object["tools"] as? [[String: Any]], tools.contains(where: { $0["id"] == nil }) {
-            throw AxolotyError.invalidArgument(argument: "object", reason: "advertised tool identifiers are required")
-        }
-        let encoded = try JSONSerialization.data(withJSONObject: root)
-        return try JSONDecoder().decode(AdvertiseEvent.self, from: encoded)
-    }
 }
 
 public struct DeadvertiseEventSnapshot: Codable, Equatable, Sendable {
