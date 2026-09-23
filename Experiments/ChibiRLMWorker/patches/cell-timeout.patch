@@ -85,7 +85,10 @@ index 5ad9452..841bbd6 100644
 +extern volatile sig_atomic_t gnostic_cell_timeout_reason;
 +extern sexp_sint_t gnostic_cell_timeout_stack_limit;
 +#endif
-@@ -1106 +1115,6 @@ sexp sexp_apply (sexp ctx, sexp proc, sexp args) {
+@@ -1103,7 +1112,12 @@ sexp sexp_apply (sexp ctx, sexp proc, sexp args) {
+  loop:
+ #if SEXP_USE_GREEN_THREADS
+   if (--fuel <= 0) {
 -    if (sexp_context_interruptp(ctx)) {
 +    if (sexp_context_interruptp(ctx) || gnostic_cell_timeout_pending) {
 +      if (gnostic_cell_timeout_pending) {
@@ -94,7 +97,12 @@ index 5ad9452..841bbd6 100644
 +        gnostic_cell_timeout_expired = 1;
 +      }
        fuel = sexp_context_refuel(ctx);
-@@ -1305,0 +1319,9 @@ sexp sexp_apply (sexp ctx, sexp proc, sexp args) {
+       sexp_context_interruptp(ctx) = 0;
+       _ARG1 = sexp_global(ctx, SEXP_G_INTERRUPT_ERROR);
+@@ -1303,6 +1317,15 @@ sexp sexp_apply (sexp ctx, sexp proc, sexp args) {
+     i = sexp_unbox_fixnum(_WORD0);
+     tmp1 = _ARG1;
+   make_call:
 +#if SEXP_USE_GREEN_THREADS
 +    if (gnostic_cell_timeout_armed && top > gnostic_cell_timeout_stack_limit) {
 +      gnostic_cell_timeout_armed = 0;
@@ -104,3 +112,6 @@ index 5ad9452..841bbd6 100644
 +      goto call_error_handler;
 +    }
 +#endif
+     sexp_context_top(ctx) = top;
+     if (sexp_opcodep(tmp1)) {
+       /* compile non-inlined opcode applications on the fly */

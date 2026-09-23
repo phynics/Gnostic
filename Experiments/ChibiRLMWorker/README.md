@@ -62,7 +62,7 @@ and the session reports `unsupportedPlatform` outside Linux. See
 | `SEXP_USE_GREEN_THREADS=1` | Re-enabled only for the VM's fuel-based interrupt poll. The worker does not import thread procedures into the cell environment. |
 | `SEXP_USE_CHECK_STACK=1` | Enables checked VM stack bounds so a recursive cell can return a recoverable error. |
 | `SEXP_USE_GROW_STACK=0` | Keeps the VM stack fixed; recursive cells cannot grow it past the configured size. |
-| `SEXP_INIT_STACK_SIZE=8192` | Sets the fixed VM stack capacity in slots; a worker-side guard limits one cell to 512 additional slots. |
+| `SEXP_INIT_STACK_SIZE=8192` | Sets the fixed VM stack capacity in slots; a worker-side guard caps a cell at 512 slots beyond its entry stack depth. |
 | `SEXP_USE_MODULES=0` | Removes the module system and the `import` binding. |
 | `SEXP_USE_STATIC_LIBS_EMPTY=1` | Builds no statically compiled C libraries, so the process, filesystem, socket, and FFI libraries do not exist. |
 | `SEXP_USE_LIMITED_MALLOC=1` | Replaces the allocator with a cap read once from `CHIBI_MAX_ALLOC`. |
@@ -175,10 +175,10 @@ values have the same wire shape in both workers.
 - The host sends `SIGUSR1` at the per-cell time limit. The patched VM consumes
   the interrupt at a fuel checkpoint, and the worker reports
   `cell time limit exceeded` while keeping its run-local environment alive.
-  Deep non-tail recursion is checked against the 512-slot per-cell VM stack
-  bound and reports `cell recursion limit exceeded`. The parent wall deadline
-  remains the authoritative kill backstop for blocked host calls, uninterruptible C work,
-  or an interrupt failure.
+  Deep non-tail recursion is capped at 512 VM stack slots beyond the cell's
+  entry depth and reports `cell recursion limit exceeded`. The parent
+  wall deadline remains the authoritative kill backstop for blocked host calls,
+  uninterruptible C work, or an interrupt failure.
 - `CHIBI_MAX_ALLOC` is set from `maxHeapBytes`. It caps the Scheme heap for the
   worker's lifetime, not per cell and not the process RSS. Large-allocation
   fixtures fail recoverably under this process-wide cap, but unlike Guile's

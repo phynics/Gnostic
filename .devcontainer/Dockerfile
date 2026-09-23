@@ -82,6 +82,7 @@ RUN set -eux; \
     echo "${CHIBI_SHA256}  ${archive}" | sha256sum -c -; \
     tar --extract --gzip --strip-components=1 --directory "$build_dir" --file "$archive"; \
     patch -d "$build_dir" -p1 < /tmp/chibi-cell-timeout.patch; \
+    grep -Fq 'gnostic_cell_timeout_armed && top > gnostic_cell_timeout_stack_limit' "$build_dir/vm.c"; \
     sed -i \
         -e 's|/\* #define SEXP_USE_NO_FEATURES 1 \*/|#define SEXP_USE_NO_FEATURES 1\n#define SEXP_USE_GREEN_THREADS 1\n#define SEXP_USE_CHECK_STACK 1\n#define SEXP_USE_GROW_STACK 0\n#define SEXP_INIT_STACK_SIZE 8192\n#define SEXP_USE_FLONUMS 1\n#define SEXP_USE_BIGNUMS 1\n#define SEXP_USE_MATH 1\n#define SEXP_USE_RATIOS 0\n#define SEXP_USE_COMPLEX 0|' \
         -e 's|/\* #define SEXP_USE_MODULES 0 \*/|#define SEXP_USE_MODULES 0|' \
