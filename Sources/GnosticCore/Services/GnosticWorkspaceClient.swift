@@ -85,9 +85,9 @@ public struct GnosticWorkspaceToolResult: Codable, Sendable, Equatable {
 /// instead.
 @MainActor
 public final class GnosticWorkspaceClient {
-    private let manager: CommunicationManager
     private let catalog: NetworkCatalog
-    private let subscription: GnosticSubscription
+    private let lookup: GnosticCatalogLookup
+    private let channel: GnosticCallChannel<GnosticWorkspaceClientError>
     private let timeout: Duration
 
     init(
@@ -96,9 +96,9 @@ public final class GnosticWorkspaceClient {
         subscription: GnosticSubscription,
         timeout: Duration
     ) {
-        self.manager = manager
         self.catalog = catalog
-        self.subscription = subscription
+        lookup = GnosticCatalogLookup(manager: manager, catalog: catalog, subscription: subscription, timeout: timeout)
+        channel = GnosticCallChannel(manager: manager)
         self.timeout = timeout
     }
 
@@ -142,16 +142,14 @@ public final class GnosticWorkspaceClient {
         _ = try await resolvedWorkspaceProvider(nil, for: workspaceID)
         let target = try await resolvedTimelineProvider(providerID, for: timelineID)
         try await requireAttachmentCapability(forTimeline: timelineID, providerID: target)
-        let payload = try GnosticWirePayload.encode(
-            WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
-            context: "workspace.attach request"
+        let result = try await channel.call(
+            WorkspaceOpsProvider.attachOperation,
+            request: WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
+            context: "workspace.attach request",
+            providerID: target,
+            timeout: timeout,
+            returning: WorkspaceMutationResult.self
         )
-        let response = try await call(
-            operation: WorkspaceOpsProvider.attachOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: target
-        )
-        let result = try Self.decode(WorkspaceMutationResult.self, from: response.result)
         guard result.accepted else {
             throw GnosticWorkspaceClientError.callFailed(
                 reasonCode: "workspaceAttachRejected",
@@ -177,16 +175,14 @@ public final class GnosticWorkspaceClient {
         providerID: String? = nil
     ) async throws {
         let target = try await resolvedTimelineProvider(providerID, for: timelineID)
-        let payload = try GnosticWirePayload.encode(
-            WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
-            context: "workspace.detach request"
+        let result = try await channel.call(
+            WorkspaceOpsProvider.detachOperation,
+            request: WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
+            context: "workspace.detach request",
+            providerID: target,
+            timeout: timeout,
+            returning: WorkspaceMutationResult.self
         )
-        let response = try await call(
-            operation: WorkspaceOpsProvider.detachOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: target
-        )
-        let result = try Self.decode(WorkspaceMutationResult.self, from: response.result)
         guard result.accepted else {
             throw GnosticWorkspaceClientError.callFailed(
                 reasonCode: "workspaceDetachRejected",
@@ -217,21 +213,19 @@ public final class GnosticWorkspaceClient {
     ) async throws -> GnosticWorkspaceToolResult {
         let target = try await resolvedWorkspaceProvider(providerID, for: workspaceID)
         try await requireInvocationCapability(providerID: target)
-        let payload = try GnosticWirePayload.encode(
-            WorkspaceInvocationPayload(
+        return try await channel.call(
+            GnosticWorkspaceProvider.invocationOperation,
+            request: WorkspaceInvocationPayload(
                 workspaceID: workspaceID,
                 providerID: target,
                 toolID: toolID,
                 arguments: arguments
             ),
-            context: "workspace.invoke request"
+            context: "workspace.invoke request",
+            providerID: target,
+            timeout: timeout,
+            returning: GnosticWorkspaceToolResult.self
         )
-        let response = try await call(
-            operation: GnosticWorkspaceProvider.invocationOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: target
-        )
-        return try Self.decode(GnosticWorkspaceToolResult.self, from: response.result)
     }
 
     private func resolvedWorkspaceProvider(
@@ -240,7 +234,7 @@ public final class GnosticWorkspaceClient {
     ) async throws -> String {
         var status = await catalog.workspaceAttachmentStatus(id: workspaceID)
         if case .unavailable = status {
-            await subscription.discover(using: manager, timeout: timeout)
+            await lookup.refresh()
             status = await catalog.workspaceAttachmentStatus(id: workspaceID)
         }
         switch status {
@@ -263,28 +257,18 @@ public final class GnosticWorkspaceClient {
         _ explicitProviderID: String?,
         for timelineID: UUID
     ) async throws -> String {
-        var entries = await catalog.networkObjects()
-        if !entries.contains(where: {
-            $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
-        }) {
-            await subscription.discover(using: manager, timeout: timeout)
-            entries = await catalog.networkObjects()
+        let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
+        switch GnosticCatalogLookup.provider(
+            of: GnosticObjectType.timeline,
+            id: timelineID,
+            in: entries,
+            expected: explicitProviderID
+        ) {
+        case let .provider(providerID): return providerID
+        case .unavailable: throw GnosticWorkspaceClientError.timelineUnavailable(timelineID)
+        case .ambiguous: throw GnosticWorkspaceClientError.timelineAmbiguous(timelineID)
+        case .mismatch: throw GnosticWorkspaceClientError.providerMismatch
         }
-        let timelines = entries.filter {
-            $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
-        }
-        guard let providerID = timelines.first?.providerID else {
-            throw GnosticWorkspaceClientError.timelineUnavailable(timelineID)
-        }
-        let providers = Set(timelines.map { $0.providerID.lowercased() })
-        guard providers.count == 1 else {
-            throw GnosticWorkspaceClientError.timelineAmbiguous(timelineID)
-        }
-        if let explicitProviderID,
-           explicitProviderID.caseInsensitiveCompare(providerID) != .orderedSame {
-            throw GnosticWorkspaceClientError.providerMismatch
-        }
-        return providerID
     }
 
     private func requireAttachmentCapability(
@@ -292,104 +276,31 @@ public final class GnosticWorkspaceClient {
         providerID: String
     ) async throws {
         let entries = await catalog.networkObjects()
-        let timelines = entries.filter {
-            $0.objectType == GnosticObjectType.timeline
-                && $0.objectID == timelineID
-                && $0.providerID.caseInsensitiveCompare(providerID) == .orderedSame
-        }
-        let ascendantIDs = Set(timelines.compactMap { entry -> UUID? in
-            guard case let .string(raw) = entry.knownProperties["attachedAscendantID"] else { return nil }
-            return UUID(uuidString: raw)
-        })
-        guard ascendantIDs.count == 1, let ascendantID = ascendantIDs.first else {
+        guard let ascendantID = GnosticCatalogLookup.operatingAscendantID(
+            ofTimeline: timelineID,
+            providerID: providerID,
+            in: entries
+        ) else {
             throw GnosticWorkspaceClientError.timelineUnavailable(timelineID)
         }
-        guard entries.contains(where: { entry in
-            entry.objectType == GnosticObjectType.ascendant
-                && entry.objectID == ascendantID
-                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
-                && Self.capabilities(of: entry).contains(GnosticCapability.workspaceAttachment)
-        }) else {
+        guard GnosticCatalogLookup.ascendantAdvertises(
+            GnosticCapability.workspaceAttachment,
+            ascendantID: ascendantID,
+            providerID: providerID,
+            in: entries
+        ) else {
             throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceAttachment)
         }
     }
 
     private func requireInvocationCapability(providerID: String) async throws {
         let entries = await catalog.networkObjects()
-        guard entries.contains(where: { entry in
-            entry.objectType == GnosticObjectType.ascendant
-                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
-                && Self.capabilities(of: entry).contains(GnosticCapability.workspaceToolInvocation)
-        }) else {
+        guard GnosticCatalogLookup.ascendantAdvertises(
+            GnosticCapability.workspaceToolInvocation,
+            providerID: providerID,
+            in: entries
+        ) else {
             throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceToolInvocation)
-        }
-    }
-
-    private static func capabilities(of entry: NetworkCatalogEntry) -> [String] {
-        guard case let .array(values) = entry.knownProperties["capabilities"] else { return [] }
-        return values.compactMap { value in
-            guard case let .string(capability) = value else { return nil }
-            return capability
-        }
-    }
-
-    private func call(
-        operation: String,
-        parameters: String,
-        providerID: String
-    ) async throws -> UnaryCallResult {
-        let response: UnaryCallResult
-        do {
-            response = try await manager.call(
-                operation: operation,
-                parameters: parameters,
-                context: Self.providerContext(providerID),
-                timeout: timeout
-            )
-        } catch let failure as RemoteCallFailure {
-            let decoded = try? JSONDecoder().decode(
-                GnosticProtocolFailure.self,
-                from: Data(failure.message.utf8)
-            )
-            throw GnosticWorkspaceClientError.callFailed(
-                reasonCode: decoded?.reasonCode ?? "callFailed",
-                statusCode: decoded?.statusCode ?? failure.code,
-                retryable: decoded?.retryable ?? false
-            )
-        } catch let error as AxolotyError {
-            throw Self.transportFailure(error)
-        }
-        guard response.sourceId?.lowercased() == providerID.lowercased() else {
-            throw GnosticWorkspaceClientError.providerMismatch
-        }
-        return response
-    }
-
-    private static func decode<T: Decodable>(_ type: T.Type, from result: String) throws -> T {
-        do {
-            return try JSONDecoder().decode(type, from: Data(result.utf8))
-        } catch {
-            throw GnosticWorkspaceClientError.callFailed(
-                reasonCode: "invalidResponse",
-                statusCode: 502,
-                retryable: false
-            )
-        }
-    }
-
-    private static func transportFailure(_ error: AxolotyError) -> GnosticWorkspaceClientError {
-        switch error {
-        case let .runtime(code, _):
-            switch code {
-            case .timedOut:
-                return .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true)
-            case .cancelled:
-                return .callFailed(reasonCode: "callCancelled", statusCode: 499, retryable: false)
-            default:
-                return .callFailed(reasonCode: "transportFailure", statusCode: 503, retryable: true)
-            }
-        default:
-            return .callFailed(reasonCode: "transportFailure", statusCode: 503, retryable: true)
         }
     }
 
@@ -401,13 +312,6 @@ public final class GnosticWorkspaceClient {
         case .unavailable: .unavailable
         case .malformed, .ambiguous, .unsupported: .unsupported
         }
-    }
-
-    private static func providerContext(_ providerID: String) -> ObjectFilter {
-        ObjectFilter(condition: ObjectFilterCondition(
-            property: ObjectFilterProperty("objectId"),
-            expression: .equals(FilterOperand(providerID.lowercased()))
-        ))
     }
 }
 
