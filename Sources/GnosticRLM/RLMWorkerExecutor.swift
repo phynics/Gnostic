@@ -21,6 +21,12 @@ public protocol RLMWorkerExecutor: Sendable {
     static func launchSpec(for configuration: Configuration) -> RLMWorkerLaunchSpec
 }
 
+/// A worker signal used to interrupt a cell without terminating its process.
+public enum RLMWorkerInterruptSignal: Sendable, Equatable {
+    /// POSIX `SIGUSR1`; the Chibi build maps this to its VM interrupt flag.
+    case user1
+}
+
 /// Everything the shared worker session needs to launch and bound one worker.
 ///
 /// Every limit is set by the host. No tool argument, generated cell, or model
@@ -49,6 +55,8 @@ public struct RLMWorkerLaunchSpec: Sendable, Equatable {
     public var maxOutputBytes: Int
     public var cellTimeLimitSeconds: Double
     public var cellAllocationLimitBytes: Int
+    /// Optional cooperative process signal for recoverable per-cell timeout.
+    public var cellTimeoutInterruptSignal: RLMWorkerInterruptSignal?
     public var wallDeadlineSeconds: Double
     public var terminationGraceSeconds: Double
     public var startupDeadlineSeconds: Double
@@ -65,6 +73,7 @@ public struct RLMWorkerLaunchSpec: Sendable, Equatable {
         maxOutputBytes: Int,
         cellTimeLimitSeconds: Double,
         cellAllocationLimitBytes: Int,
+        cellTimeoutInterruptSignal: RLMWorkerInterruptSignal? = nil,
         wallDeadlineSeconds: Double,
         terminationGraceSeconds: Double,
         startupDeadlineSeconds: Double,
@@ -80,6 +89,7 @@ public struct RLMWorkerLaunchSpec: Sendable, Equatable {
         self.maxOutputBytes = maxOutputBytes
         self.cellTimeLimitSeconds = cellTimeLimitSeconds
         self.cellAllocationLimitBytes = cellAllocationLimitBytes
+        self.cellTimeoutInterruptSignal = cellTimeoutInterruptSignal
         self.wallDeadlineSeconds = wallDeadlineSeconds
         self.terminationGraceSeconds = terminationGraceSeconds
         self.startupDeadlineSeconds = startupDeadlineSeconds

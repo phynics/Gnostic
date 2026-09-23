@@ -5,6 +5,39 @@ import GnosticRLM
 
 @Suite("RLM Chibi sandbox denial", .enabled(if: RLMChibiTestSupport.isAvailable), .serialized)
 struct RLMChibiSandboxDenialTests {
+    @Test("the runtime VM interrupt reports a failed cell and remains usable")
+    func rawCellTimeoutRecovers() async throws {
+        let worker = try RLMChibiRawWorker(runID: "raw-cell-timeout")
+        defer { worker.shutdown() }
+        guard case .ready = try worker.initialize() else {
+            Issue.record("worker did not report ready")
+            return
+        }
+
+        let pendingEvaluation = Task.detached {
+            try worker.evaluate("(define (spin n) (spin n)) (spin 0)", cellID: 1)
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        worker.interruptForCellTimeout()
+
+        do {
+            let timedOut = try await pendingEvaluation.value
+            guard case let .failed(failure) = timedOut else {
+                Issue.record("expected a recoverable failed frame, got \(timedOut)")
+                return
+            }
+            #expect(failure.message == "cell time limit exceeded")
+            #expect(try worker.evaluate("(+ 1 2)", cellID: 2) == .evaluated(RLMSchemeEvaluated(
+                runID: "raw-cell-timeout",
+                cellID: 2,
+                value: .integer(3),
+                output: ""
+            )))
+        } catch {
+            Issue.record("raw interrupt failed: \(error); stderr: \(worker.stderrAfterExit())")
+        }
+    }
+
     @Test("the raw environment rejects dangerous forms without the parent validator")
     func rejectsDangerousForms() throws {
         let worker = try RLMChibiRawWorker(runID: "raw-sandbox")
@@ -53,6 +86,9 @@ struct RLMChibiSandboxDenialTests {
             "(environ)",
             "(dynamic-link \"libc.so.6\")",
             "(make-thread (lambda () 1))",
+            "(gnostic-arm-cell-timeout!)",
+            "(gnostic-clear-cell-timeout!)",
+            "(gnostic-cell-timeout-reason)",
             "(scm-error 'gnostic-finish \"answer\" (list \"c-1\") #f #f)",
             "(throw 'x 1)",
             "(catch #t (lambda () 1) (lambda args 2))",

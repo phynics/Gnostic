@@ -6,6 +6,15 @@ import GnosticRLM
 
 @Suite("RLM Guile host-call mapping")
 struct RLMGuileOperationTests {
+    @Test("Guile retains its in-worker cell limit and requests no process interrupt")
+    func cellTimeoutInterruptIsNotInLaunchSpec() {
+        let configuration = RLMGuileWorkerConfiguration(
+            runID: "r",
+            workerScriptPath: "/worker.scm"
+        )
+        #expect(RLMGuileExecutor.launchSpec(for: configuration).cellTimeoutInterruptSignal == nil)
+    }
+
     @Test("a one-argument leaf query defaults to the fast tier")
     func defaultTier() {
         let operation = RLMGuileWorkerSession.operation(for: RLMSchemeHostCall(
