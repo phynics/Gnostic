@@ -8,7 +8,9 @@ import GnosticRLMProcessWorker
 ///
 /// Chibi has no `setrlimit` binding, so `prlimit` applies the CPU and
 /// address-space limits before the interpreter starts, and `CHIBI_MAX_ALLOC`
-/// caps the limited-malloc heap. The reviewed build is Linux-only.
+/// caps the limited-malloc heap. The host sends `SIGUSR1` at the configured
+/// per-cell time limit; the patched VM converts it to a recoverable Scheme
+/// exception. The reviewed build is Linux-only.
 public enum RLMChibiExecutor: RLMWorkerExecutor {
     public typealias Configuration = RLMChibiWorkerConfiguration
 
@@ -48,6 +50,7 @@ public enum RLMChibiExecutor: RLMWorkerExecutor {
             maxOutputBytes: configuration.maxOutputBytes,
             cellTimeLimitSeconds: configuration.cellTimeLimitSeconds,
             cellAllocationLimitBytes: configuration.cellAllocationLimitBytes,
+            cellTimeoutInterruptSignal: .user1,
             wallDeadlineSeconds: configuration.wallDeadlineSeconds,
             terminationGraceSeconds: configuration.terminationGraceSeconds,
             startupDeadlineSeconds: configuration.startupDeadlineSeconds,

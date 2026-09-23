@@ -129,6 +129,44 @@ struct RLMWorkerWireParityTests {
         #expect(outcomes.chibi == .value(expected))
     }
 
+    @Test("loop and deep-recursion stress cells fail without losing either worker")
+    func containmentStressRecoversBothWorkers() async throws {
+        let fixtures = [
+            (name: "loop", source: "(define (spin n) (spin n)) (spin 0)"),
+            (
+                name: "deep recursion",
+                source: "(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1))))) (deep 1000000)"
+            ),
+        ]
+        for fixture in fixtures {
+            _ = try RLMSchemeProfile.validate(fixture.source)
+        }
+
+        let (guile, chibi) = RLMWorkerWireParitySupport.containmentSessions()
+        try await guile.start()
+        do {
+            try await chibi.start()
+        } catch {
+            await guile.shutdown()
+            throw error
+        }
+
+        for fixture in fixtures {
+            let guileOutcome = await guile.evaluate(source: fixture.source)
+            let chibiOutcome = await chibi.evaluate(source: fixture.source)
+            #expect(Self.isSchemeFailure(guileOutcome), "Guile \(fixture.name) result: \(guileOutcome)")
+            #expect(Self.isSchemeFailure(chibiOutcome), "Chibi \(fixture.name) result: \(chibiOutcome)")
+            #expect(await guile.isRunning, "Guile worker exited after \(fixture.name)")
+            #expect(await chibi.isRunning, "Chibi worker exited after \(fixture.name)")
+
+            #expect(await guile.evaluate(source: "(+ 1 2)") == .value(.integer(3)))
+            #expect(await chibi.evaluate(source: "(+ 1 2)") == .value(.integer(3)))
+        }
+
+        await guile.shutdown()
+        await chibi.shutdown()
+    }
+
     @Test("every profile pure operation is usable and has worker parity")
     func pureOperationCorpusMatches() async throws {
         #expect(Set(Self.pureOperationSources.keys) == RLMSchemeProfile.pureOperations)
@@ -186,6 +224,11 @@ struct RLMWorkerWireParityTests {
 
     private static func isValue(_ outcome: RLMWorkerEvaluationOutcome) -> Bool {
         if case .value = outcome { return true }
+        return false
+    }
+
+    private static func isSchemeFailure(_ outcome: RLMWorkerEvaluationOutcome) -> Bool {
+        if case .schemeFailed = outcome { return true }
         return false
     }
 
@@ -381,6 +424,36 @@ private enum RLMWorkerWireParitySupport {
             try observation(for: operation)
         }
         return (guileSession(host: guileHost), chibiSession(host: chibiHost))
+    }
+
+    static func containmentSessions() -> (guile: RLMGuileWorkerSession, chibi: RLMChibiWorkerSession) {
+        let guileHost = RLMGuileClosureHost { operation in
+            try observation(for: operation)
+        }
+        let chibiHost = RLMChibiClosureHost { operation in
+            try observation(for: operation)
+        }
+        let guileConfiguration = RLMGuileWorkerConfiguration(
+            runID: "stress-guile",
+            workerScriptPath: guileScriptPath,
+            executablePath: guilePath ?? RLMGuileWorkerConfiguration.defaultExecutablePath,
+            cellTimeLimitSeconds: 0.25,
+            cellAllocationLimitBytes: 1_024 * 1_024,
+            wallDeadlineSeconds: 5
+        )
+        let chibiConfiguration = RLMChibiWorkerConfiguration(
+            runID: "stress-chibi",
+            workerScriptPath: chibiScriptPath,
+            executablePath: chibiPath ?? RLMChibiWorkerConfiguration.defaultExecutablePath,
+            maxHeapBytes: 32 * 1_024 * 1_024,
+            cellTimeLimitSeconds: 0.25,
+            cellAllocationLimitBytes: 1_024 * 1_024,
+            wallDeadlineSeconds: 5
+        )
+        return (
+            RLMGuileWorkerSession(configuration: guileConfiguration, host: guileHost),
+            RLMChibiWorkerSession(configuration: chibiConfiguration, host: chibiHost)
+        )
     }
 
     static func observation(for operation: RLMHostOperation) throws -> RLMHostObservation {

@@ -62,12 +62,16 @@ RUN printf '%s\n' \
 
 ARG CHIBI_VERSION=0.12
 ARG CHIBI_SHA256=b70a1147bc70a0f90df3fb6081bc99808237fd17a9accf9ee7a2cc20d95a4df0
+COPY Experiments/ChibiRLMWorker/patches/cell-timeout.patch /tmp/chibi-cell-timeout.patch
 
 # Pin Chibi to the reviewed 0.12 tag, verify the exact tarball digest, and
 # build a static interpreter with the RLM worker hardening set. The features.h
 # patch is the applied flag set; see Experiments/ChibiRLMWorker/README.md for
-# what each flag disables. The pinned system dependency is outside SwiftPM SBOM
-# coverage.
+# what each flag enables or disables. Green-thread VM fuel checks, a fixed VM
+# stack bound, and a private signal hook support recoverable cell timeouts and
+# recursion failures. The cell environment still imports no thread API, and
+# static libraries and modules remain absent.
+# The pinned system dependency is outside SwiftPM SBOM coverage.
 RUN set -eux; \
     build_dir=/tmp/chibi-build; \
     archive=/tmp/chibi-${CHIBI_VERSION}.tar.gz; \
@@ -77,8 +81,9 @@ RUN set -eux; \
         -o "$archive"; \
     echo "${CHIBI_SHA256}  ${archive}" | sha256sum -c -; \
     tar --extract --gzip --strip-components=1 --directory "$build_dir" --file "$archive"; \
+    patch -d "$build_dir" -p1 < /tmp/chibi-cell-timeout.patch; \
     sed -i \
-        -e 's|/\* #define SEXP_USE_NO_FEATURES 1 \*/|#define SEXP_USE_NO_FEATURES 1\n#define SEXP_USE_FLONUMS 1\n#define SEXP_USE_BIGNUMS 1\n#define SEXP_USE_MATH 1\n#define SEXP_USE_RATIOS 0\n#define SEXP_USE_COMPLEX 0|' \
+        -e 's|/\* #define SEXP_USE_NO_FEATURES 1 \*/|#define SEXP_USE_NO_FEATURES 1\n#define SEXP_USE_GREEN_THREADS 1\n#define SEXP_USE_CHECK_STACK 1\n#define SEXP_USE_GROW_STACK 0\n#define SEXP_INIT_STACK_SIZE 8192\n#define SEXP_USE_FLONUMS 1\n#define SEXP_USE_BIGNUMS 1\n#define SEXP_USE_MATH 1\n#define SEXP_USE_RATIOS 0\n#define SEXP_USE_COMPLEX 0|' \
         -e 's|/\* #define SEXP_USE_MODULES 0 \*/|#define SEXP_USE_MODULES 0|' \
         -e 's|/\* #define SEXP_USE_STATIC_LIBS_EMPTY 1 \*/|#define SEXP_USE_STATIC_LIBS_EMPTY 1|' \
         -e 's|/\* #define SEXP_USE_STRICT_TOPLEVEL_BINDINGS 0 \*/|#define SEXP_USE_STRICT_TOPLEVEL_BINDINGS 1|' \
@@ -86,6 +91,10 @@ RUN set -eux; \
     sed -i 's|^#ifndef SEXP_USE_LIMITED_MALLOC$|#define SEXP_USE_LIMITED_MALLOC 1\n#ifndef SEXP_USE_LIMITED_MALLOC|' \
         "$build_dir/include/chibi/features.h"; \
     grep -q '^#define SEXP_USE_NO_FEATURES 1$' "$build_dir/include/chibi/features.h"; \
+    grep -q '^#define SEXP_USE_GREEN_THREADS 1$' "$build_dir/include/chibi/features.h"; \
+    grep -q '^#define SEXP_USE_CHECK_STACK 1$' "$build_dir/include/chibi/features.h"; \
+    grep -q '^#define SEXP_USE_GROW_STACK 0$' "$build_dir/include/chibi/features.h"; \
+    grep -q '^#define SEXP_INIT_STACK_SIZE 8192$' "$build_dir/include/chibi/features.h"; \
     grep -q '^#define SEXP_USE_FLONUMS 1$' "$build_dir/include/chibi/features.h"; \
     grep -q '^#define SEXP_USE_BIGNUMS 1$' "$build_dir/include/chibi/features.h"; \
     grep -q '^#define SEXP_USE_MATH 1$' "$build_dir/include/chibi/features.h"; \

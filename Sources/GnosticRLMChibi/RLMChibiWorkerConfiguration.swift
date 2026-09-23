@@ -6,8 +6,10 @@ import GnosticRLM
 /// Host-owned configuration for one disposable Chibi worker.
 ///
 /// Every limit is set by the host. No tool argument, generated cell, or model
-/// response can enlarge one. This worker is experimental and is not enabled in
-/// any production composition.
+/// response can enlarge one. Chibi enforces `maxHeapBytes` process-wide;
+/// `cellAllocationLimitBytes` is protocol metadata because this runtime has no
+/// per-cell allocation counter. This worker is experimental and is not enabled
+/// in any production composition.
 public struct RLMChibiWorkerConfiguration: Sendable, Equatable {
     public var executablePath: String
     public var limitExecutablePath: String

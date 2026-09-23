@@ -219,12 +219,18 @@
           (get-output-string port)))))))
 
 (define (error-message error)
-  (if (and (pair? error) (eq? (car error) 'gnostic-error))
-      (cadr error)
-      (let ((text (render-exception error)))
-        (if (and (string? text) (string-contains text "out of memory"))
-            "resource limit exceeded"
-            text))))
+  (let ((timeout-reason (gnostic-cell-timeout-reason)))
+    (cond ((= timeout-reason 1) "cell time limit exceeded")
+          ((= timeout-reason 2) "cell recursion limit exceeded")
+          ((and (pair? error) (eq? (car error) 'gnostic-error))
+           (cadr error))
+          (else
+           (let ((text (render-exception error)))
+             (cond ((and (string? text) (string-contains text "out of memory"))
+                    "resource limit exceeded")
+                   ((and (string? text) (string-contains text "out of stack space"))
+                    "cell recursion limit exceeded")
+                    (else text)))))))
 
 (define (call-host name arguments)
   (let ((call-id (next-call-id)))
@@ -459,13 +465,17 @@
             (loop (eval form environment)))))))
 
 (define (eval-cell source)
-  (call-with-current-continuation
-   (lambda (escape)
-     (set! finish-continuation escape)
-     (with-exception-handler
-      (lambda (condition) (escape (list 'failed (error-message condition))))
-      (lambda ()
-        (escape (list 'value (scm->wire (eval-forms source run-environment)))))))))
+  (gnostic-arm-cell-timeout!)
+  (let ((result
+         (call-with-current-continuation
+          (lambda (escape)
+            (set! finish-continuation escape)
+            (with-exception-handler
+             (lambda (condition) (escape (list 'failed (error-message condition))))
+             (lambda ()
+               (escape (list 'value (scm->wire (eval-forms source run-environment))))))))))
+    (gnostic-clear-cell-timeout!)
+    result))
 
 (define (valid-finish? answer evidence)
   (and (string? answer)

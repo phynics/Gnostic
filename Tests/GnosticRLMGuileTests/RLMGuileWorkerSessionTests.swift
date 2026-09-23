@@ -356,6 +356,25 @@ struct RLMGuileWorkerSessionTests {
         await session.shutdown()
     }
 
+    @Test("deep non-tail recursion is bounded and the worker survives")
+    func deepRecursionIsBounded() async throws {
+        let host = RLMGuileRecordingHost()
+        let session = RLMGuileTestSupport.session(host: host)
+        try await session.start()
+
+        let timeout = await session.evaluate(
+            source: "(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1))))) (deep 1000000)"
+        )
+        #expect(timeout == .schemeFailed("resource limit exceeded"))
+        #expect(await session.isRunning)
+
+        let nextCell = await session.evaluate(source: "(+ 1 2)")
+        #expect(nextCell == .value(.integer(3)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("the parent wall deadline terminates a stuck worker")
     func wallDeadline() async throws {
         let host = RLMGuileRecordingHost(blockingSeconds: 5)
@@ -402,7 +421,12 @@ struct RLMGuileWorkerSessionTests {
         try await session.start()
 
         let outcome = await session.evaluate(source: "(make-list 1000000 1)")
-        #expect(outcome == .schemeFailed("resource limit exceeded"))
+        #expect(outcome == .schemeFailed("resource limit exceeded"), "got \(outcome)")
+        #expect(await session.isRunning)
+
+        let nextCell = await session.evaluate(source: "(+ 1 2)")
+        #expect(nextCell == .value(.integer(3)))
+        #expect(await session.isRunning)
 
         await session.shutdown()
     }

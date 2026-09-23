@@ -312,6 +312,27 @@ struct RLMChibiWorkerSessionTests {
         #expect(late == .workerExited(-1))
     }
 
+    @Test("a per-cell timeout is recoverable and leaves the worker available")
+    func perCellTimeoutIsRecoverable() async throws {
+        let host = RLMChibiRecordingHost()
+        let session = RLMChibiTestSupport.session(host: host) { configuration in
+            configuration.cellTimeLimitSeconds = 0.25
+            configuration.wallDeadlineSeconds = 2
+        }
+        try await session.start()
+
+        let timeout = await session.evaluate(source: "(define (spin n) (spin n)) (spin 0)")
+        let stderr = await session.stderrTail
+        #expect(timeout == .schemeFailed("cell time limit exceeded"), "got \(timeout); stderr: \(stderr)")
+        #expect(await session.isRunning)
+
+        let nextCell = await session.evaluate(source: "(+ 1 2)")
+        #expect(nextCell == .value(.integer(3)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
+    }
+
     @Test("the worker installs the process CPU and address-space limits")
     func processLimitsInstalled() async throws {
         let host = RLMChibiRecordingHost()
@@ -339,7 +360,7 @@ struct RLMChibiWorkerSessionTests {
         try await session.start()
 
         let outcome = await session.evaluate(source: "(make-string 50000000 (string-ref \"a\" 0))")
-        #expect(outcome == .schemeFailed("resource limit exceeded"))
+        #expect(outcome == .schemeFailed("resource limit exceeded"), "got \(outcome)")
         #expect(await session.isRunning)
 
         let recovered = await session.evaluate(source: "(+ 1 2)")
@@ -416,25 +437,26 @@ struct RLMChibiWorkerSessionTests {
         #expect(Date().timeIntervalSince(started) < 20)
     }
 
-    @Test("deep non-tail recursion is bounded and contained")
+    @Test("deep non-tail recursion fails recoverably at the VM stack bound")
     func deepRecursionIsContained() async throws {
         let host = RLMChibiRecordingHost()
         let session = RLMChibiTestSupport.session(host: host) { configuration in
             configuration.wallDeadlineSeconds = 2
-            configuration.terminationGraceSeconds = 0.2
         }
         try await session.start()
 
         let started = Date()
         let outcome = await session.evaluate(source: "(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1))))) (deep 100000)")
-        switch outcome {
-        case .workerExited, .timedOut:
-            break
-        default:
-            Issue.record("expected deep recursion to be contained, got \(outcome)")
-        }
-        #expect(await session.isRunning == false)
-        #expect(Date().timeIntervalSince(started) < 10)
+        let stderr = await session.stderrTail
+        #expect(outcome == .schemeFailed("cell recursion limit exceeded"), "got \(outcome); stderr: \(stderr)")
+        #expect(await session.isRunning)
+        #expect(Date().timeIntervalSince(started) < 2)
+
+        let recovered = await session.evaluate(source: "(+ 1 2)")
+        #expect(recovered == .value(.integer(3)))
+        #expect(await session.isRunning)
+
+        await session.shutdown()
     }
 
     @Test("a three-argument leaf query is rejected before evaluation")

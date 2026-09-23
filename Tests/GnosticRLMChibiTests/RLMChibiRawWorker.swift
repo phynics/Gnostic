@@ -123,6 +123,16 @@ final class RLMChibiRawWorker: @unchecked Sendable { // SAFETY: a test drives on
         }
     }
 
+    func interruptForCellTimeout() {
+        if process.isRunning {
+            kill(process.processIdentifier, SIGUSR1)
+        }
+    }
+
+    func stderrAfterExit() -> String {
+        String(decoding: errorOutput.readDataToEndOfFile(), as: UTF8.self)
+    }
+
     func shutdown() {
         if process.isRunning {
             try? send(.shutdown(runID: runID))

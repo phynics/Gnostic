@@ -421,16 +421,59 @@ public actor RLMProcessWorkerSession<Executor: RLMWorkerExecutor> {
     private func withWallDeadline(
         _ operation: @escaping @Sendable () async -> RLMWorkerEvaluationOutcome
     ) async -> RLMWorkerEvaluationOutcome {
-        await withTaskGroup(of: RLMWorkerEvaluationOutcome.self) { group in
-            group.addTask { await operation() }
+        await withTaskGroup(of: EvaluationDeadlineEvent.self) { group in
+            group.addTask { .evaluation(await operation()) }
+            if let signal = spec.cellTimeoutInterruptSignal {
+                group.addTask {
+                    do {
+                        try await Task.sleep(for: .seconds(self.spec.cellTimeLimitSeconds))
+                    } catch {
+                        return .cellInterruptCancelled
+                    }
+                    guard !Task.isCancelled else { return .cellInterruptCancelled }
+                    await self.sendCellTimeoutInterrupt(signal)
+                    return .cellInterruptSent
+                }
+            }
             group.addTask {
                 try? await Task.sleep(for: .seconds(self.spec.wallDeadlineSeconds))
-                return .timedOut
+                return .wallDeadline
             }
-            let first = await group.next() ?? .workerExited(-1)
-            group.cancelAll()
-            return first
+            while let event = await group.next() {
+                switch event {
+                case let .evaluation(outcome):
+                    group.cancelAll()
+                    return outcome
+                case .cellInterruptSent, .cellInterruptCancelled:
+                    continue
+                case .wallDeadline:
+                    group.cancelAll()
+                    return .timedOut
+                }
+            }
+            return .workerExited(-1)
         }
+    }
+
+    private enum EvaluationDeadlineEvent: Sendable {
+        case evaluation(RLMWorkerEvaluationOutcome)
+        case cellInterruptSent
+        case cellInterruptCancelled
+        case wallDeadline
+    }
+
+    private func sendCellTimeoutInterrupt(_ signal: RLMWorkerInterruptSignal) {
+        guard let process, process.isRunning else { return }
+        let processSignal: Int32
+        switch signal {
+        case .user1:
+            #if canImport(Glibc) || canImport(Darwin)
+            processSignal = SIGUSR1
+            #else
+            return
+            #endif
+        }
+        _ = kill(process.processIdentifier, processSignal)
     }
 
     private func nextFrame(deadline: Double) async -> RLMSchemeWorkerFrame? {
