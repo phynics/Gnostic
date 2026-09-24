@@ -50,7 +50,7 @@ build: require-package image
 
 test: build
 	@mkdir -p .testing
-	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path)/gnostic; test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; GNOSTIC_SERVE_BINARY="$$bin" GNOSTIC_CLI_BINARY="$$bin" swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) | tee .testing/swift-test.log && grep -Eq "Test run with [1-9][0-9]* tests" .testing/swift-test.log'
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path)/gnostic; test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; GNOSTIC_SERVE_BINARY="$$bin" GNOSTIC_CLI_BINARY="$$bin" swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --no-parallel | tee .testing/swift-test.log && grep -Eq "Test run with [1-9][0-9]* tests" .testing/swift-test.log'
 
 benchmark: require-package image
 	@mkdir -p Documentation/Experiments

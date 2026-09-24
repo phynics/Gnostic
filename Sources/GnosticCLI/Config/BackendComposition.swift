@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import GnosticACPAscendant
 import GnosticCore
 import GnosticLettaBackend
 import PositronicKit
@@ -31,7 +32,7 @@ public struct BackendComposition: Sendable {
 
     /// The CLI's production composition.
     ///
-    /// Carries the bundled Positronic backend and the optional Letta backend.
+    /// Carries the bundled Positronic backend and optional Letta and ACP backends.
     /// Their factories construct a model or a remote client only when a
     /// backend is materialized, so configuration listing stays free of
     /// credentials and network access.
@@ -39,6 +40,7 @@ public struct BackendComposition: Sendable {
         var composition = BackendComposition()
         composition.registerPositronicExtension(RLMPositronicExtension.value)
         composition.registerLettaBackend()
+        composition.registerACPBackend()
         return composition
     }
 
@@ -113,6 +115,21 @@ public struct BackendComposition: Sendable {
             settings: LettaAscendantBackend.settingsSchema
         ) { ascendant, backend, services, timelines in
             try LettaAscendantBackend(
+                ascendant: ascendant,
+                configuration: backend,
+                services: services,
+                timelines: timelines
+            )
+        }
+    }
+
+    /// Installs the configuration-only ACP backend and its CLI schema.
+    private mutating func registerACPBackend() {
+        registry.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backend, services, timelines in
+            try ACPAscendantBackend(
                 ascendant: ascendant,
                 configuration: backend,
                 services: services,

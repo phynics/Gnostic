@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
         .library(name: "GnosticLettaBackend", targets: ["GnosticLettaBackend"]),
+        .library(name: "GnosticACPAscendant", targets: ["GnosticACPAscendant"]),
         .library(name: "GnosticRLMGuile", targets: ["GnosticRLMGuile"]),
         .library(name: "GnosticRLMChibi", targets: ["GnosticRLMChibi"]),
         .executable(name: "gnostic-rlm-benchmark", targets: ["GnosticRLMBenchmark"]),
@@ -24,6 +25,7 @@ let package = Package(
         .package(url: "https://github.com/phynics/PositronicKit.git", exact: "6.1.0-rc.1"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.15.1"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
+        .package(url: "https://github.com/aptove/swift-sdk.git", exact: "0.1.16"),
     ],
     targets: [
         .target(
@@ -50,6 +52,20 @@ let package = Package(
         .target(
             name: "GnosticLettaBackend",
             dependencies: [
+                "GnosticCore",
+            ]
+        ),
+        .target(
+            name: "GnosticACPAscendant",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "ACP", package: "swift-sdk"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticACPAscendantTests",
+            dependencies: [
+                "GnosticACPAscendant",
                 "GnosticCore",
             ]
         ),
@@ -175,6 +191,7 @@ let package = Package(
             dependencies: [
                 "GnosticCore",
                 "GnosticLettaBackend",
+                "GnosticACPAscendant",
                 "GnosticRLM",
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",

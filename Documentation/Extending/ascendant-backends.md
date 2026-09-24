@@ -121,8 +121,33 @@ build, and `settingsSchema(for:)` returns a kind's keys.
 4. Gnostic calls `validateConfiguration()` before publishing the backend.
 
 Configuration commands consult the default registrations only. A kind
-registered solely inside a running host can be built but not configured
-through the CLI.
+registered solely inside a custom running host can be built but not configured
+through the CLI. The production CLI composition is shared by `serve` and
+`config`, and includes the optional `letta` and `acp-client` kinds.
+
+### ACP client configuration
+
+The optional `acp-client` kind records the launch configuration for an external
+ACP agent. In this increment it validates and projects configuration, but does
+not start the process or execute Turns; a Turn returns a terminal
+`acpTurnUnavailable` error until GNO-ACPC-003.
+
+`args` and `env` are JSON encoded strings because the generic `config backend
+set` command stores one string per key:
+
+```sh
+gnostic config ascendant add "OpenCode" --kind acp-client
+gnostic config backend set <ascendant-id> command opencode
+gnostic config backend set <ascendant-id> args '["acp"]'
+gnostic config backend set <ascendant-id> cwd "$PWD"
+gnostic config backend set <ascendant-id> env '{"MODE":"safe"}'
+gnostic config backend set <ascendant-id> displayName "OpenCode"
+```
+
+The `env` object accepts non-secret string values only. Per-variable secret
+environment values and their `config backend set-secret` schema support are
+deferred to [GNO-ACPC-009](https://github.com/phynics/Gnostic/issues/396).
+Do not place secrets in `env`.
 
 ## Extending the bundled Positronic backend
 

@@ -182,15 +182,23 @@ struct BackendCompositionTests {
         #expect(recorder.count == 0)
     }
 
-    @Test("the production composition exposes Positronic and Letta without building a model")
+    @Test("the production composition exposes Positronic, Letta, and ACP without building a model")
     func productionCompositionListsBackends() {
         let composition = BackendComposition.default
-        #expect(composition.registeredKinds == [AscendantAdapterRegistry.positronicKind, LettaAscendantBackend.kind])
+        #expect(composition.registeredKinds == [
+            AscendantAdapterRegistry.positronicKind,
+            LettaAscendantBackend.kind,
+            "acp-client",
+        ])
         let schema = composition.settingsSchema(for: AscendantAdapterRegistry.positronicKind)
         #expect(schema?.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions", "rlm.worker"])
         let lettaSchema = composition.settingsSchema(for: LettaAscendantBackend.kind)
         #expect(lettaSchema?.settingNames == ["serverURL", "model", "agentID", "agentName", "maxSteps"])
         #expect(lettaSchema?.secretNames == ["apiKey"])
+
+        let acpSchema = composition.settingsSchema(for: "acp-client")
+        #expect(acpSchema?.settingNames == ["command", "args", "cwd", "env", "displayName"])
+        #expect(acpSchema?.secretNames == [])
     }
 
     @Test("an unregistered kind is still rejected")
