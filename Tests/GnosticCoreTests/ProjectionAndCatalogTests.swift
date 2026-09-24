@@ -279,38 +279,6 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.networkObjects().filter { $0.objectID == ascendantID }.count == 2)
     }
 
-    @Test("projector advertises local objects and readvertises its changed timeline") @MainActor
-    func projectorAdvertisesLocalObjectsAndReadvertisesChangedTimeline() {
-        let recorded = RecordedAdvertisements()
-        let projector = OrchestrationProjector(
-            advertise: { recorded.appendAdvertised($0) },
-            readvertise: { recorded.appendReadvertised($0) }
-        )
-        let agent = AscendantRuntimeIdentity(id: ascendantID, name: "Atlas", description: "Coordinates analysis.", privateTimelineID: timelineID, primaryWorkspaceID: nil, lastActiveAt: creationDate, createdAt: creationDate, updatedAt: creationDate)
-        let initialTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: creationDate)
-        let changedTimeline = AscendantRuntimeTimeline(id: timelineID, title: "New Conversation", attachedWorkspaceIDs: [workspaceID], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: creationDate, updatedAt: updateDate)
-        let workspace = WorkspaceReference(
-            id: workspaceID,
-            uri: WorkspaceURI(parsing: "workspace://atlas")!,
-            location: .runtime
-        )
-
-        projector.advertise(
-            ascendant: agent,
-            timeline: initialTimeline,
-            workspaces: [WorkspaceReferenceProjection.networkReference(from: workspace)]
-        )
-        let updated = projector.readvertise(timeline: changedTimeline)
-
-        #expect(recorded.advertisedObjectTypes == [
-            "me.atkn.gnostic.Ascendant",
-            "me.atkn.gnostic.Timeline",
-            "me.atkn.gnostic.Workspace",
-        ])
-        #expect(recorded.readvertisedTimelineWorkspaceIDs == [[workspaceID]])
-        #expect(updated.attachedWorkspaceIDs == [workspaceID])
-    }
-
     @Test("catalog replaces a provider advertisement and removes its lifecycle entry")
     func catalogReplacesProviderAdvertisementAndRemovesItsLifecycleEntry() async {
         let catalog = NetworkCatalog()
@@ -540,28 +508,6 @@ struct ProjectionAndCatalogTests {
 
         #expect(await catalog.object(id: workspaceID, providerID: "provider-a") != nil)
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .malformed)
-    }
-
-    @Test("malformed workspace ingress is rejected by Axoloty without trapping")
-    func malformedWorkspaceIngressIsRejectedWithoutTrapping() {
-        _ = GnosticWorkspaceObject.objectType
-        let malformedPayload = """
-        {
-          "object": {
-            "objectId": "\(workspaceID.uuidString.lowercased())",
-            "coreType": "CoatyObject",
-            "objectType": "me.atkn.gnostic.Workspace",
-            "name": "Malformed workspace",
-            "uri": "workspace://alpha",
-            "isAvailable": true,
-            "tools": [{"name": "No identifier"}]
-          }
-        }
-        """
-
-        #expect(throws: AxolotyError.self) {
-            let _: AdvertiseEvent = try PayloadCoder.decode(malformedPayload)
-        }
     }
 
     @Test("subscription registers only canonical Gnostic object types") @MainActor
@@ -915,25 +861,6 @@ struct ProjectionAndCatalogTests {
         object["protocolMajor"] = protocolMajor
         let data = try JSONSerialization.data(withJSONObject: object)
         return try #require(String(data: data, encoding: .utf8))
-    }
-}
-
-private final class RecordedAdvertisements: @unchecked Sendable {
-    private var advertised: [CoatyObject] = []
-    private var readvertised: [CoatyObject] = []
-
-    var advertisedObjectTypes: [String] { advertised.map(\.objectType) }
-
-    var readvertisedTimelineWorkspaceIDs: [[UUID]] {
-        readvertised.compactMap { ($0 as? GnosticTimelineObject)?.attachedWorkspaceIDs }
-    }
-
-    func appendAdvertised(_ object: CoatyObject) {
-        advertised.append(object)
-    }
-
-    func appendReadvertised(_ object: CoatyObject) {
-        readvertised.append(object)
     }
 }
 

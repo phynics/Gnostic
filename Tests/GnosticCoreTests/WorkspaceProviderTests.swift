@@ -85,7 +85,7 @@ struct WorkspaceProviderTests {
         let kit = PKRuntime(configuration: .init(
             languageModel: UnconfiguredLLMService(),
             persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store),
-            runtime: .init(workspaceCreator: AxolotyWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
+            runtime: .init(workspaceCreator: RemoteWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
         ))
         let timeline = try await kit.timelines.create()
         let recorder = TimelineRecorder()
