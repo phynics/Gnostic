@@ -53,11 +53,6 @@ public struct AscendantToolApprovalPolicy: ToolApprovalPolicy {
     }
 }
 
-/// The former spelling of ``BackendPermissionRequest``. The two types had
-/// identical stored properties and one meaning.
-@available(*, deprecated, renamed: "BackendPermissionRequest")
-public typealias AscendantPermissionRequest = BackendPermissionRequest
-
 public actor AscendantPermissionCoordinator {
     private struct Pending {
         let request: BackendPermissionRequest

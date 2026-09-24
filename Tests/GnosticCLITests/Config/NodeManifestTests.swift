@@ -44,19 +44,6 @@ struct NodeManifestTests {
         #expect(throws: DecodingError.self) { _ = try JSONDecoder().decode(NodeManifest.self, from: Data(source.utf8)) }
     }
 
-    @Test("v2 load removes the retired CLI profile identity marker")
-    func v2LoadCanonicalizesRetiredProfileMarker() throws {
-        let folder = try TemporaryFolder()
-        let path = folder.url.appendingPathComponent("config.json")
-        var manifest = NodeManifest.makeDefault(broker: .init(host: "localhost", port: 1883, namespace: "gnostic"))
-        manifest.ascendants[0].backend.settings["_legacyID"] = .string(UUID().uuidString)
-        try JSONEncoder().encode(manifest).write(to: path)
-
-        let loaded = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
-        #expect(loaded.ascendants[0].backend.settings["_legacyID"] == nil)
-        #expect(String(data: try Data(contentsOf: path), encoding: .utf8)?.contains("_legacyID") == false)
-    }
-
     @Test("v2 load clears empty broker credentials and rewrites the manifest")
     func v2LoadClearsEmptyBrokerCredentials() throws {
         let folder = try TemporaryFolder()
@@ -72,22 +59,6 @@ struct NodeManifestTests {
         let stored = try String(contentsOf: path, encoding: .utf8)
         #expect(!stored.contains("\"password\""))
         #expect(!stored.contains("\"username\""))
-    }
-
-    @Test("v1 migration clears empty broker credentials")
-    func v1MigrationClearsEmptyBrokerCredentials() throws {
-        let folder = try TemporaryFolder()
-        let path = folder.url.appendingPathComponent("config.json")
-        let node = "A21D0000-0000-4000-8000-000000000131"
-        let source = "{\"schemaVersion\":1,\"broker\":{\"host\":\"legacy.example\",\"port\":1883,\"namespace\":\"gnostic\",\"username\":\"\",\"password\":\"\"},\"node\":{\"id\":\"\(node)\",\"kind\":\"node\",\"approvalMode\":\"auto\",\"logLevel\":\"info\"},\"ascendants\":[],\"timelines\":[],\"workspaces\":[]}"
-        try Data(source.utf8).write(to: path)
-
-        let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
-        #expect(migrated.broker.username == nil)
-        #expect(migrated.broker.password == nil)
-        let canonical = try String(contentsOf: path, encoding: .utf8)
-        #expect(!canonical.contains("\"password\""))
-        #expect(!canonical.contains("\"username\""))
     }
 
     @Test("v2 load preserves opaque settings owned by other backends")
@@ -107,57 +78,20 @@ struct NodeManifestTests {
         #expect(loaded.ascendants[0].backend.settings["mode"] == .string("deterministic"))
     }
 
-    @Test("invalid legacy profile does not rewrite its source")
-    func invalidLegacyProfileIsNotRewritten() throws {
+    @Test("a schema v1 manifest is rejected with a migration hint and left untouched")
+    func schemaV1ManifestIsRejected() throws {
         let folder = try TemporaryFolder()
         let path = folder.url.appendingPathComponent("config.json")
         let source = Data("{\"schemaVersion\":1,\"broker\":{\"host\":\"localhost\",\"port\":1883,\"namespace\":\"gnostic\"},\"node\":{\"id\":\"A21D0000-0000-4000-8000-000000000194\",\"kind\":\"node\",\"approvalMode\":\"auto\",\"logLevel\":\"info\"},\"llmProfiles\":[{\"id\":\"A21D0000-0000-4000-8000-000000000195\",\"name\":\"\",\"provider\":\"stub\"}],\"ascendants\":[],\"timelines\":[],\"workspaces\":[]}".utf8)
         try source.write(to: path)
-        #expect(throws: CLIConfigurationError.self) { _ = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest() }
+        do {
+            _ = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
+            Issue.record("a schema v1 manifest was accepted")
+        } catch let CLIConfigurationError.invalidManifest(error, _) {
+            #expect(error == .unsupportedSchemaVersion(1))
+            #expect(error.errorDescription?.contains("0.4") == true)
+        }
         #expect(try Data(contentsOf: path) == source)
-    }
-
-    @Test("schema v1 migration preserves graph identities and inlines profiles")
-    func schemaV1MigrationPreservesIdentities() throws {
-        let folder = try TemporaryFolder()
-        let path = folder.url.appendingPathComponent("config.json")
-        let node = "A21D0000-0000-4000-8000-000000000111"
-        let profile = "A21D0000-0000-4000-8000-000000000112"
-        let ascendant = "A21D0000-0000-4000-8000-000000000113"
-        let timeline = "A21D0000-0000-4000-8000-000000000114"
-        let workspace = "A21D0000-0000-4000-8000-000000000115"
-        let source = """
-        {"schemaVersion":1,"broker":{"host":"legacy.example","port":1883,"namespace":"gnostic","username":"alice","password":"broker-secret"},"node":{"id":"\(node)","kind":"node","approvalMode":"auto","logLevel":"info"},"llmProfiles":[{"id":"\(profile)","name":"Legacy","provider":"anthropic","model":"claude","apiKey":"llm-secret"}],"ascendants":[{"id":"\(ascendant)","kind":"positronic","name":"Alice","description":"old","metadata":{},"llmProfileID":"\(profile)","defaultTimelineID":"\(timeline)"}],"timelines":[{"id":"\(timeline)","kind":"timeline","title":"Default","operatingAscendantID":"\(ascendant)","flags":[],"attachments":[{"workspaceID":"\(workspace)","scope":"local"}]}],"workspaces":[{"id":"\(workspace)","kind":"echo","name":"Echo","uri":"echo://default"}]}
-        """
-        try Data(source.utf8).write(to: path)
-
-        let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
-        #expect(migrated.schemaVersion == 2)
-        #expect(migrated.node.id.uuidString.lowercased() == node.lowercased())
-        #expect(migrated.ascendants.first?.id.uuidString.lowercased() == ascendant.lowercased())
-        #expect(migrated.timelines.first?.id.uuidString.lowercased() == timeline.lowercased())
-        #expect(migrated.workspaces.first?.id.uuidString.lowercased() == workspace.lowercased())
-        #expect(migrated.ascendants.first?.backend.settings["provider"] == .string("anthropic"))
-        #expect(migrated.ascendants.first?.backend.secrets["apiKey"] == .string("llm-secret"))
-        #expect(migrated.ascendants.first?.backend.settings["_legacyID"] == nil)
-        let canonical = try Data(contentsOf: path)
-        #expect(String(data: canonical, encoding: .utf8)?.contains("llmProfiles") == false)
-        #expect(FileManager.default.fileExists(atPath: path.appendingPathExtension("legacy").path))
-    }
-
-    @Test("v1 shared profiles are inlined independently for each Ascendant")
-    func sharedV1ProfilesAreInlinedPerAscendant() throws {
-        let folder = try TemporaryFolder()
-        let path = folder.url.appendingPathComponent("config.json")
-        let source = """
-        {"schemaVersion":1,"broker":{"host":"localhost","port":1883,"namespace":"gnostic"},"node":{"id":"A21D0000-0000-4000-8000-000000000121","kind":"node","approvalMode":"auto","logLevel":"info"},"llmProfiles":[{"id":"A21D0000-0000-4000-8000-000000000122","name":"Shared","provider":"stub","model":"deterministic"}],"ascendants":[{"id":"A21D0000-0000-4000-8000-000000000123","kind":"positronic","name":"One","metadata":{},"llmProfileID":"A21D0000-0000-4000-8000-000000000122","defaultTimelineID":"A21D0000-0000-4000-8000-000000000125"},{"id":"A21D0000-0000-4000-8000-000000000124","kind":"positronic","name":"Two","metadata":{},"llmProfileID":"A21D0000-0000-4000-8000-000000000122","defaultTimelineID":"A21D0000-0000-4000-8000-000000000126"}],"timelines":[{"id":"A21D0000-0000-4000-8000-000000000125","kind":"timeline","title":"One","operatingAscendantID":"A21D0000-0000-4000-8000-000000000123","flags":[],"attachments":[]},{"id":"A21D0000-0000-4000-8000-000000000126","kind":"timeline","title":"Two","operatingAscendantID":"A21D0000-0000-4000-8000-000000000124","flags":[],"attachments":[]}],"workspaces":[]}
-        """
-        try Data(source.utf8).write(to: path)
-
-        let migrated = try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest()
-        #expect(migrated.ascendants.count == 2)
-        #expect(migrated.ascendants.allSatisfy { $0.backend.settings["provider"] == .string("stub") })
-        #expect(migrated.ascendants.allSatisfy { $0.backend.settings["_legacyID"] == nil })
     }
 
     @Test("backend settings and secrets are bounded")
@@ -235,37 +169,21 @@ struct NodeManifestTests {
         #expect(store.path() == explicit)
     }
 
-    @Test("valid legacy config migrates once, retains a private backup, and creates defaults")
-    func validLegacyConfigMigratesOnce() throws {
+    @Test("a pre-manifest flat config is rejected and left untouched")
+    func flatConfigIsRejected() throws {
         let folder = try TemporaryFolder()
         let path = folder.url.appendingPathComponent("config.json")
-        let legacy = #"{"mqtt.host":"legacy.example","mqtt.port":1884,"mqtt.password":"broker-secret","llm.provider":"anthropic","llm.apiKey":"llm-secret","llm.model":"claude"}"#
-        _ = FileManager.default.createFile(atPath: path.path, contents: Data(legacy.utf8))
+        let flat = Data(#"{"mqtt.host":"legacy.example","mqtt.port":1884,"llm.provider":"anthropic"}"#.utf8)
+        _ = FileManager.default.createFile(atPath: path.path, contents: flat)
 
         let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
-        let manifest = try store.loadManifest()
-
-        #expect(manifest.schemaVersion == 2)
-        #expect(manifest.broker.host == "legacy.example")
-        #expect(manifest.broker.password == "broker-secret")
-        #expect(manifest.ascendants.count == 1)
-        #expect(manifest.ascendants.first?.backend.settings["endpoint"] == nil)
-        #expect(manifest.ascendants.first?.kind == "positronic")
-        #expect(manifest.timelines.count == 1)
-        #expect(manifest.timelines.first?.attachments.isEmpty == true)
-        #expect(manifest.workspaces.first?.kind == "echo")
-        #expect(FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
-        #expect(((try FileManager.default.attributesOfItem(atPath: store.legacyBackupPath().path)[.posixPermissions]) as? NSNumber)?.intValue == 0o600)
-        #expect(((try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions]) as? NSNumber)?.intValue == 0o600)
-
-        let secondLoad = try store.loadManifest()
-        #expect(secondLoad == manifest)
-        #expect(try store.load().mqttPassword == "broker-secret")
-        #expect(try store.load().llmAPIKey == "llm-secret")
+        #expect(throws: CLIConfigurationError.self) { try store.loadManifest() }
+        #expect(try Data(contentsOf: path) == flat)
+        #expect(!FileManager.default.fileExists(atPath: path.appendingPathExtension("legacy").path))
     }
 
-    @Test("malformed legacy config is left untouched")
-    func malformedLegacyConfigIsUntouched() throws {
+    @Test("malformed config is left untouched")
+    func malformedConfigIsUntouched() throws {
         let folder = try TemporaryFolder()
         let path = folder.url.appendingPathComponent("config.json")
         let data = Data("{not-json".utf8)
@@ -274,10 +192,9 @@ struct NodeManifestTests {
         let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
         #expect(throws: CLIConfigurationError.self) { try store.loadManifest() }
         #expect(try Data(contentsOf: path) == data)
-        #expect(!FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
     }
 
-    @Test("schema-less JSON that is not a legacy config is left untouched")
+    @Test("schema-less JSON is left untouched")
     func arbitrarySchemaLessJSONIsUntouched() throws {
         let folder = try TemporaryFolder()
         let path = folder.url.appendingPathComponent("config.json")
@@ -287,7 +204,6 @@ struct NodeManifestTests {
         let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
         #expect(throws: CLIConfigurationError.self) { try store.loadManifest() }
         #expect(try Data(contentsOf: path) == data)
-        #expect(!FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
     }
 
     @Test("mutating an empty existing file fails without replacing it")

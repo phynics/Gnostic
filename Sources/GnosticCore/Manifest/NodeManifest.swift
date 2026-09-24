@@ -92,19 +92,12 @@ public struct AscendantBackendConfiguration: Codable, Equatable, Sendable {
         let bytes = (try? JSONEncoder().encode(self).count) ?? Int.max
         return bytes <= Self.maxJSONBytes
     }
-
-    public typealias JSONValue = ManifestJSONValue
 }
-
-/// Compatibility spelling used by early reset consumers.
-public typealias BackendConfiguration = AscendantBackendConfiguration
 
 /// The versioned, graph-shaped configuration persisted by Gnostic.
 public struct NodeManifest: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 2
     public typealias BackendConfiguration = AscendantBackendConfiguration
-    public typealias Backend = AscendantBackendConfiguration
-    public typealias JSONValue = ManifestJSONValue
 
     public struct Broker: Codable, Equatable, Sendable {
         public var host: String
@@ -144,7 +137,6 @@ public struct NodeManifest: Codable, Equatable, Sendable {
     }
 
     public struct Ascendant: Codable, Equatable, Sendable {
-        public typealias Backend = AscendantBackendConfiguration
         public typealias BackendConfiguration = AscendantBackendConfiguration
         public var id: UUID
         public var kind: String
@@ -250,23 +242,16 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         }
     }
 
-    public typealias BrokerConfiguration = Broker
-    public typealias NodeConfiguration = Node
-    public typealias AscendantConfiguration = Ascendant
-    public typealias TimelineConfiguration = Timeline
-    public typealias WorkspaceConfiguration = Workspace
-
     public var schemaVersion: Int
     public var broker: Broker
     public var node: Node
     public var ascendants: [Ascendant]
     public var timelines: [Timeline]
     public var workspaces: [Workspace]
-    private var legacyMigrationError: Bool
 
     public init(schemaVersion: Int = currentSchemaVersion, broker: Broker, node: Node, ascendants: [Ascendant] = [], timelines: [Timeline] = [], workspaces: [Workspace] = []) {
         self.schemaVersion = schemaVersion; self.broker = broker; self.node = node
-        self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces; self.legacyMigrationError = false
+        self.ascendants = ascendants; self.timelines = timelines; self.workspaces = workspaces
     }
 
     public static func makeDefault(broker: Broker) -> Self {
@@ -356,102 +341,25 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         return String(data: redacted, encoding: .utf8) ?? "{}"
     }
 
-    /// Converts a validated v1 manifest to canonical v2 without changing any
-    /// Node, Ascendant, Timeline, or Workspace identity.
-    public func migratedToV2() throws -> Self {
-        guard !legacyMigrationError else { throw NodeManifestError.invalidBackend(ascendants.first?.id ?? node.id) }
-        var copy = self
-        copy.schemaVersion = Self.currentSchemaVersion
-        copy.legacyMigrationError = false
-        try copy.validate()
-        return copy
-    }
-
     private var identityMap: [UUID: String] {
         var map = [node.id: node.kind]; for value in ascendants { map[value.id] = "ascendant" }; for value in timelines { map[value.id] = value.kind }; for value in workspaces { map[value.id] = value.kind }; return map
     }
 
-    enum CodingKeys: String, CodingKey { case schemaVersion, broker, node, ascendants, timelines, workspaces, llmProfiles }
+    enum CodingKeys: String, CodingKey { case schemaVersion, broker, node, ascendants, timelines, workspaces }
 
-    private struct LegacyRecord: Decodable {
-        let id: UUID
-        let values: [String: ManifestJSONValue]
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: AnyCodingKey.self)
-            id = try container.decode(UUID.self, forKey: AnyCodingKey("id"))
-            var values: [String: ManifestJSONValue] = [:]
-            for key in container.allKeys where key.stringValue != "id" {
-                values[key.stringValue] = try container.decode(ManifestJSONValue.self, forKey: key)
-            }
-            self.values = values
-        }
-    }
-
-    private struct LegacyAscendant: Decodable {
-        let id: UUID
-        let kind: String
-        let name: String
-        let description: String
-        let metadata: [String: String]
-        let profileID: UUID?
-        let timelineID: UUID
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: AnyCodingKey.self)
-            id = try c.decode(UUID.self, forKey: AnyCodingKey("id"))
-            kind = try c.decodeIfPresent(String.self, forKey: AnyCodingKey("kind")) ?? "positronic"
-            name = try c.decode(String.self, forKey: AnyCodingKey("name"))
-            description = try c.decodeIfPresent(String.self, forKey: AnyCodingKey("description")) ?? ""
-            metadata = try c.decodeIfPresent([String: String].self, forKey: AnyCodingKey("metadata")) ?? [:]
-            profileID = try c.decodeIfPresent(UUID.self, forKey: AnyCodingKey("llmProfileID"))
-                ?? c.decodeIfPresent(UUID.self, forKey: AnyCodingKey("profileID"))
-            timelineID = try c.decodeIfPresent(UUID.self, forKey: AnyCodingKey("defaultTimelineID"))
-                ?? c.decode(UUID.self, forKey: AnyCodingKey("timelineID"))
-        }
-    }
-
-    private struct AnyCodingKey: CodingKey {
-        let stringValue: String
-        let intValue: Int? = nil
-        init(_ string: String) { stringValue = string }
-        init?(stringValue: String) { self.init(stringValue) }
-        init?(intValue: Int) { return nil }
-    }
-
+    /// Decodes a current-schema manifest. Any other schema version is
+    /// rejected; the pre-reset v1 migration was retired after 0.4.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard schemaVersion == Self.currentSchemaVersion else {
+            throw NodeManifestError.unsupportedSchemaVersion(schemaVersion)
+        }
         broker = try container.decode(Broker.self, forKey: .broker)
         node = try container.decode(Node.self, forKey: .node)
-        ascendants = []
+        ascendants = try container.decodeIfPresent([Ascendant].self, forKey: .ascendants) ?? []
         timelines = try container.decodeIfPresent([Timeline].self, forKey: .timelines) ?? []
         workspaces = try container.decodeIfPresent([Workspace].self, forKey: .workspaces) ?? []
-        legacyMigrationError = false
-        if schemaVersion == 1 {
-            let profiles = try container.decodeIfPresent([LegacyRecord].self, forKey: .llmProfiles) ?? []
-            legacyMigrationError = profiles.contains { record in
-                (record.values["name"]?.stringValue ?? "").isEmpty || (record.values["provider"]?.stringValue ?? "").isEmpty
-            }
-            let byID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
-            let legacy = try container.decodeIfPresent([LegacyAscendant].self, forKey: .ascendants) ?? []
-            legacyMigrationError = legacy.contains { value in value.profileID != nil && byID[value.profileID!] == nil }
-                || legacyMigrationError
-            ascendants = legacy.map { value in
-                var settings = byID[value.profileID ?? UUID()]?.values ?? [:]
-                let secrets = settings.filter { key, _ in
-                    let normalized = key.lowercased()
-                    return normalized.contains("secret") || normalized.contains("password") || normalized.contains("token") || normalized.hasSuffix("key")
-                }
-                settings = settings.filter { !secrets.keys.contains($0.key) }
-                return Ascendant(id: value.id, name: value.name, defaultTimelineID: value.timelineID, kind: value.kind, description: value.description, metadata: value.metadata, backend: .init(kind: value.kind, settings: settings, secrets: secrets))
-            }
-        } else {
-            if container.contains(.llmProfiles) {
-                throw DecodingError.dataCorruptedError(forKey: .llmProfiles, in: container, debugDescription: "Manifest v2 does not accept a top-level llmProfiles collection")
-            }
-            ascendants = try container.decodeIfPresent([Ascendant].self, forKey: .ascendants) ?? []
-        }
     }
 
     public func encode(to encoder: Encoder) throws {

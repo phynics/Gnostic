@@ -56,6 +56,27 @@ invariants atomically, if a required backend setting cannot be safely bounded
 or redacted, or if compatibility evidence shows the selected major boundary
 cannot distinguish interoperable peers.
 
+## Amendment — migration retired after 0.4
+
+[#381](https://github.com/phynics/Gnostic/issues/381) retires the migration
+paths this ADR introduced. Gnostic 0.3 through 0.4 carried them. After 0.4,
+loading a schema v1 manifest fails with `unsupportedSchemaVersion` and a
+message that names 0.4 as the last release that migrated it. A pre-manifest
+flat configuration file is reported as malformed. Neither file is rewritten. The
+`_legacyID` marker written by the pre-#164 CLI is no longer stripped, and the
+`.legacy` backup is no longer created.
+
+Invariant: the CLI reads and writes only the current manifest schema, and never
+rewrites a file it rejects.
+
+Rejected alternative: keep the migrations indefinitely. They preserved an
+identity model (top-level `llmProfiles`) that this ADR removed, and they were
+the only remaining readers of it.
+
+The protocol-major-2 wire fallbacks are unaffected. These are the `isAvailable`
+Workspace field and the unpaginated `workspace.list` request. Retiring them
+requires a new protocol major.
+
 ## Links
 
 - [Epic #140](https://github.com/phynics/Gnostic/issues/140)

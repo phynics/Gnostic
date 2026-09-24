@@ -13,7 +13,7 @@ struct ResourceCommandTests {
         let help = ConfigCommand.helpMessage()
 
         for command in [
-            "init", "show", "validate", "path", "broker", "positronic", "ascendant", "timeline", "workspace",
+            "init", "show", "validate", "path", "broker", "backend", "ascendant", "timeline", "workspace",
         ] {
             #expect(help.contains(command), "missing config command: \(command)")
         }
@@ -22,16 +22,19 @@ struct ResourceCommandTests {
         #expect(help.contains("--config"))
 
         #expect(ConfigCommand.Broker.helpMessage().contains("set-password"))
-        #expect(ConfigCommand.Positronic.helpMessage().contains("set-api-key"))
+        #expect(ConfigCommand.Backend.helpMessage().contains("set-secret"))
         #expect(!ConfigCommand.Ascendant.helpMessage().contains("llm-profile"))
         #expect(ConfigCommand.Timeline.helpMessage().contains("attach-workspace"))
         #expect(ConfigCommand.Timeline.helpMessage().contains("detach-workspace"))
     }
 
-    @Test("generic profile commands are not registered")
+    @Test("generic profile and retired Positronic commands are not registered")
     func genericProfileCommandsAreRemoved() {
         #expect(throws: (any Error).self) {
             _ = try GnosticCLI.parseAsRoot(["config", "llm"])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try GnosticCLI.parseAsRoot(["config", "positronic", "set", UUID().uuidString, "--provider", "openai"])
         }
         #expect(throws: (any Error).self) {
             _ = try GnosticCLI.parseAsRoot(["config", "ascendant", "add", "--llm-profile", UUID().uuidString])
@@ -90,10 +93,8 @@ struct ResourceCommandTests {
             manifest.ascendants[0].backend.settings["custom"] = .string("preserved")
         }
 
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: secondID.uuidString, provider: "anthropic", endpoint: nil,
-            model: "sonnet", utilityModel: nil, fastModel: nil, store: store
-        )
+        try ConfigCommandLogic.setBackendValue(ascendantID: secondID.uuidString, key: "provider", value: "anthropic", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: secondID.uuidString, key: "model", value: "sonnet", store: store)
         let updated = try store.loadManifest()
         #expect(updated.ascendants.first { $0.id == firstID }?.backend.settings["custom"] == .string("preserved"))
         #expect(updated.ascendants.first { $0.id == secondID }?.backend.settings["provider"] == .string("anthropic"))
@@ -112,11 +113,8 @@ struct ResourceCommandTests {
             manifest.ascendants[0].kind = "legacy-label"
         }
 
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: try store.loadManifest().ascendants[0].id.uuidString,
-            provider: "stub", endpoint: nil, model: "deterministic",
-            utilityModel: nil, fastModel: nil, store: store
-        )
+        try ConfigCommandLogic.setBackendValue(ascendantID: try store.loadManifest().ascendants[0].id.uuidString, key: "provider", value: "stub", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: try store.loadManifest().ascendants[0].id.uuidString, key: "model", value: "deterministic", store: store)
         #expect(try store.loadManifest().ascendants[0].backend.settings["provider"] == .string("stub"))
     }
 
@@ -153,12 +151,9 @@ struct ResourceCommandTests {
         )
         let secondaryTimeline = try #require(try store.loadManifest().timelines.last)
 
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: initial.ascendants[0].id.uuidString,
-            provider: "stub", endpoint: nil, model: "deterministic",
-            utilityModel: nil, fastModel: nil, store: store
-        )
-        try ConfigCommandLogic.clearPositronic(ascendantID: initial.ascendants[0].id.uuidString, store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: initial.ascendants[0].id.uuidString, key: "provider", value: "stub", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: initial.ascendants[0].id.uuidString, key: "model", value: "deterministic", store: store)
+        try ConfigCommandLogic.clearBackend(ascendantID: initial.ascendants[0].id.uuidString, store: store)
         try ConfigCommandLogic.updateTimeline(
             id: secondaryTimeline.id.uuidString,
             title: nil,
@@ -179,7 +174,7 @@ struct ResourceCommandTests {
         try ConfigCommandLogic.initialize(store: store)
         try ConfigCommandLogic.setBrokerPassword("broker-secret", store: store)
         let manifest = try store.loadManifest()
-        try ConfigCommandLogic.setPositronicAPIKey(id: manifest.ascendants[0].id.uuidString, value: "llm-secret", store: store)
+        try ConfigCommandLogic.setBackendSecret(ascendantID: manifest.ascendants[0].id.uuidString, key: "apiKey", value: "llm-secret", store: store)
 
         var output = ""
         try ConfigCommandLogic.show(store: store, json: true, writeOutput: { output = $0 })
@@ -232,11 +227,9 @@ struct ResourceCommandTests {
         )
         manifest = try store.loadManifest()
         let secondaryAscendant = try #require(manifest.ascendants.last)
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: secondaryAscendant.id.uuidString, provider: "anthropic",
-            endpoint: "https://example.test", model: "sonnet", utilityModel: nil,
-            fastModel: nil, store: store
-        )
+        try ConfigCommandLogic.setBackendValue(ascendantID: secondaryAscendant.id.uuidString, key: "provider", value: "anthropic", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: secondaryAscendant.id.uuidString, key: "endpoint", value: "https://example.test", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: secondaryAscendant.id.uuidString, key: "model", value: "sonnet", store: store)
         manifest = try store.loadManifest()
         try ConfigCommandLogic.addTimeline(title: "Unoperated", operatingAscendantID: nil, store: store)
         manifest = try store.loadManifest()
@@ -289,7 +282,7 @@ struct ResourceConfigurationSubprocessTests {
         let apiSecret = "stdin-only-api-key"
         let setAPIKey = try run(
             binary: binary,
-            arguments: ["config", "positronic", "set-api-key", ascendantID, "--config", path.path],
+            arguments: ["config", "backend", "set-secret", ascendantID, "apiKey", "--config", path.path],
             stdin: apiSecret + "\n"
         )
         #expect(setAPIKey.status == 0, Comment(rawValue: setAPIKey.stderr))

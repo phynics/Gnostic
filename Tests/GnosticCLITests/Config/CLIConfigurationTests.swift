@@ -53,10 +53,11 @@ struct CLIConfigurationTests {
         try store.setValue("1884", for: .mqttPort)
         try store.setValue("my-namespace", for: .mqttNamespace)
         try store.setValue("alice", for: .mqttUsername)
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: ascendantID, provider: "anthropic", endpoint: "https://api.anthropic.com",
-            model: "claude-sonnet", utilityModel: "claude-haiku", fastModel: "claude-haiku", store: store
-        )
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "provider", value: "anthropic", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "endpoint", value: "https://api.anthropic.com", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "model", value: "claude-sonnet", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "utilityModel", value: "claude-haiku", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "fastModel", value: "claude-haiku", store: store)
 
         let config = try store.load()
 
@@ -80,7 +81,7 @@ struct CLIConfigurationTests {
         let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
 
         try store.setValue("s3cr3t", for: .mqttPassword)
-        try ConfigCommandLogic.setPositronicAPIKey(id: ascendantID, value: "sk-ant-123", store: store)
+        try ConfigCommandLogic.setBackendSecret(ascendantID: ascendantID, key: "apiKey", value: "sk-ant-123", store: store)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: store.path().path)
         let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue
@@ -213,10 +214,9 @@ struct CLIConfigurationTests {
         try store.setValue("broker.example.com", for: .mqttHost)
         try store.setValue("1884", for: .mqttPort)
         try store.setValue("alice", for: .mqttUsername)
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: ascendantID, provider: "anthropic", endpoint: "https://api.anthropic.com",
-            model: "claude-sonnet", utilityModel: nil, fastModel: nil, store: store
-        )
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "provider", value: "anthropic", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "endpoint", value: "https://api.anthropic.com", store: store)
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "model", value: "claude-sonnet", store: store)
 
         let config = try store.load()
 
@@ -242,10 +242,7 @@ struct CLIConfigurationTests {
         let unset = try store.load()
         #expect(unset.llmConfiguration() == nil)
 
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: ascendantID, provider: "nonexistent", endpoint: nil,
-            model: nil, utilityModel: nil, fastModel: nil, store: store
-        )
+        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "provider", value: "nonexistent", store: store)
         let unknown = try store.load()
         #expect(unknown.llmConfiguration() == nil)
     }

@@ -55,21 +55,10 @@ struct NodeAssembly {
                 throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
             }
             let workspace = try adapters.workspaces.makeWorkspace(for: configuration)
-            let reference: WorkspaceReference
-            if adapters.workspaces.usesProductFactory(kind: configuration.kind) {
-                let ownedReference = workspace.reference
-                guard ownedReference.id == configuration.id,
-                      ownedReference.uri.description == uri.description else {
-                    throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
-                }
-                reference = ownedReference
-            } else {
-                reference = WorkspaceReference(
-                    id: configuration.id,
-                    uri: uri,
-                    location: .runtime,
-                    tools: try await (workspace as? any WorkspaceToolProvider)?.listTools() ?? []
-                )
+            let reference = workspace.reference
+            guard reference.id == configuration.id,
+                  reference.uri.description == uri.description else {
+                throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
             }
             references[configuration.id] = reference
             workspaces[configuration.id] = workspace

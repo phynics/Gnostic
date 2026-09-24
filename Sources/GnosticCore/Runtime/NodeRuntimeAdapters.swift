@@ -78,25 +78,6 @@ public struct AscendantAdapterRegistry: Sendable {
     /// The kind served by the bundled Positronic backend.
     public static let positronicKind = "positronic"
 
-    /// Registers a Positronic language model under an arbitrary kind.
-    ///
-    /// This seam accepted any `kind` but only ever built a
-    /// ``PositronicAscendantAdapter``, so a foreign kind produced a backend
-    /// that failed semantic validation at startup with a message that did not
-    /// name the mistake.
-    @available(*, deprecated, message: "Use registerPositronicBackend(languageModel:) for the bundled backend, or registerBackend(kind:factory:) for any other kind.")
-    public mutating func register(kind: String, languageModel factory: @escaping @Sendable (_ ascendant: NodeManifest.Ascendant, _ backend: AscendantBackendConfiguration) -> any LLMStreamClient) {
-        guard kind == Self.positronicKind else {
-            factories[kind] = { _, _, _, _ in
-                throw AscendantBackendError.invalidConfiguration(
-                    "Backend kind '\(kind)' cannot be registered through the Positronic language-model seam, which only builds a Positronic backend. Use registerBackend(kind:factory:) instead."
-                )
-            }
-            return
-        }
-        registerPositronicBackend(languageModel: factory)
-    }
-
     @MainActor
     func makeBackend(for ascendant: NodeManifest.Ascendant, backend: AscendantBackendConfiguration, services: AscendantBackendServices, timelines: [NodeManifest.Timeline]) async throws -> any AscendantBackend {
         try AscendantBackendConfigurationValidator.validate(backend)
@@ -113,16 +94,12 @@ public struct AscendantAdapterRegistry: Sendable {
 
 /// A registry of local Workspace adapters keyed by the manifest's `kind` field.
 public struct WorkspaceAdapterRegistry: Sendable {
-    public typealias Factory = @Sendable (_ configuration: NodeManifest.Workspace, _ reference: WorkspaceReference) throws -> any WorkspaceProvider
-    /// Preferred factory seam. The adapter owns its final reference and tool
-    /// projection instead of receiving a runtime-owned provisional reference.
+    /// The adapter owns its final reference and tool projection.
     public typealias ProductFactory = @Sendable (_ configuration: NodeManifest.Workspace) throws -> any WorkspaceProvider
 
-    private var factories: [String: Factory]
     private var productFactories: [String: ProductFactory]
 
     public init() {
-        factories = [:]
         productFactories = ["echo": { configuration in
             guard let uri = WorkspaceURI(parsing: configuration.uri) else {
                 throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
@@ -137,52 +114,23 @@ public struct WorkspaceAdapterRegistry: Sendable {
         }]
     }
 
-    /// Registers a legacy factory that accepts a compatibility reference.
-    /// New adapters should use `registerProduct(kind:factory:)` so that the
-    /// adapter, rather than NodeRuntime, owns its identity and tools.
-    @available(*, deprecated, message: "Use registerProduct(kind:factory:) so the adapter owns its final WorkspaceReference.")
-    public mutating func register(kind: String, factory: @escaping Factory) {
-        factories[kind] = factory
-        productFactories.removeValue(forKey: kind)
-    }
-
     public mutating func registerProduct(kind: String, factory: @escaping ProductFactory) {
         productFactories[kind] = factory
-        factories.removeValue(forKey: kind)
     }
 
-    /// Every Workspace kind this registry can build, through either seam.
-    public var registeredKinds: Set<String> { Set(factories.keys).union(productFactories.keys) }
+    /// Every Workspace kind this registry can build.
+    public var registeredKinds: Set<String> { Set(productFactories.keys) }
 
     @MainActor
     func makeWorkspace(for configuration: NodeManifest.Workspace) throws -> any WorkspaceProvider {
-        if let factory = productFactories[configuration.kind] {
-            return try factory(configuration)
-        }
-        guard let factory = factories[configuration.kind] else {
+        guard let factory = productFactories[configuration.kind] else {
             throw NodeRuntimeError.unsupportedWorkspaceKind(configuration.kind)
         }
-        guard let uri = WorkspaceURI(parsing: configuration.uri) else {
-            throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
-        }
-        // The runtime cannot know a legacy adapter's tools, so it must not
-        // invent any. An adapter that projects the reference it is handed
-        // would otherwise advertise tools belonging to another implementation.
-        // NodeAssembly derives the advertised reference from `listTools()`.
-        return try factory(configuration, WorkspaceReference(
-            id: configuration.id,
-            uri: uri,
-            location: .runtime,
-            tools: []
-        ))
-    }
-
-    func usesProductFactory(kind: String) -> Bool {
-        productFactories[kind] != nil
+        return try factory(configuration)
     }
 
     func validate(kinds: some Sequence<String>) throws {
-        for kind in kinds where factories[kind] == nil && productFactories[kind] == nil {
+        for kind in kinds where productFactories[kind] == nil {
             throw NodeRuntimeError.unsupportedWorkspaceKind(kind)
         }
     }
@@ -261,8 +209,7 @@ public struct EchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Senda
     public init(reference: WorkspaceReference) { self.reference = reference }
 
     /// Echo owns its tool projection rather than trusting the reference it
-    /// was constructed with, so it advertises the same tools through both the
-    /// product and the legacy registration seams.
+    /// was constructed with.
     public func listTools() async throws -> [ToolReference] { Self.toolDefinitions }
 
     public func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {

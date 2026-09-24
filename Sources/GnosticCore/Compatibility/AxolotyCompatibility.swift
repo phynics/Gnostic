@@ -751,7 +751,7 @@ public final class CommunicationManager {
         return responseStream
     }
 
-    public func call(operation: String, parameters: String? = nil, context: ContextFilter? = nil, timeout: Duration) async throws -> UnaryCallResult {
+    public func call(operation: String, parameters: String? = nil, context: ObjectFilter? = nil, timeout: Duration) async throws -> UnaryCallResult {
         let id = UUID(); let stream = subscribeResponse(correlationID: id.uuidString.lowercased())
         var payload: [String: Any] = [:]
         if let parameters { payload["parameters"] = try JSONSerialization.jsonObject(with: Data(parameters.utf8)) }
@@ -965,7 +965,6 @@ public final class CommunicationManager {
     }
 }
 
-public typealias ContextFilter = ObjectFilter
 
 public struct UnaryCallResult: Equatable, Sendable { public let result: String; public let executionInfo: String?; public let sourceId: String? }
 public struct RemoteCallFailure: Error, Equatable, Sendable { public let code: Int; public let message: String; public init(code: Int, message: String) { self.code = code; self.message = message } }
