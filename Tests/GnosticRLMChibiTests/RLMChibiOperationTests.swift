@@ -10,9 +10,20 @@ struct RLMChibiOperationTests {
     func cellTimeoutInterruptIsInLaunchSpec() {
         let configuration = RLMChibiWorkerConfiguration(
             runID: "r",
-            workerScriptPath: "/worker.scm"
+            workerScriptPath: "/worker.scm",
+            limitExecutablePath: "/gnostic-rlm-limit-exec"
         )
-        #expect(RLMChibiExecutor.launchSpec(for: configuration).cellTimeoutInterruptSignal == .user1)
+        let launchSpec = RLMChibiExecutor.launchSpec(for: configuration)
+        #expect(launchSpec.cellTimeoutInterruptSignal == .user1)
+        #expect(launchSpec.launchPath == "/gnostic-rlm-limit-exec")
+        #expect(launchSpec.requirements.contains(.limitTool("/gnostic-rlm-limit-exec")))
+        #if os(Linux)
+        #expect(launchSpec.arguments.prefix(3) == ["--cpu=30", "--as=268435456", "--"])
+        #else
+        #expect(launchSpec.arguments.prefix(2) == ["--cpu=30", "--"])
+        #expect(launchSpec.arguments.suffix(4) == ["--max-address-space", "-1", "--max-cpu", "30"])
+        #endif
+        #expect(launchSpec.arguments.contains(configuration.executablePath))
     }
 
     @Test("a one-argument leaf query defaults to the fast tier")

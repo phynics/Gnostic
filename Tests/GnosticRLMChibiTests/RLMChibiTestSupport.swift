@@ -14,6 +14,8 @@ enum RLMChibiTestSupport {
     static var chibiPath: String? {
         let candidates = [
             ProcessInfo.processInfo.environment["GNOSTIC_CHIBI"],
+            "/opt/homebrew/bin/chibi-scheme",
+            "/usr/bin/chibi-scheme",
             "/usr/local/bin/chibi-scheme",
         ]
         for candidate in candidates {
@@ -28,8 +30,16 @@ enum RLMChibiTestSupport {
     }
 
     static var isAvailable: Bool {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         chibiPath != nil && FileManager.default.fileExists(atPath: workerScriptPath)
+        #else
+        false
+        #endif
+    }
+
+    static var hasProcFS: Bool {
+        #if os(Linux)
+        true
         #else
         false
         #endif
@@ -44,7 +54,7 @@ enum RLMChibiTestSupport {
         var configuration = RLMChibiWorkerConfiguration(
             runID: runID,
             workerScriptPath: workerScriptPath,
-            executablePath: chibiPath ?? "/usr/local/bin/chibi-scheme"
+            executablePath: chibiPath ?? RLMChibiWorkerConfiguration.defaultExecutablePath
         )
         configure(&configuration)
         return RLMChibiWorkerSession(configuration: configuration, host: host, cancellation: cancellation)

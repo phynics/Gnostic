@@ -344,7 +344,11 @@ struct RLMChibiWorkerSessionTests {
 
         let ready = try #require(await session.ready)
         #expect(ready.cpuLimitSeconds == 7)
+        #if os(Linux)
         #expect(ready.addressSpaceBytes == 256 * 1_024 * 1_024)
+        #else
+        #expect(ready.addressSpaceBytes == -1)
+        #endif
 
         await session.shutdown()
     }
@@ -402,7 +406,7 @@ struct RLMChibiWorkerSessionTests {
         await session.shutdown()
     }
 
-    @Test("the worker process holds only its standard file descriptors")
+    @Test("the worker process holds only its standard file descriptors", .enabled(if: RLMChibiTestSupport.hasProcFS))
     func fileDescriptorsAbsent() async throws {
         let host = RLMChibiRecordingHost()
         let session = RLMChibiTestSupport.session(host: host)
@@ -619,7 +623,7 @@ struct RLMChibiWorkerConfigurationTests {
                 runID: "run",
                 workerScriptPath: "/nonexistent/worker.scm",
                 executablePath: "/nonexistent/chibi-scheme",
-                limitExecutablePath: "/nonexistent/prlimit"
+                limitExecutablePath: "/nonexistent/gnostic-rlm-limit-exec"
             ),
             host: RLMChibiRecordingHost()
         )

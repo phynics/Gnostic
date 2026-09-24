@@ -5,9 +5,8 @@ import GnosticRLMProcessWorker
 
 /// GNU Guile 3.0 as an RLM worker executor.
 ///
-/// Guile applies its own process limits: the worker script calls `setrlimit`
-/// for address space and CPU from the arguments below, and bounds each cell's
-/// time and allocation itself.
+/// The host limit launcher applies CPU and, on Linux, address-space limits
+/// before Guile starts. Guile bounds each cell's time and allocation itself.
 public enum RLMGuileExecutor: RLMWorkerExecutor {
     public typealias Configuration = RLMGuileWorkerConfiguration
 
@@ -22,18 +21,24 @@ public enum RLMGuileExecutor: RLMWorkerExecutor {
     }
 
     public static func launchSpec(for configuration: RLMGuileWorkerConfiguration) -> RLMWorkerLaunchSpec {
-        RLMWorkerLaunchSpec(
+        var arguments = ["--cpu=\(configuration.maxCPUSeconds)"]
+        #if os(Linux)
+        arguments.append("--as=\(configuration.maxAddressSpaceBytes)")
+        #endif
+        arguments += [
+            "--",
+            configuration.executablePath,
+            "--no-auto-compile",
+            "-s", configuration.workerScriptPath,
+        ]
+        return RLMWorkerLaunchSpec(
             requirements: [
                 .executable(configuration.executablePath),
+                .limitTool(configuration.limitExecutablePath),
                 .workerScript(configuration.workerScriptPath),
             ],
-            launchPath: configuration.executablePath,
-            arguments: [
-                "--no-auto-compile",
-                "-s", configuration.workerScriptPath,
-                "--max-address-space", String(configuration.maxAddressSpaceBytes),
-                "--max-cpu", String(configuration.maxCPUSeconds),
-            ],
+            launchPath: configuration.limitExecutablePath,
+            arguments: arguments,
             environment: configuration.environment,
             runID: configuration.runID,
             profile: configuration.profile,

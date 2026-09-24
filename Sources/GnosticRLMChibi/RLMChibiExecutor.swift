@@ -6,11 +6,12 @@ import GnosticRLMProcessWorker
 /// Chibi Scheme 0.12, built with the reviewed flag set, as an RLM worker
 /// executor.
 ///
-/// Chibi has no `setrlimit` binding, so `prlimit` applies the CPU and
+/// Chibi has no `setrlimit` binding, so the host limit launcher applies CPU and
 /// address-space limits before the interpreter starts, and `CHIBI_MAX_ALLOC`
 /// caps the limited-malloc heap. The host sends `SIGUSR1` at the configured
 /// per-cell time limit; the patched VM converts it to a recoverable Scheme
-/// exception. The reviewed build is Linux-only.
+/// exception. Darwin enforces the CPU limit and records address-space limits as
+/// unavailable; Linux enforces both process limits.
 public enum RLMChibiExecutor: RLMWorkerExecutor {
     public typealias Configuration = RLMChibiWorkerConfiguration
 
@@ -18,6 +19,8 @@ public enum RLMChibiExecutor: RLMWorkerExecutor {
 
     public static var isSupportedOnCurrentPlatform: Bool {
         #if os(Linux)
+        true
+        #elseif os(macOS)
         true
         #else
         false
@@ -27,6 +30,20 @@ public enum RLMChibiExecutor: RLMWorkerExecutor {
     public static func launchSpec(for configuration: RLMChibiWorkerConfiguration) -> RLMWorkerLaunchSpec {
         var environment = configuration.environment
         environment["CHIBI_MAX_ALLOC"] = String(configuration.maxHeapBytes)
+        var arguments = ["--cpu=\(configuration.maxCPUSeconds)"]
+        #if os(Linux)
+        arguments.append("--as=\(configuration.maxAddressSpaceBytes)")
+        let reportedAddressSpace = String(configuration.maxAddressSpaceBytes)
+        #else
+        let reportedAddressSpace = "-1"
+        #endif
+        arguments += [
+            "--",
+            configuration.executablePath,
+            configuration.workerScriptPath,
+            "--max-address-space", reportedAddressSpace,
+            "--max-cpu", String(configuration.maxCPUSeconds),
+        ]
         return RLMWorkerLaunchSpec(
             requirements: [
                 .executable(configuration.executablePath),
@@ -34,15 +51,7 @@ public enum RLMChibiExecutor: RLMWorkerExecutor {
                 .workerScript(configuration.workerScriptPath),
             ],
             launchPath: configuration.limitExecutablePath,
-            arguments: [
-                "--cpu=\(configuration.maxCPUSeconds)",
-                "--as=\(configuration.maxAddressSpaceBytes)",
-                "--",
-                configuration.executablePath,
-                configuration.workerScriptPath,
-                "--max-address-space", String(configuration.maxAddressSpaceBytes),
-                "--max-cpu", String(configuration.maxCPUSeconds),
-            ],
+            arguments: arguments,
             environment: environment,
             runID: configuration.runID,
             profile: configuration.profile,

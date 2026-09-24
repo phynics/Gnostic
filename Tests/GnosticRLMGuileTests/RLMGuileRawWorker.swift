@@ -40,8 +40,6 @@ final class RLMGuileRawWorker: @unchecked Sendable { // SAFETY: a test drives on
         process.arguments = [
             "--no-auto-compile",
             "-s", RLMGuileTestSupport.workerScriptPath,
-            "--max-address-space", "268435456",
-            "--max-cpu", "10",
         ]
         process.environment = environment
         let inputPipe = Pipe()

@@ -18,8 +18,9 @@ termination boundary.
 
 The parent-side client is the shared
 [`RLMProcessWorkerSession.swift`](../../Sources/GnosticRLMProcessWorker/RLMProcessWorkerSession.swift),
-which supervises every executor. What is specific to Chibi, the `prlimit`
-wrapper, `CHIBI_MAX_ALLOC` and the Linux-only platform gate, lives in
+which supervises every executor. What is specific to Chibi, the shared
+`gnostic-rlm-limit-exec` launcher, `CHIBI_MAX_ALLOC` and the Linux-only
+platform gate, lives in
 [`RLMChibiExecutor.swift`](../../Sources/GnosticRLMChibi/RLMChibiExecutor.swift).
 The shared frame codec and profile validator live in
 [`RLMSchemeProfile.swift`](../../Sources/GnosticRLM/RLMSchemeProfile.swift).
@@ -34,8 +35,8 @@ build verifies its SHA256
 `sha256sum -c` before extraction. Chibi is a pinned system dependency outside
 SwiftPM, so the repository SBOM target does not cover it.
 
-The build applies the reviewed hardening set and the cell-timeout patch, then
-builds a static binary and installs the one runtime file it needs:
+The Linux dev-image build applies the reviewed hardening set and cell-timeout
+patch, then builds a static binary and installs the one runtime file it needs:
 
 1. Patch `include/chibi/features.h`.
 2. Apply [`chibi-cell-timeout.patch`](../../.devcontainer/patches/chibi-cell-timeout.patch) to Chibi's
@@ -48,9 +49,40 @@ builds a static binary and installs the one runtime file it needs:
 The patch is the authoritative flag list; see the `CHIBI_SHA256` step in
 [`.devcontainer/Dockerfile`](../../.devcontainer/Dockerfile).
 
-The build is verified against Linux only. macOS support and benchmark
-measurements are deferred to issue #181; there is no verified macOS Chibi build,
-and the session reports `unsupportedPlatform` outside Linux. See
+## Shared process limit launcher
+
+Both worker executors require `gnostic-rlm-limit-exec`. The dev image builds and
+installs it from the checked-in C source. To install it on a macOS host with
+Homebrew's compiler, choose the Homebrew prefix:
+
+```sh
+PREFIX="$(brew --prefix)" bash Scripts/install-rlm-limit-exec.sh
+```
+
+The launcher verifies each requested resource limit with `getrlimit` before it
+replaces itself with the interpreter. Linux applies CPU and address-space
+limits. Darwin applies and verifies CPU limits; address-space containment is a
+documented gap because Darwin does not provide an equivalent enforceable
+`RLIMIT_AS` bound for these workers. The worker's own allocation limits and the
+parent's wall deadline remain active.
+
+| Containment property | Linux | macOS |
+| --- | --- | --- |
+| CPU | Host `RLIMIT_CPU`, verified before exec | Host `RLIMIT_CPU`, verified before exec |
+| Address space | Host `RLIMIT_AS`, verified before exec | No `RLIMIT_AS`; Chibi's Scheme heap cap and Guile's per-cell allocation limit remain |
+| Wall time | Shared parent deadline terminates the worker | Shared parent deadline terminates the worker |
+| File descriptors | Worker tests inspect the Linux child; no separate `RLIMIT_NOFILE` | No dedicated `RLIMIT_NOFILE`; child descriptor inventory is not verified by the macOS gate |
+| Environment | Executor supplies a scrubbed environment | Executor supplies the same scrubbed environment |
+
+The pinned, patched Chibi build is reproduced on macOS by
+`bash Scripts/build-chibi-rlm.sh`; it verifies the upstream archive SHA256 and
+the reviewed VM guards before compiling. Install Guile 3.0 as a Homebrew system
+dependency (`brew install guile`). Gnostic launches that separate executable
+and does not bundle or redistribute Guile. Run `make macos-rlm-smoke` to build
+both tools and exercise the session, denial, signal, and parity suites.
+
+The macOS build and containment differences are tracked by issue #353.
+Benchmark measurements are tracked by issue #354. See
 [Scope and deferrals](#scope-and-deferrals).
 
 ## Reviewed flags
@@ -141,7 +173,8 @@ characterizes these contracts on both workers.
 
 Chibi has no binding for `setrlimit`, and `guard` is not part of this build, so
 the worker uses `with-exception-handler` and a captured continuation for
-evaluation, and the parent applies the CPU and address-space rlimits.
+evaluation. The parent launches both executors through the shared limit
+launcher described above. Guile's worker does not apply process limits itself.
 
 ## Wire rules
 
@@ -191,6 +224,7 @@ values have the same wire shape in both workers.
 
 ## Scope and deferrals
 
-macOS support is deferred to issue #353, and live impact measurements belong to
-issue #354. This worker remains Linux-only; #181's captured benchmark is
-historical operational evidence, not a runtime-selection result.
+macOS support and its containment differences are tracked by issue #353, and
+live impact measurements belong to issue #354. Until the macOS smoke job passes,
+macOS Chibi support remains unverified. #181's captured benchmark is historical
+operational evidence, not a runtime-selection result.

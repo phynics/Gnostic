@@ -6,13 +6,39 @@ import GnosticRLM
 
 @Suite("RLM Guile host-call mapping")
 struct RLMGuileOperationTests {
-    @Test("Guile retains its in-worker cell limit and requests no process interrupt")
-    func cellTimeoutInterruptIsNotInLaunchSpec() {
+    @Test("Guile receives host-owned process limits before launch")
+    func processLimitsAreInLaunchSpec() {
         let configuration = RLMGuileWorkerConfiguration(
             runID: "r",
-            workerScriptPath: "/worker.scm"
+            workerScriptPath: "/worker.scm",
+            limitExecutablePath: "/gnostic-rlm-limit-exec"
         )
-        #expect(RLMGuileExecutor.launchSpec(for: configuration).cellTimeoutInterruptSignal == nil)
+        let launchSpec = RLMGuileExecutor.launchSpec(for: configuration)
+        #expect(launchSpec.launchPath == "/gnostic-rlm-limit-exec")
+        #expect(launchSpec.requirements.contains(.limitTool("/gnostic-rlm-limit-exec")))
+        #if os(Linux)
+        #expect(launchSpec.arguments.prefix(3) == ["--cpu=30", "--as=268435456", "--"])
+        #else
+        #expect(launchSpec.arguments.prefix(2) == ["--cpu=30", "--"])
+        #endif
+        #expect(launchSpec.arguments.contains(configuration.executablePath))
+        #expect(launchSpec.arguments.contains("/worker.scm"))
+    }
+
+    @Test("Guile refuses to start without the required host limit launcher")
+    func missingLimitLauncherIsReported() async {
+        let session = RLMGuileWorkerSession(
+            configuration: RLMGuileWorkerConfiguration(
+                runID: "r",
+                workerScriptPath: "/worker.scm",
+                executablePath: "/bin/sh",
+                limitExecutablePath: "/missing/gnostic-rlm-limit-exec"
+            ),
+            host: RLMWorkerClosureHost { _ in .progress }
+        )
+        await #expect(throws: RLMGuileWorkerError.limitToolMissing("/missing/gnostic-rlm-limit-exec")) {
+            try await session.start()
+        }
     }
 
     @Test("a one-argument leaf query defaults to the fast tier")

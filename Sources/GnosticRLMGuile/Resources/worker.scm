@@ -9,27 +9,6 @@
              (ice-9 binary-ports)
              (rnrs bytevectors))
 
-(define (parse-options args)
-  (if (null? args)
-      '()
-      (cons (cons (car args)
-                  (if (null? (cdr args)) "" (cadr args)))
-            (parse-options (if (null? (cdr args)) '() (cddr args))))))
-
-(define options (parse-options (cdr (command-line))))
-
-(define (option-number key default)
-  (let ((entry (assoc key options)))
-    (if entry (string->number (cdr entry)) default)))
-
-(define (apply-limit resource value)
-  (catch #t
-    (lambda () (setrlimit resource value value))
-    (lambda args #f)))
-
-(apply-limit 'as (option-number "--max-address-space" 268435456))
-(apply-limit 'cpu (option-number "--max-cpu" 30))
-
 (define input-port (current-input-port))
 (define output-port (current-output-port))
 
