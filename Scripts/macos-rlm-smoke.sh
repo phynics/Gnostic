@@ -14,6 +14,11 @@ command -v brew >/dev/null
 command -v guile >/dev/null
 guile --version | grep -F "GNU Guile) 3.0."
 
+mkdir -p .testing
+swift build --target GnosticACPAscendant --disable-automatic-resolution --build-system native \
+    --quiet -Xswiftc -warnings-as-errors \
+    | tee .testing/macos-acp-target-build.log
+
 prefix=$(brew --prefix)
 PREFIX="$prefix" bash Scripts/install-rlm-limit-exec.sh
 PREFIX="$prefix" bash Scripts/build-chibi-rlm.sh
@@ -25,7 +30,6 @@ if "$launcher" --cpu=10 --as=268435456 -- /usr/bin/true; then
     exit 1
 fi
 
-mkdir -p .testing
 export GNOSTIC_GUILE="$(command -v guile)"
 export GNOSTIC_CHIBI="$prefix/bin/chibi-scheme"
 

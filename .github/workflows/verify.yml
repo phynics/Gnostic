@@ -115,7 +115,7 @@ jobs:
           retention-days: 7
 
   macos-rlm:
-    name: macOS RLM executors
+    name: macOS ACP target and RLM executors
     runs-on: macos-26
     timeout-minutes: 60
     steps:
