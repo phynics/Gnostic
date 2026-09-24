@@ -180,13 +180,22 @@ public struct WorkspaceOpsProvider: Sendable {
     }
 
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
+        guard [Self.listOperation, Self.attachOperation, Self.detachOperation].contains(operation) else {
+            return .failure(code: 404, reasonCode: "unknownWorkspaceOperation", message: "Unknown workspace operation")
+        }
+        if let failure = GnosticCallHandling.protocolFailure(
+            parameters,
+            invalidReasonCode: "invalidWorkspacePayload",
+            invalidMessage: "Invalid workspace payload"
+        ) {
+            return failure
+        }
         switch operation {
         case Self.listOperation:
-            if let error = protocolError(parameters) { return error }
             guard let request = decodeList(parameters) else {
-                return failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
+                return .failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
             }
-            do {
+            return try await run {
                 let listings = try await list()
                 try listings.forEach { try GnosticProtocol.validate($0.protocolMajor) }
                 switch request {
@@ -194,64 +203,61 @@ public struct WorkspaceOpsProvider: Sendable {
                     // A legacy client has no way to consume nextOffset. Return
                     // the complete result when it fits; otherwise require the
                     // explicit paginated request instead of silently truncating.
-                    guard let encoded = try? GnosticWirePayload.encode(
+                    guard let result = try? CallHandlerResult.encoded(
                         WorkspaceListResult(workspaces: listings),
                         context: "workspace.list result"
                     ) else {
-                        return failure(
+                        return .failure(
                             code: 400,
                             reasonCode: "paginationRequired",
                             message: "workspace.list requires WorkspaceListRequest pagination"
                         )
                     }
-                    return .success(result: String(decoding: encoded, as: UTF8.self))
+                    return result
                 case let .paged(request):
                     guard request.offset >= 0, request.limit > 0 else {
-                        return failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
+                        return .failure(code: 400, reasonCode: "invalidWorkspaceListPayload", message: "Invalid workspace.list payload")
                     }
-                    let pageLimit = min(request.limit, GnosticWirePayload.maximumListItems)
-                    let page = boundedPage(listings, offset: request.offset, limit: pageLimit)
-                    let nextOffset = request.offset + page.count < listings.count ? request.offset + page.count : nil
-                    let encoded = try GnosticWirePayload.encode(
-                        WorkspaceListResult(workspaces: page, nextOffset: nextOffset),
+                    let page = GnosticCallHandling.boundedPage(
+                        listings,
+                        offset: request.offset,
+                        limit: request.limit,
+                        context: "workspace.list result"
+                    ) { WorkspaceListResult(workspaces: $0, nextOffset: $1) }
+                    return try .encoded(
+                        WorkspaceListResult(workspaces: page.items, nextOffset: page.nextOffset),
                         context: "workspace.list result"
                     )
-                    return .success(result: String(decoding: encoded, as: UTF8.self))
                 }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                return failure(for: error)
             }
         case Self.attachOperation:
-            if let error = protocolError(parameters) { return error }
-            guard let request = decode(parameters) else {
-                return failure(code: 400, reasonCode: "invalidWorkspaceAttachPayload", message: "Invalid workspace.attach payload")
-            }
-            do {
-                let ok = try await attach(request)
-                return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                return failure(for: error)
-            }
-        case Self.detachOperation:
-            if let error = protocolError(parameters) { return error }
-            guard let request = decode(parameters) else {
-                return failure(code: 400, reasonCode: "invalidWorkspaceDetachPayload", message: "Invalid workspace.detach payload")
-            }
-            do {
-                let ok = try await detach(request)
-                return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: ok)), as: UTF8.self))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                return failure(for: error)
-            }
+            return try await mutate(parameters, using: attach, invalidReasonCode: "invalidWorkspaceAttachPayload", invalidMessage: "Invalid workspace.attach payload")
         default:
-            return failure(code: 404, reasonCode: "unknownWorkspaceOperation", message: "Unknown workspace operation")
+            return try await mutate(parameters, using: detach, invalidReasonCode: "invalidWorkspaceDetachPayload", invalidMessage: "Invalid workspace.detach payload")
         }
+    }
+
+    private func mutate(
+        _ parameters: String?,
+        using execute: MutateExecutor,
+        invalidReasonCode: String,
+        invalidMessage: String
+    ) async throws -> CallHandlerResult {
+        guard let request = GnosticCallHandling.decode(WorkspaceOpsRequest.self, from: parameters) else {
+            return .failure(code: 400, reasonCode: invalidReasonCode, message: invalidMessage)
+        }
+        return try await run {
+            let accepted = try await execute(request)
+            return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: accepted)), as: UTF8.self))
+        }
+    }
+
+    private func run(_ body: () async throws -> CallHandlerResult) async throws -> CallHandlerResult {
+        try await GnosticCallHandling.run(
+            fallbackReasonCode: "workspaceOperationFailed",
+            fallbackMessage: "The workspace operation failed.",
+            body
+        )
     }
 
     private enum ListRequest: Sendable {
@@ -271,67 +277,14 @@ public struct WorkspaceOpsProvider: Sendable {
         return .legacy
     }
 
-    private func boundedPage(_ values: [WorkspaceListing], offset: Int, limit: Int) -> [WorkspaceListing] {
-        guard offset < values.count else { return [] }
-        var result: [WorkspaceListing] = []
-        for value in values.dropFirst(offset).prefix(limit) {
-            let candidate = result + [value]
-            let candidateOffset = offset + candidate.count < values.count ? offset + candidate.count : nil
-            guard (try? GnosticWirePayload.encode(
-                WorkspaceListResult(workspaces: candidate, nextOffset: candidateOffset),
-                context: "workspace.list result"
-            )) != nil else { break }
-            result.append(value)
-        }
-        return result
-    }
-
-    private func decode(_ parameters: String?) -> WorkspaceOpsRequest? {
-        guard let parameters,
-              let data = parameters.data(using: .utf8),
-              let request = try? JSONDecoder().decode(WorkspaceOpsRequest.self, from: data) else { return nil }
-        return request
-    }
-
-    private func protocolError(_ parameters: String?) -> CallHandlerResult? {
-        do {
-            try GnosticProtocol.validatePayload(parameters)
-            return nil
-        } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
-        } catch {
-            return failure(code: 400, reasonCode: "invalidWorkspacePayload", message: "Invalid workspace payload")
-        }
-    }
-
-    private func failure(for error: Error) -> CallHandlerResult {
-        let mapped = GnosticProtocol.publicFailure(
-            for: error,
-            fallbackCode: 500,
-            fallbackReasonCode: "workspaceOperationFailed",
-            fallbackMessage: "The workspace operation failed."
-        )
-        return .failure(code: mapped.code, message: mapped.message)
-    }
-
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message, statusCode: code))
-    }
-
     @MainActor
     public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
-        var registrations: [CallHandlerRegistration] = []
-        do {
-            for operation in [Self.listOperation, Self.attachOperation, Self.detachOperation] {
-                let op = operation
-                registrations.append(try await communication.registerCallHandler(operation: op, context: context) { [self] request in
-                    try await handle(operation: op, parameters: request.parameters)
-                })
-            }
-        } catch {
-            registrations.forEach { $0.cancel() }
-            throw error
+        try await GnosticCallHandling.register(
+            operations: [Self.listOperation, Self.attachOperation, Self.detachOperation],
+            on: communication,
+            context: context
+        ) { [self] operation, parameters in
+            try await handle(operation: operation, parameters: parameters)
         }
-        return registrations
     }
 }

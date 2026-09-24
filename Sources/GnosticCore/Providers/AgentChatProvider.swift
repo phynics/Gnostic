@@ -112,23 +112,23 @@ public struct AscendantTurnProvider: Sendable {
 
     public func handle(parameters: String?) async throws -> CallHandlerResult {
         guard await isAvailable() else {
-            return failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
+            return .failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
         }
         guard let parameters else {
-            return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
+            return .failure(GnosticProtocolError.missing)
         }
         let request: AscendantTurnRequest
         do {
             request = try JSONDecoder().decode(AscendantTurnRequest.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
+            return .failure(error)
         } catch let error as GnosticWirePayload.Error {
             if case .invalidIdentifier = error {
-                return failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+                return .failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
             }
-            return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
+            return .failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         } catch {
-            return failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
+            return .failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         }
         do {
             let executedResult = try await executor(request)
@@ -141,7 +141,7 @@ public struct AscendantTurnProvider: Sendable {
             do {
                 try GnosticProtocol.validate(result.protocolMajor)
             } catch let error as GnosticProtocolError {
-                return .failure(code: error.statusCode, message: error.failureMessage)
+                return .failure(error)
             }
             if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
                 let replay = try await replayStore.replay(
@@ -185,7 +185,7 @@ public struct AscendantTurnProvider: Sendable {
                 )
                 guard !replay.terminal else {
                     try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-                    return .failure(code: mapped.code, message: mapped.message)
+                    return .failure(mapped)
                 }
                 let kind: AscendantTurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
                 _ = try await replayStore.append(
@@ -200,7 +200,7 @@ public struct AscendantTurnProvider: Sendable {
                 )
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return .failure(code: mapped.code, message: mapped.message)
+            return .failure(mapped)
         } catch let error as NodeRuntimeError {
             let mapped = GnosticProtocol.publicFailure(
                 for: error,
@@ -220,12 +220,12 @@ public struct AscendantTurnProvider: Sendable {
                 )
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return .failure(code: mapped.code, message: mapped.message)
+            return .failure(mapped)
         } catch let error as GnosticProtocolError {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
             }
-            return .failure(code: error.statusCode, message: error.failureMessage)
+            return .failure(error)
         } catch {
             if let replayStore, let clientTurnID = request.clientTurnID {
                 _ = try await replayStore.append(
@@ -245,7 +245,7 @@ public struct AscendantTurnProvider: Sendable {
                 fallbackReasonCode: "internalError",
                 fallbackMessage: "The ascendant turn failed."
             )
-            return .failure(code: mapped.code, message: mapped.message)
+            return .failure(mapped)
         }
     }
 
@@ -258,26 +258,26 @@ public struct AscendantTurnProvider: Sendable {
 
     public func handleReplay(parameters: String?) async throws -> CallHandlerResult {
         guard await isAvailable() else {
-            return failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
+            return .failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
         }
         guard let replayStore else {
-            return failure(code: 400, reasonCode: "replayUnavailable", message: "Replay is not configured for this provider.")
+            return .failure(code: 400, reasonCode: "replayUnavailable", message: "Replay is not configured for this provider.")
         }
         guard let parameters else {
-            return .failure(code: GnosticProtocolError.missing.statusCode, message: GnosticProtocolError.missing.failureMessage)
+            return .failure(GnosticProtocolError.missing)
         }
         let request: AscendantTurnReplayRequest
         do {
             request = try JSONDecoder().decode(AscendantTurnReplayRequest.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
+            return .failure(error)
         } catch let error as GnosticWirePayload.Error {
             if case .invalidIdentifier = error {
-                return failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+                return .failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
             }
-            return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
+            return .failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         } catch {
-            return failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
+            return .failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         }
         let replay = try await replayStore.replay(
             timelineID: request.timelineID,
@@ -286,27 +286,15 @@ public struct AscendantTurnProvider: Sendable {
             afterSequence: request.afterSequence
         )
         if replay.conflict {
-            return failure(code: 409, reasonCode: "turnConflict", message: "clientTurnID was already used with different content")
+            return .failure(code: 409, reasonCode: "turnConflict", message: "clientTurnID was already used with different content")
         }
         do {
             try GnosticProtocol.validate(replay.protocolMajor)
         } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
+            return .failure(error)
         }
         let encoded = try GnosticWirePayload.encode(replay, context: "ascendant.turn.replay result")
         return .success(result: String(decoding: encoded, as: UTF8.self))
-    }
-
-    private func failure(code: Int, reasonCode: String, message: String, retryable: Bool = false) -> CallHandlerResult {
-        .failure(
-            code: code,
-            message: GnosticProtocol.failureMessage(
-                reasonCode: reasonCode,
-                message: message,
-                statusCode: code,
-                retryable: retryable
-            )
-        )
     }
 
     @MainActor

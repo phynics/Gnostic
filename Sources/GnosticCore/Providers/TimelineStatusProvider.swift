@@ -76,37 +76,24 @@ public struct TimelineStatusProvider: Sendable {
     }
 
     public func handle(parameters: String?) async throws -> CallHandlerResult {
-        do {
-            try GnosticProtocol.validatePayload(parameters)
-        } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
-        } catch {
-            return failure(code: 400, reasonCode: "invalidTimelineStatusPayload", message: "Invalid timeline.status payload")
+        if let failure = GnosticCallHandling.protocolFailure(
+            parameters,
+            invalidReasonCode: "invalidTimelineStatusPayload",
+            invalidMessage: "Invalid timeline.status payload"
+        ) {
+            return failure
         }
-        guard let parameters,
-              let request = try? JSONDecoder().decode(TimelineStatusRequest.self, from: Data(parameters.utf8)) else {
-            return failure(code: 400, reasonCode: "invalidTimelineStatusPayload", message: "Invalid timeline.status payload")
+        guard let request = GnosticCallHandling.decode(TimelineStatusRequest.self, from: parameters) else {
+            return .failure(code: 400, reasonCode: "invalidTimelineStatusPayload", message: "Invalid timeline.status payload")
         }
-        do {
+        return try await GnosticCallHandling.run(
+            fallbackReasonCode: "internalError",
+            fallbackMessage: "The timeline status operation failed."
+        ) {
             let status = try await executor(request)
             try GnosticProtocol.validate(status.protocolMajor)
-            let encoded = try JSONEncoder().encode(status)
-            return .success(result: String(decoding: encoded, as: UTF8.self))
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            let mapped = GnosticProtocol.publicFailure(
-                for: error,
-                fallbackCode: 500,
-                fallbackReasonCode: "internalError",
-                fallbackMessage: "The timeline status operation failed."
-            )
-            return .failure(code: mapped.code, message: mapped.message)
+            return .success(result: String(decoding: try JSONEncoder().encode(status), as: UTF8.self))
         }
-    }
-
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message, statusCode: code))
     }
 
     @MainActor
