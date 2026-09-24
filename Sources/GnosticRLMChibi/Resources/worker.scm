@@ -18,6 +18,14 @@
   (let ((entry (assoc key options)))
     (if entry (string->number (cdr entry)) default)))
 
+(define (option-values key)
+  (let loop ((remaining options) (values '()))
+    (if (null? remaining)
+        (reverse values)
+        (if (string=? (caar remaining) key)
+            (loop (cdr remaining) (cons (cdar remaining) values))
+            (loop (cdr remaining) values)))))
+
 (define input-port (current-input-port))
 (define output-port (current-output-port))
 
@@ -387,39 +395,8 @@
       (let ((sorted (sort-list items less?)))
         (if vector-input? (list->vector sorted) sorted)))))
 
-(define (read-characters path)
-  (call-with-current-continuation
-   (lambda (escape)
-     (with-exception-handler
-      (lambda (ignored) (escape #f))
-      (lambda ()
-        (let ((port (open-input-file path)))
-          (let loop ((characters '()))
-            (let ((character (read-char port)))
-              (if (eof-object? character)
-                  (begin (close-input-port port) (reverse characters))
-                  (loop (cons character characters)))))))))))
-
-(define (split-on-null characters)
-  (let loop ((rest characters) (current '()) (parts '()))
-    (cond ((null? rest) (reverse (cons (reverse current) parts)))
-          ((= (char->integer (car rest)) 0)
-           (loop (cdr rest) '() (cons (reverse current) parts)))
-          (else (loop (cdr rest) (cons (car rest) current) parts)))))
-
-(define (entry-key characters)
-  (let loop ((rest characters) (current '()))
-    (cond ((null? rest) (list->string (reverse current)))
-          ((= (char->integer (car rest)) 61) (list->string (reverse current)))
-          (else (loop (cdr rest) (cons (car rest) current))))))
-
 (define (environment-keys)
-  (let ((characters (read-characters "/proc/self/environ")))
-    (if (not characters)
-        '()
-        (map entry-key
-             (filter (lambda (entry) (not (null? entry)))
-                     (split-on-null characters))))))
+  (option-values "--environment-key"))
 
 (define pure-operation-names
   '(+ - * / quotient remainder modulo abs min max

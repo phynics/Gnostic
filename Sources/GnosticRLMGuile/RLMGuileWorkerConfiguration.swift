@@ -10,6 +10,7 @@ import GnosticRLM
 /// any production composition.
 public struct RLMGuileWorkerConfiguration: Sendable, Equatable {
     public var executablePath: String
+    public var limitExecutablePath: String
     public var workerScriptPath: String
     public var runID: String
     public var profile: String
@@ -29,6 +30,7 @@ public struct RLMGuileWorkerConfiguration: Sendable, Equatable {
         runID: String,
         workerScriptPath: String,
         executablePath: String = RLMGuileWorkerConfiguration.defaultExecutablePath,
+        limitExecutablePath: String = RLMGuileWorkerConfiguration.defaultLimitExecutablePath,
         profile: String = RLMSchemeProfile.name,
         environment: [String: String] = RLMGuileWorkerConfiguration.scrubbedEnvironment,
         maxHeapBytes: Int = 64 * 1_024 * 1_024,
@@ -43,6 +45,7 @@ public struct RLMGuileWorkerConfiguration: Sendable, Equatable {
         validationLimits: RLMSchemeProfile.Limits = .standard
     ) {
         self.executablePath = executablePath
+        self.limitExecutablePath = limitExecutablePath
         self.workerScriptPath = workerScriptPath
         self.runID = runID
         self.profile = profile
@@ -81,6 +84,21 @@ public struct RLMGuileWorkerConfiguration: Sendable, Equatable {
     /// than a runtime condition.
     public static var defaultWorkerScriptPath: String? {
         Bundle.module.url(forResource: "worker", withExtension: "scm")?.path
+    }
+
+    /// The host utility that applies process rlimits before the Guile interpreter starts.
+    public static var defaultLimitExecutablePath: String {
+        let candidates = [
+            ProcessInfo.processInfo.environment["GNOSTIC_RLM_LIMIT_EXEC"],
+            "/usr/local/bin/gnostic-rlm-limit-exec",
+            "/opt/homebrew/bin/gnostic-rlm-limit-exec",
+            "/usr/bin/gnostic-rlm-limit-exec",
+        ]
+        for candidate in candidates {
+            guard let candidate, FileManager.default.isExecutableFile(atPath: candidate) else { continue }
+            return candidate
+        }
+        return "/usr/local/bin/gnostic-rlm-limit-exec"
     }
 
 

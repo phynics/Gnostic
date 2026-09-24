@@ -67,6 +67,7 @@ public struct RLMChibiWorkerConfiguration: Sendable, Equatable {
     public static var defaultExecutablePath: String {
         let candidates = [
             ProcessInfo.processInfo.environment["GNOSTIC_CHIBI"],
+            "/opt/homebrew/bin/chibi-scheme",
             "/usr/local/bin/chibi-scheme",
         ]
         for candidate in candidates {
@@ -87,18 +88,19 @@ public struct RLMChibiWorkerConfiguration: Sendable, Equatable {
     }
 
 
-    /// The host utility that applies the process CPU and address-space rlimits
-    /// before the Chibi interpreter starts.
+    /// The host utility that applies process rlimits before the interpreter starts.
     public static var defaultLimitExecutablePath: String {
         let candidates = [
-            ProcessInfo.processInfo.environment["GNOSTIC_PRLIMIT"],
-            "/usr/bin/prlimit",
+            ProcessInfo.processInfo.environment["GNOSTIC_RLM_LIMIT_EXEC"],
+            "/usr/local/bin/gnostic-rlm-limit-exec",
+            "/opt/homebrew/bin/gnostic-rlm-limit-exec",
+            "/usr/bin/gnostic-rlm-limit-exec",
         ]
         for candidate in candidates {
             guard let candidate, FileManager.default.isExecutableFile(atPath: candidate) else { continue }
             return candidate
         }
-        return "/usr/bin/prlimit"
+        return "/usr/local/bin/gnostic-rlm-limit-exec"
     }
 
     /// A cleared environment that carries no credentials and no unrelated

@@ -113,3 +113,25 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+  macos-rlm:
+    name: macOS RLM executors
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Guile
+        run: brew install guile
+
+      - name: Build and exercise both RLM workers on macOS
+        run: make macos-rlm-smoke
+
+      - name: Upload macOS RLM logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-rlm-smoke-logs
+          path: .testing/macos-rlm-smoke.log
+          if-no-files-found: ignore
+          retention-days: 7

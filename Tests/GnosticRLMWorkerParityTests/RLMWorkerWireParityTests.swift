@@ -6,8 +6,6 @@ import GnosticRLM
 import GnosticRLMChibi
 import GnosticRLMGuile
 
-#if os(Linux)
-
 @Suite("RLM worker wire parity", .enabled(if: RLMWorkerWireParitySupport.isAvailable), .serialized)
 struct RLMWorkerWireParityTests {
     @Test("Guile and Chibi produce the same value frame for one corpus fixture")
@@ -346,6 +344,8 @@ private enum RLMWorkerWireParitySupport {
     static var chibiPath: String? {
         let candidates = [
             ProcessInfo.processInfo.environment["GNOSTIC_CHIBI"],
+            "/opt/homebrew/bin/chibi-scheme",
+            "/usr/bin/chibi-scheme",
             "/usr/local/bin/chibi-scheme",
         ]
         return candidates.compactMap { $0 }.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
@@ -391,7 +391,7 @@ private enum RLMWorkerWireParitySupport {
             configuration: RLMChibiWorkerConfiguration(
                 runID: runID,
                 workerScriptPath: chibiScriptPath,
-                executablePath: chibiPath ?? "/usr/local/bin/chibi-scheme",
+                executablePath: chibiPath ?? RLMChibiWorkerConfiguration.defaultExecutablePath,
                 environment: environment
             ),
             host: host
@@ -496,5 +496,3 @@ private enum RLMWorkerWireParitySupport {
         }
     }
 }
-
-#endif

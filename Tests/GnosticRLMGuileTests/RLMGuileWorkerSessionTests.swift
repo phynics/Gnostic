@@ -405,7 +405,11 @@ struct RLMGuileWorkerSessionTests {
 
         let ready = try #require(await session.ready)
         #expect(ready.cpuLimitSeconds == 7)
+        #if os(Linux)
         #expect(ready.addressSpaceBytes == 256 * 1_024 * 1_024)
+        #else
+        #expect(ready.addressSpaceBytes == -1)
+        #endif
 
         await session.shutdown()
     }
