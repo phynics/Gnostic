@@ -137,20 +137,27 @@ public actor GnosticWorkspaceProvider {
             return .success(result: try Self.encodeResult(result))
         } catch is CancellationError {
             throw CancellationError()
-        } catch is DecodingError {
-            return failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: "Invalid workspace invocation payload")
-        } catch let error {
-            let mapped = GnosticProtocol.publicFailure(
-                for: error,
-                fallbackCode: 500,
-                fallbackReasonCode: "workspaceInvocationFailed",
-                fallbackMessage: "The workspace invocation failed."
-            )
-            return .failure(code: mapped.code, message: mapped.message)
+        } catch {
+            return Self.invocationFailure(error)
         }
     }
 
-    private static func encodeResult(_ result: ToolResult) throws -> String {
+    /// Maps an invocation failure: an undecodable invocation is a 400, and
+    /// any other failure keeps its bounded public form.
+    static func invocationFailure(_ error: Error) -> CallHandlerResult {
+        if error is DecodingError {
+            return .failure(code: 400, reasonCode: "invalidWorkspaceInvocationPayload", message: "Invalid workspace invocation payload")
+        }
+        return .failure(GnosticProtocol.publicFailure(
+            for: error,
+            fallbackCode: 500,
+            fallbackReasonCode: "workspaceInvocationFailed",
+            fallbackMessage: "The workspace invocation failed."
+        ))
+    }
+
+    /// Encodes a tool result with the protocol major within the event budget.
+    static func encodeResult(_ result: ToolResult) throws -> String {
         let data = try GnosticWirePayload.encode(result, context: "workspace.invoke result")
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
@@ -159,10 +166,6 @@ public actor GnosticWorkspaceProvider {
         let encoded = try JSONSerialization.data(withJSONObject: object)
         try GnosticWirePayload.validateEvent(encoded, context: "workspace.invoke result")
         return String(decoding: encoded, as: UTF8.self)
-    }
-
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message, statusCode: code))
     }
 
     /// Registers this provider with Axoloty's released unary Call handler.

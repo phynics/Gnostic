@@ -121,130 +121,73 @@ public struct TimelineManagementProvider: Sendable {
     }
 
     public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
+        guard [Self.createOperation, Self.listOperation, Self.updateOperation].contains(operation) else {
+            return .failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")
+        }
+        if let failure = GnosticCallHandling.protocolFailure(
+            parameters,
+            invalidReasonCode: "invalidTimelinePayload",
+            invalidMessage: "Invalid timeline payload"
+        ) {
+            return failure
+        }
         switch operation {
         case Self.createOperation:
-            if let error = protocolError(parameters) { return error }
-            let request: TimelineCreateRequest
-            if let parameters, let decoded = try? JSONDecoder().decode(TimelineCreateRequest.self, from: Data(parameters.utf8)) {
-                request = decoded
-            } else {
-                return failure(code: 400, reasonCode: "invalidTimelineCreatePayload", message: "Invalid timeline.create payload")
+            guard let request = GnosticCallHandling.decode(TimelineCreateRequest.self, from: parameters) else {
+                return .failure(code: 400, reasonCode: "invalidTimelineCreatePayload", message: "Invalid timeline.create payload")
             }
-            do {
+            return try await run {
                 let status = try await create(request.title, request.ascendantID)
                 try GnosticProtocol.validate(status.protocolMajor)
-                let encoded = try GnosticWirePayload.encode(status, context: "timeline.create result")
-                return .success(result: String(decoding: encoded, as: UTF8.self))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                let mapped = GnosticProtocol.publicFailure(
-                    for: error,
-                    fallbackCode: 500,
-                    fallbackReasonCode: "internalError",
-                    fallbackMessage: "The timeline operation failed."
-                )
-                return .failure(code: mapped.code, message: mapped.message)
+                return try .encoded(status, context: "timeline.create result")
             }
         case Self.listOperation:
-            if let error = protocolError(parameters) { return error }
-            guard let request = decodeList(parameters), request.offset >= 0, request.limit > 0 else {
-                return failure(code: 400, reasonCode: "invalidTimelineListPayload", message: "Invalid timeline.list payload")
+            guard let request = GnosticCallHandling.decode(TimelineListRequest.self, from: parameters),
+                  request.offset >= 0, request.limit > 0 else {
+                return .failure(code: 400, reasonCode: "invalidTimelineListPayload", message: "Invalid timeline.list payload")
             }
-            do {
+            return try await run {
                 let statuses = try await list()
                 try statuses.forEach { try GnosticProtocol.validate($0.protocolMajor) }
-                let pageLimit = min(request.limit, GnosticWirePayload.maximumListItems)
-                let page = boundedPage(statuses, offset: request.offset, limit: pageLimit)
-                let nextOffset = request.offset + page.count < statuses.count ? request.offset + page.count : nil
-                let encoded = try GnosticWirePayload.encode(
-                    TimelineListResult(timelines: page, nextOffset: nextOffset),
+                let page = GnosticCallHandling.boundedPage(
+                    statuses,
+                    offset: request.offset,
+                    limit: request.limit,
+                    context: "timeline.list result"
+                ) { TimelineListResult(timelines: $0, nextOffset: $1) }
+                return try .encoded(
+                    TimelineListResult(timelines: page.items, nextOffset: page.nextOffset),
                     context: "timeline.list result"
                 )
-                return .success(result: String(decoding: encoded, as: UTF8.self))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                let mapped = GnosticProtocol.publicFailure(
-                    for: error,
-                    fallbackCode: 500,
-                    fallbackReasonCode: "internalError",
-                    fallbackMessage: "The timeline operation failed."
-                )
-                return .failure(code: mapped.code, message: mapped.message)
-            }
-        case Self.updateOperation:
-            if let error = protocolError(parameters) { return error }
-            guard let parameters,
-                  let request = try? JSONDecoder().decode(TimelineUpdateRequest.self, from: Data(parameters.utf8)) else {
-                return failure(code: 400, reasonCode: "invalidTimelineUpdatePayload", message: "Invalid timeline.update payload")
-            }
-            do {
-                let status = try await update(request)
-                try GnosticProtocol.validate(status.protocolMajor)
-                let encoded = try GnosticWirePayload.encode(status, context: "timeline.update result")
-                return .success(result: String(decoding: encoded, as: UTF8.self))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                let mapped = GnosticProtocol.publicFailure(
-                    for: error,
-                    fallbackCode: 500,
-                    fallbackReasonCode: "internalError",
-                    fallbackMessage: "The timeline operation failed."
-                )
-                return .failure(code: mapped.code, message: mapped.message)
             }
         default:
-            return failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")
+            guard let request = GnosticCallHandling.decode(TimelineUpdateRequest.self, from: parameters) else {
+                return .failure(code: 400, reasonCode: "invalidTimelineUpdatePayload", message: "Invalid timeline.update payload")
+            }
+            return try await run {
+                let status = try await update(request)
+                try GnosticProtocol.validate(status.protocolMajor)
+                return try .encoded(status, context: "timeline.update result")
+            }
         }
     }
 
-    private func protocolError(_ parameters: String?) -> CallHandlerResult? {
-        do {
-            try GnosticProtocol.validatePayload(parameters)
-            return nil
-        } catch let error as GnosticProtocolError {
-            return .failure(code: error.statusCode, message: error.failureMessage)
-        } catch {
-            return failure(code: 400, reasonCode: "invalidTimelinePayload", message: "Invalid timeline payload")
-        }
-    }
-
-    private func decodeList(_ parameters: String?) -> TimelineListRequest? {
-        guard let parameters else { return nil }
-        return try? JSONDecoder().decode(TimelineListRequest.self, from: Data(parameters.utf8))
-    }
-
-    private func boundedPage(_ values: [TimelineStatus], offset: Int, limit: Int) -> [TimelineStatus] {
-        guard offset < values.count else { return [] }
-        var result: [TimelineStatus] = []
-        for value in values.dropFirst(offset).prefix(limit) {
-            let candidate = result + [value]
-            guard (try? GnosticWirePayload.encode(TimelineListResult(timelines: candidate), context: "timeline.list result")) != nil else { break }
-            result.append(value)
-        }
-        return result
-    }
-
-    private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message, statusCode: code))
+    private func run(_ body: () async throws -> CallHandlerResult) async throws -> CallHandlerResult {
+        try await GnosticCallHandling.run(
+            fallbackReasonCode: "internalError",
+            fallbackMessage: "The timeline operation failed.",
+            body
+        )
     }
 
     @MainActor
     public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
-        var registrations: [CallHandlerRegistration] = []
-        do {
-            for operation in [Self.createOperation, Self.listOperation, Self.updateOperation] {
-                let op = operation
-                registrations.append(try await communication.registerCallHandler(operation: op, context: context) { [self] request in
-                    try await handle(operation: op, parameters: request.parameters)
-                })
-            }
-        } catch {
-            registrations.forEach { $0.cancel() }
-            throw error
+        try await GnosticCallHandling.register(
+            operations: [Self.createOperation, Self.listOperation, Self.updateOperation],
+            on: communication,
+            context: context
+        ) { [self] operation, parameters in
+            try await handle(operation: operation, parameters: parameters)
         }
-        return registrations
     }
 }
