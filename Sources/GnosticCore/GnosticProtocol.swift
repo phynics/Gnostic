@@ -116,13 +116,13 @@ public enum GnosticProtocol {
         if let error = error as? DiscoveredWorkspaceAttachmentError {
             switch error {
             case .approvalRequired:
-                return GnosticPublicFailure(code: 403, message: failureMessage(reasonCode: "approvalRequired", message: "Workspace attachment requires approval."))
+                return GnosticPublicFailure(code: 403, message: failureMessage(reasonCode: "approvalRequired", message: "Workspace attachment requires approval.", statusCode: 403))
             case let .unavailable(status):
-                return GnosticPublicFailure(code: 409, message: failureMessage(reasonCode: "workspaceUnavailable", message: "Workspace is not uniquely available (\(status))."))
+                return GnosticPublicFailure(code: 409, message: failureMessage(reasonCode: "workspaceUnavailable", message: "Workspace is not uniquely available (\(status)).", statusCode: 409))
             case .invalidURI:
-                return GnosticPublicFailure(code: 422, message: failureMessage(reasonCode: "invalidWorkspaceURI", message: "Workspace advertised an invalid URI."))
+                return GnosticPublicFailure(code: 422, message: failureMessage(reasonCode: "invalidWorkspaceURI", message: "Workspace advertised an invalid URI.", statusCode: 422))
             case let .timelineNotOwned(id):
-                return GnosticPublicFailure(code: 404, message: failureMessage(reasonCode: "timelineNotOwned", message: "Timeline \(id.uuidString.lowercased()) is not owned by this Node."))
+                return GnosticPublicFailure(code: 404, message: failureMessage(reasonCode: "timelineNotOwned", message: "Timeline \(id.uuidString.lowercased()) is not owned by this Node.", statusCode: 404))
             }
         }
         return GnosticPublicFailure(code: fallbackCode, message: failureMessage(reasonCode: fallbackReasonCode, message: fallbackMessage, statusCode: fallbackCode))

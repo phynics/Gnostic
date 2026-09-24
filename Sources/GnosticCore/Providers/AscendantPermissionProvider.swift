@@ -82,7 +82,7 @@ public struct AscendantPermissionProvider: Sendable {
     }
 
     private func failure(code: Int, reasonCode: String, message: String) -> CallHandlerResult {
-        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message))
+        .failure(code: code, message: GnosticProtocol.failureMessage(reasonCode: reasonCode, message: message, statusCode: code))
     }
 
     @MainActor
