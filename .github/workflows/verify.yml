@@ -121,11 +121,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Swift development toolchain
-        uses: swift-actions/setup-swift@v3
-        with:
-          swift-version: main-snapshot
-
       - name: Install Guile
         run: brew install guile
 
