@@ -217,10 +217,11 @@ values have the same wire shape in both workers.
   fixtures fail recoverably under this process-wide cap, but unlike Guile's
   32 MiB per-cell allocation limit, the Chibi cap is cumulative across cells.
   This remains a bounded executor difference, not a per-cell accounting claim.
-- The worker reads its own environment from `/proc/self/environ`, so the `ready`
-  frame reports the real scrubbed key set. It can not enumerate its open file
-  descriptors, so `openFileDescriptorCount` is `-1`; a parent-side test reads
-  `/proc/<pid>/fd` to prove the child holds only its standard descriptors.
+- The host passes environment-key names, but not values, as worker arguments;
+  the `ready` frame reports those names after wire sanitization. This avoids a
+  Linux-only `/proc/self/environ` dependency. The worker cannot enumerate its
+  open file descriptors, so `openFileDescriptorCount` is `-1`; a Linux-only
+  parent test reads `/proc/<pid>/fd` to inspect the child descriptors.
 
 ## Scope and deferrals
 
