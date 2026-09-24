@@ -360,7 +360,7 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
         // Experiment targets incubate outside Core. Core may host their adapters
         // through the flat AscendantBackend contract without importing them.
-        let experimentTargets = ["GnosticPositronicAtlas", "RLM", "Letta"]
+        let experimentTargets = ["GnosticPositronicAtlas", "RLM", "Letta", "GnosticACPAscendant"]
 
         let package = try String(
             contentsOf: rootURL.appendingPathComponent("Package.swift"),
@@ -391,6 +391,16 @@ struct BackendArchitectureFitnessTests {
             importingPaths.isEmpty,
             "GnosticCore sources must not import an experiment target; found: \(importingPaths)."
         )
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for forbidden in ["import ACP", "Foundation.Process", "NSTask", "posix_spawn"] {
+                #expect(!source.contains(forbidden), "GnosticCore must not use ACP/process API '\(forbidden)' in \(relativePath).")
+            }
+        }
     }
 
     private static func targetBlock(named name: String, in package: String) -> String? {

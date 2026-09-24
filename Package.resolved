@@ -1,5 +1,5 @@
 {
-  "originHash" : "ee4bf1adfe197ab6843585e26f6de164bb439cda85dce05dbdcfa48864fe5dd3",
+  "originHash" : "094e4527ce065bf8bcabd80c38fe7be0c37590aa2d193985abea9c35fd6e3899",
   "pins" : [
     {
       "identity" : "axoloty",
@@ -170,6 +170,15 @@
       "state" : {
         "revision" : "3d3a8457661daf7fb260ceeb9f0e24e5204ba5fb",
         "version" : "1.12.0"
+      }
+    },
+    {
+      "identity" : "swift-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/aptove/swift-sdk.git",
+      "state" : {
+        "revision" : "f38606f7bb43a12122b8338b2bb694084ededf94",
+        "version" : "0.1.16"
       }
     },
     {

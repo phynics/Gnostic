@@ -552,6 +552,10 @@ struct BackendLifecycleTests {
         await deadline.release()
         try await withTestTimeout { await backendProbe.waitUntilShutdownFinished() }
         #expect(await construction.value)
+        // Timeout retirement launches shutdown independently of the bounded
+        // construction rollback, so observe its eventual entry before checking
+        // the call count.
+        try await withTestTimeout { await backendProbe.waitUntilShutdownCount(1) }
         #expect(await backendProbe.shutdownCount == 1)
 
         await backendProbe.releaseFirstCancel()
