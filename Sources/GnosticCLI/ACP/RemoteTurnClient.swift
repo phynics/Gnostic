@@ -1,13 +1,15 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import Axoloty
 import Foundation
 import GnosticCore
 
-/// A pure-Axoloty transport for ACP's network operations.
+/// The ACP adapter over the public consumer facade.
 ///
-/// Every interaction is a unary Call/Return over the Axoloty stack
-/// (`communication.call(operation:...)`) — no raw MQTT or local runtime.
+/// Connection, discovery, Turns, and Timeline calls go through one
+/// ``GnosticConsumerSession`` and its clients. This type adds only what ACP
+/// needs on top: Ascendant selection, Timeline presence for the session
+/// registry, fast failure once a provider is evicted, and the ACP error
+/// vocabulary.
 @MainActor
 public final class RemoteTurnClient: Sendable {
     public struct DiscoveredAscendant: Sendable, Equatable {
@@ -41,16 +43,14 @@ public final class RemoteTurnClient: Sendable {
     public let namespace: String
     public let username: String?
     public let password: String?
-    private let manager: CommunicationManager
-    private let catalog: NetworkCatalog
-    private let subscription: GnosticSubscription
+    private let session: GnosticConsumerSession
     private let timeout: Duration
     private let promptTimeout: Duration
-    private var stateTask: Task<Void, Never>?
+    private var turns: GnosticTurnClient?
+    private var timelines: GnosticTimelineClient?
     private var providerEvictionTask: Task<Void, Never>?
-    private var connectionLost = false
     private var offlineProviders: Set<String> = []
-    private var inFlightCalls: [String: [UUID: Task<UnaryCallResult, Error>]] = [:]
+    private var inFlightCalls: [String: [UUID: @MainActor () -> Void]] = [:]
 
     /// Creates a client bound to a broker namespace.
     ///
@@ -65,80 +65,64 @@ public final class RemoteTurnClient: Sendable {
         timeout: Duration = .seconds(5),
         promptTimeout: Duration? = nil
     ) throws {
-        let username = username.flatMap { $0.isEmpty ? nil : $0 }
-        let password = password.flatMap { $0.isEmpty ? nil : $0 }
+        let broker = GnosticBrokerSettings(
+            host: host,
+            port: port,
+            namespace: namespace,
+            username: username,
+            password: password
+        )
         self.host = host
         self.port = port
         self.namespace = namespace
-        self.username = username
-        self.password = password
+        self.username = broker.username
+        self.password = broker.password
         self.timeout = timeout
         self.promptTimeout = promptTimeout ?? timeout
-        manager = try CommunicationManager(
-            identity: Identity(name: "gnostic-turn-client"),
-            communicationOptions: CommunicationOptions(
-                namespace: namespace,
-                shouldEnableCrossNamespacing: false,
-                mqttClientOptions: MQTTClientOptions(
-                    host: host,
-                    port: UInt16(port),
-                    shouldTryMDNSDiscovery: false,
-                    username: username,
-                    password: password,
-                    autoReconnect: false
-                ),
-                shouldAutoStart: false
-            ),
-            commonOptions: nil
+        session = try GnosticConsumerSession(
+            broker: broker,
+            identityName: "gnostic-turn-client",
+            connectTimeout: Self.connectTimeout,
+            discoverTimeout: timeout
         )
-        catalog = NetworkCatalog()
-        subscription = GnosticSubscription(catalog: catalog, communicationManager: manager)
     }
+
+    /// The bounded window in which the broker must come online.
+    static let connectTimeout: Duration = .seconds(10)
 
     /// Connects and subscribes to Gnostic object advertisements.
     public func connect() async throws {
-        let stream = await manager.observeCommunicationStateStream()
-        var iterator = stream.makeAsyncIterator()
-        try manager.start()
-        while let state = await iterator.next() {
-            if state == .online {
-                startProviderEvictionMonitor()
-                try await subscription.start()
-                connectionLost = false
-                stateTask?.cancel()
-                stateTask = Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let states = await self.manager.observeCommunicationStateStream()
-                    for await state in states {
-                        if state != .online { self.connectionLost = true }
-                    }
-                }
-                return
+        startProviderEvictionMonitor(await session.catalogUpdates())
+        do {
+            try await session.start()
+        } catch let error as GnosticConsumerSessionError {
+            providerEvictionTask?.cancel()
+            switch error {
+            case let .brokerUnreachable(detail), let .connectionFailed(detail):
+                throw RemoteTurnClientError.brokerUnreachable(detail)
+            case .invalidCredentials, .notStarted, .alreadyStopped:
+                throw RemoteTurnClientError.brokerUnreachable(error.errorDescription ?? error.reasonCode)
             }
         }
-        throw RemoteTurnClientError.brokerUnreachable("timed out connecting")
+        turns = try session.turnClient(timeout: timeout, promptTimeout: promptTimeout)
+        timelines = try session.timelineClient(timeout: timeout)
     }
 
-    /// Stops the client's manager and subscriptions with ordered cleanup.
+    /// Stops the client's session with ordered cleanup.
     public func stop() async {
-        stateTask?.cancel()
-        stateTask = nil
         providerEvictionTask?.cancel()
         providerEvictionTask = nil
-        await subscription.stopAndWait()
-        await subscription.disposeScope()
-        manager.stop()
+        await session.stop()
     }
 
     /// Observes catalog provider evictions so their in-flight and later calls
     /// fail without waiting for the call or prompt timeout.
-    private func startProviderEvictionMonitor() {
+    private func startProviderEvictionMonitor(_ changes: AsyncStream<NetworkCatalogChange>) {
         providerEvictionTask?.cancel()
         providerEvictionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let stream = await self.catalog.providerEvictionStream()
-            for await providerID in stream {
-                self.providerEvicted(providerID)
+            for await change in changes {
+                guard case let .providerEvicted(providerID) = change else { continue }
+                self?.providerEvicted(providerID)
             }
         }
     }
@@ -146,11 +130,7 @@ public final class RemoteTurnClient: Sendable {
     private func providerEvicted(_ providerID: String) {
         let normalized = providerID.lowercased()
         offlineProviders.insert(normalized)
-        if let calls = inFlightCalls[normalized] {
-            for task in calls.values {
-                task.cancel()
-            }
-        }
+        inFlightCalls[normalized]?.values.forEach { $0() }
     }
 
     private func ensureProviderOnline(_ providerID: String?) throws {
@@ -159,26 +139,20 @@ public final class RemoteTurnClient: Sendable {
     }
 
     /// Whether the underlying broker connection has been lost since connect.
-    public var hasLostConnection: Bool { connectionLost }
+    public var hasLostConnection: Bool { session.hasLostConnection }
 
     /// Providers observed offline through a lifecycle identity deadvertisement.
     /// Diagnostic surface for tests and inspection; not part of the ACP contract.
     var evictedProviderIDs: Set<String> { offlineProviders }
 
-    /// Refreshes the catalog using Axoloty's active discover request.
-    private func refreshCatalog() async {
-        await subscription.discover(using: manager, timeout: timeout)
-    }
-
-    /// Returns provider-scoped discovered objects from the current catalog.
+    /// Returns provider-scoped discovered objects after one active refresh.
     public func listNetworkObjects() async -> [NetworkCatalogEntry] {
-        await refreshCatalog()
-        return await catalog.networkObjects()
+        try? await session.discover()
+        return await session.networkObjects()
     }
 
     private func discoverAscendants() async -> [DiscoveredAscendant] {
-        await refreshCatalog()
-        return discoveredAscendants(from: await catalog.networkObjects())
+        discoveredAscendants(from: await listNetworkObjects())
     }
 
     private func discoveredAscendants(from entries: [NetworkCatalogEntry]) -> [DiscoveredAscendant] {
@@ -187,49 +161,30 @@ public final class RemoteTurnClient: Sendable {
             .compactMap { entry in
                 guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
                       let timelineID = UUID(uuidString: raw) else { return nil }
-                let capabilities: [String]
-                if case let .array(values) = entry.knownProperties["capabilities"] {
-                    capabilities = values.compactMap { value in
-                        guard case let .string(capability) = value else { return nil }
-                        return capability
-                    }
-                } else {
-                    capabilities = []
-                }
                 return DiscoveredAscendant(
                     id: entry.objectID,
                     name: entry.name,
                     timelineID: timelineID,
                     providerID: entry.providerID,
                     nodeID: Self.nodeID(of: entry),
-                    capabilities: capabilities
+                    capabilities: entry.advertisedCapabilities
                 )
             }
             .sorted { ($0.id.uuidString, $0.providerID) < ($1.id.uuidString, $1.providerID) }
     }
 
-    /// Runs an identified Turn and returns replay metadata. Supplying a
-    /// stable id enables serve-lifetime deduplication; `nil` preserves the
-    /// legacy non-idempotent request shape.
+    /// Runs an identified Turn. Supplying a stable id enables serve-lifetime
+    /// deduplication; `nil` preserves the non-idempotent request shape.
     public func turn(
         message: String,
         timelineID: UUID,
         clientTurnID: String?,
         providerID: String? = nil
     ) async throws -> AscendantTurnResult {
-        try ensureProviderOnline(providerID)
-        let payload = try GnosticWirePayload.encode(
-            AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID)
-            , context: "ascendant.turn request")
-        let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        try ensureProviderOnline(target.providerID)
-        let response = try await call(
-            operation: AscendantTurnProvider.turnOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: target.providerID,
-            timeout: promptTimeout
-        )
-        return try JSONDecoder().decode(AscendantTurnResult.self, from: Data(response.result.utf8))
+        let turns = try connectedTurns()
+        return try await tracked(providerID) {
+            try await turns.run(message: message, timelineID: timelineID, clientTurnID: clientTurnID, providerID: providerID)
+        }
     }
 
     /// Reads bounded identified-turn updates retained by the serve runtime.
@@ -242,80 +197,50 @@ public final class RemoteTurnClient: Sendable {
         afterSequence: Int = 0,
         providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
-        try ensureProviderOnline(providerID)
-        let payload = try GnosticWirePayload.encode(
-            AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: clientTurnID, message: message, afterSequence: afterSequence)
-            , context: "ascendant.turn.replay request")
-        let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        try ensureProviderOnline(target.providerID)
-        let response = try await call(
-            operation: AscendantTurnProvider.replayOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: target.providerID,
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(response.result.utf8))
-    }
-
-    public func observeTurnUpdates(providerID: String? = nil) async throws -> AsyncStream<AscendantTurnUpdateStore.Event> {
-        let snapshots = try await manager.observeChannelStream(channelId: AscendantTurnProvider.updateChannel)
-        return AsyncStream { continuation in
-            let task = Task {
-                for await snapshot in snapshots {
-                    if let providerID,
-                       snapshot.sourceId?.lowercased() != providerID.lowercased() { continue }
-                    guard let raw = snapshot.privateData,
-                          let event = try? JSONDecoder().decode(
-                            AscendantTurnUpdateStore.Event.self,
-                            from: Data(raw.utf8)
-                          ) else { continue }
-                    continuation.yield(event)
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        let turns = try connectedTurns()
+        return try await tracked(providerID) {
+            try await turns.replay(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                message: message,
+                afterSequence: afterSequence,
+                providerID: providerID
+            )
         }
     }
 
-    public func respondToPermission(_ permission: AscendantPermissionResponse, providerID: String? = nil) async throws {
-        manager.publishChannel(try AscendantPermissionProvider.responseEvent(permission.targeted(to: providerID)))
+    /// Streams the live updates for one identified Turn until its terminal
+    /// update.
+    public func turnUpdates(
+        for clientTurnID: String,
+        timelineID: UUID,
+        providerID: String
+    ) async throws -> AsyncStream<AscendantTurnUpdate> {
+        try await connectedTurns().updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
     }
 
-    /// Reads the served timeline's attachment state.
+    public func respondToPermission(_ permission: AscendantPermissionResponse, providerID: String) throws {
+        try connectedTurns().respond(to: permission, providerID: providerID)
+    }
+
+    /// Reads a Timeline's attachment state from the given provider.
     public func timelineStatus(timelineID: UUID, providerID: String? = nil) async throws -> TimelineStatus {
-        try ensureProviderOnline(providerID)
-        let payload = try JSONEncoder().encode(TimelineStatusRequest(timelineID: timelineID))
-        let response = try await call(
-            operation: TimelineStatusProvider.statusOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: try await resolvedProviderID(providerID, forTimeline: timelineID),
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
+        let timelines = try connectedTimelines()
+        return try await tracked(providerID) {
+            try await timelines.status(timelineID: timelineID, providerID: providerID)
+        }
     }
 
-    /// Creates a new timeline on the serve and returns its status.
+    /// Creates a new Timeline under a discovered Ascendant.
     public func createTimeline(
         title: String,
-        ascendantID: UUID? = nil,
-        providerID: String? = nil,
-        nodeID: UUID? = nil
+        ascendantID: UUID,
+        providerID: String? = nil
     ) async throws -> TimelineStatus {
-        try ensureProviderOnline(providerID)
-        let payload = try JSONEncoder().encode(TimelineCreateRequest(title: title, ascendantID: ascendantID))
-        let targetProvider: String?
-        if let providerID {
-            targetProvider = providerID
-        } else {
-            targetProvider = try await selectAscendant(id: ascendantID, nodeID: nodeID).providerID
+        let timelines = try connectedTimelines()
+        return try await tracked(providerID) {
+            try await timelines.create(title: title, ascendantID: ascendantID, providerID: providerID)
         }
-        let response = try await call(
-            operation: TimelineManagementProvider.createOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
-            providerID: targetProvider,
-            timeout: timeout
-        )
-        return try JSONDecoder().decode(TimelineStatus.self, from: Data(response.result.utf8))
     }
 
     public func selectAscendant(
@@ -372,8 +297,7 @@ public final class RemoteTurnClient: Sendable {
     /// so it needs one catalog refresh for the whole registry rather than one
     /// per record.
     public func timelinePresenceSnapshot() async -> TimelinePresenceSnapshot {
-        await refreshCatalog()
-        let entries = await catalog.networkObjects()
+        let entries = await listNetworkObjects()
         var providersByTimeline: [UUID: Set<String>] = [:]
         for entry in entries where entry.objectType == GnosticObjectType.timeline {
             providersByTimeline[entry.objectID, default: []].insert(entry.providerID)
@@ -395,67 +319,28 @@ public final class RemoteTurnClient: Sendable {
         await timelinePresenceSnapshot().presence(of: timelineID)
     }
 
-    private func discoveredProviderID(forTimeline timelineID: UUID) async throws -> String {
-        switch await timelinePresence(of: timelineID) {
-        case let .present(providerID): return providerID
-        case .ambiguous: throw RemoteTurnClientError.timelineAmbiguous(timelineID)
-        case .absent, .indeterminate: throw RemoteTurnClientError.timelineUnavailable(timelineID)
-        }
+    private func connectedTurns() throws -> GnosticTurnClient {
+        guard let turns else { throw RemoteTurnClientError.brokerUnreachable("not connected") }
+        return turns
     }
 
-    private func resolvedProviderID(_ explicit: String?, forTimeline timelineID: UUID) async throws -> String {
-        if let explicit { return explicit }
-        return try await discoveredProviderID(forTimeline: timelineID)
+    private func connectedTimelines() throws -> GnosticTimelineClient {
+        guard let timelines else { throw RemoteTurnClientError.brokerUnreachable("not connected") }
+        return timelines
     }
 
-    private func resolvedTurnTarget(
-        _ explicitProviderID: String?,
-        forTimeline timelineID: UUID
-    ) async throws -> (providerID: String, ascendantID: UUID) {
-        await refreshCatalog()
-        let entries = await catalog.networkObjects()
-        let timelines = entries.filter {
-            $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
-        }
-        let providers = Set(timelines.map(\.providerID))
-        guard let providerID = providers.first else { throw RemoteTurnClientError.timelineUnavailable(timelineID) }
-        guard providers.count == 1 else { throw RemoteTurnClientError.timelineAmbiguous(timelineID) }
-        if let explicitProviderID,
-           explicitProviderID.caseInsensitiveCompare(providerID) != .orderedSame {
-            throw RemoteTurnClientError.providerMismatch
-        }
-        let attachedAscendantIDs = Set(timelines.compactMap { entry -> UUID? in
-            guard case let .string(raw) = entry.knownProperties["attachedAscendantID"] else { return nil }
-            return UUID(uuidString: raw)
-        })
-        guard attachedAscendantIDs.count == 1,
-              let ascendantID = attachedAscendantIDs.first else {
-            throw RemoteTurnClientError.timelineUnavailable(timelineID)
-        }
-        guard discoveredAscendants(from: entries).contains(where: {
-            $0.id == ascendantID
-                && $0.providerID.caseInsensitiveCompare(providerID) == .orderedSame
-                && $0.capabilities.contains(GnosticCapability.textTurnInput)
-        }) else {
-            throw RemoteTurnClientError.missingCapability(GnosticCapability.textTurnInput)
-        }
-        return (providerID, ascendantID)
-    }
-
-    private func call(operation: String, parameters: String? = nil, providerID: String?, timeout: Duration) async throws -> UnaryCallResult {
+    /// Runs one provider-addressed operation so a provider eviction cancels it
+    /// and reports ``RemoteTurnClientError/providerOffline(_:)``.
+    private func tracked<Value: Sendable>(
+        _ providerID: String?,
+        _ operation: @escaping @MainActor () async throws -> Value
+    ) async throws -> Value {
         try ensureProviderOnline(providerID)
+        let task = Task { @MainActor in try await operation() }
         let normalized = providerID?.lowercased()
         let callID = UUID()
-        let task = Task { [manager] in
-            try await manager.call(
-                operation: operation,
-                parameters: parameters,
-                context: providerID.map(Self.providerContext),
-                timeout: timeout
-            )
-        }
         if let normalized {
-            inFlightCalls[normalized, default: [:]][callID] = task
+            inFlightCalls[normalized, default: [:]][callID] = { task.cancel() }
         }
         defer {
             if let normalized {
@@ -465,25 +350,44 @@ public final class RemoteTurnClient: Sendable {
                 }
             }
         }
-        let response: UnaryCallResult
         do {
-            response = try await task.value
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
         } catch {
             // A provider eviction cancels this call. Report the typed offline
             // error instead of the generic cancellation it produces.
             try ensureProviderOnline(providerID)
-            throw error
+            throw Self.remoteError(error)
         }
-        if let providerID, response.sourceId?.lowercased() != providerID.lowercased() {
-            throw RemoteTurnClientError.providerMismatch
-        }
-        return response
     }
 
-    private static func providerContext(_ providerID: String) -> ObjectFilter {
-        ObjectFilter(condition: ObjectFilterCondition(
-            property: ObjectFilterProperty("objectId"),
-            expression: .equals(FilterOperand(providerID.lowercased()))
-        ))
+    /// Maps the public client failures onto the ACP error vocabulary. Serve
+    /// rejections and transport failures keep their public client error.
+    private static func remoteError(_ error: any Error) -> any Error {
+        switch error {
+        case let error as GnosticTurnClientError:
+            switch error {
+            case let .timelineUnavailable(id): RemoteTurnClientError.timelineUnavailable(id)
+            case let .timelineAmbiguous(id): RemoteTurnClientError.timelineAmbiguous(id)
+            case .providerMismatch: RemoteTurnClientError.providerMismatch
+            case let .missingCapability(capability): RemoteTurnClientError.missingCapability(capability)
+            case .callFailed: error
+            }
+        case let error as GnosticTimelineClientError:
+            switch error {
+            case let .ascendantUnavailable(id): RemoteTurnClientError.ascendantUnavailable(id)
+            case .ascendantAmbiguous: RemoteTurnClientError.ambiguousAscendant
+            case let .timelineUnavailable(id): RemoteTurnClientError.timelineUnavailable(id)
+            case let .timelineAmbiguous(id): RemoteTurnClientError.timelineAmbiguous(id)
+            case .providerMismatch: RemoteTurnClientError.providerMismatch
+            case let .missingCapability(capability): RemoteTurnClientError.missingCapability(capability)
+            case .callFailed: error
+            }
+        default:
+            error
+        }
     }
 }

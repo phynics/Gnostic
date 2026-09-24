@@ -35,11 +35,14 @@ public final class GnosticTimelineClient {
     /// - Parameters:
     ///   - title: The new Timeline title.
     ///   - ascendantID: The Ascendant that will operate the Timeline.
+    ///   - providerID: The expected provider of the Ascendant, or `nil` to
+    ///     resolve it from the session catalog.
     /// - Returns: The status returned by the serving Node.
     /// - Throws: ``GnosticTimelineClientError`` when the Ascendant cannot be
-    ///   resolved, lacks Timeline management, or the serve rejects the call.
-    public func create(title: String, ascendantID: UUID) async throws -> TimelineStatus {
-        let providerID = try await resolvedAscendantProvider(for: ascendantID)
+    ///   resolved, the addressed provider does not advertise it, it lacks
+    ///   Timeline management, or the serve rejects the call.
+    public func create(title: String, ascendantID: UUID, providerID expectedProviderID: String? = nil) async throws -> TimelineStatus {
+        let providerID = try await resolvedAscendantProvider(for: ascendantID, expected: expectedProviderID)
         return try await channel.call(
             TimelineManagementProvider.createOperation,
             request: TimelineCreateRequest(title: title, ascendantID: ascendantID),
@@ -71,9 +74,45 @@ public final class GnosticTimelineClient {
         )
     }
 
-    private func resolvedAscendantProvider(for ascendantID: UUID) async throws -> String {
+    /// Reads a Timeline's attachment state from its serving Node.
+    ///
+    /// Unlike the mutating operations, status needs no capability. When
+    /// `providerID` is given the client asks that provider directly, without a
+    /// catalog refresh, so a caller can probe a Timeline it no longer sees
+    /// advertised; a Node that does not own the Timeline rejects the call.
+    ///
+    /// - Parameters:
+    ///   - timelineID: The Timeline to read.
+    ///   - providerID: The provider to ask, or `nil` to resolve the Timeline's
+    ///     provider from the session catalog.
+    /// - Returns: The status returned by the serving Node.
+    /// - Throws: ``GnosticTimelineClientError`` when the Timeline cannot be
+    ///   resolved or the serve rejects the call.
+    public func status(timelineID: UUID, providerID explicitProviderID: String? = nil) async throws -> TimelineStatus {
+        let providerID: String
+        if let explicitProviderID {
+            providerID = explicitProviderID
+        } else {
+            let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
+            switch GnosticCatalogLookup.provider(of: GnosticObjectType.timeline, id: timelineID, in: entries) {
+            case let .provider(resolved): providerID = resolved
+            case .unavailable, .mismatch: throw GnosticTimelineClientError.timelineUnavailable(timelineID)
+            case .ambiguous: throw GnosticTimelineClientError.timelineAmbiguous(timelineID)
+            }
+        }
+        return try await channel.call(
+            TimelineStatusProvider.statusOperation,
+            request: TimelineStatusRequest(timelineID: timelineID),
+            context: "timeline.status request",
+            providerID: providerID,
+            timeout: timeout,
+            returning: TimelineStatus.self
+        )
+    }
+
+    private func resolvedAscendantProvider(for ascendantID: UUID, expected: String?) async throws -> String {
         let entries = await lookup.entries(requiring: GnosticObjectType.ascendant, id: ascendantID)
-        switch GnosticCatalogLookup.provider(of: GnosticObjectType.ascendant, id: ascendantID, in: entries) {
+        switch GnosticCatalogLookup.provider(of: GnosticObjectType.ascendant, id: ascendantID, in: entries, expected: expected) {
         case let .provider(providerID):
             guard GnosticCatalogLookup.ascendantAdvertises(
                 GnosticCapability.timelineManagement,
@@ -84,8 +123,9 @@ public final class GnosticTimelineClient {
                 throw GnosticTimelineClientError.missingCapability(GnosticCapability.timelineManagement)
             }
             return providerID
-        case .unavailable, .mismatch: throw GnosticTimelineClientError.ascendantUnavailable(ascendantID)
+        case .unavailable: throw GnosticTimelineClientError.ascendantUnavailable(ascendantID)
         case .ambiguous: throw GnosticTimelineClientError.ascendantAmbiguous(ascendantID)
+        case .mismatch: throw GnosticTimelineClientError.providerMismatch
         }
     }
 

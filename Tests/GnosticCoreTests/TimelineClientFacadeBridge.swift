@@ -81,6 +81,10 @@ enum TimelineClientFacadeBridge {
         if options.update != .timeout {
             registrations.append(try await registerUpdate(on: manager, provider: provider, outcome: options.update))
         }
+        let status = TimelineStatusProvider { request in
+            TimelineStatus(timelineID: request.timelineID, title: "Status", attachedWorkspaceIDs: [])
+        }
+        registrations.append(try await status.register(on: manager, context: manager.identity))
 
         try await start(manager)
         return Fixture(

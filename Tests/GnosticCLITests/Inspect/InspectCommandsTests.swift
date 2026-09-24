@@ -45,6 +45,23 @@ struct InspectCommandsTests {
         }
     }
 
+    @Test("inspect returns within one observe window once the broker is online") @MainActor
+    func inspectSpendsOneObserveWindow() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        _ = try await InspectSession(
+            values: .init(
+                host: "127.0.0.1",
+                port: 1883,
+                namespace: "gnostic-inspect-window-\(UUID().uuidString.lowercased())",
+                observeSeconds: 2
+            )
+        ).collect()
+
+        // Connecting must not consume its own observe window before discovery.
+        #expect(clock.now - start < .milliseconds(3_500))
+    }
+
     @Test("object resolution and exit codes classify unknown and ambiguous") @MainActor
     func objectResolutionExitCodes() {
         let entry = InspectRendererTestsEntry.workspace(provider: "a")
