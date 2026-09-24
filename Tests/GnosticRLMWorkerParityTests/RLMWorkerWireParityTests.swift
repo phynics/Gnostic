@@ -154,8 +154,8 @@ struct RLMWorkerWireParityTests {
         for fixture in fixtures {
             let guileOutcome = await guile.evaluate(source: fixture.source)
             let chibiOutcome = await chibi.evaluate(source: fixture.source)
-            #expect(Self.isSchemeFailure(guileOutcome), "Guile \(fixture.name) result: \(guileOutcome)")
-            #expect(Self.isSchemeFailure(chibiOutcome), "Chibi \(fixture.name) result: \(chibiOutcome)")
+            #expect(Self.isRepairableSchemeFailure(guileOutcome), "Guile \(fixture.name) result: \(guileOutcome)")
+            #expect(Self.isRepairableSchemeFailure(chibiOutcome), "Chibi \(fixture.name) result: \(chibiOutcome)")
             #expect(await guile.isRunning, "Guile worker exited after \(fixture.name)")
             #expect(await chibi.isRunning, "Chibi worker exited after \(fixture.name)")
 
@@ -227,9 +227,9 @@ struct RLMWorkerWireParityTests {
         return false
     }
 
-    private static func isSchemeFailure(_ outcome: RLMWorkerEvaluationOutcome) -> Bool {
-        if case .schemeFailed = outcome { return true }
-        return false
+    private static func isRepairableSchemeFailure(_ outcome: RLMWorkerEvaluationOutcome) -> Bool {
+        guard case let .schemeFailed(message) = outcome else { return false }
+        return RLMWorkerFailureClassifier.classify(message).isRecoverableCellFailure
     }
 
     private static let pureOperationSources: [String: String] = [
