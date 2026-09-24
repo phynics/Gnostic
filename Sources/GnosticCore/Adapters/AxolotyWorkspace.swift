@@ -93,31 +93,6 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
     }
 }
 
-/// Creates catalog-backed remote workspace proxies for PositronicKit's normal resolver path.
-public struct AxolotyWorkspaceFactory: WorkspaceFactory, Sendable {
-    private let catalog: NetworkCatalog
-    private let invoke: @Sendable (WorkspaceInvocation) async throws -> ToolResult
-
-    /// Creates a factory using the remote invocation transport.
-    public init(catalog: NetworkCatalog, invoke: @escaping @Sendable (WorkspaceInvocation) async throws -> ToolResult) {
-        self.catalog = catalog
-        self.invoke = invoke
-    }
-
-    /// Creates catalog-backed proxies that route to the selected provider.
-    @MainActor
-    public init(catalog: NetworkCatalog, communication: CommunicationManager, timeout: Duration = .seconds(10)) {
-        self.init(catalog: catalog) { invocation in
-            try await invokeWorkspace(invocation, communication: communication, timeout: timeout)
-        }
-    }
-
-    /// Creates the runtime proxy used by `WorkspaceToolWrapper` and `TimelineToolRegistry`.
-    public func create(from reference: WorkspaceReference) throws -> any WorkspaceProvider {
-        AxolotyWorkspace(reference: reference, catalog: catalog, invoke: invoke)
-    }
-}
-
 @MainActor
 private func invokeWorkspace(
     _ invocation: WorkspaceInvocation,
