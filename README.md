@@ -10,8 +10,9 @@ records the load-time cancellation-shield fix this release carries. The
 deployment-target fix. The
 [0.4.0 declaration](Documentation/Compatibility/0.4.0.md) lists the public
 consumer clients and the dependency exception. The [0.3.0 declaration](Documentation/Compatibility/0.3.0.md) remains
-authoritative for the protocol, manifest, migration, and intentional 0.2
-breaks.
+authoritative for the protocol, manifest, and intentional 0.2 breaks. The
+pre-reset configuration migrations were retired after 0.4 (ADR 0003
+amendment): migrate an older file with Gnostic 0.4 first.
 
 ## Start a Node
 
@@ -38,7 +39,8 @@ when a command reads the manifest.
 Start the Node after configuring an LLM provider and model:
 
 ```sh
-gnostic config positronic set <ASCENDANT_UUID> --provider <PROVIDER> --model <MODEL>
+gnostic config backend set <ASCENDANT_UUID> provider <PROVIDER>
+gnostic config backend set <ASCENDANT_UUID> model <MODEL>
 gnostic serve
 ```
 

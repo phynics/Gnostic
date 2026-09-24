@@ -60,12 +60,7 @@ public struct CLIConfigurationStore: Sendable {
         explicitConfigURL ?? baseDirectory.appendingPathComponent(Self.defaultFileName)
     }
 
-    /// The retained copy of a flat file after successful migration.
-    public func legacyBackupPath() -> URL {
-        path().appendingPathExtension("legacy")
-    }
-
-    /// Loads the current manifest, migrating a valid flat file exactly once.
+    /// Loads the current manifest.
     public func loadManifest() throws -> NodeManifest {
         guard FileManager.default.fileExists(atPath: path().path) else {
             throw CLIConfigurationError.missingFile(path())
@@ -134,12 +129,12 @@ public struct CLIConfigurationStore: Sendable {
     }
 
     /// Sets a broker compatibility key in the manifest, preserving all unrelated graph data.
-    /// Positronic fields require an explicitly selected Ascendant through
-    /// `config positronic` and cannot be mutated through this compatibility API.
+    /// Backend fields require an explicitly selected Ascendant through
+    /// `config backend` and cannot be mutated through this compatibility API.
     public func setValue(_ value: String, for key: ConfigurationKey) throws {
         switch key {
         case .llmProvider, .llmEndpoint, .llmModel, .llmUtilityModel, .llmFastModel, .llmAPIKey:
-            throw CLIConfigurationError.invalidArgument("Use `gnostic config positronic` with an explicit Ascendant ID.")
+            throw CLIConfigurationError.invalidArgument("Use `gnostic config backend` with an explicit Ascendant ID.")
         default:
             break
         }
@@ -172,50 +167,19 @@ public struct CLIConfigurationStore: Sendable {
             throw CLIConfigurationError.malformedFile(url)
         }
 
-        let jsonObject = try? JSONSerialization.jsonObject(with: data)
-        let object = jsonObject as? [String: Any]
-        let hasSchemaVersion = object?["schemaVersion"] != nil
-        if hasSchemaVersion {
-            do {
-                let manifest = try JSONDecoder().decode(NodeManifest.self, from: data)
-                if manifest.schemaVersion == 1 {
-                    let migrated = try manifest.migratedToV2().normalized()
-                    try retainLegacyBackupUnlocked(data)
-                    try writeManifestUnlocked(migrated)
-                    return migrated
-                }
-                let canonical = canonicalV2Manifest(manifest)
-                try canonical.validate()
-                if canonical != manifest {
-                    try writeManifestUnlocked(canonical)
-                }
-                return canonical
-            } catch let error as NodeManifestError {
-                throw CLIConfigurationError.invalidManifest(error, url)
-            } catch {
-                throw CLIConfigurationError.malformedFile(url)
+        do {
+            let manifest = try JSONDecoder().decode(NodeManifest.self, from: data)
+            let canonical = manifest.normalized()
+            try canonical.validate()
+            if canonical != manifest {
+                try writeManifestUnlocked(canonical)
             }
-        }
-
-        guard let object,
-              !object.isEmpty,
-              Set(object.keys).isSubset(of: PersistedConfiguration.acceptedKeys)
-        else {
+            return canonical
+        } catch let error as NodeManifestError {
+            throw CLIConfigurationError.invalidManifest(error, url)
+        } catch {
             throw CLIConfigurationError.malformedFile(url)
         }
-
-        let legacy: PersistedConfiguration
-        do { legacy = try JSONDecoder().decode(PersistedConfiguration.self, from: data) }
-        catch { throw CLIConfigurationError.malformedFile(url) }
-        let configuration = legacy.applying(.defaults)
-        let manifest = Self.manifest(from: legacy, configuration: configuration)
-        do { try manifest.validate() }
-        catch let error as NodeManifestError { throw CLIConfigurationError.invalidManifest(error, url) }
-        catch { throw CLIConfigurationError.malformedFile(url) }
-
-        try retainLegacyBackupUnlocked(data)
-        try writeManifestUnlocked(manifest)
-        return manifest
     }
 
     private func existingManifestOrEmptyUnlocked() throws -> NodeManifest {
@@ -226,35 +190,8 @@ public struct CLIConfigurationStore: Sendable {
         return try loadManifestUnlocked() ?? NodeManifest.empty(broker: defaultBroker)
     }
 
-    /// Removes the retired profile identity marker from v2 files emitted by
-    /// the pre-164 CLI projection without changing opaque backend settings.
-    /// Empty broker credentials are cleared so the stored manifest is canonical.
-    private func canonicalV2Manifest(_ manifest: NodeManifest) -> NodeManifest {
-        var result = manifest
-        for index in result.ascendants.indices where result.ascendants[index].backend.kind == "positronic" {
-            result.ascendants[index].backend.settings.removeValue(forKey: "_legacyID")
-        }
-        result.broker = result.broker.normalized()
-        return result
-    }
-
     private var defaultBroker: NodeManifest.Broker {
         .init(host: CLIConfiguration.defaults.mqttHost, port: CLIConfiguration.defaults.mqttPort, namespace: CLIConfiguration.defaults.mqttNamespace)
-    }
-
-    private func retainLegacyBackupUnlocked(_ data: Data) throws {
-        let backup = legacyBackupPath()
-        if FileManager.default.fileExists(atPath: backup.path) { return }
-        try FileManager.default.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temporary = backup.deletingLastPathComponent().appendingPathComponent(".legacy-\(UUID.makeVersion4().uuidString).tmp")
-        do {
-            try data.write(to: temporary)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-            try FileManager.default.moveItem(at: temporary, to: backup)
-        } catch {
-            try? FileManager.default.removeItem(at: temporary)
-            throw CLIConfigurationError.writeFailed(backup)
-        }
     }
 
     private func writeManifestUnlocked(_ manifest: NodeManifest) throws {
@@ -314,28 +251,6 @@ public struct CLIConfigurationStore: Sendable {
         result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword).normalized()
         return result
     }
-
-    private static func manifest(from legacy: PersistedConfiguration, configuration: CLIConfiguration) -> NodeManifest {
-        let broker = NodeManifest.Broker(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword).normalized()
-        let hasLLMValues = [legacy.llmProvider, legacy.llmEndpoint, legacy.llmModel, legacy.llmUtilityModel, legacy.llmFastModel, legacy.llmAPIKey].contains { $0 != nil }
-        let timelineID = UUID.makeVersion4()
-        let ascendantID = UUID.makeVersion4()
-        let backend = hasLLMValues ? PositronicBackendConfiguration(
-            provider: configuration.llmProvider ?? "positronic",
-            endpoint: configuration.llmEndpoint,
-            model: configuration.llmModel,
-            utilityModel: configuration.llmUtilityModel,
-            fastModel: configuration.llmFastModel,
-            apiKey: configuration.llmAPIKey
-        ).applying() : .init(kind: "positronic")
-        return NodeManifest(
-            broker: broker,
-            node: .init(id: UUID.makeVersion4()),
-            ascendants: [.init(id: ascendantID, name: "Migrated Ascendant", defaultTimelineID: timelineID, backend: backend)],
-            timelines: [.init(id: timelineID, title: "Default Timeline", operatingAscendantID: ascendantID)],
-            workspaces: [.init(id: UUID.makeVersion4(), name: "Echo Workspace", uri: "echo://default")]
-        )
-    }
 }
 
 private enum ManifestStoreLock {
@@ -355,5 +270,3 @@ private enum ManifestStoreLock {
         return try operation()
     }
 }
-
-public typealias NodeManifestStore = CLIConfigurationStore

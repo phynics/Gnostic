@@ -122,19 +122,4 @@ struct BackendConfigCommandTests {
             )
         }
     }
-
-    @Test("the deprecated Positronic command group still works")
-    @available(*, deprecated, message: "Exercises the deprecated kind-specific seam on purpose.")
-    func deprecatedPositronicStillWorks() throws {
-        let (_, store, id) = try seeded()
-
-        try ConfigCommandLogic.configurePositronic(
-            ascendantID: id.uuidString, provider: "openai", endpoint: nil,
-            model: "gpt-5", utilityModel: nil, fastModel: nil, store: store
-        )
-        let backend = try store.loadManifest().ascendants[0].backend
-        #expect(backend.settings["provider"]?.stringValue == "openai")
-        #expect(backend.settings["model"]?.stringValue == "gpt-5")
-        #expect(ConfigCommand.Positronic.configuration.abstract.lowercased().contains("deprecated"))
-    }
 }

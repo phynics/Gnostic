@@ -21,7 +21,7 @@ struct ConfigCommand: AsyncParsableCommand {
         """,
         subcommands: [
             Init.self, Show.self, Validate.self, Path.self, Broker.self, Backend.self,
-            Positronic.self, Ascendant.self, Timeline.self, Workspace.self,
+            Ascendant.self, Timeline.self, Workspace.self,
         ]
     )
 
@@ -215,75 +215,6 @@ struct ConfigCommand: AsyncParsableCommand {
                 try ConfigCommandLogic.clearBackend(
                     ascendantID: ascendantID, store: ConfigCommandLogic.store(for: configPath)
                 )
-            }
-        }
-    }
-
-    struct Positronic: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "positronic",
-            abstract: "Deprecated. Use 'config backend' instead.",
-            discussion: """
-            These commands remain for compatibility and only ever worked for the \
-            bundled Positronic backend. `config backend` works for every \
-            registered kind and is the supported surface.
-
-              gnostic config backend set <ascendant-id> provider openai
-              gnostic config backend set-secret <ascendant-id> apiKey
-            """,
-            subcommands: [Set.self, SetAPIKey.self, Clear.self]
-        )
-
-        struct Set: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "set", abstract: "Set fields on one Positronic Ascendant backend.")
-            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-            var configPath: String?
-            @Argument(help: "Existing Positronic Ascendant UUID.")
-            var ascendantID: String
-            @Option(name: .long, help: "Provider name.")
-            var provider: String?
-            @Option(name: .long, help: "Provider endpoint URL.")
-            var endpoint: String?
-            @Option(name: .long, help: "Primary model name.")
-            var model: String?
-            @Option(name: .customLong("utility-model"), help: "Utility model name.")
-            var utilityModel: String?
-            @Option(name: .customLong("fast-model"), help: "Fast model name.")
-            var fastModel: String?
-
-            func run() async throws {
-                try ConfigCommandLogic.configurePositronic(
-                    ascendantID: ascendantID, provider: provider, endpoint: endpoint,
-                    model: model, utilityModel: utilityModel, fastModel: fastModel,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
-            }
-        }
-
-        struct SetAPIKey: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "set-api-key", abstract: "Read a Positronic API key from standard input.")
-            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-            var configPath: String?
-            @Argument(help: "Existing Positronic Ascendant UUID.")
-            var ascendantID: String
-
-            func run() async throws {
-                try ConfigCommandLogic.setPositronicAPIKey(
-                    id: ascendantID, value: ConfigCommandLogic.readSecret(),
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
-            }
-        }
-
-        struct Clear: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear the selected Positronic backend envelope.")
-            @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-            var configPath: String?
-            @Argument(help: "Existing Positronic Ascendant UUID.")
-            var ascendantID: String
-
-            func run() async throws {
-                try ConfigCommandLogic.clearPositronic(ascendantID: ascendantID, store: ConfigCommandLogic.store(for: configPath))
             }
         }
     }
@@ -723,49 +654,6 @@ public enum ConfigCommandLogic {
         }
     }
 
-    public static func configurePositronic(
-        ascendantID: String,
-        provider: String?,
-        endpoint: String?,
-        model: String?,
-        utilityModel: String?,
-        fastModel: String?,
-        store: CLIConfigurationStore
-    ) throws {
-        guard provider != nil || endpoint != nil || model != nil || utilityModel != nil || fastModel != nil else {
-            throw CLIConfigurationError.invalidArgument("Provide at least one Positronic backend field to set.")
-        }
-        if let provider, provider.isEmpty {
-            throw CLIConfigurationError.invalidArgument("A Positronic provider cannot be empty.")
-        }
-        let id = try parseID(ascendantID, kind: "ascendant")
-        _ = try store.mutateManifest { manifest in
-            let index = try positronicIndex(id, in: manifest)
-            let configuration = PositronicBackendConfiguration(
-                provider: provider, endpoint: endpoint, model: model,
-                utilityModel: utilityModel, fastModel: fastModel
-            )
-            manifest.ascendants[index].backend = configuration.applying(to: manifest.ascendants[index].backend)
-        }
-    }
-
-    public static func setPositronicAPIKey(id: String, value: String, store: CLIConfigurationStore) throws {
-        let ascendantID = try parseID(id, kind: "ascendant")
-        _ = try store.mutateManifest { manifest in
-            let index = try positronicIndex(ascendantID, in: manifest)
-            manifest.ascendants[index].backend = PositronicBackendConfiguration(apiKey: value)
-                .applying(to: manifest.ascendants[index].backend)
-        }
-    }
-
-    public static func clearPositronic(ascendantID: String, store: CLIConfigurationStore) throws {
-        let id = try parseID(ascendantID, kind: "ascendant")
-        _ = try store.mutateManifest { manifest in
-            let index = try positronicIndex(id, in: manifest)
-            manifest.ascendants[index].backend = .init(kind: "positronic")
-        }
-    }
-
     public static func addAscendant(
         name: String?,
         description: String,
@@ -919,15 +807,6 @@ public enum ConfigCommandLogic {
         return id
     }
 
-    private static func positronicIndex(_ id: UUID, in manifest: NodeManifest) throws -> Int {
-        guard let index = manifest.ascendants.firstIndex(where: { $0.id == id }) else {
-            throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
-        }
-        guard manifest.ascendants[index].backend.kind == "positronic" else {
-            throw CLIConfigurationError.invalidArgument("Ascendant \(id.uuidString.lowercased()) does not use the Positronic backend.")
-        }
-        return index
-    }
 
     private static func printID(_ label: String, _ id: UUID) {
         print("\(label): \(id.uuidString.lowercased())")

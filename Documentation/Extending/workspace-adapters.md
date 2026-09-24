@@ -28,27 +28,20 @@ adapters.workspaces.registerProduct(kind: "ledger") { configuration in
 }
 ```
 
-`registerProduct(kind:factory:)` is the supported seam. The adapter owns its
+`registerProduct(kind:factory:)` is the registration seam. The adapter owns its
 own `WorkspaceReference` — its identifier, URI, and tool projection — and
 Gnostic does not invent any of it.
 
 `WorkspaceAdapterRegistry.registeredKinds` enumerates what a registry can
 build.
 
-## Why `register(kind:factory:)` is deprecated
+## Why the adapter owns its reference
 
-The legacy seam hands your factory a runtime-built `WorkspaceReference` and
-expects you to adopt it. That inverts ownership: the runtime cannot know your
-adapter's tools, so an adapter that projects the reference it was handed
-advertises whatever the runtime guessed.
-
-That was a real defect. The runtime injected the bundled echo tool definitions
-into every legacy adapter regardless of kind, so an adapter following the
-documented pattern advertised `workspace_echo` and then rejected the call it
-had advertised. Legacy factories now receive an empty tool list, which is
-honest but means a legacy adapter must declare its own tools to advertise any.
-
-Use `registerProduct(kind:factory:)`.
+An earlier seam, `register(kind:factory:)`, handed the factory a runtime-built
+`WorkspaceReference` to adopt. The runtime cannot know an adapter's tools, so
+an adapter that projected the reference it was handed advertised whatever the
+runtime guessed, and at one point every such adapter advertised the bundled
+echo tool and then rejected the call. That seam was removed after 0.4.
 
 ## Local and network Workspaces
 

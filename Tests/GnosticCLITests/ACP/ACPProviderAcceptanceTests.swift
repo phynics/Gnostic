@@ -406,27 +406,22 @@ struct ACPProviderAcceptanceTests {
     }
 
     @Test(
-        "legacy flat config migrates to schema v2 and streams whitespace-compatible ACP turn IDs",
+        "a configured runtime streams whitespace-compatible ACP turn IDs",
         .timeLimit(.minutes(1))
     )
     @MainActor
-    func legacyMigrationToConfiguredRuntimeSmoke() async throws {
+    func configuredRuntimeSmoke() async throws {
         let folder = try TemporaryFolder()
         let namespace = "legacy-runtime-\(UUID().uuidString.lowercased())"
         let configURL = folder.url.appendingPathComponent("config.json")
-        let legacy = """
-        {"mqtt.host":"127.0.0.1","mqtt.port":1883,"mqtt.namespace":"\(namespace)","llm.provider":"Ollama","llm.model":"deterministic"}
-        """
-        _ = FileManager.default.createFile(atPath: configURL.path, contents: Data(legacy.utf8))
-
         let store = CLIConfigurationStore(configPath: configURL, environment: [:])
-        let migrated = try store.loadManifest()
-        #expect(migrated.schemaVersion == 2)
-        #expect(migrated.ascendants.count == 1)
-        #expect(migrated.ascendants[0].backend.settings["provider"] == .string("Ollama"))
-        #expect(FileManager.default.fileExists(atPath: store.legacyBackupPath().path))
+        let seeded = try store.mutateManifest { manifest in
+            manifest = NodeManifest.makeDefault(broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace))
+            manifest.ascendants[0].backend.settings = ["provider": .string("Ollama"), "model": .string("deterministic")]
+        }
+        #expect(seeded.ascendants.count == 1)
 
-        let workspaceID = try #require(migrated.workspaces.first?.id)
+        let workspaceID = try #require(seeded.workspaces.first?.id)
         let configured = try store.mutateManifest { manifest in
             manifest.timelines[0].attachments = [.local(workspaceID)]
         }
@@ -532,7 +527,7 @@ struct ACPProviderAcceptanceTests {
               case let .array(listedSessions) = listedValues["sessions"],
               case let .dictionary(listedSession) = listedSessions.first,
               case let .dictionary(listedMetadata) = listedSession["_meta"] else {
-            Issue.record("session/list did not return migrated ACP metadata")
+            Issue.record("session/list did not return ACP session metadata")
             return
         }
         #expect(listedMetadata["gnosticWorkspaceAttachmentState"] == .string("attached"))
@@ -1060,7 +1055,7 @@ private final class AcceptanceFinalLanguageModel: LLMStreamClient, @unchecked Se
     func fetchAvailableModels() async throws -> [String]? { nil }
 }
 
-/// Deterministic two-step model for the migrated-config ACP acceptance path.
+/// Deterministic two-step model for the configured-runtime ACP acceptance path.
 private final class LegacyMigrationToolLanguageModel: LLMStreamClient, @unchecked Sendable {
     private actor Counter {
         private var value = 0
