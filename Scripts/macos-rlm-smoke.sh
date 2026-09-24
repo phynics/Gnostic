@@ -75,8 +75,23 @@ let package = Package(
 )
 SWIFT
 
-swift test --package-path "$mac_package" --disable-automatic-resolution --build-system native \
-    --quiet -Xswiftc -warnings-as-errors \
-    --filter 'RLM(Guile|Chibi)(WorkerSession|SandboxDenial|ProcessSignals|Operation)Tests|RLMWorkerWireParityTests' \
-    | tee .testing/macos-rlm-smoke.log
-grep -Eq 'Test run with [1-9][0-9]* tests' .testing/macos-rlm-smoke.log
+: > .testing/macos-rlm-smoke.log
+suite_index=0
+for test_filter in \
+    RLMGuileWorkerSessionTests \
+    RLMGuileSandboxDenialTests \
+    RLMGuileProcessSignalsTests \
+    RLMGuileOperationTests \
+    RLMChibiWorkerSessionTests \
+    RLMChibiSandboxDenialTests \
+    RLMChibiProcessSignalsTests \
+    RLMChibiOperationTests \
+    RLMWorkerWireParityTests; do
+    suite_log="$mac_package/suite-${suite_index}.log"
+    swift test --package-path "$mac_package" --disable-automatic-resolution --build-system native \
+        --quiet -Xswiftc -warnings-as-errors --filter "$test_filter" \
+        | tee "$suite_log" \
+        | tee -a .testing/macos-rlm-smoke.log
+    grep -Eq 'Test run with [1-9][0-9]* tests' "$suite_log"
+    suite_index=$((suite_index + 1))
+done

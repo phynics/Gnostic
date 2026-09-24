@@ -126,3 +126,12 @@ jobs:
 
       - name: Build and exercise both RLM workers on macOS
         run: make macos-rlm-smoke
+
+      - name: Upload macOS RLM logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-rlm-smoke-logs
+          path: .testing/macos-rlm-smoke.log
+          if-no-files-found: ignore
+          retention-days: 7

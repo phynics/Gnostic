@@ -101,7 +101,7 @@ struct RLMBoundaryFitnessTests {
         let files = try Self.swiftSources(in: "GnosticRLMProcessWorker")
         #expect(!files.isEmpty)
         for file in files {
-            for token in ["Guile", "Chibi", "guile", "chibi", "prlimit"] {
+            for token in ["Guile", "Chibi", "guile", "chibi", "gnostic-rlm-limit-exec"] {
                 #expect(!file.source.contains(token), "\(file.path) must not contain '\(token)'")
             }
         }

@@ -78,8 +78,10 @@ The pinned, patched Chibi build is reproduced on macOS by
 `bash Scripts/build-chibi-rlm.sh`; it verifies the upstream archive SHA256 and
 the reviewed VM guards before compiling. Install Guile 3.0 as a Homebrew system
 dependency (`brew install guile`). Gnostic launches that separate executable
-and does not bundle or redistribute Guile. Run `make macos-rlm-smoke` to build
-both tools and exercise the session, denial, signal, and parity suites.
+and does not bundle or redistribute Guile; this keeps the LGPL runtime outside
+Gnostic's distributed artifacts. Run `make macos-rlm-smoke` to build both tools
+and exercise each session, denial, signal, operation, and parity suite. The
+target fails if any selected suite executes zero tests.
 
 The macOS build and containment differences are tracked by issue #353.
 Benchmark measurements are tracked by issue #354. See
