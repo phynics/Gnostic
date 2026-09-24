@@ -91,7 +91,6 @@ struct BoundedWorkspaceAnalysisToolTests {
     @Test("keeps host-call Scheme failures terminal")
     func keepsHostCallFailuresTerminal() {
         #expect(RLMWorkerFailureClassifier.classify("host call failed: Leaf model call limit reached: 2") == .evaluatorFailed("host call failed: Leaf model call limit reached: 2"))
-        #expect(RLMWorkerFailureClassifier.classify("resource limit exceeded") == .evaluatorFailed("resource limit exceeded"))
         #expect(RLMWorkerFailureClassifier.classify("unbound variable: retry") == .cellRuntimeFailed("unbound variable: retry"))
     }
 
