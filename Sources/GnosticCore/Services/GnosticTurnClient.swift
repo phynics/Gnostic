@@ -42,8 +42,8 @@ import Foundation
 @MainActor
 public final class GnosticTurnClient {
     private let manager: CommunicationManager
-    private let catalog: NetworkCatalog
-    private let subscription: GnosticSubscription
+    private let lookup: GnosticCatalogLookup
+    private let channel: GnosticCallChannel<GnosticTurnClientError>
     private let timeout: Duration
     private let promptTimeout: Duration
 
@@ -55,8 +55,8 @@ public final class GnosticTurnClient {
         promptTimeout: Duration
     ) {
         self.manager = manager
-        self.catalog = catalog
-        self.subscription = subscription
+        lookup = GnosticCatalogLookup(manager: manager, catalog: catalog, subscription: subscription, timeout: timeout)
+        channel = GnosticCallChannel(manager: manager)
         self.timeout = timeout
         self.promptTimeout = promptTimeout
     }
@@ -81,17 +81,14 @@ public final class GnosticTurnClient {
         providerID: String? = nil
     ) async throws -> AscendantTurnResult {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        let payload = try GnosticWirePayload.encode(
-            AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
-            context: "ascendant.turn request"
-        )
-        let response = try await call(
-            operation: AscendantTurnProvider.turnOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
+        return try await channel.call(
+            AscendantTurnProvider.turnOperation,
+            request: AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+            context: "ascendant.turn request",
             providerID: target,
-            timeout: promptTimeout
+            timeout: promptTimeout,
+            returning: AscendantTurnResult.self
         )
-        return try Self.decode(AscendantTurnResult.self, from: response.result)
     }
 
     /// Reads the retained updates for an identified Turn.
@@ -119,22 +116,19 @@ public final class GnosticTurnClient {
         providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        let payload = try GnosticWirePayload.encode(
-            AscendantTurnReplayRequest(
+        return try await channel.call(
+            AscendantTurnProvider.replayOperation,
+            request: AscendantTurnReplayRequest(
                 timelineID: timelineID,
                 clientTurnID: clientTurnID,
                 message: message,
                 afterSequence: afterSequence
             ),
-            context: "ascendant.turn.replay request"
-        )
-        let response = try await call(
-            operation: AscendantTurnProvider.replayOperation,
-            parameters: String(decoding: payload, as: UTF8.self),
+            context: "ascendant.turn.replay request",
             providerID: target,
-            timeout: timeout
+            timeout: timeout,
+            returning: AscendantTurnReplay.self
         )
-        return try Self.decode(AscendantTurnReplay.self, from: response.result)
     }
 
     /// Streams the live updates for one identified Turn.
@@ -219,108 +213,34 @@ public final class GnosticTurnClient {
     }
 
     private func resolvedTurnTarget(_ explicitProviderID: String?, forTimeline timelineID: UUID) async throws -> String {
-        var entries = await catalog.networkObjects()
-        if !entries.contains(where: { $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID }) {
-            await subscription.discover(using: manager, timeout: timeout)
-            entries = await catalog.networkObjects()
+        let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
+        let providerID: String
+        switch GnosticCatalogLookup.provider(
+            of: GnosticObjectType.timeline,
+            id: timelineID,
+            in: entries,
+            expected: explicitProviderID
+        ) {
+        case let .provider(resolved): providerID = resolved
+        case .unavailable: throw GnosticTurnClientError.timelineUnavailable(timelineID)
+        case .ambiguous: throw GnosticTurnClientError.timelineAmbiguous(timelineID)
+        case .mismatch: throw GnosticTurnClientError.providerMismatch
         }
-        let timelines = entries.filter {
-            $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
-        }
-        let providers = Set(timelines.map { $0.providerID.lowercased() })
-        guard let providerID = timelines.first?.providerID else {
+        guard let ascendantID = GnosticCatalogLookup.operatingAscendantID(
+            ofTimeline: timelineID,
+            providerID: providerID,
+            in: entries
+        ) else {
             throw GnosticTurnClientError.timelineUnavailable(timelineID)
         }
-        guard providers.count == 1 else {
-            throw GnosticTurnClientError.timelineAmbiguous(timelineID)
-        }
-        if let explicitProviderID, explicitProviderID.caseInsensitiveCompare(providerID) != .orderedSame {
-            throw GnosticTurnClientError.providerMismatch
-        }
-        let attachedAscendantIDs = Set(timelines.compactMap { entry -> UUID? in
-            guard case let .string(raw) = entry.knownProperties["attachedAscendantID"] else { return nil }
-            return UUID(uuidString: raw)
-        })
-        guard attachedAscendantIDs.count == 1, let ascendantID = attachedAscendantIDs.first else {
-            throw GnosticTurnClientError.timelineUnavailable(timelineID)
-        }
-        guard entries.contains(where: { entry in
-            entry.objectType == GnosticObjectType.ascendant
-                && entry.objectID == ascendantID
-                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
-                && Self.capabilities(of: entry).contains(GnosticCapability.textTurnInput)
-        }) else {
+        guard GnosticCatalogLookup.ascendantAdvertises(
+            GnosticCapability.textTurnInput,
+            ascendantID: ascendantID,
+            providerID: providerID,
+            in: entries
+        ) else {
             throw GnosticTurnClientError.missingCapability(GnosticCapability.textTurnInput)
         }
         return providerID
-    }
-
-    private func call(
-        operation: String,
-        parameters: String,
-        providerID: String,
-        timeout: Duration
-    ) async throws -> UnaryCallResult {
-        let response: UnaryCallResult
-        do {
-            response = try await manager.call(
-                operation: operation,
-                parameters: parameters,
-                context: Self.providerContext(providerID),
-                timeout: timeout
-            )
-        } catch let failure as RemoteCallFailure {
-            let decoded = try? JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(failure.message.utf8))
-            throw GnosticTurnClientError.callFailed(
-                reasonCode: decoded?.reasonCode ?? "callFailed",
-                statusCode: decoded?.statusCode ?? failure.code,
-                retryable: decoded?.retryable ?? false
-            )
-        } catch let error as AxolotyError {
-            throw Self.transportFailure(error)
-        }
-        guard response.sourceId?.lowercased() == providerID.lowercased() else {
-            throw GnosticTurnClientError.providerMismatch
-        }
-        return response
-    }
-
-    private static func transportFailure(_ error: AxolotyError) -> GnosticTurnClientError {
-        switch error {
-        case let .runtime(code, _):
-            switch code {
-            case .timedOut:
-                return .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true)
-            case .cancelled:
-                return .callFailed(reasonCode: "callCancelled", statusCode: 499, retryable: false)
-            default:
-                return .callFailed(reasonCode: "transportFailure", statusCode: 503, retryable: true)
-            }
-        default:
-            return .callFailed(reasonCode: "transportFailure", statusCode: 503, retryable: true)
-        }
-    }
-
-    private static func decode<T: Decodable>(_ type: T.Type, from result: String) throws -> T {
-        do {
-            return try JSONDecoder().decode(type, from: Data(result.utf8))
-        } catch {
-            throw GnosticTurnClientError.callFailed(reasonCode: "invalidResponse", statusCode: 502, retryable: false)
-        }
-    }
-
-    private static func capabilities(of entry: NetworkCatalogEntry) -> [String] {
-        guard case let .array(values) = entry.knownProperties["capabilities"] else { return [] }
-        return values.compactMap { value in
-            guard case let .string(capability) = value else { return nil }
-            return capability
-        }
-    }
-
-    private static func providerContext(_ providerID: String) -> ObjectFilter {
-        ObjectFilter(condition: ObjectFilterCondition(
-            property: ObjectFilterProperty("objectId"),
-            expression: .equals(FilterOperand(providerID.lowercased()))
-        ))
     }
 }

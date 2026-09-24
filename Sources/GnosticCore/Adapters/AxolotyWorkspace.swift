@@ -106,10 +106,7 @@ private func invokeWorkspace(
     let response = try await communication.call(
         operation: GnosticWorkspaceProvider.invocationOperation,
         parameters: String(decoding: data, as: UTF8.self),
-        context: ObjectFilter(condition: ObjectFilterCondition(
-            property: ObjectFilterProperty("objectId"),
-            expression: .equals(FilterOperand(providerID.lowercased()))
-        )),
+        context: .provider(providerID),
         timeout: timeout
     )
     guard response.sourceId?.lowercased() == providerID.lowercased() else {
