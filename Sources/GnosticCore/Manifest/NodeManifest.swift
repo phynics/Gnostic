@@ -276,7 +276,6 @@ public struct NodeManifest: Codable, Equatable, Sendable {
     }
 
     public static func empty(broker: Broker) -> Self { .init(broker: broker, node: .init(id: UUID.makeVersion4())) }
-    public static func defaultManifest(broker: Broker) -> Self { makeDefault(broker: broker) }
 
     public var allIDs: [UUID] { [node.id] + ascendants.map(\.id) + timelines.map(\.id) + workspaces.map(\.id) }
 
