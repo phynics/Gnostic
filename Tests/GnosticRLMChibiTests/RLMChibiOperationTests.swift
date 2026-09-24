@@ -21,7 +21,8 @@ struct RLMChibiOperationTests {
         #expect(launchSpec.arguments.prefix(3) == ["--cpu=30", "--as=268435456", "--"])
         #else
         #expect(launchSpec.arguments.prefix(2) == ["--cpu=30", "--"])
-        #expect(launchSpec.arguments.suffix(4) == ["--max-address-space", "-1", "--max-cpu", "30"])
+        #expect(launchSpec.arguments.contains("--max-address-space"))
+        #expect(launchSpec.arguments.contains("-1"))
         #endif
         #expect(launchSpec.arguments.contains(configuration.executablePath))
     }

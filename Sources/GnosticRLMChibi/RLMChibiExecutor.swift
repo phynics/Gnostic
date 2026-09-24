@@ -44,6 +44,9 @@ public enum RLMChibiExecutor: RLMWorkerExecutor {
             "--max-address-space", reportedAddressSpace,
             "--max-cpu", String(configuration.maxCPUSeconds),
         ]
+        for key in environment.keys.sorted() {
+            arguments += ["--environment-key", key]
+        }
         return RLMWorkerLaunchSpec(
             requirements: [
                 .executable(configuration.executablePath),

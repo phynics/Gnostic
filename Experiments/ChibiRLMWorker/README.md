@@ -72,7 +72,7 @@ parent's wall deadline remain active.
 | Address space | Host `RLIMIT_AS`, verified before exec | No `RLIMIT_AS`; Chibi's Scheme heap cap and Guile's per-cell allocation limit remain |
 | Wall time | Shared parent deadline terminates the worker | Shared parent deadline terminates the worker |
 | File descriptors | Worker tests inspect the Linux child; no separate `RLIMIT_NOFILE` | No dedicated `RLIMIT_NOFILE`; child descriptor inventory is not verified by the macOS gate |
-| Environment | Executor supplies a scrubbed environment | Executor supplies the same scrubbed environment |
+| Environment | Executor supplies a scrubbed environment and the worker reports its launch keys | Executor supplies the same scrubbed environment and launch-key metadata |
 
 The pinned, patched Chibi build is reproduced on macOS by
 `bash Scripts/build-chibi-rlm.sh`; it verifies the upstream archive SHA256 and
