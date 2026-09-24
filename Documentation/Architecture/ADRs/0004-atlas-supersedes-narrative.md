@@ -8,6 +8,15 @@ and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145). The 0.3
 package contains the optional Atlas model and in-memory store foundation;
 durable persistence and host integration remain future work.
 
+Epic [#113](https://github.com/phynics/Gnostic/issues/113) delivered the
+opt-in end-to-end slice (#115–#119). Its lifecycle review was recorded in
+[#382](https://github.com/phynics/Gnostic/issues/382) on 2026-09-24: Atlas
+**continues incubation**. It stays an optional library with no executable
+consumer. Continued work is owned by
+[GNO-ATLAS-001 #115](https://github.com/phynics/Gnostic/issues/115). Types that
+only tests construct today, such as the integration coordinator, the fixture and
+no-op integrators, and the null observers, are incubation seams, not dead code.
+
 ## Context
 
 Continuity and context behavior currently carries Narrative terminology inside
