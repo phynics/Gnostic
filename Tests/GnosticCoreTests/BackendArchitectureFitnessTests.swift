@@ -83,7 +83,6 @@ struct BackendArchitectureFitnessTests {
             "Sources/GnosticCore/Objects/GnosticWorkspaceObject.swift",
             "Sources/GnosticCore/Objects/GnosticWorkspaceTypes.swift",
             "Sources/GnosticCore/Services/NetworkCatalogStructures.swift",
-            "Sources/GnosticCore/Services/OrchestrationProjector.swift",
         ]
         for relativePath in sourcePaths {
             let source = try String(
@@ -158,7 +157,7 @@ struct BackendArchitectureFitnessTests {
             "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
             "Sources/GnosticCore/Adapters/PositronicContribution.swift",
             "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
-            "Sources/GnosticCore/Providers/AgentChatProvider.swift",
+            "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
             "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
             "Sources/GnosticCore/Providers/TimelineStatusProvider.swift",
             "Sources/GnosticCore/Providers/WorkspaceOpsProvider.swift",
@@ -229,7 +228,7 @@ struct BackendArchitectureFitnessTests {
             "Sources/GnosticCore/Objects/GnosticAscendantObject.swift",
             "Sources/GnosticCore/Runtime/AscendantBackend.swift",
             "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
-            "Sources/GnosticCore/Providers/AgentChatProvider.swift",
+            "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
             "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
             "Sources/GnosticCLI/ACP/RemoteTurnClient.swift",
         ]

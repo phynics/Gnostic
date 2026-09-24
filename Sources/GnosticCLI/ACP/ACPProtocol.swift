@@ -13,11 +13,6 @@ public enum ACPProtocol {
     public static let turnIDMetadataKey = "dev.phynics.pi-acp-client/clientTurnID"
 }
 
-struct ACPTextContent: Codable, Sendable {
-    let type: String
-    let text: String
-}
-
 struct ACPPromptParameters: Codable, Sendable {
     let sessionID: String
     let prompt: [ACPPromptContent]

@@ -38,7 +38,7 @@ The build applies the reviewed hardening set and the cell-timeout patch, then
 builds a static binary and installs the one runtime file it needs:
 
 1. Patch `include/chibi/features.h`.
-2. Apply [`patches/cell-timeout.patch`](patches/cell-timeout.patch) to Chibi's
+2. Apply [`chibi-cell-timeout.patch`](../../.devcontainer/patches/chibi-cell-timeout.patch) to Chibi's
    `main.c` and `vm.c`.
 3. Build the `chibi-scheme-static` target with the `SEXP_USE_DL=0` variable and
    `PREFIX=/usr/local`.

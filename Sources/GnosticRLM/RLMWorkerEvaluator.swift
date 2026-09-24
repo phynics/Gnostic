@@ -27,12 +27,12 @@ public protocol RLMWorkerDriver: Sendable {
 
 /// Maps a worker-reported Scheme failure message to the harness failure kind.
 ///
-/// A bounded host call that failed, or an exhausted resource limit, is an
-/// evaluator fault. Every other Scheme failure is a runtime fault in a
-/// generated cell, which the root model may repair.
+/// A bounded host call that failed is an evaluator fault. Resource-limit
+/// reports and other Scheme failures are runtime faults in a generated cell,
+/// which the root model may repair.
 public enum RLMWorkerFailureClassifier {
     public static func classify(_ message: String) -> RLMFailure {
-        if message.contains("host call failed") || message == "resource limit exceeded" {
+        if message.contains("host call failed") {
             return .evaluatorFailed(message)
         }
         return .cellRuntimeFailed(message)

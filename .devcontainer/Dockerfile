@@ -62,7 +62,7 @@ RUN printf '%s\n' \
 
 ARG CHIBI_VERSION=0.12
 ARG CHIBI_SHA256=b70a1147bc70a0f90df3fb6081bc99808237fd17a9accf9ee7a2cc20d95a4df0
-COPY Experiments/ChibiRLMWorker/patches/cell-timeout.patch /tmp/chibi-cell-timeout.patch
+COPY .devcontainer/patches/chibi-cell-timeout.patch /tmp/chibi-cell-timeout.patch
 
 # Pin Chibi to the reviewed 0.12 tag, verify the exact tarball digest, and
 # build a static interpreter with the RLM worker hardening set. The features.h

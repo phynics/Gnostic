@@ -9,10 +9,6 @@ import PositronicKit
 /// per-Ascendant runtime adapters, and complete canonical advertisements.
 @MainActor
 public final class NodeRuntime {
-    /// Compatibility alias for the echo adapter's public tool identifier.
-    @available(*, deprecated, message: "Use EchoWorkspace.toolID instead.")
-    public nonisolated static let echoToolID = EchoWorkspace.toolID
-
     public let plan: NodeLaunchPlan
     public var launchPlan: NodeLaunchPlan { plan }
     public let host: String
@@ -293,10 +289,6 @@ public final class NodeRuntime {
 
     public func renameTimeline(_ request: TimelineUpdateRequest) async throws -> TimelineStatus {
         try await timelineService.rename(request)
-    }
-
-    public func attachableWorkspaces() async -> [WorkspaceListing] {
-        await workspaceService.listAttachable()
     }
 
     public func attachWorkspace(_ request: WorkspaceOpsRequest) async throws -> Bool {

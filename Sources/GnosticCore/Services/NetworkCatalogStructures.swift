@@ -115,9 +115,6 @@ public struct NetworkCatalogEntry: Sendable {
     /// The effective Workspace status, including malformed or incompatible entries.
     public let effectiveStatus: GnosticWorkspaceEffectiveStatus?
 
-    /// Compatibility alias for callers that scope the status to Workspaces.
-    public var workspaceStatus: GnosticWorkspaceEffectiveStatus? { effectiveStatus }
-
     /// Creates a catalogued entry.
     public init(
         objectID: UUID,
