@@ -65,6 +65,51 @@ struct TimelineClientFacadeTests {
         }
     }
 
+    @Test("status reads a discovered Timeline and can address a provider directly")
+    func readsTimelineStatus() async throws {
+        let namespace = namespaced("status")
+        let fixture = try await TimelineClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            let client = try session.timelineClient(timeout: .seconds(2))
+
+            let discovered = try await client.status(timelineID: fixture.timelineID)
+            #expect(discovered.timelineID == fixture.timelineID)
+            #expect(discovered.title == "Status")
+
+            // An explicit provider is asked directly, without a catalog lookup.
+            let unadvertised = UUID()
+            let direct = try await client.status(timelineID: unadvertised, providerID: fixture.providerID)
+            #expect(direct.timelineID == unadvertised)
+        }
+    }
+
+    @Test("create rejects an Ascendant addressed to another provider")
+    func createRejectsUnexpectedProvider() async throws {
+        let namespace = namespaced("create-mismatch")
+        let fixture = try await TimelineClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.timelineClient(timeout: .seconds(2))
+
+            await #expect(throws: GnosticTimelineClientError.providerMismatch) {
+                _ = try await client.create(title: "Elsewhere", ascendantID: fixture.ascendantID, providerID: "another-provider")
+            }
+            #expect(await fixture.recorder.createTitles.isEmpty)
+        }
+    }
+
     @Test("maps a create protocol failure to a structured error")
     func createProtocolFailureMapsToStructuredError() async throws {
         let namespace = namespaced("create-conflict")

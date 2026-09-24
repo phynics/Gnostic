@@ -329,12 +329,11 @@ final class ACPDispatcher: Sendable {
         turnID: String
     ) async throws -> (AscendantTurnResult, Int) {
         let providerID = try await boundProviderID(for: record)
-        let channel = try await client.observeTurnUpdates(providerID: providerID)
+        let channel = try await client.turnUpdates(for: turnID, timelineID: record.timelineID, providerID: providerID)
         let inbox = TurnUpdateInbox()
         let collector = Task {
-            for await event in channel
-                where event.timelineID == record.timelineID && event.clientTurnID == turnID {
-                await inbox.append(event.update)
+            for await update in channel {
+                await inbox.append(update)
             }
         }
         let turnTask = Task {
@@ -427,7 +426,7 @@ final class ACPDispatcher: Sendable {
 
         static func of(_ error: any Error) -> Self {
             if let remote = error as? RemoteTurnClientError { return .remote(remote) }
-            return .message(String(describing: error))
+            return .message((error as? LocalizedError)?.errorDescription ?? String(describing: error))
         }
 
         var thrown: any Error {
@@ -469,12 +468,13 @@ final class ACPDispatcher: Sendable {
                 guard let approved = ACPPermissionBridge.approved(from: response) else {
                     throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
-                try await client.respondToPermission(AscendantPermissionResponse(
+                let providerID = try await currentAscendant().providerID
+                try client.respondToPermission(AscendantPermissionResponse(
                     correlationID: state.correlationID,
                     timelineID: timelineID,
                     clientTurnID: turnID,
                     approved: approved
-                ), providerID: try await currentAscendant().providerID)
+                ), providerID: providerID)
             } catch {
                 try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
                 if error is CancellationError {
@@ -490,12 +490,13 @@ final class ACPDispatcher: Sendable {
         timelineID: UUID,
         turnID: String
     ) async throws {
-        try await client.respondToPermission(AscendantPermissionResponse(
+        let providerID = try await currentAscendant().providerID
+        try client.respondToPermission(AscendantPermissionResponse(
             correlationID: state.correlationID,
             timelineID: timelineID,
             clientTurnID: turnID,
             approved: false
-        ), providerID: try await currentAscendant().providerID)
+        ), providerID: providerID)
     }
 
     private func publishUpdate(

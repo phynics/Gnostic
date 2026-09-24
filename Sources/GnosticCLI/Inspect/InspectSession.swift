@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import Axoloty
 import Foundation
 import GnosticCore
 
-/// Bounded broker observation: connect, subscribe to canonical Gnostic types,
-/// collect a deterministic snapshot within a deadline, then disconnect.
+/// Bounded broker observation through the public consumer facade: connect,
+/// discover within the observe window, snapshot every advertised object
+/// (including incompatible ones), then disconnect.
 @MainActor
 final class InspectSession {
     private let values: InspectConnectionValues
@@ -15,84 +15,42 @@ final class InspectSession {
     }
 
     func collect() async throws -> [NetworkCatalogEntry] {
-        let store = CLIConfigurationStore()
-        let stored = try store.load()
-
-        let host = values.host ?? stored.mqttHost
-        let port = values.port ?? stored.mqttPort
-        let namespace = values.namespace ?? stored.mqttNamespace
-
-        let manager = try CommunicationManager(
-            identity: Identity(name: "gnostic-inspect"),
-            communicationOptions: CommunicationOptions(
-                namespace: namespace,
-                shouldEnableCrossNamespacing: false,
-                mqttClientOptions: MQTTClientOptions(
-                    host: host,
-                    port: UInt16(clamping: port),
-                    shouldTryMDNSDiscovery: false,
-                    username: stored.mqttUsername,
-                    password: stored.mqttPassword,
-                    autoReconnect: false
-                ),
-                shouldAutoStart: false
+        let stored = try CLIConfigurationStore().load()
+        let window = Duration.seconds(values.observeSeconds)
+        let session = try GnosticConsumerSession(
+            broker: GnosticBrokerSettings(
+                host: values.host ?? stored.mqttHost,
+                port: values.port ?? stored.mqttPort,
+                namespace: values.namespace ?? stored.mqttNamespace,
+                username: stored.mqttUsername,
+                password: stored.mqttPassword
             ),
-            commonOptions: nil
+            identityName: "gnostic-inspect",
+            connectTimeout: window,
+            discoverTimeout: window
         )
-
-        let catalog = NetworkCatalog()
-        let subscription = GnosticSubscription(catalog: catalog, communicationManager: manager)
-
         do {
-            try await start(manager)
-            try await subscription.start()
-            await subscription.discover(using: manager, timeout: .seconds(values.observeSeconds))
-            let entries = await catalog.networkObjects(includeIncompatible: true)
-            await subscription.stopAndWait()
-            manager.stop()
+            try await session.start()
+            try await session.discover()
+            let entries = await session.networkObjects(includeIncompatible: true)
+            await session.stop()
             return entries
-        } catch let error as InspectError {
-            await subscription.stopAndWait()
-            manager.stop()
-            throw error
-        } catch {
-            await subscription.stopAndWait()
-            manager.stop()
-            if error is CancellationError {
-                throw InspectError.brokerUnreachable("timed out")
+        } catch let error as GnosticConsumerSessionError {
+            await session.stop()
+            switch error {
+            case .brokerUnreachable:
+                throw InspectError.brokerUnreachable("timed out connecting")
+            case let .connectionFailed(detail):
+                throw InspectError.connectionFailed(detail)
+            case .invalidCredentials, .notStarted, .alreadyStopped:
+                throw InspectError.connectionFailed(error.errorDescription ?? error.reasonCode)
             }
+        } catch is CancellationError {
+            await session.stop()
+            throw InspectError.brokerUnreachable("timed out")
+        } catch {
+            await session.stop()
             throw InspectError.connectionFailed(String(describing: error))
         }
     }
-
-    /// Starts the manager and waits for the connection to come online within a
-    /// bounded window, failing fast with a structured error when the broker is
-    /// unreachable.
-    private func start(_ manager: CommunicationManager) async throws {
-        try manager.start()
-
-        // Observe the connection lifecycle in a child task, racing it against a
-        // deadline. Cancelling the observer after the deadline surfaces its
-        // latest result deterministically without a task group (region-isolation
-        // friendly).
-        let observer = Task { @MainActor () async -> Bool in
-            let stream = await manager.observeCommunicationStateStream()
-            for await state in stream where state == .online {
-                return true
-            }
-            return false
-        }
-        let deadline = Task {
-            try? await Task.sleep(for: .seconds(values.observeSeconds))
-        }
-        await deadline.value
-        observer.cancel()
-        let online = await observer.value
-        await deadline.value
-
-        guard online else {
-            throw InspectError.brokerUnreachable("timed out connecting")
-        }
-    }
-
 }

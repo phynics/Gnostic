@@ -142,6 +142,11 @@ public final class GnosticConsumerSession {
     private let catalog: NetworkCatalog
     private let subscription: GnosticSubscription
     private var state = State.ready
+    private var connectionMonitor: Task<Void, Never>?
+
+    /// Whether the transport has gone offline since ``start()`` brought it
+    /// online. A session never reconnects, so once set this stays `true`.
+    public private(set) var hasLostConnection = false
 
     /// Creates a session bound to a broker namespace.
     ///
@@ -214,6 +219,7 @@ public final class GnosticConsumerSession {
             }
             try await subscription.start()
             state = .running
+            monitorConnection()
         } catch let error as GnosticConsumerSessionError {
             state = .stopped
             await teardown()
@@ -393,6 +399,16 @@ public final class GnosticConsumerSession {
         await teardown()
     }
 
+    /// Records the first transport state change away from online.
+    private func monitorConnection() {
+        connectionMonitor = Task { @MainActor [weak self, manager] in
+            let states = await manager.observeCommunicationStateStream()
+            for await state in states where state != .online {
+                self?.hasLostConnection = true
+            }
+        }
+    }
+
     /// Waits for the first `.online` state within a bounded window.
     private func firstOnline(in stream: AsyncStream<CommunicationState>, timeout: Duration) async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
@@ -419,6 +435,8 @@ public final class GnosticConsumerSession {
     /// awaited runtime stop can block on it. The manager owns its own teardown
     /// task, so the session does not await it here.
     private func teardown() async {
+        connectionMonitor?.cancel()
+        connectionMonitor = nil
         await subscription.stopAndWait()
         await subscription.disposeScope()
         manager.stop()

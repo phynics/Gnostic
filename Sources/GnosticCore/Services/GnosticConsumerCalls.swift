@@ -180,8 +180,9 @@ struct GnosticCatalogLookup {
 }
 
 extension NetworkCatalogEntry {
-    /// The capability names the advertisement declares.
-    var advertisedCapabilities: [String] {
+    /// The capability names the advertisement declares, or an empty list when
+    /// it declares none.
+    public var advertisedCapabilities: [String] {
         guard case let .array(values) = knownProperties["capabilities"] else { return [] }
         return values.compactMap { value in
             guard case let .string(capability) = value else { return nil }
