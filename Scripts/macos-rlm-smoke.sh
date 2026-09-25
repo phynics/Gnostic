@@ -94,10 +94,13 @@ for test_filter in \
     RLMChibiOperationTests \
     RLMWorkerWireParityTests; do
     suite_log="$evidence_dir/${test_filter}.log"
-    swift test --package-path "$mac_package" --disable-automatic-resolution --build-system native \
+    if ! swift test --package-path "$mac_package" --disable-automatic-resolution --build-system native \
         --quiet -Xswiftc -warnings-as-errors --filter "$test_filter" \
-        --xunit-output "$evidence_dir/${test_filter}.xml" \
-        | tee "$suite_log" \
-        | tee -a .testing/macos-rlm-smoke.log
+        --xunit-output "$evidence_dir/${test_filter}-swift-testing.xml" \
+        >"$suite_log" 2>&1; then
+        tee -a .testing/macos-rlm-smoke.log <"$suite_log"
+        exit 1
+    fi
+    tee -a .testing/macos-rlm-smoke.log <"$suite_log"
     grep -Eq 'Test run with [1-9][0-9]* tests' "$suite_log"
 done

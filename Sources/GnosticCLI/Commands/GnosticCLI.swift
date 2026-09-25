@@ -10,6 +10,6 @@ struct GnosticCLI: AsyncParsableCommand {
         commandName: "gnostic",
         abstract: "Inspect Axoloty objects, configure MQTT and Positronic details, and expose ACP.",
         version: "0.4.2",
-        subcommands: [ConfigCommand.self, InspectCommand.self, ServeCommand.self, ACPCommand.self]
+        subcommands: [ConfigCommand.self, InspectCommand.self, ServeCommand.self, ACPCommand.self, ExperimentCommand.self]
     )
 }
