@@ -299,6 +299,27 @@ swift test --cache-path /workspace/.swiftpm-cache --disable-automatic-resolution
 `make acp-smoke` remains the gate; repetitions only help reproduce an
 intermittent failure.
 
+### Run the RLM scenario live stages
+
+The #354 pilot (Stage 2) and full matrix (Stage 3) call a real provider and
+cost money. `gnostic experiment rlm-scenario` runs them using the provider,
+models, and key of a configured Positronic Ascendant. Run it through the
+container so each run records the pinned image:
+
+```sh
+make scenario-live CONFIG=path/to/manifest.json \
+  ARGS="--stage pilot --ascendant <uuid> --input-price 3 --output-price 15 --prices-date 2026-09-25"
+```
+
+Without `--confirm-spend` the command prints the plan and a worst-case cost
+ceiling, checks that each executor starts, and contacts no provider. To run,
+add `--confirm-spend --max-cost <USD>` to `ARGS`. The artifact under
+`Documentation/Experiments/` is rewritten after every run, so re-running the
+same command resumes the round. The command refuses to resume an artifact
+whose fixed parameters differ. The matrix (`--stage matrix`) also needs
+`--pilot` pointing at the completed pilot artifact, which carries the measured
+cost projection.
+
 ### Generate an SBOM
 
 `make sbom` writes SPDX 3.0.1 and CycloneDX 1.7 SBOMs for the SwiftPM

@@ -193,14 +193,18 @@ struct RLMRunAssembly {
 }
 
 enum RLMRunAssemblyFactory {
+    /// - Parameter leafService: A separate service for leaf queries. The tool
+    ///   uses one service for both roles; the #354 experiment passes two so it
+    ///   can meter root and leaf calls apart.
     static func make(
         model: any PositronicContributionModelService,
+        leafService: (any PositronicContributionModelService)? = nil,
         worker: RLMWorkerSelection,
         budget: RLMRunBudget,
         policy: RLMCorpusPolicy,
         progressSink: (any RLMProgressSink)?
     ) throws -> RLMRunAssembly {
-        let leafModel = RLMLeafModelAdapter(model: model)
+        let leafModel = RLMLeafModelAdapter(model: leafService ?? model)
         let host = RLMWorkerHostState(
             leafModel: leafModel,
             budget: budget,
