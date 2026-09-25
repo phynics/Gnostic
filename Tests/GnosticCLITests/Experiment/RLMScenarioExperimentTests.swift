@@ -102,7 +102,7 @@ struct RLMScenarioExperimentTests {
         let ceiling = plan.ceiling
         #expect(ceiling.maximumModelCalls == 6 * (8 + 32))
         #expect(ceiling.maximumEstimatedTokens == 6 * 200_000)
-        #expect(abs(ceiling.maximumEstimatedCostUSD - 6 * 200_000 * 15 / 1_000_000) < 1e-9)
+        #expect(abs((ceiling.maximumEstimatedCostUSD ?? 0) - 6 * 200_000 * 15 / 1_000_000) < 1e-9)
     }
 
     @Test("mechanical evidence scores follow the proposed mapping")
@@ -117,6 +117,22 @@ struct RLMScenarioExperimentTests {
         #expect(none.evidenceSufficiency == 0)
         #expect(none.evidenceCorrectness == 0)
         #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["C.md"]), expectedPaths: expected).evidenceCorrectness == 3)
+    }
+
+    @Test("an unpriced subscription round meters tokens without a dollar ceiling")
+    func unpricedRoundHasNoDollarCeiling() async throws {
+        let plan = RLMScenarioPlan(identity: Self.identity(stage: .pilot, pricing: nil), questions: Array(Self.questions.prefix(1)), matrixQuestionCount: 12, pilot: nil)
+        #expect(plan.ceiling.maximumEstimatedCostUSD == nil)
+        let artifact = try await RLMScenarioLiveRunner(
+            plan: plan,
+            maximumCostUSD: nil,
+            execute: { _, key in Self.record(key, cost: 0) },
+            persist: { _ in },
+            report: { _ in }
+        ).run(resuming: nil)
+        #expect(artifact.status == "complete")
+        #expect(artifact.runs.count == 6)
+        #expect(artifact.runs.allSatisfy { $0.totalUsage.promptTokens == 150 })
     }
 
     // MARK: - Runner
@@ -217,7 +233,11 @@ struct RLMScenarioExperimentTests {
         RLMScenarioQuestion(id: "Q\($0)", question: "question \($0)", referenceAnswer: "answer", evidencePaths: ["A.md"])
     }
 
-    private static func identity(stage: RLMScenarioStage, rootModel: String = "root-model") -> RLMScenarioRoundIdentity {
+    private static func identity(
+        stage: RLMScenarioStage,
+        rootModel: String = "root-model",
+        pricing: RLMScenarioPricing? = RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
+    ) -> RLMScenarioRoundIdentity {
         RLMScenarioRoundIdentity(
             manifestID: "rlm-scenario-manifest-v1",
             manifestVersion: "v6",
@@ -237,7 +257,7 @@ struct RLMScenarioExperimentTests {
             questionIDs: stage == .pilot ? ["Q1"] : questions.map(\.id),
             executors: ["guile", "chibi"],
             repetitions: 3,
-            pricing: RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
+            pricing: pricing
         )
     }
 

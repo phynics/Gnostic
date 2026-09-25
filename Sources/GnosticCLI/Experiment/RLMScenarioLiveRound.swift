@@ -42,7 +42,8 @@ struct RLMScenarioRoundIdentity: Codable, Sendable, Equatable {
     let questionIDs: [String]
     let executors: [String]
     let repetitions: Int
-    let pricing: RLMScenarioPricing
+    /// Nil for a flat-rate subscription: tokens are metered, dollars are not.
+    let pricing: RLMScenarioPricing?
 
     /// The fields that differ from another identity, for a void-round message.
     func differences(from other: Self) -> [String] {
@@ -201,14 +202,16 @@ struct RLMScenarioCeiling: Codable, Sendable, Equatable {
     /// The host token estimator's bound. It is a character estimate, not
     /// provider tokens, so the dollar figure is an order-of-magnitude ceiling.
     let maximumEstimatedTokens: Int
-    let maximumEstimatedCostUSD: Double
+    let maximumEstimatedCostUSD: Double?
 
-    init(runs: Int, budget: RLMScenarioBudgetDescription, pricing: RLMScenarioPricing) {
+    init(runs: Int, budget: RLMScenarioBudgetDescription, pricing: RLMScenarioPricing?) {
         self.runs = runs
         maximumModelCalls = runs * (budget.rootIterations + budget.leafModelCalls)
         maximumEstimatedTokens = runs * budget.estimatedModelTokens
-        let rate = max(pricing.inputUSDPerMillionTokens, pricing.outputUSDPerMillionTokens)
-        maximumEstimatedCostUSD = Double(maximumEstimatedTokens) * rate / 1_000_000
+        let tokens = Double(maximumEstimatedTokens)
+        maximumEstimatedCostUSD = pricing.map {
+            tokens * max($0.inputUSDPerMillionTokens, $0.outputUSDPerMillionTokens) / 1_000_000
+        }
     }
 }
 
@@ -280,7 +283,7 @@ struct RLMScenarioLiveArtifact: Codable, Sendable, Equatable {
     var status: String
     var updatedAtUTC: String
     let ceiling: RLMScenarioCeiling
-    let authorisedMaximumCostUSD: Double
+    let authorisedMaximumCostUSD: Double?
     let pilot: RLMScenarioPilotReference?
     let mechanicalScoringRule: String
     let measurements: [RLMScenarioMeasurementStatus]
