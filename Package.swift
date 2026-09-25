@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "GnosticRLMGuile", targets: ["GnosticRLMGuile"]),
         .library(name: "GnosticRLMChibi", targets: ["GnosticRLMChibi"]),
         .executable(name: "gnostic-rlm-benchmark", targets: ["GnosticRLMBenchmark"]),
+        .executable(name: "gnostic-rlm-scenario", targets: ["GnosticRLMScenario"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
@@ -106,6 +107,21 @@ let package = Package(
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
                 "GnosticRLMProcessWorker",
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticRLMScenario",
+            dependencies: [
+                "GnosticRLM",
+                "GnosticRLMGuile",
+                "GnosticRLMChibi",
+                "GnosticRLMProcessWorker",
+            ]
+        ),
+        .testTarget(
+            name: "GnosticRLMScenarioTests",
+            dependencies: [
+                "GnosticRLM",
             ]
         ),
         .testTarget(
