@@ -1,0 +1,364 @@
+{
+  "schemaVersion": 1,
+  "manifestID": "rlm-scenario-manifest-v1",
+  "manifestVersion": "v6",
+  "stage": "stage-1-environment",
+  "outcome": "stage-1-no-spend-complete",
+  "generatedAtUTC": "2026-09-25T01:16:05Z",
+  "gitCommit": "be7aab4a4a73f1d9271a68610c114aecf270e06d",
+  "providerSpend": "none",
+  "host": {
+    "operatingSystem": "darwin",
+    "operatingSystemVersion": "26.6.2",
+    "architecture": "arm64",
+    "swift": "Apple Swift version 6.4"
+  },
+  "suites": [
+    {
+      "filter": "RLMGuileWorkerSessionTests",
+      "tests": 35,
+      "passed": 35,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "450373a983f615a6edb11511eeb21243698c674d04e769c856c328b97ae33773",
+      "xunitSHA256": "743662a1d11a6ff1e3f2b87262aa6ed300490063a791e0deffb30a3c4a10bca5"
+    },
+    {
+      "filter": "RLMGuileSandboxDenialTests",
+      "tests": 3,
+      "passed": 3,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "960143336e6f9b6950916b910d2f50e175ba4260eb7c999b98d5b2980e1b3758",
+      "xunitSHA256": "4cfce2070be3f0171ecc8bcb85fba97f607907d8d7350486078bc3c04ba34917"
+    },
+    {
+      "filter": "RLMGuileProcessSignalsTests",
+      "tests": 2,
+      "passed": 2,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "184bd62e2d5ccdafddcd22763d2af866e43f07634c925213614d68f7f81b9dc9",
+      "xunitSHA256": "e85394a5c88381189ccace986e7c791709461ae1039cf2b68a2daa9c4130016a"
+    },
+    {
+      "filter": "RLMGuileOperationTests",
+      "tests": 5,
+      "passed": 5,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "3e544d8dba6ff8a70e3d6ff67c531d80e2cd145d9e73e8ffc423f832d4705174",
+      "xunitSHA256": "1ef082f971a1d277b2c5c74e6fc352854fbfec2c7058d3103977cc021257fe38"
+    },
+    {
+      "filter": "RLMChibiWorkerSessionTests",
+      "tests": 39,
+      "passed": 38,
+      "skipped": 1,
+      "failed": 0,
+      "logSHA256": "9ab82c8bfc11d638a8681195363609342381a2301eecad338b6beb6100bdc06e",
+      "xunitSHA256": "b86ed76f9778267bd6e63603cc6c207e919e0d24b5fac54f5883668cc708ceaa"
+    },
+    {
+      "filter": "RLMChibiSandboxDenialTests",
+      "tests": 4,
+      "passed": 4,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "64e6492961e7b9fd2efba99a3f9e5906d33c447efe7162b9f9be8f06aeb48a20",
+      "xunitSHA256": "5e12b2ded5be7798ed6a1c75721091c0c763c94081ebbc38683aabb1f7f6c678"
+    },
+    {
+      "filter": "RLMChibiProcessSignalsTests",
+      "tests": 2,
+      "passed": 2,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "184bd62e2d5ccdafddcd22763d2af866e43f07634c925213614d68f7f81b9dc9",
+      "xunitSHA256": "041f23e1b1bbd6d756556fb148c5df87b883f8e351fedbfa3b3e743688ebc3eb"
+    },
+    {
+      "filter": "RLMChibiOperationTests",
+      "tests": 5,
+      "passed": 5,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "3e544d8dba6ff8a70e3d6ff67c531d80e2cd145d9e73e8ffc423f832d4705174",
+      "xunitSHA256": "88d830efc85b5b5de53ec227a02022772e1c0e9ca199efc8d22263d681b93594"
+    },
+    {
+      "filter": "RLMWorkerWireParityTests",
+      "tests": 7,
+      "passed": 7,
+      "skipped": 0,
+      "failed": 0,
+      "logSHA256": "7298b623ebee4910ab9e7b55bb5805b248cd618a537709a81050c9870c5cb452",
+      "xunitSHA256": "039a446f76c2c0331e95a7273b698b0a7b404803eff690c8c0bfeb1ccd68a053"
+    }
+  ],
+  "probes": [
+    {
+      "probe": "cpu-limit-applied",
+      "status": "passed",
+      "exitStatus": 0,
+      "detail": "child observes ulimit -t 10"
+    },
+    {
+      "probe": "cpu-limit-enforced",
+      "status": "passed",
+      "exitStatus": 152,
+      "detail": "SIGXCPU after 1s wall"
+    },
+    {
+      "probe": "address-space-request-rejected",
+      "status": "passed",
+      "exitStatus": 125,
+      "detail": "launcher refuses --as on Darwin"
+    }
+  ],
+  "M13": {
+    "status": "satisfied",
+    "rule": "Manifest §4: every Linux guarantee is proven on macOS or recorded as a bounded gap.",
+    "properties": [
+      {
+        "property": "cpu",
+        "linuxGuarantee": "Host RLIMIT_CPU applied by gnostic-rlm-limit-exec and verified before exec.",
+        "macOS": "proven",
+        "evidence": {
+          "tests": [
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileOperationTests/processLimitsAreInLaunchSpec()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/processLimitsInstalled()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/processLimitsInstalled()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/cpuLimitIsEnforced()",
+              "result": "passed"
+            }
+          ],
+          "probes": [
+            "cpu-limit-applied",
+            "cpu-limit-enforced"
+          ]
+        }
+      },
+      {
+        "property": "address-space",
+        "linuxGuarantee": "Host RLIMIT_AS applied by gnostic-rlm-limit-exec and verified before exec.",
+        "macOS": "bounded-gap",
+        "bound": "Darwin has no enforceable RLIMIT_AS, and the launcher refuses the request instead of starting an unbounded worker. Both workers report the address-space limit as absent (-1). Allocation inside the interpreter is still bounded: Chibi by its limited-malloc heap cap, Guile by its per-cell allocation limit. Both keep the worker alive for the next cell. The parent wall deadline and output limit also hold. Only native allocation outside those interpreter caps has no host bound on macOS.",
+        "evidence": {
+          "tests": [
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/processLimitsInstalled()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/memoryLimit()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/outputLimit()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/processLimitsInstalled()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/memoryLimit()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/outputLimit()",
+              "result": "passed"
+            }
+          ],
+          "probes": [
+            "address-space-request-rejected"
+          ]
+        }
+      },
+      {
+        "property": "wall-time",
+        "linuxGuarantee": "The shared parent session deadline terminates the worker.",
+        "macOS": "proven",
+        "evidence": {
+          "tests": [
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/wallDeadline()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/infiniteEvaluationIsBounded()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/infiniteEvaluationIsBounded()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/perCellTimeoutIsRecoverable()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMWorkerParityTests.RLMWorkerWireParityTests/containmentStressRecoversBothWorkers()",
+              "result": "passed"
+            }
+          ],
+          "probes": []
+        }
+      },
+      {
+        "property": "file-descriptors",
+        "linuxGuarantee": "Worker tests inspect the Linux child's descriptor inventory through /proc; there is no separate RLIMIT_NOFILE.",
+        "macOS": "bounded-gap",
+        "bound": "The macOS gate cannot inspect the child's descriptor inventory without /proc. The Chibi inventory test is skipped, and the Guile worker reports no count (-1). The M11 denial suites still hold on macOS: cells cannot reach file, port, or process primitives. So an inherited descriptor cannot be named or used from a cell. The residual gap is that nobody has checked whether one is inherited.",
+        "evidence": {
+          "tests": [
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/fileDescriptorsAbsent()",
+              "result": "skipped"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/credentialsAbsent()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileSandboxDenialTests/rejectsDangerousForms()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiSandboxDenialTests/rejectsDangerousForms()",
+              "result": "passed"
+            }
+          ],
+          "probes": []
+        }
+      },
+      {
+        "property": "environment",
+        "linuxGuarantee": "The executor supplies a scrubbed environment and the worker reports its launch keys.",
+        "macOS": "proven",
+        "evidence": {
+          "tests": [
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerSessionTests/credentialsAbsent()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMGuileTests.RLMGuileWorkerConfigurationTests/scrubbedEnvironment()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/credentialsAbsent()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiWorkerConfigurationTests/scrubbedEnvironment()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMChibiTests.RLMChibiOperationTests/environmentKeysAreInLaunchSpec()",
+              "result": "passed"
+            },
+            {
+              "test": "GnosticRLMWorkerParityTests.RLMWorkerWireParityTests/readyFrameSanitizesEnvironment()",
+              "result": "passed"
+            }
+          ],
+          "probes": []
+        }
+      }
+    ]
+  },
+  "M14": {
+    "status": "recorded",
+    "scoring": "Structural facts per manifest §5a, as of this commit. The comparison scores them at the §6 freeze date; this stage assigns no score.",
+    "executors": [
+      {
+        "name": "chibi",
+        "version": "0.12",
+        "source": "pinned upstream archive, built from source by Scripts/build-chibi-rlm.sh on Linux (dev image) and macOS",
+        "archiveSHA256": "b70a1147bc70a0f90df3fb6081bc99808237fd17a9accf9ee7a2cc20d95a4df0",
+        "macOSBinarySHA256": "5331be3d86e3079473f56b8cf943657423c8875f4a7d1a68c601fdd885d1e7a2",
+        "buildFlags": [
+          "SEXP_USE_NO_FEATURES=1",
+          "SEXP_USE_GREEN_THREADS=1",
+          "SEXP_USE_CHECK_STACK=1",
+          "SEXP_USE_GROW_STACK=0",
+          "SEXP_INIT_STACK_SIZE=8192",
+          "SEXP_USE_FLONUMS=1",
+          "SEXP_USE_BIGNUMS=1",
+          "SEXP_USE_MATH=1",
+          "SEXP_USE_RATIOS=0",
+          "SEXP_USE_COMPLEX=0",
+          "SEXP_USE_MODULES=0",
+          "SEXP_USE_STATIC_LIBS_EMPTY=1",
+          "SEXP_USE_LIMITED_MALLOC=1",
+          "SEXP_USE_STRICT_TOPLEVEL_BINDINGS=1",
+          "SEXP_USE_DL=0"
+        ],
+        "buildFlagCount": 15,
+        "nonDefaultPatches": [
+          {
+            "path": ".devcontainer/patches/chibi-cell-timeout.patch",
+            "sha256": "5172f4ff9cb85a8baaa33edf1d04ea53878a083a595aabd38896b604bfdd79f4",
+            "files": [
+              "main.c",
+              "vm.c"
+            ],
+            "lines": 117
+          }
+        ],
+        "reproducibility": "The build script checks the archive SHA-256 and the patched VM guards before compiling. The Linux image and macOS run the same script.",
+        "pinning": "Exact upstream tag and archive hash. An interpreter upgrade has to re-apply the cell-timeout patch to vm.c and main.c and pass the guard checks again.",
+        "distribution": "Built and installed by Gnostic's own scripts; no system package.",
+        "buildConfigurationCoupling": {
+          "coupled": true,
+          "property": "Frame I/O addresses bytes through character ports, so worker wire correctness depends on SEXP_USE_UTF8_STRINGS staying unset.",
+          "guard": "worker.scm refuses to start when strings are not byte strings, so a flag change fails loudly at startup instead of corrupting frames.",
+          "pinnedBy": {
+            "test": "GnosticRLMChibiTests.RLMChibiWorkerSessionTests/stringsAreByteStrings()",
+            "result": "passed"
+          }
+        }
+      },
+      {
+        "name": "guile",
+        "macOSVersion": "guile (GNU Guile) 3.0.11",
+        "macOSFormula": "guile 3.0.11",
+        "macOSBinarySHA256": "961704db9fd1a8945f62168c74a6ab805ea8b7fc26de4c687ad9749fb3a6486c",
+        "linuxVersion": "guile (GNU Guile) 3.0.9",
+        "source": "system dependency: Homebrew `guile` on macOS, the distribution `guile-3.0` package in the dev image",
+        "buildFlags": [],
+        "buildFlagCount": 0,
+        "nonDefaultPatches": [],
+        "reproducibility": "Not built by Gnostic. The macOS smoke accepts any Guile 3.0.x. The two platforms run different patch releases, which the versions above record.",
+        "pinning": "Floating within 3.0.x on both platforms; there is no exact version or binary hash pin.",
+        "distribution": "Not bundled or redistributed. The LGPL runtime stays outside Gnostic's distributed artifacts.",
+        "buildConfigurationCoupling": {
+          "coupled": false,
+          "property": "The worker uses a stock distribution build and relies on no build flag."
+        }
+      }
+    ],
+    "launcher": {
+      "source": "Scripts/gnostic-rlm-limit-exec.c",
+      "sourceSHA256": "337c0b5b79fcbacacd05d4562a2840e6d62f9d35ce34828617517327282b7de5",
+      "macOSBinarySHA256": "a779b8186f285cc9ca45b7539ecc71c7d62cc6de0fbbe3946abafde1ae524deb",
+      "build": "Scripts/install-rlm-limit-exec.sh compiles one C file with the host compiler on both platforms."
+    },
+    "platformCoverage": {
+      "linux": "Stage 0 artifact (dev image): both executors, M1–M6, M11, M12.",
+      "macOS": "9 suites / 102 tests across both executors and the shared parity suite on this host."
+    }
+  }
+}
