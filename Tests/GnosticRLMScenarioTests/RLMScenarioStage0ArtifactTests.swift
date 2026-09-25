@@ -56,6 +56,61 @@ func committedScenarioStage0ArtifactIsValid() throws {
     }
 }
 
+@Test("committed Stage 0 rows hash the frozen question set verbatim")
+func committedScenarioStage0RowsMatchFrozenQuestions() throws {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let artifact = try JSONDecoder().decode(
+        Stage0Artifact.self,
+        from: Data(contentsOf: repositoryRoot.appendingPathComponent("Documentation/Experiments/rlm-scenario-stage0.json"))
+    )
+    let frozen = try FrozenQuestion.parse(
+        String(decoding: Data(contentsOf: repositoryRoot.appendingPathComponent(artifact.questionSetPath)), as: UTF8.self)
+    )
+
+    #expect(frozen.map(\.id) == (1...12).map { "Q\($0)" })
+    #expect(artifact.rows.map(\.id) == frozen.map(\.id))
+    for (row, question) in zip(artifact.rows, frozen) {
+        #expect(normalized(row.question) == question.question, "\(row.id) question text differs from the frozen set")
+        #expect(row.questionSHA256 == RLMDigest.sha256Hex(question.question), "\(row.id) question hash")
+        #expect(row.referenceAnswerSHA256 == RLMDigest.sha256Hex(question.referenceAnswer), "\(row.id) reference answer hash")
+    }
+}
+
+/// An independent reading of `rlm-scenario-questions.md`, so the guard does not
+/// share a parser with the harness it checks.
+private struct FrozenQuestion {
+    let id: String
+    let question: String
+    let referenceAnswer: String
+
+    static func parse(_ text: String) throws -> [FrozenQuestion] {
+        try text.components(separatedBy: "\n## Q").dropFirst().map { section in
+            let id = "Q" + section.prefix { $0.isNumber }
+            return FrozenQuestion(
+                id: id,
+                question: normalized(try #require(field("Question", in: section), "\(id) question")),
+                referenceAnswer: normalized(try #require(field("Reference answer", in: section), "\(id) answer"))
+            )
+        }
+    }
+
+    private static func field(_ name: String, in section: String) -> String? {
+        guard let start = section.range(of: "**\(name).**") else { return nil }
+        let rest = section[start.upperBound...]
+        return String(rest[..<(rest.range(of: "\n\n")?.lowerBound ?? rest.endIndex)])
+    }
+}
+
+/// The manifest §7 hash normalization: inline-code delimiters dropped and
+/// whitespace collapsed.
+private func normalized(_ value: String) -> String {
+    value.replacingOccurrences(of: "`", with: "")
+        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
+
 private struct Stage0Artifact: Decodable {
     let schemaVersion: Int
     let scenario: String
@@ -87,6 +142,7 @@ private struct SuiteEvidence: Decodable {
 
 private struct ScenarioRow: Decodable {
     let id: String
+    let question: String
     let questionSHA256: String
     let referenceAnswerSHA256: String
     let scripted: ArmMeasurement
