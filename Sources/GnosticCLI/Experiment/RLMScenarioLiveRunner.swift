@@ -90,7 +90,7 @@ struct RLMScenarioLiveRunner: Sendable {
                 ceiling: plan.ceiling,
                 authorisedMaximumCostUSD: maximumCostUSD,
                 pilot: plan.pilot,
-                mechanicalScoringRule: RLMScenarioMechanicalScore.rule,
+                scoringRule: RLMScenarioScoring.rule,
                 measurements: RLMScenarioLiveArtifact.unavailableMeasurements,
                 runs: [],
                 costActualUSD: 0,

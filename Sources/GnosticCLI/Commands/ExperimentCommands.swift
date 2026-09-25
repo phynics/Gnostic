@@ -12,7 +12,7 @@ struct ExperimentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "experiment",
         abstract: "Run opt-in evidence experiments.",
-        subcommands: [RLMScenario.self]
+        subcommands: [RLMScenario.self, RLMScenarioRating.self]
     )
 
     /// `gnostic experiment rlm-scenario` — the #354 live stages (manifest §8).
@@ -370,9 +370,7 @@ struct RLMScenarioPreparation: Sendable {
             leafUsage: leafUsage,
             costUSD: pricing?.cost(of: usage) ?? 0,
             costComplete: usage.callsWithoutUsage == 0,
-            mechanicalScore: outcome == "completed"
-                ? .score(evidence: evidence, expectedPaths: question.evidencePaths)
-                : nil
+            score: nil
         )
     }
 }

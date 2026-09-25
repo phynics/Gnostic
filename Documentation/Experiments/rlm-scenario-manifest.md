@@ -261,6 +261,13 @@ Per question, per run. Scored blind to which executor produced the answer.
 
 Reference answers and rubric are frozen before any live run.
 
+**v7 replacement (owner decision).** The rounds under v7 use one score per
+completed run, 0 to 10, assigned after collection by an LLM evaluator. The
+evaluator sees the question, the reference answer, the answer, and its cited
+evidence, but not the executor. The dimensions above, the mechanical scoring
+below, and the κ condition in G3 do not apply to v7 rounds; the result is a
+single-evaluator, model-rated claim.
+
 ### Mechanical scoring first
 
 **Evidence correctness and evidence sufficiency are scored mechanically**, with
@@ -541,4 +548,5 @@ uneven probing effort is recorded in the artifact next to the rows it touches.
     separate the executors only on a difference larger than the owner accepts
     as meaningful. The result is a weaker claim, and the artifact must say so.
     Provider cost may be unpriced (a flat-rate subscription); tokens are still
-    recorded. *(owner)*
+    recorded. §5 and G3 — answer quality is one blind 0–10 LLM-evaluator score
+    per completed run, replacing the rubric dimensions and κ. *(owner)*

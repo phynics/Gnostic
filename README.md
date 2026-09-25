@@ -321,7 +321,9 @@ dollar cost; such a priced round also requires a `--max-cost` ceiling. The artif
 same command resumes the round. The command refuses to resume an artifact
 whose fixed parameters differ. The matrix (`--stage matrix`) also needs
 `--pilot` pointing at the completed pilot artifact, which carries the measured
-cost projection.
+cost projection. After a round, `gnostic experiment rlm-scenario-rating`
+writes a blind rating sheet (`--write-sheet`) for an evaluator LLM and applies
+its 0–10 scores (`--apply-scores`).
 
 ### Generate an SBOM
 

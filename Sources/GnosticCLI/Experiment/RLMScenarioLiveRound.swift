@@ -129,7 +129,8 @@ struct RLMScenarioRunRecord: Codable, Sendable, Equatable {
     let costUSD: Double
     /// False when a provider omitted usage for any call, so cost is a lower bound.
     let costComplete: Bool
-    let mechanicalScore: RLMScenarioMechanicalScore?
+    /// 0–10, set by `rlm-scenario-rating --apply-scores`; nil until rated.
+    var score: Int?
 
     var key: RLMScenarioRunKey {
         RLMScenarioRunKey(questionID: questionID, executor: executor, repetition: repetition)
@@ -173,28 +174,10 @@ struct RLMScenarioRunMetrics: Codable, Sendable, Equatable {
     }
 }
 
-/// Manifest §5 mechanical dimensions. The 0–3 / 0–2 mapping below is this
-/// harness's proposal; the manifest fixes the scales but not the mapping, so
-/// the method review must accept it before scores are compared.
-struct RLMScenarioMechanicalScore: Codable, Sendable, Equatable {
-    static let rule = "Proposed, pending method review: evidence correctness is 3 when the run completed with at least one reference (the engine rejects any reference that does not resolve in the snapshot), else 0. Evidence sufficiency is 2 when every listed evidence file for the question is cited, 1 when some are, 0 when none are."
-
-    let evidenceCorrectness: Int
-    let evidenceSufficiency: Int
-    let expectedPaths: [String]
-    let citedExpectedPaths: [String]
-
-    static func score(evidence: [RLMScenarioEvidence], expectedPaths: [String]) -> Self {
-        let cited = Set(evidence.map(\.path))
-        let covered = expectedPaths.filter(cited.contains)
-        let sufficiency = covered.isEmpty ? 0 : (covered.count == expectedPaths.count ? 2 : 1)
-        return Self(
-            evidenceCorrectness: evidence.isEmpty ? 0 : 3,
-            evidenceSufficiency: sufficiency,
-            expectedPaths: expectedPaths,
-            citedExpectedPaths: covered
-        )
-    }
+/// Manifest v7 §5: one answer-quality score per completed run.
+enum RLMScenarioScoring {
+    static let rule = "One score from 0 to 10 per completed run, assigned after collection by an LLM evaluator that sees the question, the reference answer, the run's answer, and its cited evidence, but not the executor (`gnostic experiment rlm-scenario-rating`)."
+    static let range = 0...10
 }
 
 /// Worst-case ceilings a round cannot exceed, computed before any spend.
@@ -275,7 +258,7 @@ struct RLMScenarioPilotReference: Codable, Sendable, Equatable {
 /// round can stop and resume.
 struct RLMScenarioLiveArtifact: Codable, Sendable, Equatable {
     static let unavailableMeasurements = [
-        RLMScenarioMeasurementStatus(id: "M7", status: "requires-rater", reason: "Answer correctness needs the §5 model-based rater pass; this artifact records answers and reference-answer hashes for it."),
+        RLMScenarioMeasurementStatus(id: "M7", status: "requires-rater", reason: "Each completed run's score is set after collection by the blind LLM evaluator (v7 §5)."),
         RLMScenarioMeasurementStatus(id: "M8", status: "unavailable", reason: "Arm D (ordinary Positronic Workspace analysis) has no headless runner, so M8 is not required (§2)."),
     ]
 
@@ -287,7 +270,7 @@ struct RLMScenarioLiveArtifact: Codable, Sendable, Equatable {
     let ceiling: RLMScenarioCeiling
     let authorisedMaximumCostUSD: Double?
     let pilot: RLMScenarioPilotReference?
-    let mechanicalScoringRule: String
+    let scoringRule: String
     let measurements: [RLMScenarioMeasurementStatus]
     var runs: [RLMScenarioRunRecord]
     var costActualUSD: Double

@@ -105,18 +105,23 @@ struct RLMScenarioExperimentTests {
         #expect(abs((ceiling.maximumEstimatedCostUSD ?? 0) - 6 * 200_000 * 15 / 1_000_000) < 1e-9)
     }
 
-    @Test("mechanical evidence scores follow the proposed mapping")
-    func mechanicalScores() {
-        let expected = ["A.md", "B.md"]
-        let evidence = { (paths: [String]) in
-            paths.map { RLMScenarioEvidence(chunkID: "c", path: $0, startLine: 1, endLine: 2) }
+    @Test("the rating sheet hides the executor and scores round-trip onto runs")
+    func ratingSheetIsBlindAndScoresApply() async throws {
+        let artifact = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5).run(resuming: nil)
+        let sheet = RLMScenarioBlindRating.sheet(for: artifact, questions: Self.questions)
+        #expect(sheet.items.count == 6)
+        #expect(Set(sheet.items.map(\.id)).count == 6)
+        let encoded = String(decoding: try JSONEncoder().encode(sheet), as: UTF8.self)
+        #expect(!encoded.contains("guile") && !encoded.contains("chibi"))
+
+        let scored = try RLMScenarioBlindRating.apply([sheet.items[0].id: 7], to: artifact)
+        #expect(scored.runs.compactMap(\.score) == [7])
+        #expect(throws: RLMScenarioError.self) {
+            _ = try RLMScenarioBlindRating.apply([sheet.items[0].id: 11], to: artifact)
         }
-        #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["A.md", "B.md"]), expectedPaths: expected).evidenceSufficiency == 2)
-        #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["B.md", "C.md"]), expectedPaths: expected).evidenceSufficiency == 1)
-        let none = RLMScenarioMechanicalScore.score(evidence: [], expectedPaths: expected)
-        #expect(none.evidenceSufficiency == 0)
-        #expect(none.evidenceCorrectness == 0)
-        #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["C.md"]), expectedPaths: expected).evidenceCorrectness == 3)
+        #expect(throws: RLMScenarioError.self) {
+            _ = try RLMScenarioBlindRating.apply(["unknown": 5], to: artifact)
+        }
     }
 
     @Test("an unpriced subscription round meters tokens without a dollar ceiling")
@@ -196,7 +201,7 @@ struct RLMScenarioExperimentTests {
             ceiling: existing.ceiling,
             authorisedMaximumCostUSD: existing.authorisedMaximumCostUSD,
             pilot: nil,
-            mechanicalScoringRule: existing.mechanicalScoringRule,
+            scoringRule: existing.scoringRule,
             measurements: existing.measurements,
             runs: existing.runs,
             costActualUSD: existing.costActualUSD,
@@ -323,7 +328,7 @@ struct RLMScenarioExperimentTests {
             leafUsage: RLMScenarioUsage(calls: 1, promptTokens: 50, completionTokens: 5),
             costUSD: cost,
             costComplete: true,
-            mechanicalScore: nil
+            score: nil
         )
     }
 }
