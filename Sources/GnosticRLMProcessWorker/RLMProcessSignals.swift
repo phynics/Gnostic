@@ -28,6 +28,20 @@ package enum RLMProcessSignals {
         return try operation()
     }
 
+    /// Makes a write to `descriptor` after its reader exits fail with `EPIPE`
+    /// instead of raising `SIGPIPE`.
+    ///
+    /// Darwin raises a broken-pipe `SIGPIPE` on the whole process, not on the
+    /// writing thread, so any thread that has not blocked it can take it and
+    /// terminate the host. The thread mask in ``withoutBrokenPipeSignal(_:)``
+    /// cannot contain that; the per-descriptor flag does. Linux directs the
+    /// signal at the writing thread, where the mask is sufficient (#404).
+    package static func disableBrokenPipeSignal(onWriteEnd descriptor: Int32) {
+        #if canImport(Darwin)
+        _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+        #endif
+    }
+
     private static func drainPendingSIGPIPE() {
         var pending = sigset_t()
         sigemptyset(&pending)

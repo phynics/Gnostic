@@ -25,10 +25,10 @@ SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-live docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-live docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -61,6 +61,9 @@ scenario-stage0: build
 	@commit="$$(git rev-parse HEAD)"; image_digest="$$($(CONTAINER_RUNTIME) image inspect "$(IMAGE)" --format '{{.Id}}')"; \
 		BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" \
 		./.devcontainer/run.sh bash -o pipefail -c "export GNOSTIC_SCENARIO_COMMIT='$$commit' GNOSTIC_SCENARIO_IMAGE_DIGEST='$$image_digest'; bash /workspace/Scripts/run-rlm-scenario-stage0.sh"
+
+scenario-stage1: require-package
+	@bash Scripts/run-rlm-scenario-stage1.sh
 
 scenario-live: build
 	@CONFIG="$(CONFIG)" ARGS="$(ARGS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" SWIFT_LOCKED_ARGS="$(SWIFT_LOCKED_ARGS)" \
