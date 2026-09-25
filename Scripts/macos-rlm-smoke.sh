@@ -80,7 +80,9 @@ let package = Package(
 SWIFT
 
 : > .testing/macos-rlm-smoke.log
-suite_index=0
+evidence_dir=.testing/macos-rlm-smoke
+rm -rf "$evidence_dir"
+mkdir -p "$evidence_dir"
 for test_filter in \
     RLMGuileWorkerSessionTests \
     RLMGuileSandboxDenialTests \
@@ -91,11 +93,11 @@ for test_filter in \
     RLMChibiProcessSignalsTests \
     RLMChibiOperationTests \
     RLMWorkerWireParityTests; do
-    suite_log="$mac_package/suite-${suite_index}.log"
+    suite_log="$evidence_dir/${test_filter}.log"
     swift test --package-path "$mac_package" --disable-automatic-resolution --build-system native \
         --quiet -Xswiftc -warnings-as-errors --filter "$test_filter" \
+        --xunit-output "$evidence_dir/${test_filter}.xml" \
         | tee "$suite_log" \
         | tee -a .testing/macos-rlm-smoke.log
     grep -Eq 'Test run with [1-9][0-9]* tests' "$suite_log"
-    suite_index=$((suite_index + 1))
 done
