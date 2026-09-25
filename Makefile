@@ -25,10 +25,10 @@ SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test benchmark docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -55,6 +55,12 @@ test: build
 benchmark: require-package image
 	@mkdir -p Documentation/Experiments
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'git config --global --add safe.directory /workspace; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic-rlm-benchmark; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic-rlm-benchmark --show-bin-path)/gnostic-rlm-benchmark; test -x "$$bin" || { echo "Could not locate benchmark executable at $$bin" >&2; exit 1; }; GNOSTIC_BENCHMARK_COMMIT=$$(git rev-parse HEAD) "$$bin" | tee Documentation/Experiments/rlm-runtime-benchmark.json'
+
+scenario-stage0: build
+	@mkdir -p Documentation/Experiments
+	@commit="$$(git rev-parse HEAD)"; image_digest="$$($(CONTAINER_RUNTIME) image inspect "$(IMAGE)" --format '{{.Id}}')"; \
+		BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" \
+		./.devcontainer/run.sh bash -o pipefail -c "export GNOSTIC_SCENARIO_COMMIT='$$commit' GNOSTIC_SCENARIO_IMAGE_DIGEST='$$image_digest'; bash /workspace/Scripts/run-rlm-scenario-stage0.sh"
 
 docs-check: build
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'node /workspace/Scripts/check-documentation.mjs --self-test; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path)/gnostic; test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; node /workspace/Scripts/check-documentation.mjs --root /workspace --cli "$$bin"'
