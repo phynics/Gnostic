@@ -310,6 +310,16 @@ container so each run records the pinned image:
 make scenario-live CONFIG=path/to/manifest.json ARGS="--stage pilot --ascendant <uuid>"
 ```
 
+Validate the handoff without spending first. This synthesises a throwaway
+Ollama-backed manifest, starts both executors, and stops before any provider
+call:
+
+```sh
+make scenario-live-preflight
+```
+
+It fails unless the run reaches `Dry run: no provider was contacted.`
+
 Without `--confirm-spend` the command prints the plan and a worst-case ceiling,
 checks that each executor starts, and contacts no provider. To run, add
 `--confirm-spend` to `ARGS`. Each question runs once per executor by default;
