@@ -2,12 +2,12 @@
 
 Status: **Pre-registered.** The dual-executor amendment to ADR 0012 landed with
 #350, and §2 below is the only slot it parameterised; this revision records that
-alignment. The pre-registered rules in §0, §4, §5, §6, §7, §8 and §9 are
-unchanged from v5. This document lands with #354's executor matrix slot closed.
+alignment. v7 records the owner's choice of a light sample (§1, §0 G2, §8),
+made before any live run. The other pre-registered rules are unchanged.
 
 Author: consultant session 3ed79195 (session ended; preserved by coordinator f9746017).
-Version: **v6**. Revised after four rounds of coordinator review (session f9746017)
-and one amendment-alignment pass for #350.
+Version: **v7**. Revised after four rounds of coordinator review (session f9746017),
+one amendment-alignment pass for #350, and one owner sample-size decision.
 Intended destination: `Documentation/Experiments/rlm-scenario-manifest.md`.
 
 ---
@@ -23,9 +23,10 @@ decision time:
 - **G1 — Missing required evidence.** Any row in §4 marked `required` has
   status `unavailable`. ADR 0012 names these explicitly; an absent row is not
   a partial result.
-- **G2 — Insufficient completed sample.** Fewer than 10 of the 12 scenario
-  questions produce a completed run on either executor, at 3 repetitions each.
-  A run that terminates on a run-terminal failure is not a completed run.
+- **G2 — Insufficient completed sample.** Fewer than 80% of the questions run
+  in the round produce a completed run on either executor, at the round's
+  recorded repetitions. A run that terminates on a run-terminal failure is not a
+  completed run. (v7: was 10 of 12 at 3 repetitions each.)
 - **G3 — Untrustworthy scoring.** Inter-rater agreement on the quality rubric
   (§5) falls below κ = 0.6, or a single evaluator scored the whole set with no
   second rater on at least 20% of runs.
@@ -94,7 +95,7 @@ these invalidates the matrix and starts a new manifest version.
 | Corpus | One pinned Gnostic repository snapshot, recorded by commit SHA |
 | Corpus scope | `Sources/GnosticCore/Runtime`, `Sources/GnosticRLM`, `Documentation/Architecture` |
 | Questions | 12, fixed, recorded verbatim in the manifest artifact (§7) |
-| Repetitions | 3 per question per executor |
+| Repetitions | 1 per question per executor by default, at most 3 (v7); recorded per round |
 | Provider / model family | One family, pinned by exact model ID, root and leaf both recorded |
 | Root iteration budget | Fixed, identical per executor |
 | Leaf call budget | Fixed, identical per executor |
@@ -424,13 +425,15 @@ matrix that cannot promote.
 **Stage 1 — environment rows.** M13, M14 on macOS. No spend. If these come back
 `unavailable`, G1 already holds and the live stage is pointless.
 
-**Stage 2 — pilot.** One question, three repetitions, both executors, live. This
-measures rather than estimates the per-run call count, token count and cost, and
-projects the full matrix: 12 questions × 3 repetitions × 2 executors = 72 runs,
-plus arm D. **The projection is reported to the coordinator and the full matrix
-is not authorised until the projected spend is accepted.**
+**Stage 2 — pilot.** One question, the round's repetitions, both executors,
+live. This measures rather than estimates the per-run call count, token count
+and cost, and projects the full matrix: questions × repetitions × 2 executors
+(v7 default: 12 × 1 × 2 = 24 runs), plus arm D. **The projection is reported to
+the coordinator and the full matrix is not authorised until the projected spend
+is accepted.**
 
-**Stage 3 — full matrix.** Only after Stage 2 is authorised.
+**Stage 3 — full matrix.** Only after Stage 2 is authorised. v7 lets the owner
+run a named subset of the 12 questions; the artifact records which.
 
 Staging in this order means the two cheapest stages can veto the expensive one,
 and the expensive one is costed from measurement rather than guesswork.
@@ -529,3 +532,13 @@ uneven probing effort is recorded in the artifact next to the rows it touches.
     set). Arm E is recorded as unavailable by decision rather than by omission.
     The pre-registered rules in §0, §4, §5, §6, §7, §8 and §9 are untouched, so
     the ordering that gives them their value is preserved. *(coordinator)*
+
+**v7** — owner sample-size decision on 2026-09-25, before any live run.
+11. §1, §0 G2, §8 — the owner accepted a light sample over full rigor.
+    Repetitions default to 1 (at most 3) and the matrix may run a named subset
+    of the questions. G2 becomes a completion share of the questions actually
+    run. One repetition gives no run-to-run noise band, so §6 step 2 can
+    separate the executors only on a difference larger than the owner accepts
+    as meaningful. The result is a weaker claim, and the artifact must say so.
+    Provider cost may be unpriced (a flat-rate subscription); tokens are still
+    recorded. *(owner)*

@@ -135,6 +135,24 @@ struct RLMScenarioExperimentTests {
         #expect(artifact.runs.allSatisfy { $0.totalUsage.promptTokens == 150 })
     }
 
+    @Test("a light round plans one repetition over the chosen questions")
+    func lightRoundPlansFewerRuns() {
+        var identity = Self.identity(stage: .matrix, repetitions: 1)
+        identity = RLMScenarioRoundIdentity(
+            manifestID: identity.manifestID, manifestVersion: identity.manifestVersion, stage: .matrix,
+            gitCommit: identity.gitCommit, workingTreeClean: true, imageDigest: identity.imageDigest,
+            host: identity.host, provider: identity.provider, endpoint: identity.endpoint,
+            rootModel: identity.rootModel, leafModels: identity.leafModels,
+            samplingParameters: identity.samplingParameters, budget: identity.budget,
+            questionSetSHA256: identity.questionSetSHA256, corpusRevisionDigest: identity.corpusRevisionDigest,
+            questionIDs: ["Q2", "Q7"], executors: identity.executors, repetitions: 1, pricing: nil
+        )
+        let plan = RLMScenarioPlan(identity: identity, questions: Self.questions, matrixQuestionCount: 12, pilot: nil)
+        #expect(plan.runKeys.count == 4)
+        // A three-repetition pilot still authorises a one-repetition matrix.
+        #expect(identity.sharesComparison(with: Self.identity(stage: .pilot, pricing: nil)).isEmpty)
+    }
+
     // MARK: - Runner
 
     @Test("a complete pilot records every run and projects the full matrix")
@@ -147,6 +165,7 @@ struct RLMScenarioExperimentTests {
         #expect(abs(artifact.costActualUSD - 3) < 1e-9)
         #expect(persisted.values.count == 7)
         let projection = try #require(artifact.costProjection)
+        // The fixture round uses three repetitions; the projection follows it.
         #expect(projection.projectedRuns == 12 * 3 * 2)
         #expect(abs(projection.projectedCostUSD - 72 * 0.5) < 1e-9)
         #expect(projection.executors.map(\.executor) == ["chibi", "guile"])
@@ -236,11 +255,12 @@ struct RLMScenarioExperimentTests {
     private static func identity(
         stage: RLMScenarioStage,
         rootModel: String = "root-model",
+        repetitions: Int = 3,
         pricing: RLMScenarioPricing? = RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
     ) -> RLMScenarioRoundIdentity {
         RLMScenarioRoundIdentity(
             manifestID: "rlm-scenario-manifest-v1",
-            manifestVersion: "v6",
+            manifestVersion: "v7",
             stage: stage,
             gitCommit: "commit",
             workingTreeClean: true,
@@ -256,7 +276,7 @@ struct RLMScenarioExperimentTests {
             corpusRevisionDigest: "corpus",
             questionIDs: stage == .pilot ? ["Q1"] : questions.map(\.id),
             executors: ["guile", "chibi"],
-            repetitions: 3,
+            repetitions: repetitions,
             pricing: pricing
         )
     }

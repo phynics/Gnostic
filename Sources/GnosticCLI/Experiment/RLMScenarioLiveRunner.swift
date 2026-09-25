@@ -74,7 +74,7 @@ struct RLMScenarioLiveRunner: Sendable {
 
         artifact.status = "complete"
         if plan.identity.stage == .pilot {
-            artifact.costProjection = RLMScenarioProjection.project(runs: artifact.runs, questionsInMatrix: plan.matrixQuestionCount)
+            artifact.costProjection = RLMScenarioProjection.project(runs: artifact.runs, questionsInMatrix: plan.matrixQuestionCount, repetitions: plan.identity.repetitions)
         }
         try save(&artifact)
         return artifact

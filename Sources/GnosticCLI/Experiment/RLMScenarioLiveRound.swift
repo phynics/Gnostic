@@ -5,9 +5,9 @@ import GnosticRLM
 
 /// Manifest §8 live stages.
 enum RLMScenarioStage: String, Codable, Sendable, CaseIterable {
-    /// Stage 2: one question, three repetitions, both executors.
+    /// Stage 2: one question, both executors.
     case pilot
-    /// Stage 3: every question, three repetitions, both executors.
+    /// Stage 3: the chosen questions (all 12 by default), both executors.
     case matrix
 
     var defaultArtifactPath: String {
@@ -21,7 +21,9 @@ enum RLMScenarioStage: String, Codable, Sendable, CaseIterable {
 /// The manifest §1 fixed parameters of one round. Every run in a round shares
 /// them; an artifact whose identity differs cannot be resumed (§7).
 struct RLMScenarioRoundIdentity: Codable, Sendable, Equatable {
-    static let repetitions = 3
+    /// Manifest v7: the owner accepted a light sample, one repetition by default.
+    static let defaultRepetitions = 1
+    static let maximumRepetitions = 3
 
     let manifestID: String
     let manifestVersion: String
@@ -71,7 +73,7 @@ struct RLMScenarioRoundIdentity: Codable, Sendable, Equatable {
     /// Whether a pilot and a matrix ran the same comparison: everything but the
     /// stage and the question selection must match.
     func sharesComparison(with pilot: Self) -> [String] {
-        differences(from: pilot).filter { $0 != "stage" && $0 != "questions" }
+        differences(from: pilot).filter { !["stage", "questions", "repetitions"].contains($0) }
     }
 }
 
@@ -234,8 +236,8 @@ struct RLMScenarioProjection: Codable, Sendable, Equatable {
     let projectedCostUSD: Double
     let costComplete: Bool
 
-    static func project(runs: [RLMScenarioRunRecord], questionsInMatrix: Int) -> Self {
-        let perExecutorRuns = questionsInMatrix * RLMScenarioRoundIdentity.repetitions
+    static func project(runs: [RLMScenarioRunRecord], questionsInMatrix: Int, repetitions: Int) -> Self {
+        let perExecutorRuns = questionsInMatrix * repetitions
         let executors = Dictionary(grouping: runs, by: \.executor).keys.sorted().map { name in
             let records = runs.filter { $0.executor == name }
             let count = Double(records.count)
@@ -253,7 +255,7 @@ struct RLMScenarioProjection: Codable, Sendable, Equatable {
             )
         }
         return Self(
-            basis: "Stage 2 pilot means per executor × \(questionsInMatrix) questions × \(RLMScenarioRoundIdentity.repetitions) repetitions. Arm D is unavailable and excluded.",
+            basis: "Stage 2 pilot means per executor × \(questionsInMatrix) questions × \(repetitions) repetition(s). Arm D is unavailable and excluded.",
             executors: executors,
             projectedRuns: executors.reduce(0) { $0 + $1.projectedRuns },
             projectedCostUSD: executors.reduce(0) { $0 + $1.projectedCostUSD },

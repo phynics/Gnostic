@@ -42,6 +42,12 @@ struct ExperimentCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Pilot question ID (pilot only).")
         var question: String = "Q1"
 
+        @Option(name: .long, parsing: .upToNextOption, help: "Matrix question IDs (matrix only; default all 12).")
+        var questions: [String] = []
+
+        @Option(name: .long, help: "Repetitions per question and executor (1–3).")
+        var repetitions: Int = RLMScenarioRoundIdentity.defaultRepetitions
+
         @Option(name: .long, parsing: .upToNextOption, help: "Executors to compare: guile and/or chibi.")
         var executor: [String] = RLMWorkerSelection.allCases.map(\.rawValue)
 
@@ -130,6 +136,9 @@ struct RLMScenarioPreparation: Sendable {
             }
             return selection
         }
+        guard (1...RLMScenarioRoundIdentity.maximumRepetitions).contains(command.repetitions) else {
+            throw RLMScenarioError.invalidArguments("--repetitions must be between 1 and \(RLMScenarioRoundIdentity.maximumRepetitions)")
+        }
         guard !executors.isEmpty, Set(executors).count == executors.count else {
             throw RLMScenarioError.invalidArguments("--executor must name distinct executors")
         }
@@ -155,7 +164,15 @@ struct RLMScenarioPreparation: Sendable {
             }
             selected = [pilotQuestion]
         case .matrix:
-            selected = questions
+            if command.questions.isEmpty {
+                selected = questions
+            } else {
+                let wanted = Set(command.questions)
+                selected = questions.filter { wanted.contains($0.id) }
+                guard selected.count == wanted.count else {
+                    throw RLMScenarioError.invalidArguments("--questions must name distinct IDs from Q1 through Q12")
+                }
+            }
         }
 
         let imageDigest = ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_IMAGE_DIGEST"].flatMap { $0.isEmpty ? nil : $0 }
@@ -179,7 +196,7 @@ struct RLMScenarioPreparation: Sendable {
 
         let identity = RLMScenarioRoundIdentity(
             manifestID: "rlm-scenario-manifest-v1",
-            manifestVersion: "v6",
+            manifestVersion: "v7",
             stage: stage,
             gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"] ?? git.head(),
             workingTreeClean: git.isClean(),
@@ -195,7 +212,7 @@ struct RLMScenarioPreparation: Sendable {
             corpusRevisionDigest: corpus.revisionDigest,
             questionIDs: selected.map(\.id),
             executors: executors.map(\.rawValue),
-            repetitions: RLMScenarioRoundIdentity.repetitions,
+            repetitions: command.repetitions,
             pricing: pricing
         )
 

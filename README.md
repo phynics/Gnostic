@@ -312,7 +312,9 @@ make scenario-live CONFIG=path/to/manifest.json ARGS="--stage pilot --ascendant 
 
 Without `--confirm-spend` the command prints the plan and a worst-case ceiling,
 checks that each executor starts, and contacts no provider. To run, add
-`--confirm-spend` to `ARGS`. Tokens are always metered. On a per-token plan,
+`--confirm-spend` to `ARGS`. Each question runs once per executor by default;
+`--repetitions` raises that (up to 3), and `--questions Q2 Q7` limits the
+matrix to named questions. Tokens are always metered. On a per-token plan,
 also pass `--input-price`, `--output-price`, and `--prices-date` to record
 dollar cost; such a priced round also requires a `--max-cost` ceiling. The artifact under
 `Documentation/Experiments/` is rewritten after every run, so re-running the
