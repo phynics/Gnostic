@@ -230,7 +230,9 @@ values have the same wire shape in both workers.
 
 ## Scope and deferrals
 
-macOS support and its containment differences are tracked by issue #353, and
-live impact measurements belong to issue #354. The macOS smoke job and the
-Stage 1 artifact are the macOS verification record. #181's captured benchmark is historical
-operational evidence, not a runtime-selection result.
+macOS support and its containment differences were delivered by issue #353;
+`make macos-rlm-smoke` verifies them. Issue #401 lets the `gnostic` worker
+factory select Chibi on macOS. The macOS smoke job and the Stage 1 artifact
+record macOS verification. Live impact measurements belong to issue #354.
+#181's captured benchmark is historical operational evidence, not a
+runtime-selection result.

@@ -172,7 +172,6 @@ enum RLMWorkerFactory {
                 outputLimitBytes: configuration.maxOutputBytes
             )
         case .chibi:
-            #if os(Linux)
             let configuration = RLMChibiWorkerConfiguration(runID: runID, workerScriptPath: scriptPath)
             return RLMProcessWorkerDriver<RLMChibiExecutor>(
                 configuration: configuration,
@@ -180,9 +179,6 @@ enum RLMWorkerFactory {
                 wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
                 outputLimitBytes: configuration.maxOutputBytes
             )
-            #else
-            throw RLMFailure.evaluatorFailed("Chibi worker is unavailable on this platform")
-            #endif
         }
     }
 }
