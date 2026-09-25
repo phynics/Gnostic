@@ -100,6 +100,7 @@ public actor RLMProcessWorkerSession<Executor: RLMWorkerExecutor> {
         process.environment = spec.environment
 
         let inputPipe = Pipe()
+        RLMProcessSignals.disableBrokenPipeSignal(onWriteEnd: inputPipe.fileHandleForWriting.fileDescriptor)
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardInput = inputPipe

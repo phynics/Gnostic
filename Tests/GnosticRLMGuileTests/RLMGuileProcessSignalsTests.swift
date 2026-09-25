@@ -46,4 +46,26 @@ struct RLMGuileProcessSignalsTests {
         }
         #expect(sigpipeIsBlocked() == baseline)
     }
+
+    #if canImport(Darwin)
+    @Test("a marked write end reports EPIPE instead of raising SIGPIPE")
+    func markedWriteEndDoesNotSignal() {
+        var descriptors: [Int32] = [0, 0]
+        #expect(pipe(&descriptors) == 0)
+        defer { close(descriptors[1]) }
+        close(descriptors[0])
+
+        RLMGuileProcessSignals.disableBrokenPipeSignal(onWriteEnd: descriptors[1])
+        #expect(fcntl(descriptors[1], F_GETNOSIGPIPE) == 1)
+
+        // Deliberately unmasked: Darwin raises a broken-pipe SIGPIPE on the
+        // whole process, so without the flag this write kills the test run.
+        unblockSIGPIPE()
+        var byte: UInt8 = 0
+        let written = write(descriptors[1], &byte, 1)
+        let failure = errno
+        #expect(written == -1)
+        #expect(failure == EPIPE)
+    }
+    #endif
 }
