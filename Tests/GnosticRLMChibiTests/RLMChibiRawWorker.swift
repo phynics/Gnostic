@@ -47,6 +47,7 @@ final class RLMChibiRawWorker: @unchecked Sendable { // SAFETY: a test drives on
         ]
         process.environment = environment
         let inputPipe = Pipe()
+        RLMChibiProcessSignals.disableBrokenPipeSignal(onWriteEnd: inputPipe.fileHandleForWriting.fileDescriptor)
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardInput = inputPipe
