@@ -36,7 +36,8 @@ struct RLMScenarioLiveRunner: Sendable {
     typealias Persist = @Sendable (RLMScenarioLiveArtifact) throws -> Void
 
     let plan: RLMScenarioPlan
-    let maximumCostUSD: Double
+    /// Nil when the round is unpriced (flat-rate subscription).
+    let maximumCostUSD: Double?
     let execute: Execute
     let persist: Persist
     let report: @Sendable (String) -> Void
@@ -53,7 +54,7 @@ struct RLMScenarioLiveRunner: Sendable {
             // Stop before a run that could cross the ceiling, judged by the
             // most expensive run observed so far in this round.
             let largestRun = artifact.runs.map(\.costUSD).max() ?? 0
-            if artifact.costActualUSD + largestRun > maximumCostUSD {
+            if let maximumCostUSD, artifact.costActualUSD + largestRun > maximumCostUSD {
                 artifact.status = "stopped-at-cost-ceiling"
                 report(String(format: "Stopping: $%.4f spent, and another run could exceed the $%.2f ceiling.", artifact.costActualUSD, maximumCostUSD))
                 try save(&artifact)
