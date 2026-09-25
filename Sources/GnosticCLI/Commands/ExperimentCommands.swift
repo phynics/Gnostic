@@ -12,7 +12,7 @@ struct ExperimentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "experiment",
         abstract: "Run opt-in evidence experiments.",
-        subcommands: [RLMScenario.self]
+        subcommands: [RLMScenario.self, RLMScenarioRating.self]
     )
 
     /// `gnostic experiment rlm-scenario` — the #354 live stages (manifest §8).
@@ -42,17 +42,23 @@ struct ExperimentCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Pilot question ID (pilot only).")
         var question: String = "Q1"
 
+        @Option(name: .long, parsing: .upToNextOption, help: "Matrix question IDs (matrix only; default all 12).")
+        var questions: [String] = []
+
+        @Option(name: .long, help: "Repetitions per question and executor (1–3).")
+        var repetitions: Int = RLMScenarioRoundIdentity.defaultRepetitions
+
         @Option(name: .long, parsing: .upToNextOption, help: "Executors to compare: guile and/or chibi.")
         var executor: [String] = RLMWorkerSelection.allCases.map(\.rawValue)
 
-        @Option(name: .long, help: "Provider input price, USD per million tokens.")
-        var inputPrice: Double
+        @Option(name: .long, help: "Provider input price, USD per million tokens. Omit all prices for a flat-rate subscription.")
+        var inputPrice: Double?
 
         @Option(name: .long, help: "Provider output price, USD per million tokens.")
-        var outputPrice: Double
+        var outputPrice: Double?
 
         @Option(name: .long, help: "Date the prices were in effect (YYYY-MM-DD).")
-        var pricesDate: String
+        var pricesDate: String?
 
         @Option(name: .long, help: "Artifact path (defaults to the stage's Documentation/Experiments file).")
         var output: String?
@@ -60,18 +66,22 @@ struct ExperimentCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Completed pilot artifact that authorises the matrix.")
         var pilot: String?
 
-        @Option(name: .long, help: "Stop before a run that could take total spend past this many USD.")
+        @Option(name: .long, help: "Stop before a run that could take total spend past this many USD (priced rounds only).")
         var maxCost: Double?
 
-        @Flag(name: .long, help: "Contact the provider and spend money. Requires --max-cost.")
+        @Flag(name: .long, help: "Contact the provider. A priced round also requires --max-cost.")
         var confirmSpend = false
 
         @Flag(name: .long, help: "Allow a run outside the pinned image (recorded as unpinned).")
         var allowUnpinnedHost = false
 
         func run() async throws {
-            if confirmSpend, (maxCost ?? 0) <= 0 {
-                throw RLMScenarioError.invalidArguments("--confirm-spend requires a positive --max-cost")
+            let priced = inputPrice != nil
+            if confirmSpend, priced, (maxCost ?? 0) <= 0 {
+                throw RLMScenarioError.invalidArguments("--confirm-spend on a priced round requires a positive --max-cost")
+            }
+            if !priced, maxCost != nil {
+                throw RLMScenarioError.invalidArguments("--max-cost needs --input-price, --output-price, and --prices-date")
             }
             let root = URL(fileURLWithPath: repository).standardizedFileURL
             let preparation = try await RLMScenarioPreparation.prepare(command: self, root: root)
@@ -91,11 +101,8 @@ struct ExperimentCommand: AsyncParsableCommand {
             print("Preflight: every selected executor started and shut down cleanly.")
 
             guard confirmSpend else {
-                print("Dry run: no provider was contacted. Re-run with --confirm-spend --max-cost <USD> to spend.")
+                print("Dry run: no provider was contacted. Re-run with --confirm-spend\(priced ? " --max-cost <USD>" : "") to run.")
                 return
-            }
-            guard let maxCost else {
-                throw RLMScenarioError.invalidArguments("--confirm-spend requires a positive --max-cost")
             }
 
             let runner = RLMScenarioLiveRunner(
@@ -129,11 +136,23 @@ struct RLMScenarioPreparation: Sendable {
             }
             return selection
         }
+        guard (1...RLMScenarioRoundIdentity.maximumRepetitions).contains(command.repetitions) else {
+            throw RLMScenarioError.invalidArguments("--repetitions must be between 1 and \(RLMScenarioRoundIdentity.maximumRepetitions)")
+        }
         guard !executors.isEmpty, Set(executors).count == executors.count else {
             throw RLMScenarioError.invalidArguments("--executor must name distinct executors")
         }
-        guard command.inputPrice >= 0, command.outputPrice >= 0 else {
-            throw RLMScenarioError.invalidArguments("prices must not be negative")
+        let pricing: RLMScenarioPricing?
+        switch (command.inputPrice, command.outputPrice, command.pricesDate) {
+        case (nil, nil, nil):
+            pricing = nil
+        case let (input?, output?, date?):
+            guard input >= 0, output >= 0 else {
+                throw RLMScenarioError.invalidArguments("prices must not be negative")
+            }
+            pricing = RLMScenarioPricing(inputUSDPerMillionTokens: input, outputUSDPerMillionTokens: output, ratesDate: date)
+        default:
+            throw RLMScenarioError.invalidArguments("pass all of --input-price, --output-price, and --prices-date, or none for a flat-rate subscription")
         }
 
         let (questions, questionSetSHA256) = try RLMScenarioQuestionSet.load(repositoryRoot: root)
@@ -145,7 +164,15 @@ struct RLMScenarioPreparation: Sendable {
             }
             selected = [pilotQuestion]
         case .matrix:
-            selected = questions
+            if command.questions.isEmpty {
+                selected = questions
+            } else {
+                let wanted = Set(command.questions)
+                selected = questions.filter { wanted.contains($0.id) }
+                guard selected.count == wanted.count else {
+                    throw RLMScenarioError.invalidArguments("--questions must name distinct IDs from Q1 through Q12")
+                }
+            }
         }
 
         let imageDigest = ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_IMAGE_DIGEST"].flatMap { $0.isEmpty ? nil : $0 }
@@ -169,7 +196,7 @@ struct RLMScenarioPreparation: Sendable {
 
         let identity = RLMScenarioRoundIdentity(
             manifestID: "rlm-scenario-manifest-v1",
-            manifestVersion: "v6",
+            manifestVersion: "v7",
             stage: stage,
             gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"] ?? git.head(),
             workingTreeClean: git.isClean(),
@@ -185,12 +212,8 @@ struct RLMScenarioPreparation: Sendable {
             corpusRevisionDigest: corpus.revisionDigest,
             questionIDs: selected.map(\.id),
             executors: executors.map(\.rawValue),
-            repetitions: RLMScenarioRoundIdentity.repetitions,
-            pricing: RLMScenarioPricing(
-                inputUSDPerMillionTokens: command.inputPrice,
-                outputUSDPerMillionTokens: command.outputPrice,
-                ratesDate: command.pricesDate
-            )
+            repetitions: command.repetitions,
+            pricing: pricing
         )
 
         var pilot: RLMScenarioPilotReference?
@@ -206,7 +229,6 @@ struct RLMScenarioPreparation: Sendable {
         }
 
         let transport = RLMScenarioStreamTransport(client: client)
-        let pricing = identity.pricing
         return Self(
             plan: RLMScenarioPlan(identity: identity, questions: selected, matrixQuestionCount: questions.count, pilot: pilot),
             preflight: { try await preflightExecutors(executors, policy: policy) },
@@ -272,7 +294,7 @@ struct RLMScenarioPreparation: Sendable {
         question: RLMScenarioQuestion,
         key: RLMScenarioRunKey,
         transport: any RLMScenarioModelTransport,
-        pricing: RLMScenarioPricing,
+        pricing: RLMScenarioPricing?,
         policy: RLMCorpusPolicy,
         source: RLMScenarioRepositorySource,
         corpusRevision: String
@@ -346,11 +368,9 @@ struct RLMScenarioPreparation: Sendable {
             metrics: RLMScenarioRunMetrics(result?.metrics ?? .unavailable()),
             rootUsage: rootUsage,
             leafUsage: leafUsage,
-            costUSD: pricing.cost(of: usage),
+            costUSD: pricing?.cost(of: usage) ?? 0,
             costComplete: usage.callsWithoutUsage == 0,
-            mechanicalScore: outcome == "completed"
-                ? .score(evidence: evidence, expectedPaths: question.evidencePaths)
-                : nil
+            score: nil
         )
     }
 }
@@ -464,21 +484,28 @@ enum RLMScenarioPlanRenderer {
             "  Image: \(identity.imageDigest ?? "unpinned host \(identity.host)")",
             "  Corpus revision: \(identity.corpusRevisionDigest)",
             "  Artifact: \(outputPath)\(existing.map { " (resuming \($0.runs.count) recorded runs)" } ?? "")",
-            "  Worst case: \(ceiling.runs) runs, ≤ \(ceiling.maximumModelCalls) model calls, ≤ \(ceiling.maximumEstimatedTokens) estimated tokens, ≈ \(String(format: "$%.2f", ceiling.maximumEstimatedCostUSD)) at the higher of the given rates",
+            "  Worst case: \(ceiling.runs) runs, ≤ \(ceiling.maximumModelCalls) model calls, ≤ \(ceiling.maximumEstimatedTokens) estimated tokens"
+                + (ceiling.maximumEstimatedCostUSD.map { String(format: ", ≈ $%.2f at the higher of the given rates", $0) } ?? " (unpriced: flat-rate subscription)"),
         ]
         if let pilot = plan.pilot {
-            lines.append("  Pilot projection for this matrix: \(pilot.projection.projectedRuns) runs, \(String(format: "$%.2f", pilot.projection.projectedCostUSD))\(pilot.projection.costComplete ? "" : " (lower bound: some calls reported no usage)")")
+            let cost = identity.pricing == nil ? "unpriced" : String(format: "$%.2f", pilot.projection.projectedCostUSD)
+            lines.append("  Pilot projection for this matrix: \(pilot.projection.projectedRuns) runs, \(cost)\(pilot.projection.costComplete ? "" : " (lower bound: some calls reported no usage)")")
         }
         return lines.joined(separator: "\n")
     }
 
     static func summary(_ artifact: RLMScenarioLiveArtifact) -> String {
         let completed = artifact.runs.filter { $0.outcome == "completed" }.count
+        let usage = artifact.runs.map(\.totalUsage).reduce(RLMScenarioUsage(), +)
+        let spend = artifact.round.pricing == nil
+            ? "used \(usage.promptTokens) prompt and \(usage.completionTokens) completion tokens (unpriced)"
+            : String(format: "spent $%.4f", artifact.costActualUSD)
         var lines = [
-            "Status: \(artifact.status). \(completed) of \(artifact.runs.count) runs completed; spent \(String(format: "$%.4f", artifact.costActualUSD))\(artifact.costComplete ? "" : " (lower bound)").",
+            "Status: \(artifact.status). \(completed) of \(artifact.runs.count) runs completed; \(spend)\(artifact.costComplete ? "" : " (lower bound)").",
         ]
         if let projection = artifact.costProjection {
-            lines.append("Projected full matrix: \(projection.projectedRuns) runs, \(String(format: "$%.2f", projection.projectedCostUSD)). Accept this before running --stage matrix.")
+            let perRun = projection.executors.map { String(format: "%@ ≈ %.0f calls, %.0f tokens per run", $0.executor, $0.meanModelCalls, $0.meanPromptTokens + $0.meanCompletionTokens) }
+            lines.append("Projected full matrix: \(projection.projectedRuns) runs (\(perRun.joined(separator: "; ")))\(artifact.round.pricing == nil ? "" : String(format: ", $%.2f", projection.projectedCostUSD)). Accept this before running --stage matrix.")
         }
         return lines.joined(separator: "\n")
     }

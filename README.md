@@ -307,18 +307,23 @@ models, and key of a configured Positronic Ascendant. Run it through the
 container so each run records the pinned image:
 
 ```sh
-make scenario-live CONFIG=path/to/manifest.json \
-  ARGS="--stage pilot --ascendant <uuid> --input-price 3 --output-price 15 --prices-date 2026-09-25"
+make scenario-live CONFIG=path/to/manifest.json ARGS="--stage pilot --ascendant <uuid>"
 ```
 
-Without `--confirm-spend` the command prints the plan and a worst-case cost
-ceiling, checks that each executor starts, and contacts no provider. To run,
-add `--confirm-spend --max-cost <USD>` to `ARGS`. The artifact under
+Without `--confirm-spend` the command prints the plan and a worst-case ceiling,
+checks that each executor starts, and contacts no provider. To run, add
+`--confirm-spend` to `ARGS`. Each question runs once per executor by default;
+`--repetitions` raises that (up to 3), and `--questions Q2 Q7` limits the
+matrix to named questions. Tokens are always metered. On a per-token plan,
+also pass `--input-price`, `--output-price`, and `--prices-date` to record
+dollar cost; such a priced round also requires a `--max-cost` ceiling. The artifact under
 `Documentation/Experiments/` is rewritten after every run, so re-running the
 same command resumes the round. The command refuses to resume an artifact
 whose fixed parameters differ. The matrix (`--stage matrix`) also needs
 `--pilot` pointing at the completed pilot artifact, which carries the measured
-cost projection.
+cost projection. After a round, `gnostic experiment rlm-scenario-rating`
+writes a blind rating sheet (`--write-sheet`) for an evaluator LLM and applies
+its 0–10 scores (`--apply-scores`).
 
 ### Generate an SBOM
 

@@ -102,21 +102,60 @@ struct RLMScenarioExperimentTests {
         let ceiling = plan.ceiling
         #expect(ceiling.maximumModelCalls == 6 * (8 + 32))
         #expect(ceiling.maximumEstimatedTokens == 6 * 200_000)
-        #expect(abs(ceiling.maximumEstimatedCostUSD - 6 * 200_000 * 15 / 1_000_000) < 1e-9)
+        #expect(abs((ceiling.maximumEstimatedCostUSD ?? 0) - 6 * 200_000 * 15 / 1_000_000) < 1e-9)
     }
 
-    @Test("mechanical evidence scores follow the proposed mapping")
-    func mechanicalScores() {
-        let expected = ["A.md", "B.md"]
-        let evidence = { (paths: [String]) in
-            paths.map { RLMScenarioEvidence(chunkID: "c", path: $0, startLine: 1, endLine: 2) }
+    @Test("the rating sheet hides the executor and scores round-trip onto runs")
+    func ratingSheetIsBlindAndScoresApply() async throws {
+        let artifact = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5).run(resuming: nil)
+        let sheet = RLMScenarioBlindRating.sheet(for: artifact, questions: Self.questions)
+        #expect(sheet.items.count == 6)
+        #expect(Set(sheet.items.map(\.id)).count == 6)
+        let encoded = String(decoding: try JSONEncoder().encode(sheet), as: UTF8.self)
+        #expect(!encoded.contains("guile") && !encoded.contains("chibi"))
+
+        let scored = try RLMScenarioBlindRating.apply([sheet.items[0].id: 7], to: artifact)
+        #expect(scored.runs.compactMap(\.score) == [7])
+        #expect(throws: RLMScenarioError.self) {
+            _ = try RLMScenarioBlindRating.apply([sheet.items[0].id: 11], to: artifact)
         }
-        #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["A.md", "B.md"]), expectedPaths: expected).evidenceSufficiency == 2)
-        #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["B.md", "C.md"]), expectedPaths: expected).evidenceSufficiency == 1)
-        let none = RLMScenarioMechanicalScore.score(evidence: [], expectedPaths: expected)
-        #expect(none.evidenceSufficiency == 0)
-        #expect(none.evidenceCorrectness == 0)
-        #expect(RLMScenarioMechanicalScore.score(evidence: evidence(["C.md"]), expectedPaths: expected).evidenceCorrectness == 3)
+        #expect(throws: RLMScenarioError.self) {
+            _ = try RLMScenarioBlindRating.apply(["unknown": 5], to: artifact)
+        }
+    }
+
+    @Test("an unpriced subscription round meters tokens without a dollar ceiling")
+    func unpricedRoundHasNoDollarCeiling() async throws {
+        let plan = RLMScenarioPlan(identity: Self.identity(stage: .pilot, pricing: nil), questions: Array(Self.questions.prefix(1)), matrixQuestionCount: 12, pilot: nil)
+        #expect(plan.ceiling.maximumEstimatedCostUSD == nil)
+        let artifact = try await RLMScenarioLiveRunner(
+            plan: plan,
+            maximumCostUSD: nil,
+            execute: { _, key in Self.record(key, cost: 0) },
+            persist: { _ in },
+            report: { _ in }
+        ).run(resuming: nil)
+        #expect(artifact.status == "complete")
+        #expect(artifact.runs.count == 6)
+        #expect(artifact.runs.allSatisfy { $0.totalUsage.promptTokens == 150 })
+    }
+
+    @Test("a light round plans one repetition over the chosen questions")
+    func lightRoundPlansFewerRuns() {
+        var identity = Self.identity(stage: .matrix, repetitions: 1)
+        identity = RLMScenarioRoundIdentity(
+            manifestID: identity.manifestID, manifestVersion: identity.manifestVersion, stage: .matrix,
+            gitCommit: identity.gitCommit, workingTreeClean: true, imageDigest: identity.imageDigest,
+            host: identity.host, provider: identity.provider, endpoint: identity.endpoint,
+            rootModel: identity.rootModel, leafModels: identity.leafModels,
+            samplingParameters: identity.samplingParameters, budget: identity.budget,
+            questionSetSHA256: identity.questionSetSHA256, corpusRevisionDigest: identity.corpusRevisionDigest,
+            questionIDs: ["Q2", "Q7"], executors: identity.executors, repetitions: 1, pricing: nil
+        )
+        let plan = RLMScenarioPlan(identity: identity, questions: Self.questions, matrixQuestionCount: 12, pilot: nil)
+        #expect(plan.runKeys.count == 4)
+        // A three-repetition pilot still authorises a one-repetition matrix.
+        #expect(identity.sharesComparison(with: Self.identity(stage: .pilot, pricing: nil)).isEmpty)
     }
 
     // MARK: - Runner
@@ -131,6 +170,7 @@ struct RLMScenarioExperimentTests {
         #expect(abs(artifact.costActualUSD - 3) < 1e-9)
         #expect(persisted.values.count == 7)
         let projection = try #require(artifact.costProjection)
+        // The fixture round uses three repetitions; the projection follows it.
         #expect(projection.projectedRuns == 12 * 3 * 2)
         #expect(abs(projection.projectedCostUSD - 72 * 0.5) < 1e-9)
         #expect(projection.executors.map(\.executor) == ["chibi", "guile"])
@@ -161,7 +201,7 @@ struct RLMScenarioExperimentTests {
             ceiling: existing.ceiling,
             authorisedMaximumCostUSD: existing.authorisedMaximumCostUSD,
             pilot: nil,
-            mechanicalScoringRule: existing.mechanicalScoringRule,
+            scoringRule: existing.scoringRule,
             measurements: existing.measurements,
             runs: existing.runs,
             costActualUSD: existing.costActualUSD,
@@ -217,10 +257,15 @@ struct RLMScenarioExperimentTests {
         RLMScenarioQuestion(id: "Q\($0)", question: "question \($0)", referenceAnswer: "answer", evidencePaths: ["A.md"])
     }
 
-    private static func identity(stage: RLMScenarioStage, rootModel: String = "root-model") -> RLMScenarioRoundIdentity {
+    private static func identity(
+        stage: RLMScenarioStage,
+        rootModel: String = "root-model",
+        repetitions: Int = 3,
+        pricing: RLMScenarioPricing? = RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
+    ) -> RLMScenarioRoundIdentity {
         RLMScenarioRoundIdentity(
             manifestID: "rlm-scenario-manifest-v1",
-            manifestVersion: "v6",
+            manifestVersion: "v7",
             stage: stage,
             gitCommit: "commit",
             workingTreeClean: true,
@@ -236,8 +281,8 @@ struct RLMScenarioExperimentTests {
             corpusRevisionDigest: "corpus",
             questionIDs: stage == .pilot ? ["Q1"] : questions.map(\.id),
             executors: ["guile", "chibi"],
-            repetitions: 3,
-            pricing: RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
+            repetitions: repetitions,
+            pricing: pricing
         )
     }
 
@@ -283,7 +328,7 @@ struct RLMScenarioExperimentTests {
             leafUsage: RLMScenarioUsage(calls: 1, promptTokens: 50, completionTokens: 5),
             costUSD: cost,
             costComplete: true,
-            mechanicalScore: nil
+            score: nil
         )
     }
 }
