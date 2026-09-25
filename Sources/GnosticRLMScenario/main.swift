@@ -31,95 +31,85 @@ struct GnosticRLMScenario {
 /// One frozen scenario question from `rlm-scenario-questions.md`.
 struct ScenarioQuestion: Sendable {
     let id: String
+    /// The frozen question text, normalized as the manifest §7 hash requires.
     let question: String
     /// A single-token lexical query that resolves in the corpus scope.
     let query: String
-    /// The frozen reference answer. All three arms use the same answer, and its
-    /// normalized UTF-8 bytes are hashed into the report.
+    /// The frozen reference answer, normalized the same way. All three arms use
+    /// the same answer, and its UTF-8 bytes are hashed into the report.
     let answer: String
 }
 
+/// Reads the question and reference-answer text from the frozen file, so
+/// Stage 0 measures the approved wording verbatim (manifest §1 and §7).
 enum ScenarioQuestions {
+    static let relativePath = "Documentation/Experiments/rlm-scenario-questions.md"
+    /// The SHA-256 of the approved question set.
+    static let pinnedSHA256 = "5d57d96fd84a2afe7c9f303325cc6c8dd53138a8717a195b1a25ecaa2cc89475"
     static let corpusPrefixes = [
         "Sources/GnosticCore/Runtime",
         "Sources/GnosticRLM",
         "Documentation/Architecture",
     ]
 
-    static let all: [ScenarioQuestion] = [
-        ScenarioQuestion(
-            id: "Q1",
-            question: "What is Gnostic's host boundary, and which PositronicKit values may cross it?",
-            query: "protocolMajor",
-            answer: "Gnostic is a directly Axoloty-native Ascendant host, not a transport-neutral agent operating system. A narrow mandatory AscendantBackend contract owns execution for one Ascendant and exposes only the host services demonstrated Gnostic operations need; optional capabilities are separate, and interoperability is advertised per Ascendant instance and selected by protocolMajor and capability vocabulary, never by backend kind. PositronicKit native types stay inside the bundled backend, the explicit adapters, and the host bridges listed in ADR 0005; the Core-owned Workspace network contract uses ManifestJSONValue, and conversion lives in WorkspaceReferenceProjection and the adapter seams."
-        ),
-        ScenarioQuestion(
-            id: "Q2",
-            question: "How does Gnostic keep Timeline identity independent of backend transcript state?",
-            query: "TimelineRecord",
-            answer: "Timeline identity is Gnostic-owned. A backend may project a Timeline into private transcript/context state, but it cannot redefine or erase the Gnostic identity; PositronicKit TimelineRecord and AgentInstance are backend-private implementation details. Loss or replacement of a backend, or a backend change made while the Node is stopped, must not lose the Timeline identity."
-        ),
-        ScenarioQuestion(
-            id: "Q3",
-            question: "What is RuntimeEffectScope, and what authorities is it explicitly not?",
-            query: "RuntimeEffectScope",
-            answer: "RuntimeEffectScope is a structural ownership and cleanup boundary: adopted effects are released when the scope ends, and one live parent per child is enforced. It is explicitly not a dependency-injection container, a service locator, a configuration store, a dynamic loader, or a domain authority. Fitness tests pin its forbidden dependencies and its named owners, and a diagnostic-label test keeps dynamic or unsafe content out of scope labels."
-        ),
-        ScenarioQuestion(
-            id: "Q4",
-            question: "How does terminal Turn observation deliver an outcome, and what bounds a stuck observer?",
-            query: "TerminalTurnObserving",
-            answer: "It is a one-way, backend-neutral Core seam. Hosts install TerminalTurnObserving values through NodeRuntimeAdapters. A TerminalTurnRecord carries only Gnostic identity and a bounded TerminalTurnOutcome; Atlas, Shard, prompt, revision, and PositronicKit types stay outside the contract. Exact shutdown waits for Turn and lane settlement before closing the observation fence, then drains admitted observer deliveries up to observationDrainTimeout; only work outliving that window is cut off. A given observer receives at most one delivery per original identified terminal Turn, and only if it was admitted before the fence."
-        ),
-        ScenarioQuestion(
-            id: "Q5",
-            question: "Does a Timeline created at runtime have to survive a `gnostic serve` restart, and what exactly is promised across restarts?",
-            query: "timelineUnavailable",
-            answer: "No. In the current contract a runtime-created Timeline is process-scoped and does not have to survive a serve restart. What is promised is session/resume across an ACP-child restart against a live serve, not across a serve restart. Full durability would need both a node-scoped Gnostic Timeline identity store (separate from the manifest, which is never written back) and a durable backend TimelineRuntimeRepository. Until then, an orphaned session must fail session/resume with timelineUnavailable and be omitted from session/list rather than being recreated implicitly."
-        ),
-        ScenarioQuestion(
-            id: "Q6",
-            question: "What three layers let one Node host distinct Ascendant configurations, and what must not leak between them?",
-            query: "ambiguousAscendant",
-            answer: "The three layers are: (1) static composition at the composition root, which registers every backend kind and compiled-in Positronic extension and is shared by serve and config; (2) per-Ascendant selection through backend settings (backend.kind selects the factory; the backend-owned settings/secrets configure it; an extensions array selects contributions); and (3) the PositronicContribution seam, the only supported extension point for one Positronic Ascendant, bounded to additional tools plus at most one Turn context source. Routing is by Ascendant and Timeline identity, never by backend kind; selecting with no Ascendant ID on a multi-Ascendant Node fails with ambiguousAscendant. A lifecycle-unusable backend failure quarantines only its own Ascendant, and GnosticCore must not depend on the Atlas, RLM, or Letta targets."
-        ),
-        ScenarioQuestion(
-            id: "Q7",
-            question: "Who owns an RLM run's limits, and how may a caller change them?",
-            query: "maxCellRepairs",
-            answer: "The host owns RLMRunBudget, which fixes wall duration, root iterations, leaf model calls, estimated model tokens, corpus file/byte limits, context-read bytes, Scheme cell/output bytes, evidence references, chunks per read, search limit, and the recoverable-repair count (maxCellRepairs, default 3). A caller may only narrow these values with RLMRunBudgetRequest: narrowed(by:) takes the smaller host/requested value per field, nil keeps the host value, and resolve(host:request:) validates first. Negative values throw invalidToolArguments. No tool argument, root cell, or model response can enlarge a limit."
-        ),
-        ScenarioQuestion(
-            id: "Q8",
-            question: "Which RLM failures can be fed back to the root model for repair, and how is repairing bounded?",
-            query: "isRecoverableCellFailure",
-            answer: "Only recoverable cell failures can be fed back: cellRejected (validation rejected the cell before evaluation) and cellRuntimeFailed (the cell evaluated but raised a recoverable Scheme error), as reported by isRecoverableCellFailure. Every other failure is terminal. The root iteration containing the failed cell is already consumed, so the repair continuation advances the same root-iteration budget, and maxCellRepairs bounds the number of repairs in one run. A repair record carries a single-line reason bounded to 512 characters."
-        ),
-        ScenarioQuestion(
-            id: "Q9",
-            question: "What must an evidence reference satisfy to be accepted, and what happens when one is rejected?",
-            query: "evidenceRejected",
-            answer: "On finish, references are validated against the committed snapshot: the reference count must not exceed the budget; every chunk ID must be known; the referenced path must match the chunk's snapshot path; the line range must not be inverted and must be within the chunk's bounds. A rejection maps to evidenceRejected with the specific reason and terminates the run rather than completing with unverified evidence; the number of accepted references is recorded in run metrics."
-        ),
-        ScenarioQuestion(
-            id: "Q10",
-            question: "What access does the RLM harness have to corpus bytes, and what does the snapshot step guarantee?",
-            query: "RLMCorpusSnapshotter",
-            answer: "The harness never receives a Workspace path it can open directly; it sees only the read-only RLMCorpusSource seam (listFiles, readFile). The snapshotter captures an immutable RLMCorpusSnapshot before evaluation, enforcing the configured file-count and byte limits (tooManyFiles, corpusTooLarge) and recording any skipped files, so a run's evidence is validated against a stable corpus rather than live filesystem state."
-        ),
-        ScenarioQuestion(
-            id: "Q11",
-            question: "What does the shared executor seam own, and where do runtime differences live?",
-            query: "RLMWorkerExecutor",
-            answer: "RLMWorkerExecutor states only what differs between runtimes: a display name, whether the reviewed build supports the current platform, and how a configuration becomes an RLMWorkerLaunchSpec. Process supervision, the framed protocol, parent-side cell validation, host servicing, and cancellation and wall-time fences are shared. Each executor supplies its own launch, including host-owned process limits, so the shared worker session names no executor and branches on no executor-specific behavior. ADR 0012 offers both runtimes as first-class selectable executors and defers the default choice to measured impact."
-        ),
-        ScenarioQuestion(
-            id: "Q12",
-            question: "How is a backend failure contained, and how is retirement bounded?",
-            query: "BackendRetirementSupervisor",
-            answer: "An ordinary Turn failure leaves the backend healthy and usable; only a lifecycle-unusable failure quarantines the Ascendant whose backend failed, leaving the other Ascendants on the Node serving. Retirement is bounded by a deadline through the retirement supervisor and lifecycle coordinator: a retirement or rollback stage that exceeds its deadline is recorded as exceeded rather than blocking the Node, and the affected Ascendant is isolated instead of stalling the others."
-        ),
+    /// Stage 0's own input: one single-token lexical query per question that
+    /// resolves in the corpus scope. The frozen file does not define these.
+    static let queries: [String: String] = [
+        "Q1": "protocolMajor",
+        "Q2": "TimelineRecord",
+        "Q3": "RuntimeEffectScope",
+        "Q4": "TerminalTurnObserving",
+        "Q5": "timelineUnavailable",
+        "Q6": "ambiguousAscendant",
+        "Q7": "maxCellRepairs",
+        "Q8": "isRecoverableCellFailure",
+        "Q9": "evidenceRejected",
+        "Q10": "RLMCorpusSnapshotter",
+        "Q11": "RLMWorkerExecutor",
+        "Q12": "BackendRetirementSupervisor",
     ]
+
+    static func load(root: String) throws -> (questions: [ScenarioQuestion], sha256: String) {
+        let path = (root as NSString).appendingPathComponent(relativePath)
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let digest = RLMDigest.sha256Hex([UInt8](data))
+        guard digest == pinnedSHA256 else {
+            throw RLMFailure.corpusSourceFailed(
+                "the frozen question set changed (expected SHA-256 \(pinnedSHA256), found \(digest))"
+            )
+        }
+        return (try parse(String(decoding: data, as: UTF8.self)), digest)
+    }
+
+    /// Parses `## Qn — …` sections into their question and reference answer.
+    static func parse(_ text: String) throws -> [ScenarioQuestion] {
+        let questions = try text.components(separatedBy: "\n## Q").dropFirst().map { section in
+            let id = "Q" + section.prefix { $0.isNumber }
+            guard let question = field("Question", in: section),
+                  let answer = field("Reference answer", in: section),
+                  let query = queries[id] else {
+                throw RLMFailure.corpusSourceFailed("\(id) is missing a question, reference answer, or Stage 0 query")
+            }
+            return ScenarioQuestion(id: id, question: normalized(question), query: query, answer: normalized(answer))
+        }
+        guard questions.map(\.id) == (1...12).map({ "Q\($0)" }) else {
+            throw RLMFailure.corpusSourceFailed("expected Q1 through Q12, found \(questions.map(\.id))")
+        }
+        return questions
+    }
+
+    /// The manifest §7 normalization: inline-code delimiters dropped and
+    /// line-wrapped whitespace collapsed.
+    static func normalized(_ value: String) -> String {
+        value.replacingOccurrences(of: "`", with: "")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private static func field(_ name: String, in section: String) -> String? {
+        guard let start = section.range(of: "**\(name).**") else { return nil }
+        let rest = section[start.upperBound...]
+        return String(rest[..<(rest.range(of: "\n\n")?.lowerBound ?? rest.endIndex)])
+    }
 }
 
 // MARK: - Corpus source
@@ -130,6 +120,12 @@ struct RepositoryCorpusSource: RLMCorpusSource {
     let prefixes: [String]
 
     func listFiles() async throws -> [RLMCorpusSourceFile] {
+        enumerateFiles()
+    }
+
+    /// `FileManager`'s enumerator is unavailable from async contexts on
+    /// Darwin, so the walk stays synchronous.
+    private func enumerateFiles() -> [RLMCorpusSourceFile] {
         let fileManager = FileManager.default
         var files: [RLMCorpusSourceFile] = []
         for prefix in prefixes {
@@ -191,8 +187,13 @@ enum ScenarioScript {
         (let* ((hits (corpus-search "\(question.query)" 5))
                (ids (map (lambda (hit) (cdr (assq 'chunk-id hit))) hits)))
           (corpus-read-many ids)
-          (finish "\(question.answer)" ids))
+          (finish "\(schemeString(question.answer))" ids))
         """
+    }
+
+    private static func schemeString(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }
 
@@ -204,6 +205,7 @@ struct Stage0Harness {
 
     func run() async throws -> Stage0Report {
         let root = Self.repositoryRoot()
+        let questionSet = try ScenarioQuestions.load(root: root)
         let source = RepositoryCorpusSource(root: root, prefixes: ScenarioQuestions.corpusPrefixes)
         let corpusSnapshot = try await RLMCorpusSnapshotter(policy: Self.policy).capture(
             from: source,
@@ -212,7 +214,7 @@ struct Stage0Harness {
         )
 
         var rows: [ScenarioRow] = []
-        for question in ScenarioQuestions.all {
+        for question in questionSet.questions {
             let scripted = await runScripted(question: question, source: source)
             let guile = await runWorker(question: question, source: source, runtime: "guile")
             let chibi = await runWorker(question: question, source: source, runtime: "chibi")
@@ -235,8 +237,8 @@ struct Stage0Harness {
             manifestID: "rlm-scenario-manifest-v1",
             manifestVersion: "v6",
             hashNormalization: "SHA-256 over normalized plain-text UTF-8; Markdown inline-code delimiters are omitted and line-wrapped whitespace is collapsed.",
-            questionSetSHA256: try Self.questionSetSHA256(root: root),
-            questionSetPath: "Documentation/Experiments/rlm-scenario-questions.md",
+            questionSetSHA256: questionSet.sha256,
+            questionSetPath: ScenarioQuestions.relativePath,
             generatedAtUTC: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_TIMESTAMP"] ?? Self.timestamp(),
             gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"],
             imageDigest: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_IMAGE_DIGEST"],
@@ -449,12 +451,6 @@ struct Stage0Harness {
         ISO8601DateFormatter().string(from: Date())
     }
 
-    private static func questionSetSHA256(root: String) throws -> String {
-        let path = (root as NSString).appendingPathComponent("Documentation/Experiments/rlm-scenario-questions.md")
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return RLMDigest.sha256Hex([UInt8](data))
-    }
-
     private static func executorBuilds() throws -> [Stage0ExecutorBuild] {
         let guile = RLMGuileWorkerConfiguration.defaultExecutablePath
         let chibi = RLMChibiWorkerConfiguration.defaultExecutablePath
@@ -505,8 +501,7 @@ struct Stage0Harness {
     }
 
     private static func hashNormalizedText(_ value: String) -> String {
-        let withoutCodeMarkers = value.replacingOccurrences(of: "`", with: "")
-        return RLMDigest.sha256Hex(withoutCodeMarkers.split(whereSeparator: \.isWhitespace).joined(separator: " "))
+        RLMDigest.sha256Hex(ScenarioQuestions.normalized(value))
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {
