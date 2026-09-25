@@ -81,7 +81,10 @@ dependency (`brew install guile`). Gnostic launches that separate executable
 and does not bundle or redistribute Guile; this keeps the LGPL runtime outside
 Gnostic's distributed artifacts. Run `make macos-rlm-smoke` to build both tools
 and exercise each session, denial, signal, operation, and parity suite. The
-target fails if any selected suite executes zero tests.
+target fails if any selected suite executes zero tests. `make scenario-stage1`
+runs the same smoke plus launcher probes and records the matrix above, with
+the test behind each row, as the #354 Stage 1 artifact
+[`rlm-scenario-stage1.json`](../../Documentation/Experiments/rlm-scenario-stage1.json).
 
 The macOS build and containment differences are tracked by issue #353.
 Benchmark measurements are tracked by issue #354. See
@@ -229,6 +232,7 @@ values have the same wire shape in both workers.
 
 macOS support and its containment differences were delivered by issue #353;
 `make macos-rlm-smoke` verifies them. Issue #401 lets the `gnostic` worker
-factory select Chibi on macOS. Live impact measurements belong to issue #354.
+factory select Chibi on macOS. The macOS smoke job and the Stage 1 artifact
+record macOS verification. Live impact measurements belong to issue #354.
 #181's captured benchmark is historical operational evidence, not a
 runtime-selection result.
