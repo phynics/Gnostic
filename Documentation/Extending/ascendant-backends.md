@@ -101,6 +101,11 @@ adapters.ascendants.registerBackend(
 }
 ```
 
+Literal keys cover fixed settings. A backend that accepts one environment
+variable per key can also declare dynamic key families. The prefix determines
+the family; the suffix must be a valid environment-variable name. Secret
+families are stored in `backend.secrets` and stay structurally redacted.
+
 `registerBackend(kind:settings:factory:)` is the only supported selection
 point. The `settings` schema is optional but strongly recommended: it is what
 lets `gnostic config backend keys <ascendant-id>` list your keys and reject a
@@ -132,8 +137,10 @@ ACP agent. In this increment it validates and projects configuration, but does
 not start the process or execute Turns; a Turn returns a terminal
 `acpTurnUnavailable` error until GNO-ACPC-003.
 
-`args` and `env` are JSON encoded strings because the generic `config backend
-set` command stores one string per key:
+`args` and `env` are JSON-encoded strings because the generic `config backend
+set` command stores one string per key. The `env.<NAME>` family stores one plain
+environment variable per setting, and the `env-secret.<NAME>` family stores
+one secret per secret key:
 
 ```sh
 gnostic config ascendant add "OpenCode" --kind acp-client
@@ -141,13 +148,20 @@ gnostic config backend set <ascendant-id> command opencode
 gnostic config backend set <ascendant-id> args '["acp"]'
 gnostic config backend set <ascendant-id> cwd "$PWD"
 gnostic config backend set <ascendant-id> env '{"MODE":"safe"}'
+gnostic config backend set <ascendant-id> env.LOG_LEVEL debug
+printf '%s' "$AGENT_API_TOKEN" | gnostic config backend set-secret <ascendant-id> env-secret.API_TOKEN
 gnostic config backend set <ascendant-id> displayName "OpenCode"
 ```
 
-The `env` object accepts non-secret string values only. Per-variable secret
-environment values and their `config backend set-secret` schema support are
-deferred to [GNO-ACPC-009](https://github.com/phynics/Gnostic/issues/396).
-Do not place secrets in `env`.
+The `env` object and `env.<NAME>` settings accept non-secret strings only. Keep
+credentials in `env-secret.<NAME>` and enter them through `set-secret`; these
+values are stored under `backend.secrets` and are redacted by `config show`.
+The CLI lists both families and rejects invalid variable names, unknown keys,
+and attempts to write a family through the wrong setter. The ACP backend merges
+the plain and secret values into the future child-process environment, but this
+configuration-only increment does not launch a process or log values. A
+variable cannot be declared in more than one of `env`, `env.<NAME>`, and
+`env-secret.<NAME>`.
 
 ## Extending the bundled Positronic backend
 

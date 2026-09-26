@@ -20,6 +20,9 @@ public final class ACPAscendantBackend: AscendantBackend {
         .init(name: "cwd", summary: "Optional working directory for the ACP agent process."),
         .init(name: "env", summary: "Optional JSON object of non-secret environment-variable strings."),
         .init(name: "displayName", summary: "Optional display name for the external ACP agent."),
+    ], keyFamilies: [
+        .init(prefix: "env.", summary: "One non-secret process environment variable."),
+        .init(prefix: "env-secret.", summary: "One secret process environment variable.", isSecret: true),
     ])
 
     /// Gnostic-owned identity for the Ascendant served by this backend.
@@ -184,11 +187,10 @@ public final class ACPAscendantBackend: AscendantBackend {
             throw invalidConfiguration("The ACP backend requires kind '\(kind)'.")
         }
         let acceptedSettings = Set(settingsSchema.settingNames)
-        if let unknown = configuration.settings.keys.sorted().first(where: { !acceptedSettings.contains($0) }) {
+        if let unknown = configuration.settings.keys.sorted().first(where: {
+            !acceptedSettings.contains($0) && settingsSchema.dynamicFamily(matching: $0) == nil
+        }) {
             throw invalidConfiguration("The ACP backend does not accept setting '\(unknown)'.")
-        }
-        guard configuration.secrets.isEmpty else {
-            throw invalidConfiguration("The ACP backend does not accept secret settings yet; see GNO-ACPC-009.")
         }
         guard let command = stringSetting("command", in: configuration.settings),
               !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -213,7 +215,7 @@ public final class ACPAscendantBackend: AscendantBackend {
 
         let workingDirectory = try optionalStringSetting("cwd", in: configuration.settings)
         let displayName = try optionalStringSetting("displayName", in: configuration.settings)
-        let environment: [String: String]
+        var environment: [String: String]
         if let encodedEnvironment = configuration.settings["env"] {
             guard case let .string(json) = encodedEnvironment,
                   let data = json.data(using: .utf8),
@@ -225,10 +227,23 @@ public final class ACPAscendantBackend: AscendantBackend {
             environment = [:]
         }
         guard environment.allSatisfy({ key, value in
-            !key.isEmpty && !key.contains("=") && !key.contains("\0") && !value.contains("\0")
+            !key.isEmpty && !key.contains("=") && !key.contains("\0")
+                && AscendantBackendSettingsSchema.isValidEnvironmentVariableName(key)
+                && !value.contains("\0")
         }) else {
             throw invalidConfiguration("The ACP backend setting 'env' contains an invalid environment-variable name or value.")
         }
+
+        try addDynamicEnvironmentValues(
+            from: configuration.settings,
+            expectsSecret: false,
+            to: &environment
+        )
+        try addDynamicEnvironmentValues(
+            from: configuration.secrets,
+            expectsSecret: true,
+            to: &environment
+        )
 
         return ACPLaunchSpec(
             command: command,
@@ -258,6 +273,34 @@ public final class ACPAscendantBackend: AscendantBackend {
             throw invalidConfiguration("The ACP backend setting '\(key)' must be a non-empty string when provided.")
         }
         return string
+    }
+
+    private static func addDynamicEnvironmentValues(
+        from values: [String: ManifestJSONValue],
+        expectsSecret: Bool,
+        to environment: inout [String: String]
+    ) throws {
+        for key in values.keys.sorted() {
+            guard let dynamic = settingsSchema.dynamicFamily(matching: key) else {
+                if expectsSecret {
+                    throw invalidConfiguration("The ACP backend does not accept secret setting '\(key)'.")
+                }
+                continue
+            }
+            guard dynamic.family.isSecret == expectsSecret else {
+                throw invalidConfiguration("The ACP backend does not accept \(expectsSecret ? "secret" : "plain") setting '\(key)'.")
+            }
+            guard AscendantBackendSettingsSchema.isValidEnvironmentVariableName(dynamic.member) else {
+                throw invalidConfiguration("The ACP backend setting '\(key)' must name a valid environment variable.")
+            }
+            guard case let .string(value) = values[key], !value.contains("\0") else {
+                throw invalidConfiguration("The ACP backend setting '\(key)' must be a string without null characters.")
+            }
+            guard environment[dynamic.member] == nil else {
+                throw invalidConfiguration("The ACP backend environment variable '\(dynamic.member)' is configured more than once.")
+            }
+            environment[dynamic.member] = value
+        }
     }
 
     private static func invalidConfiguration(_ message: String) -> AscendantBackendError {

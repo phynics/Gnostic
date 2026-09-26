@@ -577,15 +577,27 @@ public enum ConfigCommandLogic {
             throw CLIConfigurationError.invalidArgument("A backend key cannot be empty.")
         }
         guard !schema.isUnspecified else { return }
-        guard let declared = schema.key(named: key) else {
-            let known = schema.keys.map(\.name).joined(separator: ", ")
+        let declaredSecret: Bool
+        if let declared = schema.key(named: key) {
+            declaredSecret = declared.isSecret
+        } else if let dynamic = schema.dynamicFamily(matching: key) {
+            guard AscendantBackendSettingsSchema.isValidEnvironmentVariableName(dynamic.member) else {
+                throw CLIConfigurationError.invalidArgument(
+                    "Backend key '\(key)' must end with a valid environment-variable name."
+                )
+            }
+            declaredSecret = dynamic.family.isSecret
+        } else {
+            let knownKeys = schema.keys.map(\.name)
+            let knownFamilies = schema.keyFamilies.map { "\($0.prefix)<VARIABLE>" }
+            let known = (knownKeys + knownFamilies).joined(separator: ", ")
             throw CLIConfigurationError.invalidArgument(
                 "Backend kind '\(kind)' does not accept key '\(key)'. Accepted keys: \(known)."
             )
         }
-        if declared.isSecret != wantsSecret {
+        if declaredSecret != wantsSecret {
             throw CLIConfigurationError.invalidArgument(
-                declared.isSecret
+                declaredSecret
                     ? "Key '\(key)' is a secret. Use 'config backend set-secret', which reads the value from standard input."
                     : "Key '\(key)' is not a secret. Use 'config backend set'."
             )
@@ -651,6 +663,10 @@ public enum ConfigCommandLogic {
         for key in target.schema.keys {
             let marker = key.isSecret ? " [secret]" : ""
             writeOutput("  \(key.name)\(marker) — \(key.summary)")
+        }
+        for family in target.schema.keyFamilies {
+            let marker = family.isSecret ? " [secret]" : ""
+            writeOutput("  \(family.prefix)<VARIABLE>\(marker) — \(family.summary)")
         }
     }
 

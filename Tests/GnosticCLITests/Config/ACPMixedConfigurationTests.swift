@@ -37,6 +37,20 @@ struct ACPMixedConfigurationTests {
             store: store,
             composition: composition
         )
+        try ConfigCommandLogic.setBackendValue(
+            ascendantID: id.uuidString,
+            key: "env.MODE",
+            value: "dynamic-test",
+            store: store,
+            composition: composition
+        )
+        try ConfigCommandLogic.setBackendSecret(
+            ascendantID: id.uuidString,
+            key: "env-secret.API_TOKEN",
+            value: "do-not-print-this-token",
+            store: store,
+            composition: composition
+        )
 
         #expect(throws: (any Error).self) {
             try ConfigCommandLogic.setBackendValue(
@@ -56,6 +70,51 @@ struct ACPMixedConfigurationTests {
                 composition: composition
             )
         }
+        #expect(throws: (any Error).self) {
+            try ConfigCommandLogic.setBackendValue(
+                ascendantID: id.uuidString,
+                key: "env.bad-name",
+                value: "invalid",
+                store: store,
+                composition: composition
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try ConfigCommandLogic.setBackendSecret(
+                ascendantID: id.uuidString,
+                key: "unrelated.API_TOKEN",
+                value: "secret",
+                store: store,
+                composition: composition
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try ConfigCommandLogic.setBackendSecret(
+                ascendantID: id.uuidString,
+                key: "env.MODE",
+                value: "wrong-storage",
+                store: store,
+                composition: composition
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try ConfigCommandLogic.setBackendValue(
+                ascendantID: id.uuidString,
+                key: "env-secret.API_TOKEN",
+                value: "wrong-storage",
+                store: store,
+                composition: composition
+            )
+        }
+        #expect(throws: (any Error).self) {
+            try ConfigCommandLogic.setBackendValue(
+                ascendantID: id.uuidString,
+                key: "env.",
+                value: "missing-name",
+                store: store,
+                composition: composition
+            )
+        }
 
         var output: [String] = []
         try ConfigCommandLogic.listBackendKeys(
@@ -69,8 +128,19 @@ struct ACPMixedConfigurationTests {
         #expect(text.contains("command"))
         #expect(text.contains("args"))
         #expect(text.contains("env"))
-        #expect(try store.loadManifest().ascendants.last?.backend.settings["commnad"] == nil)
-        #expect(try store.loadManifest().ascendants.last?.backend.secrets.isEmpty == true)
+        #expect(text.contains("env.<VARIABLE>"))
+        #expect(text.contains("env-secret.<VARIABLE>"))
+        #expect(text.contains("[secret]"))
+        let manifest = try store.loadManifest()
+        #expect(manifest.ascendants.last?.backend.settings["env.MODE"]?.stringValue == "dynamic-test")
+        #expect(manifest.ascendants.last?.backend.secrets["env-secret.API_TOKEN"]?.stringValue == "do-not-print-this-token")
+        #expect(manifest.ascendants.last?.backend.settings["commnad"] == nil)
+
+        var shown: [String] = []
+        try ConfigCommandLogic.show(store: store, writeOutput: { shown.append($0) })
+        let shownText = shown.joined(separator: "\n")
+        #expect(!shownText.contains("do-not-print-this-token"))
+        #expect(shownText.contains("<redacted>"))
     }
 
     @Test("a configured ACP Ascendant starts beside a Positronic Ascendant")

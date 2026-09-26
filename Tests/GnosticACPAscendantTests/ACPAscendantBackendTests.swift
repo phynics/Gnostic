@@ -45,6 +45,51 @@ struct ACPAscendantBackendTests {
         #expect(backend.launchSpec.displayName == "OpenCode")
     }
 
+    @Test("plain and secret per-variable values map to the launch environment")
+    @MainActor
+    func perVariableEnvironmentValuesAreCombined() throws {
+        let backend = try backend(
+            settings: [
+                "command": .string("opencode"),
+                "env": .string("{\"MODE\":\"safe\"}"),
+                "env.REGION": .string("test-west"),
+            ],
+            secrets: ["env-secret.API_TOKEN": .string("private-token")]
+        )
+
+        #expect(backend.launchSpec.environment == [
+            "MODE": "safe",
+            "REGION": "test-west",
+            "API_TOKEN": "private-token",
+        ])
+        #expect(backend.launchSpec.description.contains("API_TOKEN"))
+        #expect(!backend.launchSpec.description.contains("private-token"))
+        #expect(!backend.launchSpec.debugDescription.contains("private-token"))
+    }
+
+    @Test("invalid per-variable names and conflicting values are rejected without exposing secrets")
+    @MainActor
+    func invalidDynamicEnvironmentConfigurationIsRejected() {
+        #expect(throws: (any Error).self) {
+            try backend(settings: [
+                "command": .string("opencode"),
+                "env.bad-name": .string("invalid"),
+            ])
+        }
+        #expect(throws: (any Error).self) {
+            try backend(
+                settings: ["command": .string("opencode"), "env.API_TOKEN": .string("plain")],
+                secrets: ["env-secret.API_TOKEN": .string("private-token")]
+            )
+        }
+        do {
+            _ = try backend(secrets: ["unrelated.API_TOKEN": .string("diagnostic-secret")])
+            Issue.record("An unrelated secret key unexpectedly passed ACP configuration validation.")
+        } catch {
+            #expect(!String(describing: error).contains("diagnostic-secret"))
+        }
+    }
+
     @Test("malformed argument and environment JSON is rejected")
     @MainActor
     func malformedJSONIsRejected() {
@@ -56,6 +101,9 @@ struct ACPAscendantBackendTests {
         }
         #expect(throws: (any Error).self) {
             try backend(settings: ["command": .string("opencode"), "env": .string("{\"COUNT\":3}")])
+        }
+        #expect(throws: (any Error).self) {
+            try backend(settings: ["command": .string("opencode"), "env": .string("{\"bad-name\":\"value\"}")])
         }
         #expect(throws: (any Error).self) {
             try backend(settings: ["command": .string("opencode"), "env": .string("{\"BAD=NAME\":\"value\"}")])
