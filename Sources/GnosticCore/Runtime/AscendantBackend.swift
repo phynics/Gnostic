@@ -595,14 +595,44 @@ public struct AscendantBackendSettingsSchema: Sendable, Equatable {
         }
     }
 
-    /// Every key this backend kind understands, in presentation order.
-    public let keys: [Key]
-
-    /// Creates a schema from an ordered key list.
+    /// A family of keys whose suffix names one environment variable.
     ///
-    /// - Parameter keys: The keys, in the order help output should show them.
-    public init(keys: [Key] = []) {
+    /// A matching key is the prefix followed by an environment-variable name.
+    /// The value is stored in `settings` or `secrets` according to `isSecret`.
+    public struct KeyFamily: Sendable, Equatable {
+        /// Prefix shared by every key in this family.
+        public let prefix: String
+        /// A one-line description, suitable for CLI help output.
+        public let summary: String
+        /// Whether values belong in `secrets` and must be redacted.
+        public let isSecret: Bool
+
+        /// Creates one dynamic environment-variable key family.
+        ///
+        /// - Parameters:
+        ///   - prefix: The key prefix, including any delimiter (for example `env.`).
+        ///   - summary: A one-line description for help output.
+        ///   - isSecret: Whether values belong in `secrets`.
+        public init(prefix: String, summary: String, isSecret: Bool = false) {
+            self.prefix = prefix
+            self.summary = summary
+            self.isSecret = isSecret
+        }
+    }
+
+    /// Literal keys this backend kind understands, in presentation order.
+    public let keys: [Key]
+    /// Dynamic environment-variable key families, in presentation order.
+    public let keyFamilies: [KeyFamily]
+
+    /// Creates a schema from ordered literal keys and dynamic key families.
+    ///
+    /// - Parameters:
+    ///   - keys: The literal keys, in presentation order.
+    ///   - keyFamilies: Dynamic environment-variable families, in presentation order.
+    public init(keys: [Key] = [], keyFamilies: [KeyFamily] = []) {
         self.keys = keys
+        self.keyFamilies = keyFamilies
     }
 
     /// A schema for a backend that advertises no keys.
@@ -612,7 +642,7 @@ public struct AscendantBackendSettingsSchema: Sendable, Equatable {
     public static var unspecified: Self { .init() }
 
     /// Whether the backend advertises no keys.
-    public var isUnspecified: Bool { keys.isEmpty }
+    public var isUnspecified: Bool { keys.isEmpty && keyFamilies.isEmpty }
 
     /// The names of keys stored in `settings`.
     public var settingNames: [String] { keys.filter { !$0.isSecret }.map(\.name) }
@@ -625,6 +655,30 @@ public struct AscendantBackendSettingsSchema: Sendable, Equatable {
     /// - Parameter name: The key name to find.
     /// - Returns: The key, or `nil` when this kind does not advertise it.
     public func key(named name: String) -> Key? { keys.first { $0.name == name } }
+
+    /// Finds the dynamic family for one key and returns its environment name.
+    ///
+    /// - Parameter name: The full configuration key.
+    /// - Returns: The matching family and variable name, or `nil` when no
+    ///   declared prefix matches.
+    public func dynamicFamily(matching name: String) -> (family: KeyFamily, member: String)? {
+        guard let family = keyFamilies
+            .filter({ name.hasPrefix($0.prefix) })
+            .max(by: { $0.prefix.count < $1.prefix.count }) else { return nil }
+        return (family, String(name.dropFirst(family.prefix.count)))
+    }
+
+    /// Whether a name is a valid environment-variable identifier.
+    public static func isValidEnvironmentVariableName(_ name: String) -> Bool {
+        let bytes = Array(name.utf8)
+        guard let first = bytes.first,
+              (first == 95 || (65...90).contains(first) || (97...122).contains(first)) else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy {
+            $0 == 95 || (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0)
+        }
+    }
 }
 
 /// Structural validation common to every backend envelope. Semantic settings

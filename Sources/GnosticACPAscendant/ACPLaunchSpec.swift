@@ -11,7 +11,8 @@ public struct ACPLaunchSpec: Sendable, Equatable {
     public let arguments: [String]
     /// Optional current working directory for the process.
     public let workingDirectory: String?
-    /// Non-secret environment values supplied to the process.
+    /// Environment values supplied to the future process, including secret
+    /// values. Do not log or include this dictionary in diagnostics.
     public let environment: [String: String]
     /// Optional display name for the external agent.
     public let displayName: String?
