@@ -331,7 +331,7 @@ public final class ACPAscendantBackend: AscendantBackend {
         child.environment = ProcessInfo.processInfo.environment.merging(launchSpec.environment) { _, value in value }
         child.standardInput = input
         child.standardOutput = output
-        child.standardError = .standardError
+        child.standardError = FileHandle.standardError
         var connection: Protocol?
         do {
             child.executableURL = try resolvedExecutableURL(command: launchSpec.command, environment: child.environment ?? [:])
