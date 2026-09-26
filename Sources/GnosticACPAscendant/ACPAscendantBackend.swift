@@ -227,7 +227,9 @@ public final class ACPAscendantBackend: AscendantBackend {
             environment = [:]
         }
         guard environment.allSatisfy({ key, value in
-            !key.isEmpty && !key.contains("=") && !key.contains("\0") && !value.contains("\0")
+            !key.isEmpty && !key.contains("=") && !key.contains("\0")
+                && AscendantBackendSettingsSchema.isValidEnvironmentVariableName(key)
+                && !value.contains("\0")
         }) else {
             throw invalidConfiguration("The ACP backend setting 'env' contains an invalid environment-variable name or value.")
         }

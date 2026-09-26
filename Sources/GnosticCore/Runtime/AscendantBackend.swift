@@ -656,7 +656,10 @@ public struct AscendantBackendSettingsSchema: Sendable, Equatable {
     /// - Returns: The key, or `nil` when this kind does not advertise it.
     public func key(named name: String) -> Key? { keys.first { $0.name == name } }
 
-    /// Finds the dynamic family for one key and returns its environment name.
+    /// Prefix-matches a dynamic family and returns the suffix as its member.
+    ///
+    /// This method does not validate the member. Callers must validate it
+    /// before accepting the dynamic key.
     ///
     /// - Parameter name: The full configuration key.
     /// - Returns: The matching family and variable name, or `nil` when no

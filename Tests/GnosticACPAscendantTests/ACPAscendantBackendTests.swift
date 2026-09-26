@@ -62,6 +62,9 @@ struct ACPAscendantBackendTests {
             "REGION": "test-west",
             "API_TOKEN": "private-token",
         ])
+        #expect(backend.launchSpec.description.contains("API_TOKEN"))
+        #expect(!backend.launchSpec.description.contains("private-token"))
+        #expect(!backend.launchSpec.debugDescription.contains("private-token"))
     }
 
     @Test("invalid per-variable names and conflicting values are rejected without exposing secrets")
@@ -98,6 +101,9 @@ struct ACPAscendantBackendTests {
         }
         #expect(throws: (any Error).self) {
             try backend(settings: ["command": .string("opencode"), "env": .string("{\"COUNT\":3}")])
+        }
+        #expect(throws: (any Error).self) {
+            try backend(settings: ["command": .string("opencode"), "env": .string("{\"bad-name\":\"value\"}")])
         }
         #expect(throws: (any Error).self) {
             try backend(settings: ["command": .string("opencode"), "env": .string("{\"BAD=NAME\":\"value\"}")])
