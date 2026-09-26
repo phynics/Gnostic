@@ -80,6 +80,20 @@ struct ACPMixedConfigurationTests {
         let acpID = UUID()
         let positronicTimelineID = UUID()
         let acpTimelineID = UUID()
+        let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
+            ?? URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Tests/Fixtures/ACPAgent/agent.mjs")
+                .path
+        let fixtureState = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-mixed-\(UUID().uuidString).json").path
+        let fixtureArgs = try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))
+        let fixtureEnvironment = try #require(String(
+            data: JSONEncoder().encode(["GNOSTIC_ACP_FIXTURE_STATE": fixtureState]),
+            encoding: .utf8
+        ))
         let manifest = NodeManifest(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-mixed-\(UUID().uuidString)"),
             node: .init(id: UUID()),
@@ -89,7 +103,11 @@ struct ACPMixedConfigurationTests {
                     id: acpID,
                     name: "ACP agent",
                     defaultTimelineID: acpTimelineID,
-                    backend: .init(kind: "acp-client", settings: ["command": .string("fixture-agent")])
+                    backend: .init(kind: "acp-client", settings: [
+                        "command": .string("node"),
+                        "args": .string(fixtureArgs),
+                        "env": .string(fixtureEnvironment),
+                    ])
                 ),
             ],
             timelines: [
