@@ -308,11 +308,11 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     /// Closes the ACP transport and terminates the child process.
     public func shutdown() async {
+        if let process, process.isRunning { process.terminate() }
         await connection?.close()
         connection = nil
         await transport?.close()
         transport = nil
-        if let process, process.isRunning { process.terminate() }
         process = nil
     }
 
@@ -340,7 +340,15 @@ public final class ACPAscendantBackend: AscendantBackend {
             let processTransport = ACPProcessStdioTransport(
                 input: output.fileHandleForReading,
                 output: input.fileHandleForWriting,
-                onSessionUpdate: { [updateRouter] update in updateRouter.enqueue(update) }
+                onSessionUpdate: { [updateRouter] update in updateRouter.enqueue(update) },
+                onFailure: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.lifecycleFailure = AscendantBackendLifecycleFailure(
+                            code: "acpTransportUnusable",
+                            message: "The ACP process transport stopped unexpectedly."
+                        )
+                    }
+                }
             )
             let protocolConnection = Protocol(transport: processTransport, defaultTimeoutSeconds: 30)
             connection = protocolConnection
@@ -371,8 +379,8 @@ public final class ACPAscendantBackend: AscendantBackend {
             } else {
                 failure = map(error, context: "Could not initialize the ACP agent")
             }
-            await connection?.close()
             if child.isRunning { child.terminate() }
+            await connection?.close()
             self.connection = nil
             self.transport = nil
             process = nil

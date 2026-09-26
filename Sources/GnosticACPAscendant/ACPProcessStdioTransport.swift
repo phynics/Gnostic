@@ -5,9 +5,11 @@ import Foundation
 
 /// Nonblocking ACP transport for a child process's stdin and stdout pipes.
 ///
-/// The pinned SDK's `StdioTransport.start()` waits for its read and write loops
-/// to finish. That blocks protocol initialization. This adapter starts both
-/// loops as tasks and returns once the transport is ready for protocol traffic.
+/// `aptove/swift-sdk` 0.1.16's `StdioTransport.start()` waits for its read and
+/// write loops to finish. That blocks protocol initialization. This adapter
+/// starts both loops as tasks and returns once the transport is ready for
+/// protocol traffic. Re-evaluate this adapter when the SDK no longer blocks in
+/// `start()`.
 final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
     let state: AsyncStream<TransportState>
     let messages: AsyncStream<JsonRpcMessage>
@@ -19,20 +21,25 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
     private let input: FileHandle
     private let output: FileHandle
     private let onSessionUpdate: @Sendable (SessionUpdate) -> Void
+    private let onFailure: @Sendable () -> Void
     private let lock = NSLock()
     private var started = false
     private var closed = false
+    private var tornDown = false
+    private var failureReported = false
     private var reader: Task<Void, Never>?
     private var writer: Task<Void, Never>?
 
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (SessionUpdate) -> Void
+        onSessionUpdate: @escaping @Sendable (SessionUpdate) -> Void,
+        onFailure: @escaping @Sendable () -> Void
     ) {
         self.input = input
         self.output = output
         self.onSessionUpdate = onSessionUpdate
+        self.onFailure = onFailure
         (state, stateContinuation) = AsyncStream.makeStream()
         (messages, messageContinuation) = AsyncStream.makeStream()
         (sendStream, sendContinuation) = AsyncStream.makeStream()
@@ -45,16 +52,19 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
             started = true
             return true
         }
-        guard mayStart else { throw TransportError.notStarted }
+        guard mayStart else { throw ProtocolError.transportClosed }
         stateContinuation.yield(.starting)
-        reader = Task.detached { [input, messageContinuation, stateContinuation, onSessionUpdate] in
+        reader = Task.detached { [weak self, input, messageContinuation, stateContinuation, onSessionUpdate] in
             defer {
                 messageContinuation.finish()
-                stateContinuation.yield(.closing)
+                if self?.isClosed == false { stateContinuation.yield(.closing) }
             }
             do {
                 while !Task.isCancelled {
-                    guard let line = try input.readLine() else { return }
+                    guard let line = try input.readLine() else {
+                        self?.fail()
+                        return
+                    }
                     guard let data = line.data(using: .utf8) else { continue }
                     guard let message = try? JSONDecoder().decode(JsonRpcMessage.self, from: data) else { continue }
                     if case .notification(let notification) = message,
@@ -67,16 +77,18 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
                     messageContinuation.yield(message)
                 }
             } catch {
+                self?.fail()
                 return
             }
         }
-        writer = Task.detached { [output, sendStream] in
+        writer = Task.detached { [weak self, output, sendStream] in
             do {
                 for await message in sendStream {
                     let data = try JSONEncoder().encode(message)
                     try output.write(contentsOf: data + Data([0x0A]))
                 }
             } catch {
+                self?.fail()
                 return
             }
         }
@@ -85,13 +97,14 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
 
     func send(_ message: JsonRpcMessage) async throws {
         let canSend = withLock { started && !closed }
-        guard canSend else { throw TransportError.notStarted }
+        guard canSend else { throw ProtocolError.transportClosed }
         sendContinuation.yield(message)
     }
 
     func close() async {
         let shouldClose = withLock {
-            guard !closed else { return false }
+            guard !tornDown else { return false }
+            tornDown = true
             closed = true
             return true
         }
@@ -101,9 +114,34 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
         writer?.cancel()
         try? input.close()
         try? output.close()
+        if let reader { await reader.value }
+        if let writer { await writer.value }
         messageContinuation.finish()
         stateContinuation.yield(.closed)
         stateContinuation.finish()
+    }
+
+    private var isClosed: Bool {
+        withLock { closed }
+    }
+
+    private func fail() {
+        let report = withLock {
+            guard !closed else { return false }
+            closed = true
+            guard !failureReported else { return false }
+            failureReported = true
+            return true
+        }
+        guard report else { return }
+        sendContinuation.finish()
+        reader?.cancel()
+        writer?.cancel()
+        try? input.close()
+        try? output.close()
+        messageContinuation.finish()
+        stateContinuation.yield(.closing)
+        onFailure()
     }
 
     private func withLock<T>(_ body: () -> T) -> T {
