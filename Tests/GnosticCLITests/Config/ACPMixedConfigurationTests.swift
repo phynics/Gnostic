@@ -91,7 +91,9 @@ struct ACPMixedConfigurationTests {
             .appendingPathComponent("gnostic-acp-mixed-\(UUID().uuidString).json").path
         let fixtureArgs = try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))
         let fixtureEnvironment = try #require(String(
-            data: JSONEncoder().encode(["GNOSTIC_ACP_FIXTURE_STATE": fixtureState]),
+            data: JSONEncoder().encode([
+                "GNOSTIC_ACP_FIXTURE_STATE": fixtureState,
+            ]),
             encoding: .utf8
         ))
         let manifest = NodeManifest(
@@ -104,7 +106,7 @@ struct ACPMixedConfigurationTests {
                     name: "ACP agent",
                     defaultTimelineID: acpTimelineID,
                     backend: .init(kind: "acp-client", settings: [
-                        "command": .string("node"),
+                        "command": .string("/usr/bin/node"),
                         "args": .string(fixtureArgs),
                         "env": .string(fixtureEnvironment),
                     ])

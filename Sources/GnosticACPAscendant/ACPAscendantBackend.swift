@@ -333,9 +333,13 @@ public final class ACPAscendantBackend: AscendantBackend {
         child.standardOutput = output
         child.standardError = FileHandle.standardError
         var connection: Protocol?
+        var connectionStage = "resolve agent executable"
         do {
             child.executableURL = try resolvedExecutableURL(command: launchSpec.command, environment: child.environment ?? [:])
+            connectionStage = "start agent process"
             try child.run()
+            try? input.fileHandleForReading.close()
+            try? output.fileHandleForWriting.close()
             process = child
             let processTransport = ACPProcessStdioTransport(
                 input: output.fileHandleForReading,
@@ -354,12 +358,14 @@ public final class ACPAscendantBackend: AscendantBackend {
             connection = protocolConnection
             self.transport = processTransport
             self.connection = protocolConnection
+            connectionStage = "start ACP transport"
             try await protocolConnection.start()
             let initialize = InitializeRequest(
                 protocolVersion: .current,
                 clientCapabilities: ClientCapabilities(),
                 clientInfo: Implementation(name: "Gnostic", version: "0.1")
             )
+            connectionStage = "initialize ACP agent"
             let response = try await protocolConnection.request(
                 method: "initialize",
                 params: initialize,
@@ -372,7 +378,7 @@ public final class ACPAscendantBackend: AscendantBackend {
             if !child.isRunning {
                 let lifecycle = AscendantBackendLifecycleFailure(
                     code: "acpTransportUnusable",
-                    message: "Could not connect to the configured ACP agent process."
+                    message: "Could not connect to the configured ACP agent process while attempting to \(connectionStage): \(error.localizedDescription)"
                 )
                 lifecycleFailure = lifecycle
                 failure = .lifecycleUnusable(lifecycle)

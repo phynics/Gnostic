@@ -5,7 +5,7 @@ import GnosticACPAscendant
 import GnosticCore
 import Testing
 
-@Suite("ACP Ascendant backend")
+@Suite("ACP Ascendant backend", .serialized)
 struct ACPAscendantBackendTests {
     @MainActor
     private func backend(
@@ -80,7 +80,7 @@ struct ACPAscendantBackendTests {
     func timelineOperationsAreIdempotent() async throws {
         let configuredID = UUID()
         let timeline = NodeManifest.Timeline(id: configuredID, title: "Configured")
-        let backend = try backend(timelines: [timeline])
+        let backend = try fixtureBackend(timelines: [timeline])
         defer { Task { await backend.shutdown() } }
 
         _ = try await backend.createTimeline(id: configuredID, title: timeline.title)
@@ -206,9 +206,12 @@ struct ACPAscendantBackendTests {
                 .path
         let statePath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-acp-agent-\(UUID().uuidString).json").path
-        let encodedEnvironment = try JSONEncoder().encode(["GNOSTIC_ACP_FIXTURE_STATE": statePath])
+        let fixtureEnvironment = [
+            "GNOSTIC_ACP_FIXTURE_STATE": statePath,
+        ]
+        let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
-            "command": .string("node"),
+            "command": .string("/usr/bin/node"),
             "args": .string(try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))),
             "env": .string(try #require(String(data: encodedEnvironment, encoding: .utf8))),
         ]
