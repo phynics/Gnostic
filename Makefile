@@ -25,10 +25,10 @@ SWIFT_WARNING_ARGS := --quiet -Xswiftc -warnings-as-errors
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -92,6 +92,10 @@ runner-smoke: require-package image
 
 acp-smoke: require-package image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'set -e; pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; npm ci --prefix Tests/Fixtures/OfficialACPClient --cache .testing/npm-cache; npm ci --legacy-peer-deps --prefix Tests/Fixtures/PiACPClient --cache .testing/npm-cache; npm ci --prefix Tests/Fixtures/ACPAgent --cache .testing/npm-cache; bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic --show-bin-path)/gnostic; test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --filter GnosticACPAscendantTests | tee .testing/acp-backend-smoke.log; grep -F "Suite \"ACP Ascendant backend\" passed" .testing/acp-backend-smoke.log; GNOSTIC_ACP_BINARY="$$bin" GNOSTIC_ACP_OFFICIAL_CLIENT=/workspace/Tests/Fixtures/OfficialACPClient/lifecycle.mjs GNOSTIC_PI_ACP_CLIENT_FIXTURE=/workspace/Tests/Fixtures/PiACPClient/lifecycle.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --filter GnosticCLITests.ACPSubprocessTests | tee .testing/acp-smoke.log; grep -F "Test run with 5 tests" .testing/acp-smoke.log'
+
+acp-backend-test: require-package image
+	@mkdir -p .testing
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'set -e; npm ci --prefix Tests/Fixtures/ACPAgent --cache .testing/npm-cache; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic >/dev/null; GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --filter GnosticACPAscendantTests | tee .testing/acp-backend-tests.log; grep -F "Suite \"ACP Ascendant backend\" passed" .testing/acp-backend-tests.log; grep -Eq "Test run with [1-9][0-9]* tests" .testing/acp-backend-tests.log'
 
 container-smoke: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
