@@ -698,6 +698,8 @@ private struct ACPCloseSessionRequest: Encodable {
 
 private struct ACPEmptyResponse: Decodable {}
 
+// SAFETY: The active AsyncStream continuation is read, replaced, and finished
+// only while holding `lock`; AsyncStream continuations support concurrent yields.
 private final class ACPUpdateRouter: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: AsyncStream<SessionUpdate>.Continuation?

@@ -10,6 +10,8 @@ import Foundation
 /// starts both loops as tasks and returns once the transport is ready for
 /// protocol traffic. Re-evaluate this adapter when the SDK no longer blocks in
 /// `start()`.
+// SAFETY: Transport state is lock-guarded. One reader and one writer own their
+// respective FileHandle operations; teardown closes both handles and awaits both tasks.
 final class ACPProcessStdioTransport: Transport, @unchecked Sendable {
     let state: AsyncStream<TransportState>
     let messages: AsyncStream<JsonRpcMessage>
