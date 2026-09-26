@@ -26,7 +26,6 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     private var started = false
     private var closed = false
     private var tornDown = false
-    private var failureReported = false
     private var reader: Task<Void, Never>?
     private var writer: Task<Void, Never>?
 
@@ -47,52 +46,52 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     }
 
     func start() async throws {
-        let mayStart = withLock {
+        stateContinuation.yield(.starting)
+        let didStart = withLock {
             guard !started, !closed else { return false }
             started = true
+            let readerTask = Task.detached { [weak self, input, messageContinuation, stateContinuation, onSessionUpdate] in
+                defer {
+                    messageContinuation.finish()
+                    if self?.isClosed == false { stateContinuation.yield(.closing) }
+                }
+                do {
+                    while !Task.isCancelled {
+                        guard let line = try input.readLine() else {
+                            self?.fail()
+                            return
+                        }
+                        guard let data = line.data(using: .utf8) else { continue }
+                        guard let message = try? JSONDecoder().decode(JsonRpcMessage.self, from: data) else { continue }
+                        if case .notification(let notification) = message,
+                           notification.method == "session/update",
+                           let params = notification.params,
+                           let paramsData = try? JSONEncoder().encode(params),
+                           let sessionNotification = try? JSONDecoder().decode(SessionNotification.self, from: paramsData) {
+                            onSessionUpdate(sessionNotification.update)
+                        }
+                        messageContinuation.yield(message)
+                    }
+                } catch {
+                    self?.fail()
+                }
+            }
+            let writerTask = Task.detached { [weak self, output, sendStream] in
+                do {
+                    for await message in sendStream {
+                        let data = try JSONEncoder().encode(message)
+                        try output.write(contentsOf: data + Data([0x0A]))
+                    }
+                } catch {
+                    self?.fail()
+                }
+            }
+            reader = readerTask
+            writer = writerTask
             return true
         }
-        guard mayStart else { throw ProtocolError.transportClosed }
-        stateContinuation.yield(.starting)
-        reader = Task.detached { [weak self, input, messageContinuation, stateContinuation, onSessionUpdate] in
-            defer {
-                messageContinuation.finish()
-                if self?.isClosed == false { stateContinuation.yield(.closing) }
-            }
-            do {
-                while !Task.isCancelled {
-                    guard let line = try input.readLine() else {
-                        self?.fail()
-                        return
-                    }
-                    guard let data = line.data(using: .utf8) else { continue }
-                    guard let message = try? JSONDecoder().decode(JsonRpcMessage.self, from: data) else { continue }
-                    if case .notification(let notification) = message,
-                       notification.method == "session/update",
-                       let params = notification.params,
-                       let paramsData = try? JSONEncoder().encode(params),
-                       let sessionNotification = try? JSONDecoder().decode(SessionNotification.self, from: paramsData) {
-                        onSessionUpdate(sessionNotification.update)
-                    }
-                    messageContinuation.yield(message)
-                }
-            } catch {
-                self?.fail()
-                return
-            }
-        }
-        writer = Task.detached { [weak self, output, sendStream] in
-            do {
-                for await message in sendStream {
-                    let data = try JSONEncoder().encode(message)
-                    try output.write(contentsOf: data + Data([0x0A]))
-                }
-            } catch {
-                self?.fail()
-                return
-            }
-        }
-        stateContinuation.yield(.started)
+        guard didStart else { throw ProtocolError.transportClosed }
+        if !isClosed { stateContinuation.yield(.started) }
     }
 
     func send(_ message: JsonRpcMessage) async throws {
@@ -102,18 +101,20 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     }
 
     func close() async {
-        let shouldClose = withLock {
-            guard !tornDown else { return false }
+        let snapshot = withLock {
+            let ownsCleanup = !tornDown
             tornDown = true
             closed = true
-            return true
+            return (ownsCleanup, reader, writer, input, output)
         }
-        guard shouldClose else { return }
-        sendContinuation.finish()
-        reader?.cancel()
-        writer?.cancel()
-        try? input.close()
-        try? output.close()
+        let (ownsCleanup, reader, writer, input, output) = snapshot
+        if ownsCleanup {
+            sendContinuation.finish()
+            reader?.cancel()
+            writer?.cancel()
+            try? input.close()
+            try? output.close()
+        }
         if let reader { await reader.value }
         if let writer { await writer.value }
         messageContinuation.finish()
@@ -126,14 +127,13 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     }
 
     private func fail() {
-        let report = withLock {
-            guard !closed else { return false }
+        let snapshot = withLock { () -> (Task<Void, Never>?, Task<Void, Never>?, FileHandle, FileHandle)? in
+            guard !closed else { return nil }
             closed = true
-            guard !failureReported else { return false }
-            failureReported = true
-            return true
+            tornDown = true
+            return (reader, writer, input, output)
         }
-        guard report else { return }
+        guard let (reader, writer, input, output) = snapshot else { return }
         sendContinuation.finish()
         reader?.cancel()
         writer?.cancel()

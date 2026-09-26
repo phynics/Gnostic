@@ -4,6 +4,11 @@ import Foundation
 import GnosticACPAscendant
 import GnosticCore
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 @Suite("ACP Ascendant backend", .serialized)
 struct ACPAscendantBackendTests {
@@ -78,10 +83,11 @@ struct ACPAscendantBackendTests {
     @Test("Timeline operations are idempotent and unknown removals are ignored")
     @MainActor
     func timelineOperationsAreIdempotent() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
         let configuredID = UUID()
         let timeline = NodeManifest.Timeline(id: configuredID, title: "Configured")
-        let backend = try fixtureBackend(timelines: [timeline])
-        defer { Task { await backend.shutdown() } }
+        let backend = try fixtureBackend(timelines: [timeline], stateHome: stateHome.url)
 
         _ = try await backend.createTimeline(id: configuredID, title: timeline.title)
         #expect(try await backend.operatedTimelines().map(\.id) == [configuredID])
@@ -100,9 +106,10 @@ struct ACPAscendantBackendTests {
     @Test("runTurn streams assistant and tool updates before a terminal completion")
     @MainActor
     func runTurnStreamsFixtureEvents() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
         let timelineID = UUID()
-        let backend = try fixtureBackend(timelines: [.init(id: timelineID, title: "Configured")])
-        defer { Task { await backend.shutdown() } }
+        let backend = try fixtureBackend(timelines: [.init(id: timelineID, title: "Configured")], stateHome: stateHome.url)
         let sink = RecordingUpdateSink()
 
         let result = try await backend.runTurn(
@@ -141,9 +148,10 @@ struct ACPAscendantBackendTests {
     @Test("agent terminal failures are terminal and leave the backend usable")
     @MainActor
     func agentFailureIsTerminal() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
         let timelineID = UUID()
-        let backend = try fixtureBackend(timelines: [.init(id: timelineID, title: "Configured")])
-        defer { Task { await backend.shutdown() } }
+        let backend = try fixtureBackend(timelines: [.init(id: timelineID, title: "Configured")], stateHome: stateHome.url)
         do {
             _ = try await backend.runTurn(
                 .init(timelineID: timelineID, message: "[fixture:terminal-error]"),
@@ -160,12 +168,13 @@ struct ACPAscendantBackendTests {
     @Test("Timeline session mapping survives backend restart and list reconciliation")
     @MainActor
     func timelineMappingSurvivesRestart() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
         let ascendantID = UUID()
         let timelineID = UUID()
         let timeline = NodeManifest.Timeline(id: timelineID, title: "Runtime")
-        let settings = try fixtureSettings()
+        let settings = try fixtureSettings(stateHome: stateHome.url)
         let first = try backend(settings: settings, timelines: [], ascendantID: ascendantID)
-        defer { Task { await first.shutdown() } }
         _ = try await first.createTimeline(id: timelineID, title: timeline.title)
         _ = try await first.runTurn(
             .init(timelineID: timelineID, message: "create the durable session"),
@@ -174,7 +183,6 @@ struct ACPAscendantBackendTests {
         await first.shutdown()
 
         let restarted = try backend(settings: settings, timelines: [], ascendantID: ascendantID)
-        defer { Task { await restarted.shutdown() } }
         let firstList = try await restarted.operatedTimelines()
         let secondList = try await restarted.operatedTimelines()
         #expect(firstList.map(\.id) == [timelineID])
@@ -189,32 +197,100 @@ struct ACPAscendantBackendTests {
         await restarted.shutdown()
     }
 
+    @Test("session list omission falls back to local Gnostic Timeline projections")
+    @MainActor
+    func sessionListCapabilityIsOptional() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Configured")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, supportsList: false),
+            timelines: [timeline]
+        )
+
+        #expect(try await backend.operatedTimelines().map(\.id) == [timelineID])
+        await backend.shutdown()
+    }
+
+    @Test("failed best-effort session close does not poison the backend")
+    @MainActor
+    func failedSessionCloseDoesNotPoisonBackend() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let initialID = UUID()
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, failClose: true),
+            timelines: [.init(id: initialID, title: "Initial")]
+        )
+
+        _ = try await backend.createTimeline(id: initialID, title: "Initial")
+        await backend.removeTimeline(id: initialID)
+        let replacementID = UUID()
+        _ = try await backend.createTimeline(id: replacementID, title: "Replacement")
+        let response = try await backend.runTurn(
+            .init(timelineID: replacementID, message: "backend remains usable"),
+            updates: RecordingUpdateSink()
+        )
+        #expect(response == "fixture reply: backend remains usable")
+        await backend.shutdown()
+    }
+
     @MainActor
     private func fixtureBackend(
         timelines: [NodeManifest.Timeline],
-        ascendantID: UUID = UUID()
+        ascendantID: UUID = UUID(),
+        stateHome: URL
     ) throws -> ACPAscendantBackend {
-        try backend(settings: fixtureSettings(), timelines: timelines, ascendantID: ascendantID)
+        try backend(settings: fixtureSettings(stateHome: stateHome), timelines: timelines, ascendantID: ascendantID)
     }
 
-    private func fixtureSettings() throws -> [String: ManifestJSONValue] {
+    private func fixtureSettings(
+        stateHome: URL,
+        supportsList: Bool = true,
+        failClose: Bool = false
+    ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .appendingPathComponent("Fixtures/ACPAgent/agent.mjs")
                 .path
-        let statePath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gnostic-acp-agent-\(UUID().uuidString).json").path
-        let fixtureEnvironment = [
-            "GNOSTIC_ACP_FIXTURE_STATE": statePath,
-        ]
+        let statePath = stateHome.appendingPathComponent("agent-sessions.json").path
+        var fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": statePath]
+        if !supportsList { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_NO_LIST"] = "1" }
+        if failClose { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CLOSE_ERROR"] = "1" }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
             "command": .string("/usr/bin/node"),
             "args": .string(try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))),
             "env": .string(try #require(String(data: encodedEnvironment, encoding: .utf8))),
         ]
+    }
+
+    private func makeTemporaryStateHome() throws -> TemporaryStateHome {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-test-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let originalValue = getenv("GNOSTIC_STATE_HOME").map { String(cString: $0) }
+        guard setenv("GNOSTIC_STATE_HOME", url.path, 1) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return TemporaryStateHome(url: url, previousValue: originalValue)
+    }
+
+    private struct TemporaryStateHome {
+        let url: URL
+        let previousValue: String?
+
+        func cleanup() {
+            if let previousValue {
+                _ = setenv("GNOSTIC_STATE_HOME", previousValue, 1)
+            } else {
+                _ = unsetenv("GNOSTIC_STATE_HOME")
+            }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private actor RecordingUpdateSink: AscendantBackendUpdateSink {

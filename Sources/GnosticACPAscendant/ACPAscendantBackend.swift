@@ -1,8 +1,14 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import ACP
+import Dispatch
 import Foundation
 import GnosticCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// An optional backend configuration surface for an external ACP agent.
 ///
@@ -121,16 +127,13 @@ public final class ACPAscendantBackend: AscendantBackend {
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
         do {
             let connection = try await requireConnection()
-            guard sessionCapabilities?.supportsList == true else { return [] }
-            for id in timelineOrder where sessionIDs[id] == nil {
-                let response = try await connection.createSession(request: NewSessionRequest(
-                    cwd: workingDirectory,
-                    mcpServers: []
-                ))
-                sessionIDs[id] = response.sessionId
-                activeSessionIDs.insert(id)
-                try persistSessionMap()
+            guard sessionCapabilities?.supportsList == true else {
+                return timelineOrder.compactMap { timelines[$0] }
             }
+            // NodeRuntime uses this call during startup hydration. Seed the
+            // session map here so the advertised session-list intersection can
+            // include configured Gnostic Timelines on the first startup.
+            try await ensureSessions(for: timelineOrder, using: connection)
             let response = try await connection.listSessions(request: ListSessionsRequest(cwd: workingDirectory))
             let available = Set(response.sessions.map(\.sessionId))
             return timelineOrder.compactMap { id in
@@ -201,17 +204,14 @@ public final class ACPAscendantBackend: AscendantBackend {
            let connection,
            sessionCapabilities?.supportsClose == true {
             do {
+                // SDK 0.1.16 has no typed session/close request, so use its
+                // generic request bridge with a typed payload.
                 _ = try await connection.request(
                     method: "session/close",
                     params: ACPCloseSessionRequest(sessionId: sessionID),
                     responseType: ACPEmptyResponse.self
                 )
-            } catch {
-                lifecycleFailure = AscendantBackendLifecycleFailure(
-                    code: "acpSessionCloseFailed",
-                    message: "Could not close the ACP session for Timeline \(id.uuidString)."
-                )
-            }
+            } catch { /* Closing a removed Timeline is best effort, not a backend health failure. */ }
         }
         sessionIDs.removeValue(forKey: id)
         activeSessionIDs.remove(id)
@@ -308,12 +308,15 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     /// Closes the ACP transport and terminates the child process.
     public func shutdown() async {
-        if let process, process.isRunning { process.terminate() }
+        if let process { await stopProcess(process) }
         await connection?.close()
         connection = nil
         await transport?.close()
         transport = nil
         process = nil
+        sessionCapabilities = nil
+        lifecycleFailure = nil
+        activeSessionIDs.removeAll()
     }
 
     private var workingDirectory: String {
@@ -416,6 +419,37 @@ public final class ACPAscendantBackend: AscendantBackend {
         activeSessionIDs.insert(timelineID)
         try persistSessionMap()
         return response.sessionId
+    }
+
+    /// Backfills configured Gnostic Timelines as an explicit startup-hydration
+    /// step before intersecting them with an agent's advertised session list.
+    private func ensureSessions(for timelineIDs: [UUID], using connection: Protocol) async throws {
+        for id in timelineIDs where sessionIDs[id] == nil {
+            let response = try await connection.createSession(request: NewSessionRequest(
+                cwd: workingDirectory,
+                mcpServers: []
+            ))
+            sessionIDs[id] = response.sessionId
+            activeSessionIDs.insert(id)
+            try persistSessionMap()
+        }
+    }
+
+    private func stopProcess(_ process: Process) async {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        if !process.isRunning { return }
+        process.terminate()
+        let gracefulExit = await Task.detached {
+            exited.wait(timeout: .now() + .seconds(1)) == .success
+        }.value
+        if gracefulExit { return }
+        _ = kill(pid, SIGKILL)
+        _ = await Task.detached {
+            exited.wait(timeout: .now() + .seconds(1)) == .success
+        }.value
     }
 
     private func map(_ error: any Error, context: String) -> AscendantBackendError {

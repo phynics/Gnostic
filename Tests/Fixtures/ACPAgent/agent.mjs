@@ -12,7 +12,11 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   .onRequest(acp.methods.agent.initialize, () => ({
     protocolVersion: acp.PROTOCOL_VERSION,
     agentCapabilities: {
-      sessionCapabilities: { list: {}, resume: {}, close: {} },
+      sessionCapabilities: {
+        ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : { list: {} }),
+        resume: {},
+        close: {},
+      },
     },
     agentInfo: { name: "gnostic-deterministic-acp-fixture", version: "1" },
   }))
@@ -25,8 +29,8 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     await saveSessions();
     return { sessionId };
   })
-  .onRequest(acp.methods.agent.session.list, () => ({
-    sessions: [...sessions].map(([sessionId, info]) => ({
+  .onRequest(acp.methods.agent.session.list, ({ params }) => ({
+    sessions: [...sessions].filter(([, info]) => !params.cwd || info.cwd === params.cwd).map(([sessionId, info]) => ({
       sessionId,
       cwd: info.cwd,
       title: info.title,
@@ -38,6 +42,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     return {};
   })
   .onRequest(acp.methods.agent.session.close, async ({ params }) => {
+    if (process.env.GNOSTIC_ACP_FIXTURE_CLOSE_ERROR === "1") {
+      throw new Error("fixture close error");
+    }
     sessions.delete(params.sessionId);
     await saveSessions();
     return {};
