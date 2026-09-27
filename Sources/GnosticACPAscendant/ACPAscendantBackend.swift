@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import ACP
-import Dispatch
 import Foundation
 import GnosticCore
 #if canImport(Darwin)
@@ -41,7 +40,7 @@ public final class ACPAscendantBackend: AscendantBackend {
     private let sessionMapURL: URL
     private var process: Process?
     private var transport: ACPProcessStdioTransport?
-    private var connection: Protocol?
+    private var connection: ACPProtocolLayer?
     private var sessionCapabilities: ACPAgentSessionCapabilities?
     private let updateRouter = ACPUpdateRouter()
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
@@ -323,7 +322,7 @@ public final class ACPAscendantBackend: AscendantBackend {
         launchSpec.workingDirectory ?? FileManager.default.currentDirectoryPath
     }
 
-    private func requireConnection() async throws -> Protocol {
+    private func requireConnection() async throws -> ACPProtocolLayer {
         if let lifecycleFailure { throw AscendantBackendError.lifecycleUnusable(lifecycleFailure) }
         if let connection { return connection }
         let child = Process()
@@ -335,7 +334,7 @@ public final class ACPAscendantBackend: AscendantBackend {
         child.standardInput = input
         child.standardOutput = output
         child.standardError = FileHandle.standardError
-        var connection: Protocol?
+        var connection: ACPProtocolLayer?
         var connectionStage = "resolve agent executable"
         do {
             child.executableURL = try resolvedExecutableURL(command: launchSpec.command, environment: child.environment ?? [:])
@@ -357,7 +356,7 @@ public final class ACPAscendantBackend: AscendantBackend {
                     }
                 }
             )
-            let protocolConnection = Protocol(transport: processTransport, defaultTimeoutSeconds: 30)
+            let protocolConnection = ACPProtocolLayer(transport: processTransport, defaultTimeoutSeconds: 30)
             connection = protocolConnection
             self.transport = processTransport
             self.connection = protocolConnection
@@ -397,7 +396,7 @@ public final class ACPAscendantBackend: AscendantBackend {
         }
     }
 
-    private func requireSession(for timelineID: UUID, connection: Protocol) async throws -> SessionId {
+    private func requireSession(for timelineID: UUID, connection: ACPProtocolLayer) async throws -> SessionId {
         if let sessionID = sessionIDs[timelineID] {
             if activeSessionIDs.contains(timelineID) { return sessionID }
             guard sessionCapabilities?.supportsResume == true else {
@@ -423,7 +422,7 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     /// Backfills configured Gnostic Timelines as an explicit startup-hydration
     /// step before intersecting them with an agent's advertised session list.
-    private func ensureSessions(for timelineIDs: [UUID], using connection: Protocol) async throws {
+    private func ensureSessions(for timelineIDs: [UUID], using connection: ACPProtocolLayer) async throws {
         for id in timelineIDs where sessionIDs[id] == nil {
             let response = try await connection.createSession(request: NewSessionRequest(
                 cwd: workingDirectory,
@@ -438,18 +437,23 @@ public final class ACPAscendantBackend: AscendantBackend {
     private func stopProcess(_ process: Process) async {
         guard process.isRunning else { return }
         let pid = process.processIdentifier
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        if !process.isRunning { return }
+        let gracefulExit = ProcessExitWaiter()
+        process.terminationHandler = { _ in gracefulExit.complete(true) }
+        if !process.isRunning {
+            gracefulExit.complete(true)
+            return
+        }
         process.terminate()
-        let gracefulExit = await Task.detached {
-            exited.wait(timeout: .now() + .seconds(1)) == .success
-        }.value
-        if gracefulExit { return }
+        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) { return }
+
+        let forcedExit = ProcessExitWaiter()
+        process.terminationHandler = { _ in forcedExit.complete(true) }
+        if !process.isRunning {
+            forcedExit.complete(true)
+            return
+        }
         _ = kill(pid, SIGKILL)
-        _ = await Task.detached {
-            exited.wait(timeout: .now() + .seconds(1)) == .success
-        }.value
+        _ = await forcedExit.wait(timeoutNanoseconds: 1_000_000_000)
     }
 
     private func map(_ error: any Error, context: String) -> AscendantBackendError {
@@ -731,6 +735,47 @@ private struct ACPCloseSessionRequest: Encodable {
 }
 
 private struct ACPEmptyResponse: Decodable {}
+
+private final class ProcessExitWaiter: @unchecked Sendable { // SAFETY: `continuation` and `result` are only accessed while holding `lock`.
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var result: Bool?
+
+    func wait(timeoutNanoseconds: UInt64) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let immediateResult = withLock { () -> Bool? in
+                if let result { return result }
+                self.continuation = continuation
+                return nil
+            }
+            if let immediateResult {
+                continuation.resume(returning: immediateResult)
+                return
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                complete(false)
+            }
+        }
+    }
+
+    func complete(_ result: Bool) {
+        let continuation = withLock { () -> CheckedContinuation<Bool, Never>? in
+            guard self.result == nil else { return nil }
+            self.result = result
+            let continuation = self.continuation
+            self.continuation = nil
+            return continuation
+        }
+        continuation?.resume(returning: result)
+    }
+
+    private func withLock<T>(_ operation: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return operation()
+    }
+}
 
 private final class ACPUpdateRouter: @unchecked Sendable { // SAFETY: The active AsyncStream continuation is read, replaced, and finished only while holding `lock`; AsyncStream continuations support concurrent yields.
     private let lock = NSLock()
