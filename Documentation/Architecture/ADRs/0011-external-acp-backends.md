@@ -142,26 +142,20 @@ and, if a rule is violated, its own reviewed exception entry.
 
 ## Re-evaluation of the ADR 0005 extraction trigger
 
-[ADR 0005](0005-core-positronic-dependency-boundary.md) defers extracting the
-bundled Positronic adapter until "a second backend is shipped". This decision
-authorizes a second backend kind, but neither backend is shipped by this record:
+The supported ACP backend kind (`backend.kind = "acp-client"`) is delivered in
+the optional downstream `GnosticACPAscendant` target. This satisfies ADR 0005's
+"a second backend is shipped" re-evaluation trigger. Its outcome is recorded in
+[ADR 0005](0005-core-positronic-dependency-boundary.md): keep the Positronic
+adapter bundled in Core for now.
 
-- The Letta evaluation ([#246](https://github.com/phynics/Gnostic/issues/246))
-  recorded `PROTOTYPE`. An optional, experimental, fixture-backed prototype is
-  not a shipped backend.
-- The ACP backend is a target architecture in [Epic #288](https://github.com/phynics/Gnostic/issues/288),
-  not a delivered kind.
-
-The trigger therefore remains deferred. It must be explicitly re-evaluated when
-either backend ships as a supported kind, and the outcome recorded in ADR 0005
-or a superseding decision. The extraction question is whether the Positronic
-adapter should move to a downstream target so Core keeps only the flat contract
-and the composition seam.
-
-The ACP backend does not consume `AscendantBackendWorkspaceService` and shares
-no code with the Positronic adapter, so this decision adds no pressure to that
-shared boundary by itself. A second shipped backend, not a second planned one,
-is the evidence ADR 0005 asked for.
+The Core PositronicKit import inventory remains the exact 15-path set pinned by
+`BackendArchitectureFitnessTests.corePositronicDependencyBoundaryIsExplicit`.
+The ACP backend shares no code with the Positronic adapter and adds no ACP,
+process, SDK, or Positronic adapter dependency to Core. It uses the flat
+`AscendantBackend` boundary. A second backend's delivery alone does not justify
+an extraction without a measured Core build benefit or a concrete independent
+release/ownership need. ADR 0005 defines these reconsideration conditions and
+the fitness check that guards the boundary.
 
 ## Rejected alternatives
 
@@ -225,7 +219,8 @@ Reconsider this decision when:
   `Tests/Fixtures/PiACPClient`);
 - an agent needs client-side `fs/*` or `terminal/*`, which would make Workspace
   routing necessary again;
-- a shipped second backend makes ADR 0005 extraction concrete; or
+- a material Core build benefit or independent Positronic adapter
+  release/ownership need makes extraction concrete under ADR 0005; or
 - remote transport becomes a real requirement with a defined trust model.
 
 ## Fitness
