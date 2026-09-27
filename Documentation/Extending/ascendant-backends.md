@@ -144,10 +144,11 @@ session to each Gnostic Timeline. It executes Turns and forwards their updates.
 Each Ascendant launches one agent process. Each Gnostic Timeline maps to a
 private ACP session owned by that process. Gnostic keeps Timeline identity,
 Turn admission, replay, and permission correlation. The backend does not expose
-Gnostic Workspace tools: the agent runs its own filesystem, terminal, and other
-tools. A configured Workspace attachment therefore resolves to `unsupported`
-for this backend. Review each agent's own tool and filesystem access before
-running it.
+Gnostic Workspace tools or advertise Workspace capabilities; the agent runs
+its own filesystem, terminal, and other tools. A configured Workspace
+attachment remains intent only and does not make Gnostic tools available to
+this backend. Review each agent's own tool and filesystem access before running
+it.
 
 #### Launch recipes and authentication
 
@@ -166,7 +167,7 @@ target-local workaround when a later released SDK no longer blocks in `start()`.
 | Agent | Command and arguments | Authentication | Adapter/package pin and known limits |
 | --- | --- | --- | --- |
 | opencode | `opencode acp` | Run `opencode auth login` first. The login is stored in the user's opencode auth store. | Native ACP in `opencode-ai` (1.18.32 observed during this guide's smoke setup; Gnostic does not pin the external CLI). It executes its own tools and does not use Gnostic Workspace tools. The observed file-tool Turn did not request Gnostic permission. |
-| Codex | `npx --yes @agentclientprotocol/codex-acp@1.13.1` | Use the existing ChatGPT login, or configure `CODEX_API_KEY` / `OPENAI_API_KEY` as a secret setting. | `@agentclientprotocol/codex-acp` 1.13.1, pinned in the command to avoid npm tag drift. This adapter fronts Codex App Server; npm and the package registry are required when `npx` must download it. In this Linux container, Codex's sandbox could not create a user namespace on its first attempt, then retried the tool call successfully. |
+| Codex | `npx --yes @agentclientprotocol/codex-acp@1.13.1` | Use the existing ChatGPT login, or configure `CODEX_API_KEY` / `OPENAI_API_KEY` as a secret setting. | `@agentclientprotocol/codex-acp` 1.13.1, pinned in the command to avoid npm tag drift. This adapter fronts Codex App Server; npm and the package registry are required when `npx` must download it. In this Linux container, Codex's sandbox could not create a user namespace on its first attempt, then retried the tool call successfully. Codex owns its approval and sandbox modes; Gnostic mediates only ACP `session/request_permission` calls and does not configure Codex's local policies. See the [Codex ACP adapter documentation](https://github.com/agentclientprotocol/codex-acp#readme). |
 | Claude Agent | `claude-agent-acp` | Use an existing Claude Code login, or configure `ANTHROPIC_API_KEY` as a secret setting. | `@agentclientprotocol/claude-agent-acp` 0.64.0 observed for this guide. This adapter fronts the Claude Agent SDK; its observed `allow_always` / `allow` / `reject` permission options are not supported by the current Gnostic bridge, which fails closed. |
 
 To select an agent, configure its executable and arguments on the Ascendant.
