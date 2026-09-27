@@ -88,10 +88,11 @@ re-enter the Core-owned Workspace projection types.
 
 The trigger to re-evaluate this decision has occurred: `GnosticACPAscendant`
 ships the supported `acp-client` backend kind outside `GnosticCore`. The current
-Core PositronicKit source-import inventory remains the 15 files in the fitness
-test's `expectedImports` set above. The test compares that exact set with the
-imports found under `Sources/GnosticCore` and requires every listed path to
-appear in this inventory. The Core target retains its PositronicKit dependency.
+Core PositronicKit source-import inventory remains the 15-file PositronicKit
+subset of the inventory above (the fitness test's `expectedImports` set). The
+test compares that exact set with the imports found under `Sources/GnosticCore`
+and requires every listed path to appear in this inventory. The Core target
+retains its PositronicKit dependency.
 
 The ACP target does not import or call the Positronic adapter, and no code is
 shared between `GnosticACPAscendant` and `PositronicAscendantAdapter`. The ACP
@@ -147,8 +148,9 @@ this decision before extracting.
 
 - Removing PositronicKit from Core would remove the bundled Positronic Backend,
   not enforce a boundary.
-- Splitting packages without a second backend or measured build/ownership gain
-  would add composition complexity without changing ownership.
+- At the time of the original decision, splitting packages without a second
+  backend or measured build/ownership gain would have added composition
+  complexity without changing ownership.
 - Replacing Axoloty or abstracting all transport would violate ADR 0001.
 - Treating an import count as proof of a leak would incorrectly classify the
   explicit backend and host adapters.

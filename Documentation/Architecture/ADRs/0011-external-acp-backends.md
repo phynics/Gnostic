@@ -46,10 +46,12 @@ direction and the tool and permission split.
 Two boundary facts constrain the shape of the decision:
 
 - `GnosticCore` declares iOS, and `Foundation.Process` cannot land in Core.
-- [ADR 0005](0005-core-positronic-dependency-boundary.md) defers extracting the
-  bundled Positronic adapter until "a second backend is shipped". The parallel
-  Letta evaluation ([#246](https://github.com/phynics/Gnostic/issues/246))
-  recorded `PROTOTYPE`, not shipped, and left that trigger deferred.
+- [ADR 0005](0005-core-positronic-dependency-boundary.md) deferred extracting
+  the bundled Positronic adapter until "a second backend is shipped" at the
+  time; see "Re-evaluation of the ADR 0005 extraction trigger" below for the
+  recorded outcome. The parallel Letta evaluation
+  ([#246](https://github.com/phynics/Gnostic/issues/246)) recorded
+  `PROTOTYPE`, not shipped, and left that trigger deferred at the time.
 
 ## Decision
 
@@ -198,8 +200,10 @@ the fitness check that guards the boundary.
   Workspace attachment intent is recorded but resolves to `unsupported`.
 - The repository will carry one optional macOS target and one exact-pinned
   community SDK. Neither is a Core or production dependency.
-- ADR 0005's extraction trigger stays deferred, now with two concrete second
-  backend candidates recorded rather than an assumption.
+- ADR 0005's extraction question is explicitly re-evaluated: the delivered ACP
+  backend satisfied the re-evaluation trigger, and ADR 0005 records
+  keep-bundled with the reconsideration conditions and the fitness check that
+  guards the boundary.
 - No manifest-shape, protocol-major, or persisted-identity contract changes.
   GNO-ACPC-006 (#294) adds one explicit `ascendant.turn.cancel` operation,
   addressed by Timeline and client Turn identity, plus an optional Core
