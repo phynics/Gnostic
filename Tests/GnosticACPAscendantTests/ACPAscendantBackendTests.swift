@@ -592,6 +592,32 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("a prompt that streams for longer than the request default completes")
+    @MainActor
+    func longStreamingPromptCompletesWithoutQuarantiningBackend() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                promptProgressDurationMilliseconds: 31_000
+            ),
+            timelines: [.init(id: timelineID, title: "Long Turn")]
+        )
+        let sink = RecordingUpdateSink()
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "do long work"),
+            updates: sink
+        )
+
+        #expect(response.contains("fixture reply: do long work"))
+        #expect(await sink.updates.filter { $0.kind == AscendantTurnUpdateKind.assistantText.rawValue }.count >= 8)
+        #expect(try await backend.operatedTimelines().map(\.id) == [timelineID])
+        await backend.shutdown()
+    }
+
     @Test("fixture permission requests are mediated and approved using the advertised allow-once option")
     @MainActor
     func fixturePermissionRequestCanBeApproved() async throws {
@@ -915,6 +941,7 @@ struct ACPAscendantBackendTests {
         startCountFile: URL? = nil,
         initializeDelayMilliseconds: Int? = nil,
         promptDelayMilliseconds: Int? = nil,
+        promptProgressDurationMilliseconds: Int? = nil,
         promptStartedFile: URL? = nil,
         cancellationFile: URL? = nil
     ) throws -> [String: ManifestJSONValue] {
@@ -946,6 +973,9 @@ struct ACPAscendantBackendTests {
         }
         if let promptDelayMilliseconds {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS"] = String(promptDelayMilliseconds)
+        }
+        if let promptProgressDurationMilliseconds {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_PROGRESS_DURATION_MS"] = String(promptProgressDurationMilliseconds)
         }
         if let promptStartedFile {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE"] = promptStartedFile.path

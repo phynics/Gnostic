@@ -123,6 +123,24 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       await new Promise((resolve) => setTimeout(resolve, Number(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS)));
     }
     const prompt = promptText;
+    const progressDuration = Number(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_PROGRESS_DURATION_MS ?? 0);
+    if (progressDuration > 0) {
+      const deadline = Date.now() + progressDuration;
+      let progressIndex = 0;
+      while (Date.now() < deadline) {
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "fixture-long-turn-progress",
+            content: { type: "text", text: "working " },
+          },
+        });
+        progressIndex += 1;
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+      assert(progressIndex > 0, "long prompt must emit progress updates");
+    }
     if (process.env.GNOSTIC_ACP_FIXTURE_TERMINAL_ERROR === "1" || prompt.includes("[fixture:terminal-error]")) {
       throw new Error("fixture terminal error");
     }

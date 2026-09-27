@@ -17,6 +17,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     /// The manifest backend kind served by this implementation.
     public nonisolated static let kind = "acp-client"
     private nonisolated static let processGroupLauncherPath = "/usr/bin/perl"
+    private nonisolated static let promptTimeoutSeconds: TimeInterval = 60 * 60
 
     /// The configuration keys accepted by the ACP client backend.
     public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
@@ -315,10 +316,20 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             let response: PromptResponse
             do {
                 response = try await withTaskCancellationHandler {
-                    try await connection.prompt(request: PromptRequest(
-                        sessionId: sessionID,
-                        prompt: [.text(TextContent(text: request.message))]
-                    ))
+                    let response = try await connection.sendRequest(
+                        method: "session/prompt",
+                        params: PromptRequest(
+                            sessionId: sessionID,
+                            prompt: [.text(TextContent(text: request.message))]
+                        ),
+                        timeoutSeconds: Self.promptTimeoutSeconds
+                    )
+                    do {
+                        let data = try JSONEncoder().encode(response.result)
+                        return try JSONDecoder().decode(PromptResponse.self, from: data)
+                    } catch {
+                        throw ProtocolError.decodingFailed(underlying: error)
+                    }
                 } onCancel: {
                     Task { @MainActor in activeTurn.isCancelled = true }
                 }
