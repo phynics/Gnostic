@@ -136,10 +136,66 @@ registered solely inside a custom running host can be built but not configured
 through the CLI. The production CLI composition is shared by `serve` and
 `config`, and includes the optional `letta` and `acp-client` kinds.
 
-### ACP client configuration and cancellation
+### Using an ACP agent backend
 
 The optional `acp-client` kind launches an external ACP agent and maps one ACP
 session to each Gnostic Timeline. It executes Turns and forwards their updates.
+
+Each Ascendant launches one agent process. Each Gnostic Timeline maps to a
+private ACP session owned by that process. Gnostic keeps Timeline identity,
+Turn admission, replay, and permission correlation. The backend does not expose
+Gnostic Workspace tools or advertise Workspace capabilities; the agent runs
+its own filesystem, terminal, and other tools. A configured Workspace
+attachment remains intent only and does not make Gnostic tools available to
+this backend. Review each agent's own tool and filesystem access before running
+it.
+
+#### Launch recipes and authentication
+
+Install the agent and adapter in the same runtime environment that runs
+`gnostic serve`. Do not put credentials in `args`, `env`, the manifest, or a
+fixture. The child can use credentials in its normal home directory because
+`HOME` is inherited; only explicitly configured variables are added to its
+environment.
+
+Gnostic's Swift ACP client uses `aptove/swift-sdk` pinned to exact version
+`0.1.16`. The backend owns its process stdio transport because SDK
+`StdioTransport.start()` blocks before ACP initialization in this release; the
+protocol framing and models still come from the SDK. Re-evaluate this
+target-local workaround when a later released SDK no longer blocks in `start()`.
+
+| Agent | Command and arguments | Authentication | Adapter/package pin and known limits |
+| --- | --- | --- | --- |
+| opencode | `opencode acp` | Run `opencode auth login` first. The login is stored in the user's opencode auth store. | Native ACP in `opencode-ai` (1.18.32 observed during this guide's smoke setup; Gnostic does not pin the external CLI). It executes its own tools and does not use Gnostic Workspace tools. The observed file-tool Turn did not request Gnostic permission. |
+| Codex | `npx --yes @agentclientprotocol/codex-acp@1.13.1` | Use the existing ChatGPT login, or configure `CODEX_API_KEY` / `OPENAI_API_KEY` as a secret setting. | `@agentclientprotocol/codex-acp` 1.13.1, pinned in the command to avoid npm tag drift. This adapter fronts Codex App Server; npm and the package registry are required when `npx` must download it. In this Linux container, Codex's sandbox could not create a user namespace on its first attempt, then retried the tool call successfully. Codex owns its approval and sandbox modes; Gnostic mediates only ACP `session/request_permission` calls and does not configure Codex's local policies. See the [Codex ACP adapter documentation](https://github.com/agentclientprotocol/codex-acp#readme). |
+| Claude Agent | `claude-agent-acp` | Use an existing Claude Code login, or configure `ANTHROPIC_API_KEY` as a secret setting. | `@agentclientprotocol/claude-agent-acp` 0.64.0 observed for this guide. This adapter fronts the Claude Agent SDK; its observed `allow_always` / `allow` / `reject` permission options are not supported by the current Gnostic bridge, which fails closed. |
+
+To select an agent, configure its executable and arguments on the Ascendant.
+For example, OpenCode uses:
+
+```sh
+gnostic config ascendant add "OpenCode" --kind acp-client
+gnostic config backend set <ascendant-id> command opencode
+gnostic config backend set <ascendant-id> args '["acp"]'
+gnostic config backend set <ascendant-id> cwd "$PWD"
+```
+
+For Codex, set `command` to `npx` and `args` to
+`["--yes","@agentclientprotocol/codex-acp@1.13.1"]`. For Claude Agent, set
+`command` to `claude-agent-acp` and `args` to `[]`.
+
+Use `set-secret` for API keys. This example reads the key from the shell without
+putting its value in command history:
+
+```sh
+printf '%s' "$CODEX_API_KEY" | gnostic config backend set-secret <ascendant-id> env-secret.CODEX_API_KEY
+```
+
+Use `env-secret.OPENAI_API_KEY` instead when supplying that key, or
+`env-secret.ANTHROPIC_API_KEY` for Claude Agent. `config show` redacts these
+values. `env.<NAME>` and the JSON `env` setting are for non-secret strings only.
+The three agents do not need an API-key setting when their existing login is
+available to the child process.
 
 `args` and `env` are JSON-encoded strings because the generic `config backend
 set` command stores one string per key. The `env.<NAME>` family stores one plain
@@ -167,6 +223,8 @@ configuration-only increment does not launch a process or log values. A
 variable cannot be declared in more than one of `env`, `env.<NAME>`, and
 `env-secret.<NAME>`.
 
+#### Cancellation
+
 When a user sends ACP `session/cancel` through `gnostic acp`, the frontend sends
 the matching Timeline ID and client Turn ID to the serving runtime. The runtime
 requests cancellation only for that admitted Turn. The ACP backend sends
@@ -179,6 +237,41 @@ guarantee cancellation for agents that do not honour this request. Cancelling
 the local Swift task or disconnecting a caller alone does not cancel an
 admitted Turn. Backend-wide `cancel()` remains reserved for retirement and
 shutdown.
+
+#### Opt-in live smoke
+
+Run exactly one real Turn in an environment where the selected agent command,
+its persisted login or a supplied API key, SwiftPM dependencies, and the
+development container are available. API keys can be supplied to the smoke
+executable through the matching environment variable; it adds the key only to
+the child process's in-memory `env-secret.*` settings and never prints it:
+
+```sh
+make acp-live-smoke ACP_LIVE_AGENT=opencode
+make acp-live-smoke ACP_LIVE_AGENT=codex
+make acp-live-smoke ACP_LIVE_AGENT=claude-agent
+```
+
+When running inside the development container, pass the desired key only in
+that invocation, for example `CODEX_API_KEY="$CODEX_API_KEY" make
+acp-live-smoke ACP_LIVE_AGENT=codex`. Outside the container, install the agent
+commands and authenticate in the same environment used by the smoke command.
+
+Run one command at a time. The smoke executable creates a unique temporary
+working directory, asks the agent to create and read one file there, reports
+streamed tool/permission updates, and removes the directory on exit. It prompts
+for approval when the agent requests permission; review each request before
+approving. The executable uses the agent's existing login in its normal home;
+it does not copy credentials. Authentication data and tool output are not
+written into tracked fixtures. This target is explicitly opt-in and is not
+referenced by `verify` or the CI workflow. Do not use it with sensitive prompts
+or a directory containing production data.
+
+Capture the agent and adapter versions, whether a permission request appeared,
+how the file tool ran, and a redacted transcript on the owning issue. Remove
+personal data, file paths, tokens, and other secrets from the transcript before
+posting it. If a run cannot be completed, record the environmental blocker and
+the exact replacement condition instead.
 
 ## Extending the bundled Positronic backend
 

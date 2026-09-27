@@ -19,6 +19,7 @@ let package = Package(
         .executable(name: "gnostic-rlm-benchmark", targets: ["GnosticRLMBenchmark"]),
         .executable(name: "gnostic-rlm-scenario", targets: ["GnosticRLMScenario"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
+        .executable(name: "gnostic-acp-live-smoke", targets: ["GnosticACPLiveSmoke"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
@@ -192,6 +193,10 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
             ]
+        ),
+        .executableTarget(
+            name: "GnosticACPLiveSmoke",
+            dependencies: ["GnosticACPAscendant", "GnosticCore"]
         ),
         .testTarget(
             name: "GnosticRunnerTests",

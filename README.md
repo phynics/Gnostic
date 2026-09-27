@@ -238,6 +238,17 @@ is not exposed because no delete operation exists in the Gnostic wire contract.
 Gnostic Timelines and keeps backend transcript state private to the selected
 Ascendant backend.
 
+### External ACP agent backends
+
+The optional `acp-client` backend runs an external ACP agent as an Ascendant
+backend. Supported launch recipes, authentication, secret settings, the
+agent-owned-tools boundary, and Timeline behavior are documented in the
+[ACP backend operator guide](Documentation/Extending/ascendant-backends.md#using-an-acp-agent-backend).
+Gnostic mediates permission requests, but the agent executes its own tools; it
+does not receive Gnostic Workspace tools. Use the explicit, opt-in
+[`make acp-live-smoke`](Documentation/Extending/ascendant-backends.md#opt-in-live-smoke)
+target for one real Turn. It is not part of `make verify` or CI.
+
 An ACP session resumes after the ACP child restarts while the same
 `gnostic serve` process stays online. A serve restart orphans Timelines created
 at runtime, so a later resume or prompt fails with `timelineUnavailable` and
