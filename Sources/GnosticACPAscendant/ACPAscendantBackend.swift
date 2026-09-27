@@ -103,7 +103,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         permissionService = services.permission
         sessionMapURL = Self.sessionMapURL(for: ascendant.id)
         let recoveredSessions = Self.loadSessionMap(at: sessionMapURL)
+        let configuredTimelineIDs = Set(configuredTimelines.map(\.id))
         sessionIDs = recoveredSessions.reduce(into: [:]) { result, entry in
+            guard configuredTimelineIDs.contains(entry.key) else { return }
             result[entry.key] = SessionId(value: entry.value.sessionID)
         }
 
@@ -121,24 +123,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 updatedAt: now
             )
         }
-        let recoveredTimelineIDs = recoveredSessions.keys
-            .filter { projections[$0] == nil }
-            .sorted { $0.uuidString < $1.uuidString }
-        for id in recoveredTimelineIDs {
-            guard let session = recoveredSessions[id] else { continue }
-            projections[id] = AscendantBackendTimeline(
-                id: id,
-                title: session.title,
-                attachedWorkspaceIDs: [],
-                ascendantID: ascendant.id,
-                isArchived: false,
-                isPrivate: session.isPrivate,
-                createdAt: session.createdAt,
-                updatedAt: session.updatedAt
-            )
-        }
         timelines = projections
-        timelineOrder = configuredTimelines.map(\.id) + recoveredTimelineIDs
+        timelineOrder = configuredTimelines.map(\.id)
         identity = AscendantBackendIdentity(
             id: ascendant.id,
             name: ascendant.name,
