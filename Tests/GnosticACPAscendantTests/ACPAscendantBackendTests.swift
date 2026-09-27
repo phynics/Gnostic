@@ -72,7 +72,9 @@ struct ACPAscendantBackendTests {
         secrets: [String: ManifestJSONValue] = [:],
         timelines: [NodeManifest.Timeline] = [],
         ascendantID: UUID = UUID(),
-        permission: any AscendantBackendPermissionService = AscendantBackendServices.empty.permission
+        permission: any AscendantBackendPermissionService = AscendantBackendServices.empty.permission,
+        protocolTimeoutSeconds: TimeInterval = 30,
+        promptTimeoutSeconds: TimeInterval = 60 * 60
     ) throws -> ACPAscendantBackend {
         let ascendant = NodeManifest.Ascendant(
             id: ascendantID,
@@ -84,7 +86,9 @@ struct ACPAscendantBackendTests {
             ascendant: ascendant,
             configuration: ascendant.backend,
             services: AscendantBackendServices(permission: permission),
-            timelines: timelines
+            timelines: timelines,
+            protocolTimeoutSeconds: protocolTimeoutSeconds,
+            promptTimeoutSeconds: promptTimeoutSeconds
         )
     }
 
@@ -592,18 +596,21 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
-    @Test("a prompt that streams for longer than the request default completes")
+    @Test("prompt deadline exceeds the shorter protocol default")
     @MainActor
-    func longStreamingPromptCompletesWithoutQuarantiningBackend() async throws {
+    func promptDeadlineIsSeparateFromProtocolDefault() async throws {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
         let timelineID = UUID()
         let backend = try backend(
             settings: fixtureSettings(
                 stateHome: stateHome.url,
-                promptProgressDurationMilliseconds: 31_000
+                promptProgressDurationMilliseconds: 900,
+                promptProgressIntervalMilliseconds: 100
             ),
-            timelines: [.init(id: timelineID, title: "Long Turn")]
+            timelines: [.init(id: timelineID, title: "Long Turn")],
+            protocolTimeoutSeconds: 0.5,
+            promptTimeoutSeconds: 5
         )
         let sink = RecordingUpdateSink()
 
@@ -613,7 +620,7 @@ struct ACPAscendantBackendTests {
         )
 
         #expect(response.contains("fixture reply: do long work"))
-        #expect(await sink.updates.filter { $0.kind == AscendantTurnUpdateKind.assistantText.rawValue }.count >= 8)
+        #expect(await sink.updates.filter { $0.kind == AscendantTurnUpdateKind.assistantText.rawValue }.count >= 6)
         #expect(try await backend.operatedTimelines().map(\.id) == [timelineID])
         await backend.shutdown()
     }
@@ -942,6 +949,7 @@ struct ACPAscendantBackendTests {
         initializeDelayMilliseconds: Int? = nil,
         promptDelayMilliseconds: Int? = nil,
         promptProgressDurationMilliseconds: Int? = nil,
+        promptProgressIntervalMilliseconds: Int? = nil,
         promptStartedFile: URL? = nil,
         cancellationFile: URL? = nil
     ) throws -> [String: ManifestJSONValue] {
@@ -976,6 +984,9 @@ struct ACPAscendantBackendTests {
         }
         if let promptProgressDurationMilliseconds {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_PROGRESS_DURATION_MS"] = String(promptProgressDurationMilliseconds)
+        }
+        if let promptProgressIntervalMilliseconds {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_PROGRESS_INTERVAL_MS"] = String(promptProgressIntervalMilliseconds)
         }
         if let promptStartedFile {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE"] = promptStartedFile.path

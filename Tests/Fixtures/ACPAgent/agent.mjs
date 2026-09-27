@@ -126,6 +126,7 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     const progressDuration = Number(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_PROGRESS_DURATION_MS ?? 0);
     if (progressDuration > 0) {
       const deadline = Date.now() + progressDuration;
+      const progressInterval = Number(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_PROGRESS_INTERVAL_MS ?? 1_000);
       let progressIndex = 0;
       while (Date.now() < deadline) {
         await client.notify(acp.methods.client.session.update, {
@@ -137,7 +138,7 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
           },
         });
         progressIndex += 1;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await new Promise((resolve) => setTimeout(resolve, progressInterval));
       }
       assert(progressIndex > 0, "long prompt must emit progress updates");
     }

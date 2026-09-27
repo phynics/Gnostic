@@ -17,7 +17,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     /// The manifest backend kind served by this implementation.
     public nonisolated static let kind = "acp-client"
     private nonisolated static let processGroupLauncherPath = "/usr/bin/perl"
-    private nonisolated static let promptTimeoutSeconds: TimeInterval = 60 * 60
+    private nonisolated static let defaultProtocolTimeoutSeconds: TimeInterval = 30
+    // #418: allow long Turns; revisit if Turns exceed 1h and consider a settings key.
+    private nonisolated static let defaultPromptTimeoutSeconds: TimeInterval = 60 * 60
 
     /// The configuration keys accepted by the ACP client backend.
     public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
@@ -38,6 +40,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     public let launchSpec: ACPLaunchSpec
 
     private let configuration: AscendantBackendConfiguration
+    private let protocolTimeoutSeconds: TimeInterval
+    private let promptTimeoutSeconds: TimeInterval
     private var timelines: [UUID: AscendantBackendTimeline]
     private var timelineOrder: [UUID]
     private var sessionIDs: [UUID: SessionId]
@@ -67,15 +71,35 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     ///   - timelines: Timelines assigned to this Ascendant in the manifest.
     /// - Throws: ``AscendantBackendError/invalidConfiguration(_:)`` when the
     ///   envelope or launch settings are invalid.
-    public init(
+    public convenience init(
         ascendant: NodeManifest.Ascendant,
         configuration: AscendantBackendConfiguration,
         services: AscendantBackendServices,
         timelines configuredTimelines: [NodeManifest.Timeline]
     ) throws {
+        try self.init(
+            ascendant: ascendant,
+            configuration: configuration,
+            services: services,
+            timelines: configuredTimelines,
+            protocolTimeoutSeconds: Self.defaultProtocolTimeoutSeconds,
+            promptTimeoutSeconds: Self.defaultPromptTimeoutSeconds
+        )
+    }
+
+    init(
+        ascendant: NodeManifest.Ascendant,
+        configuration: AscendantBackendConfiguration,
+        services: AscendantBackendServices,
+        timelines configuredTimelines: [NodeManifest.Timeline],
+        protocolTimeoutSeconds: TimeInterval = 30,
+        promptTimeoutSeconds: TimeInterval = 60 * 60
+    ) throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
         launchSpec = try Self.parse(configuration)
         self.configuration = configuration
+        self.protocolTimeoutSeconds = protocolTimeoutSeconds
+        self.promptTimeoutSeconds = promptTimeoutSeconds
         permissionService = services.permission
         sessionMapURL = Self.sessionMapURL(for: ascendant.id)
         let recoveredSessions = Self.loadSessionMap(at: sessionMapURL)
@@ -322,7 +346,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                             sessionId: sessionID,
                             prompt: [.text(TextContent(text: request.message))]
                         ),
-                        timeoutSeconds: Self.promptTimeoutSeconds
+                        timeoutSeconds: promptTimeoutSeconds
                     )
                     do {
                         let data = try JSONEncoder().encode(response.result)
@@ -484,7 +508,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     }
                 }
             )
-            let protocolConnection = ACPProtocolLayer(transport: processTransport, defaultTimeoutSeconds: 30)
+            let protocolConnection = ACPProtocolLayer(transport: processTransport, defaultTimeoutSeconds: protocolTimeoutSeconds)
             await protocolConnection.onRequest(method: "session/request_permission") { [weak self] request in
                 guard let self else { return try Self.permissionResponse(for: .cancelled) }
                 return try await self.handlePermissionRequest(request)
