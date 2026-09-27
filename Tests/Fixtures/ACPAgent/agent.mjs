@@ -51,14 +51,32 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     await saveSessions();
     return { sessionId };
   })
-  .onRequest(acp.methods.agent.session.list, ({ params }) => ({
-    sessions: [...sessions].filter(([, info]) => !params.cwd || info.cwd === params.cwd).map(([sessionId, info]) => ({
-      sessionId,
-      cwd: info.cwd,
-      title: info.title,
-      updatedAt: new Date(0).toISOString(),
-    })),
-  }))
+  .onRequest(acp.methods.agent.session.list, async ({ params }) => {
+    if (process.env.GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE) {
+      await appendFile(process.env.GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE, `${params.cursor ?? "first"}\n`);
+    }
+    const listedSessions = [...sessions]
+      .filter(([, info]) => !params.cwd || info.cwd === params.cwd)
+      .map(([sessionId, info]) => ({
+        sessionId,
+        cwd: info.cwd,
+        title: info.title,
+        updatedAt: new Date(0).toISOString(),
+      }));
+    if (process.env.GNOSTIC_ACP_FIXTURE_PAGINATED_LIST === "later-page") {
+      return params.cursor
+        ? { sessions: listedSessions }
+        : { sessions: [], nextCursor: "fixture-page-2" };
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_PAGINATED_LIST === "repeating-cursor") {
+      return { sessions: listedSessions, nextCursor: "fixture-repeat" };
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_PAGINATED_LIST === "unbounded") {
+      const page = Number(params.cursor?.replace("fixture-page-", "") ?? 0);
+      return { sessions: listedSessions, nextCursor: `fixture-page-${page + 1}` };
+    }
+    return { sessions: listedSessions };
+  })
   .onRequest(acp.methods.agent.session.resume, ({ params }) => {
     if (!sessions.has(params.sessionId)) throw new Error("unknown fixture session");
     return {};
