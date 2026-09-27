@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticACPAscendant
+@testable import GnosticACPAscendant
 import GnosticCore
 import Testing
 #if canImport(Darwin)
@@ -24,6 +24,12 @@ struct ACPAscendantBackendTests {
             requests.append(request)
             return decision
         }
+    }
+
+    private actor BackendFactoryCount {
+        private(set) var value = 0
+
+        func increment() { value += 1 }
     }
 
     private actor DelayedPermissionService: AscendantBackendPermissionService {
@@ -97,6 +103,7 @@ struct ACPAscendantBackendTests {
         let backend = try backend(
             settings: [
                 "command": .string("opencode"),
+                "args": .string("[\"private-token\"]"),
                 "env": .string("{\"MODE\":\"safe\"}"),
                 "env.REGION": .string("test-west"),
             ],
@@ -111,6 +118,47 @@ struct ACPAscendantBackendTests {
         #expect(backend.launchSpec.description.contains("API_TOKEN"))
         #expect(!backend.launchSpec.description.contains("private-token"))
         #expect(!backend.launchSpec.debugDescription.contains("private-token"))
+    }
+
+    @Test("agent receives configured environment only, not unrelated parent credentials")
+    @MainActor
+    func processEnvironmentIsAllowlisted() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let key = "GNOSTIC_ACP_PARENT_ONLY_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let secret = "parent-secret-\(UUID().uuidString)"
+        guard setenv(key, secret, 1) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { _ = unsetenv(key) }
+
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, requiredAbsentEnvironmentKey: key),
+            timelines: [.init(id: UUID(), title: "Allowlist")]
+        )
+        _ = try await backend.operatedTimelines()
+        await backend.shutdown()
+    }
+
+    @Test("process spawn failure is lifecycle unusable and does not expose configured secrets")
+    @MainActor
+    func spawnFailureIsLifecycleUnusableAndRedacted() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let secret = "spawn-secret-\(UUID().uuidString)"
+        let timelineID = UUID()
+        let backend = try backend(
+            settings: ["command": .string("/missing/acp-agent-\(UUID().uuidString)")],
+            secrets: ["env-secret.API_TOKEN": .string(secret)],
+            timelines: [.init(id: timelineID, title: "Missing agent")]
+        )
+
+        do {
+            _ = try await backend.runTurn(.init(timelineID: timelineID, message: "hello"), updates: RecordingUpdateSink())
+            Issue.record("Expected the missing ACP agent process to fail.")
+        } catch let AscendantBackendError.lifecycleUnusable(failure) {
+            #expect(!failure.message.contains(secret))
+            #expect(!String(describing: failure).contains(secret))
+        }
+        await backend.shutdown()
     }
 
     @Test("invalid per-variable names and conflicting values are rejected without exposing secrets")
@@ -166,6 +214,136 @@ struct ACPAscendantBackendTests {
         #expect(throws: (any Error).self) {
             try backend(secrets: ["env.API_KEY": .string("secret")])
         }
+    }
+
+    @Test("configuration validation names an unusable setting without printing secret values")
+    @MainActor
+    func validateConfigurationFailsFastAndRedactsSecrets() throws {
+        let secret = "validation-secret-\(UUID().uuidString)"
+        let cwdBackend = try backend(
+            settings: ["command": .string("/missing/acp-command"), "cwd": .string("/missing/acp-working-directory")],
+            secrets: ["env-secret.API_TOKEN": .string(secret)]
+        )
+
+        do {
+            try cwdBackend.validateConfiguration()
+            Issue.record("Expected configuration validation to reject the missing cwd.")
+        } catch let AscendantBackendError.invalidConfiguration(message) {
+            #expect(message.contains("cwd"))
+            #expect(!message.contains(secret))
+        }
+
+        let invalidCommand = try backend(settings: ["command": .string("/missing/acp-command")])
+        do {
+            try invalidCommand.validateConfiguration()
+            Issue.record("Expected configuration validation to reject the missing executable.")
+        } catch let AscendantBackendError.invalidConfiguration(message) {
+            #expect(message.contains("command"))
+        }
+    }
+
+    @Test("stderr secret redaction spans separate pipe reads")
+    func stderrRedactionHandlesReadBoundaries() {
+        let redactor = ACPStderrRedactor(secrets: ["private-token"])
+        let first = redactor.consume(Data("agent says private-".utf8))
+        let second = redactor.consume(Data("token and private-token again\n".utf8), finishing: true)
+        let result = String(decoding: first + second, as: UTF8.self)
+        #expect(result == "agent says [REDACTED] and [REDACTED] again\n")
+        #expect(!result.contains("private-token"))
+    }
+
+    @Test("shutdown terminates the agent process group and reaps its descendants")
+    @MainActor
+    func shutdownCleansProcessTree() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let pidFile = stateHome.url.appendingPathComponent("descendant.pid")
+        let backend = try backend(settings: fixtureSettings(stateHome: stateHome.url, descendantPIDFile: pidFile))
+        _ = try await backend.operatedTimelines()
+        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+        let childPID = try #require(Int32(pidText))
+
+        await backend.shutdown()
+
+        var isAlive = kill(childPID, 0) == 0
+        for _ in 0..<40 where isAlive {
+            try await Task.sleep(for: .milliseconds(25))
+            isAlive = kill(childPID, 0) == 0
+        }
+        #expect(!isAlive, "ACP child process \(childPID) survived backend shutdown")
+    }
+
+    @Test("an ACP process crash is reported as lifecycle unusable")
+    @MainActor
+    func crashIsLifecycleUnusable() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let secret = "crash-secret-\(UUID().uuidString)"
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, crashOnPrompt: true),
+            secrets: ["env-secret.API_TOKEN": .string(secret)],
+            timelines: [.init(id: timelineID, title: "Crash")]
+        )
+
+        do {
+            _ = try await backend.runTurn(.init(timelineID: timelineID, message: "crash"), updates: RecordingUpdateSink())
+            Issue.record("Expected a crashed ACP process to make its lifecycle unusable.")
+        } catch let AscendantBackendError.lifecycleUnusable(failure) {
+            #expect(!failure.message.contains(secret))
+        }
+        await backend.shutdown()
+    }
+
+    @Test("crashed process is quarantined and reconstructed once on the next Turn")
+    @MainActor
+    func crashQuarantinesAndReconstructsBackend() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let crashMarker = stateHome.url.appendingPathComponent("crashed-once")
+        let settings = try fixtureSettings(stateHome: stateHome.url, crashOnceMarker: crashMarker)
+        let configuration = AscendantBackendConfiguration(kind: ACPAscendantBackend.kind, settings: settings)
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-crash-\(UUID().uuidString.lowercased())"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: ascendantID, name: "Crash fixture", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Crash recovery", operatingAscendantID: ascendantID)]
+        )
+        let factoryCount = BackendFactoryCount()
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            await factoryCount.increment()
+            return try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await runtime.start()
+
+        do {
+            _ = try await runtime.turn(.init(message: "crash", timelineID: timelineID, clientTurnID: "crash-once"))
+            Issue.record("Expected the first ACP Turn to fail with a lifecycle error.")
+        } catch let AscendantTurnError.lifecycleUnusable(failedTimelineID, _, _) {
+            #expect(failedTimelineID == timelineID)
+        } catch {
+            await runtime.shutdown()
+            throw error
+        }
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+
+        let recovered = try await runtime.turn(.init(message: "recover", timelineID: timelineID, clientTurnID: "after-crash"))
+        #expect(recovered.text == "fixture reply: recover")
+        #expect(await factoryCount.value == 2)
+        #expect(await runtime.backendHealth(for: ascendantID) == .healthy)
+        await runtime.shutdown()
     }
 
     @Test("Timeline operations are idempotent and unknown removals are ignored")
@@ -491,7 +669,11 @@ struct ACPAscendantBackendTests {
         failClose: Bool = false,
         permissionPrompt: Bool = false,
         permissionOutcome: String = "selected:allow-once",
-        unsupportedPermissionOptions: Bool = false
+        unsupportedPermissionOptions: Bool = false,
+        requiredAbsentEnvironmentKey: String? = nil,
+        crashOnPrompt: Bool = false,
+        descendantPIDFile: URL? = nil,
+        crashOnceMarker: URL? = nil
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -508,6 +690,12 @@ struct ACPAscendantBackendTests {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME"] = permissionOutcome
         }
         if unsupportedPermissionOptions { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED"] = "1" }
+        if let requiredAbsentEnvironmentKey {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PARENT_ONLY_KEY"] = requiredAbsentEnvironmentKey
+        }
+        if crashOnPrompt { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CRASH_ON_PROMPT"] = "1" }
+        if let descendantPIDFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CHILD_PID_FILE"] = descendantPIDFile.path }
+        if let crashOnceMarker { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CRASH_ONCE_FILE"] = crashOnceMarker.path }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
             "command": .string("/usr/bin/node"),
