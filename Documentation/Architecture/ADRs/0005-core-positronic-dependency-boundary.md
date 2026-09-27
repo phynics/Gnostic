@@ -13,14 +13,14 @@ host bridge from a PositronicKit type that has escaped into a Gnostic-owned
 contract. The earlier Workspace boundary work removed native Workspace values
 from network projections, but did not inventory the complete Core target.
 
-## Decision
+## Original decision
 
 Keep the direct PositronicKit dependency on `GnosticCore` for the bundled
 Positronic Backend and the explicit host bridges that materialize, project, or
 invoke PositronicKit Workspaces. Do not split a downstream Positronic target in
-this increment: the runtime composition root, bundled backend, and host bridge
-share one release and there is no second backend or measured build/ownership
-benefit that justifies a package boundary yet.
+that increment: the runtime composition root, bundled backend, and host bridge
+shared one release and there was no second backend or measured build/ownership
+benefit that justified a package boundary then.
 
 The Core-owned Workspace network contract uses `ManifestJSONValue`; it does not
 expose PositronicKit's `AnyCodable` or native Workspace reference/status/tool
@@ -84,23 +84,86 @@ inside the inventory above or in the optional `GnosticPositronicAtlas` target.
 Architecture fitness tests fail if native Workspace values or `AnyCodable`
 re-enter the Core-owned Workspace projection types.
 
+## Re-evaluation after ACP backend delivery
+
+The trigger to re-evaluate this decision has occurred: `GnosticACPAscendant`
+ships the supported `acp-client` backend kind outside `GnosticCore`. The current
+Core PositronicKit source-import inventory remains the 15-file PositronicKit
+subset of the inventory above (the fitness test's `expectedImports` set). The
+test compares that exact set with the imports found under `Sources/GnosticCore`
+and requires every listed path to appear in this inventory. The Core target
+retains its PositronicKit dependency.
+
+The ACP target does not import or call the Positronic adapter, and no code is
+shared between `GnosticACPAscendant` and `PositronicAscendantAdapter`. The ACP
+kind is selected through the flat `AscendantBackend` contract and is registered
+outside Core. Its delivery adds no ACP, process, or SDK dependency to Core and
+does not change the PositronicKit inventory.
+
+**Decision: keep the Positronic adapter bundled in `GnosticCore`.** Shipping a
+second backend kind proves that multiple backends can coexist behind the flat
+contract, but this ACP backend supplies no evidence that splitting the existing
+adapter would reduce Core build cost or establish a useful independent
+ownership/release boundary. The extraction trigger is therefore satisfied as a
+re-evaluation condition, not as an automatic extraction rule.
+
+### Invariant
+
+Gnostic-owned contracts remain free of native PositronicKit values. Native
+PositronicKit usage remains confined to the explicit backend and host bridge
+inventory above. Other backend targets continue to implement the flat
+`AscendantBackend` contract without depending on the Positronic adapter.
+
+### Rejected alternative
+
+Extracting the Positronic adapter now is rejected. The ACP target neither shares
+its code nor creates a Core dependency that extraction would remove; an
+additional package boundary would add composition and maintenance cost without
+a demonstrated build or ownership benefit.
+
+### Dependency impact
+
+No dependency, package manifest, or target dependency changes result from this
+re-evaluation. `GnosticCore` retains its existing PositronicKit dependency and
+the ACP target remains outside Core with no Positronic adapter dependency.
+
+### Fitness check
+
+`BackendArchitectureFitnessTests.corePositronicDependencyBoundaryIsExplicit`
+compares the Core PositronicKit imports with the exact 15-path set and checks
+that the ADR documents each path. `make verify` runs this check. It will fail
+when a Core import is added or removed without an explicit inventory review.
+ADR 0011's ACP boundary fitness checks continue to ensure Core has no ACP SDK
+or process dependency and that the ACP target uses the flat backend contract.
+
+### Reconsideration condition
+
+Reconsider extraction when measurements show a material Core build benefit, or
+when the Positronic adapter needs an independent release or ownership boundary.
+A later backend shipping on its own is not sufficient by itself; the review
+must identify a concrete dependency, build, or ownership benefit and update
+this decision before extracting.
+
 ## Rejected alternatives
 
 - Removing PositronicKit from Core would remove the bundled Positronic Backend,
   not enforce a boundary.
-- Splitting packages without a second backend or measured build/ownership gain
-  would add composition complexity without changing ownership.
+- At the time of the original decision, splitting packages without a second
+  backend or measured build/ownership gain would have added composition
+  complexity without changing ownership.
 - Replacing Axoloty or abstracting all transport would violate ADR 0001.
 - Treating an import count as proof of a leak would incorrectly classify the
   explicit backend and host adapters.
 
 ## Reconsideration triggers
 
-Reconsider extraction into a downstream Positronic target when a second backend
-is shipped, the Positronic adapter needs an independent release/ownership
-boundary, or build measurements show a material Core build benefit. Reconsider
-the `PKContracts` host seam if Axoloty or the backend capability protocols offer
-a stable Gnostic-owned replacement without widening transport abstraction.
+Reconsider extraction into a downstream Positronic target when the Positronic
+adapter needs an independent release/ownership boundary or build measurements
+show a material Core build benefit. A second backend shipping prompts explicit
+review but does not alone require extraction; the ACP delivery re-evaluation
+above records this outcome. Reconsider the `PKContracts` host seam if Axoloty or
+the backend capability protocols offer a stable Gnostic-owned replacement
+without widening transport abstraction.
 
 ## Links
 
