@@ -26,10 +26,10 @@ ACP_TEST_FILTER ?= GnosticACPAscendantTests
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -97,6 +97,13 @@ acp-smoke: require-package image
 acp-backend-test: require-package image
 	@mkdir -p .testing
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'set -e; npm ci --prefix Tests/Fixtures/ACPAgent --cache .testing/npm-cache; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic; swift build $(SWIFT_LOCKED_ARGS) --build-tests; GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --skip-build --filter "$(ACP_TEST_FILTER)" | tee .testing/acp-backend-tests.log; grep -Eq "Test run with [1-9][0-9]* tests?" .testing/acp-backend-tests.log'
+
+# Explicit operator action only. This live path is deliberately not a dependency of verify or CI.
+ACP_LIVE_AGENT ?=
+ACP_LIVE_TIMEOUT ?= 180
+acp-live-smoke: build
+	@test -n "$(ACP_LIVE_AGENT)" || { echo "Set ACP_LIVE_AGENT to opencode, codex, or claude-agent" >&2; exit 2; }
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh bash -o pipefail -c 'set -e; case "$$(uname -m)" in x86_64) triple=x86_64-unknown-linux-gnu ;; aarch64|arm64) triple=aarch64-unknown-linux-gnu ;; *) echo "Unsupported smoke container architecture: $$(uname -m)" >&2; exit 2 ;; esac; bin="/workspace/.build/$$triple/debug/gnostic-acp-live-smoke"; test -x "$$bin"; timeout --signal=TERM --kill-after=5s "$(ACP_LIVE_TIMEOUT)s" "$$bin" "$(ACP_LIVE_AGENT)"'
 
 container-smoke: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
