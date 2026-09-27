@@ -16,6 +16,7 @@ import Glibc
 public final class ACPAscendantBackend: AscendantBackend {
     /// The manifest backend kind served by this implementation.
     public nonisolated static let kind = "acp-client"
+    private nonisolated static let processGroupLauncherPath = "/usr/bin/perl"
 
     /// The configuration keys accepted by the ACP client backend.
     public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
@@ -46,6 +47,9 @@ public final class ACPAscendantBackend: AscendantBackend {
     private var stderrDrainTask: Task<Void, Never>?
     private var transport: ACPProcessStdioTransport?
     private var connection: ACPProtocolLayer?
+    private var connectionTask: Task<ACPProtocolLayer, Error>?
+    private var connectionTaskID: UUID?
+    private var isShuttingDown = false
     private var sessionCapabilities: ACPAgentSessionCapabilities?
     private let permissionService: any AscendantBackendPermissionService
     // The backend contract serializes Turns per Timeline; one active entry per Timeline is intentional.
@@ -127,6 +131,9 @@ public final class ACPAscendantBackend: AscendantBackend {
     public func validateConfiguration() throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
         let candidate = try Self.parse(configuration)
+        guard FileManager.default.isExecutableFile(atPath: Self.processGroupLauncherPath) else {
+            throw Self.invalidConfiguration("The ACP backend setting 'command' requires the Perl process-group launcher at /usr/bin/perl.")
+        }
         let directory = candidate.workingDirectory ?? FileManager.default.currentDirectoryPath
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -283,6 +290,18 @@ public final class ACPAscendantBackend: AscendantBackend {
         do {
             let connection = try await requireConnection()
             let sessionID = try await requireSession(for: request.timelineID, connection: connection)
+            guard !isShuttingDown else {
+                throw AscendantBackendError.lifecycleUnusable(.init(
+                    code: "acpBackendShuttingDown",
+                    message: "The ACP backend is shutting down."
+                ))
+            }
+            guard activeTurns[request.timelineID] == nil else {
+                throw AscendantBackendError.terminal(.init(
+                    code: "acpTurnAlreadyActive",
+                    message: "An ACP Turn is already active for this Timeline."
+                ))
+            }
             let activeTurn = ACPActiveTurn(clientTurnID: request.clientTurnID ?? "")
             activeTurns[request.timelineID] = activeTurn
             defer {
@@ -338,7 +357,14 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     /// Closes the ACP transport and terminates the child process.
     public func shutdown() async {
+        await cancel()
+        isShuttingDown = true
+        let pendingConnection = connectionTask
+        pendingConnection?.cancel()
         if let process { await stopProcess(process) }
+        if let pendingConnection { _ = await pendingConnection.result }
+        connectionTask = nil
+        connectionTaskID = nil
         await connection?.close()
         connection = nil
         await transport?.close()
@@ -359,7 +385,35 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     private func requireConnection() async throws -> ACPProtocolLayer {
         if let lifecycleFailure { throw AscendantBackendError.lifecycleUnusable(lifecycleFailure) }
+        guard !isShuttingDown else {
+            throw AscendantBackendError.lifecycleUnusable(.init(
+                code: "acpBackendShuttingDown",
+                message: "The ACP backend is shutting down."
+            ))
+        }
+        if let connectionTask { return try await connectionTask.value }
         if let connection { return connection }
+        let taskID = UUID()
+        let task = Task { @MainActor in try await establishConnection() }
+        connectionTaskID = taskID
+        connectionTask = task
+        do {
+            let established = try await task.value
+            if connectionTaskID == taskID {
+                connectionTask = nil
+                connectionTaskID = nil
+            }
+            return established
+        } catch {
+            if connectionTaskID == taskID {
+                connectionTask = nil
+                connectionTaskID = nil
+            }
+            throw error
+        }
+    }
+
+    private func establishConnection() async throws -> ACPProtocolLayer {
         let child = Process()
         let input = Pipe()
         let output = Pipe()
@@ -371,17 +425,18 @@ public final class ACPAscendantBackend: AscendantBackend {
         child.standardOutput = output
         child.standardError = errorOutput
         var connection: ACPProtocolLayer?
-        var connectionStage = "resolve agent executable"
+        var connectionStage = "resolve configured agent executable"
         do {
             let agentExecutable = try resolvedExecutableURL(command: launchSpec.command, environment: child.environment ?? [:])
-            child.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+            // Perl sets a dedicated process group before exec so shutdown can signal all descendants.
+            child.executableURL = URL(fileURLWithPath: Self.processGroupLauncherPath)
             child.arguments = [
                 "-MPOSIX",
                 "-e",
                 "setpgid(0, 0) or die; my $program = shift; exec {$program} $program, @ARGV or die;",
                 agentExecutable.path,
             ] + launchSpec.arguments
-            connectionStage = "start agent process"
+            connectionStage = "start agent through the Perl process-group launcher"
             try child.run()
             try? input.fileHandleForReading.close()
             try? output.fileHandleForWriting.close()
@@ -439,7 +494,7 @@ public final class ACPAscendantBackend: AscendantBackend {
             } else {
                 failure = map(error, context: "Could not initialize the ACP agent")
             }
-            if child.isRunning { await stopProcess(child) }
+            if child.isRunning, !isShuttingDown { await stopProcess(child) }
             await connection?.close()
             self.connection = nil
             self.transport = nil

@@ -250,6 +250,113 @@ struct ACPAscendantBackendTests {
         let result = String(decoding: first + second, as: UTF8.self)
         #expect(result == "agent says [REDACTED] and [REDACTED] again\n")
         #expect(!result.contains("private-token"))
+
+        let straddlingRedactor = ACPStderrRedactor(secrets: ["SECRET"])
+        let prefix = straddlingRedactor.consume(Data("SECRET".utf8))
+        let remainder = straddlingRedactor.consume(Data(), finishing: true)
+        let straddlingResult = String(decoding: prefix + remainder, as: UTF8.self)
+        #expect(straddlingResult == "[REDACTED]")
+        #expect(!straddlingResult.contains("S"))
+    }
+
+    @Test("concurrent first connections spawn only one ACP process")
+    @MainActor
+    func concurrentConnectionEstablishmentIsSingleFlight() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let processIDs = stateHome.url.appendingPathComponent("process-ids.txt")
+        let startCount = stateHome.url.appendingPathComponent("start-count.txt")
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                processPIDFile: processIDs,
+                startCountFile: startCount
+            ),
+            timelines: [.init(id: UUID(), title: "Concurrent startup")]
+        )
+
+        async let first = backend.operatedTimelines()
+        async let second = backend.operatedTimelines()
+        _ = try await (first, second)
+        await backend.shutdown()
+
+        let starts = try String(contentsOf: startCount, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+        #expect(starts.count == 1, "Concurrent startup launched \(starts.count) ACP processes.")
+        let launchedPIDs = try String(contentsOf: processIDs, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0) }
+        for pid in launchedPIDs { _ = kill(-pid, SIGKILL) }
+    }
+
+    @Test("shutdown waits for in-flight connection setup and leaves no process")
+    @MainActor
+    func shutdownDuringConnectionSetupCleansProcess() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let processIDs = stateHome.url.appendingPathComponent("process-ids.txt")
+        let backend = try backend(settings: fixtureSettings(
+            stateHome: stateHome.url,
+            processPIDFile: processIDs,
+            initializeDelayMilliseconds: 1_000
+        ))
+        let connection = Task { try await backend.operatedTimelines() }
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: processIDs.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: processIDs.path))
+
+        await backend.shutdown()
+        do {
+            _ = try await connection.value
+            Issue.record("Connection setup unexpectedly completed after shutdown.")
+        } catch { /* Shutdown rejects or interrupts the in-flight connection. */ }
+
+        let launchedPIDs = try String(contentsOf: processIDs, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0) }
+        for pid in launchedPIDs {
+            #expect(kill(pid, 0) != 0, "ACP process \(pid) survived shutdown during connection setup")
+        }
+    }
+
+    @Test("same-Timeline concurrent Turns do not replace active cancellation state")
+    @MainActor
+    func concurrentTurnsOnOneTimelineAreRejectedWithoutReplacingActiveTurn() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let promptStarted = stateHome.url.appendingPathComponent("prompt-started")
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                promptDelayMilliseconds: 1_000,
+                promptStartedFile: promptStarted
+            ),
+            timelines: [.init(id: timelineID, title: "Single active Turn")]
+        )
+        let first = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "first"),
+                updates: RecordingUpdateSink()
+            )
+        }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: promptStarted.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: promptStarted.path))
+
+        do {
+            _ = try await backend.runTurn(
+                .init(timelineID: timelineID, message: "second"),
+                updates: RecordingUpdateSink()
+            )
+            Issue.record("A second same-Timeline Turn unexpectedly replaced the active Turn.")
+        } catch let AscendantBackendError.terminal(failure) {
+            #expect(failure.code == "acpTurnAlreadyActive")
+        }
+        #expect(try await first.value == "fixture reply: first")
+        await backend.shutdown()
     }
 
     @Test("shutdown terminates the agent process group and reaps its descendants")
@@ -673,7 +780,12 @@ struct ACPAscendantBackendTests {
         requiredAbsentEnvironmentKey: String? = nil,
         crashOnPrompt: Bool = false,
         descendantPIDFile: URL? = nil,
-        crashOnceMarker: URL? = nil
+        crashOnceMarker: URL? = nil,
+        processPIDFile: URL? = nil,
+        startCountFile: URL? = nil,
+        initializeDelayMilliseconds: Int? = nil,
+        promptDelayMilliseconds: Int? = nil,
+        promptStartedFile: URL? = nil
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -696,6 +808,17 @@ struct ACPAscendantBackendTests {
         if crashOnPrompt { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CRASH_ON_PROMPT"] = "1" }
         if let descendantPIDFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CHILD_PID_FILE"] = descendantPIDFile.path }
         if let crashOnceMarker { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CRASH_ONCE_FILE"] = crashOnceMarker.path }
+        if let processPIDFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE"] = processPIDFile.path }
+        if let startCountFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_START_COUNT_FILE"] = startCountFile.path }
+        if let initializeDelayMilliseconds {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS"] = String(initializeDelayMilliseconds)
+        }
+        if let promptDelayMilliseconds {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS"] = String(promptDelayMilliseconds)
+        }
+        if let promptStartedFile {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE"] = promptStartedFile.path
+        }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
             "command": .string("/usr/bin/node"),
