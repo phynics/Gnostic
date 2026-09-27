@@ -12,12 +12,52 @@ import Glibc
 
 @Suite("ACP Ascendant backend", .serialized)
 struct ACPAscendantBackendTests {
+    private actor RecordingPermissionService: AscendantBackendPermissionService {
+        let decision: AscendantPermissionDecision
+        private(set) var requests: [BackendPermissionRequest] = []
+
+        init(decision: AscendantPermissionDecision) {
+            self.decision = decision
+        }
+
+        func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
+            requests.append(request)
+            return decision
+        }
+    }
+
+    private actor DelayedPermissionService: AscendantBackendPermissionService {
+        private var decisionContinuation: CheckedContinuation<AscendantPermissionDecision, Never>?
+        private var requestContinuation: CheckedContinuation<BackendPermissionRequest, Never>?
+        private var receivedRequest: BackendPermissionRequest?
+
+        func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
+            await withCheckedContinuation { continuation in
+                receivedRequest = request
+                requestContinuation?.resume(returning: request)
+                requestContinuation = nil
+                decisionContinuation = continuation
+            }
+        }
+
+        func waitForRequest() async -> BackendPermissionRequest {
+            if let receivedRequest { return receivedRequest }
+            return await withCheckedContinuation { requestContinuation = $0 }
+        }
+
+        func resolve(_ decision: AscendantPermissionDecision) {
+            decisionContinuation?.resume(returning: decision)
+            decisionContinuation = nil
+        }
+    }
+
     @MainActor
     private func backend(
         settings: [String: ManifestJSONValue] = ["command": .string("opencode")],
         secrets: [String: ManifestJSONValue] = [:],
         timelines: [NodeManifest.Timeline] = [],
-        ascendantID: UUID = UUID()
+        ascendantID: UUID = UUID(),
+        permission: any AscendantBackendPermissionService = AscendantBackendServices.empty.permission
     ) throws -> ACPAscendantBackend {
         let ascendant = NodeManifest.Ascendant(
             id: ascendantID,
@@ -28,7 +68,7 @@ struct ACPAscendantBackendTests {
         return try ACPAscendantBackend(
             ascendant: ascendant,
             configuration: ascendant.backend,
-            services: .empty,
+            services: AscendantBackendServices(permission: permission),
             timelines: timelines
         )
     }
@@ -193,6 +233,158 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("fixture permission requests are mediated and approved using the advertised allow-once option")
+    @MainActor
+    func fixturePermissionRequestCanBeApproved() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let permission = RecordingPermissionService(decision: .approved)
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "approve permission", clientTurnID: "approve-once"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: approve permission")
+        let requests = await permission.requests
+        #expect(requests.count == 1)
+        #expect(requests.first?.timelineID == timelineID)
+        #expect(requests.first?.clientTurnID == "approve-once")
+        #expect(requests.first?.toolCallID == "fixture-permission-tool")
+        #expect(requests.first?.title == "Inspect fixture input")
+        await backend.shutdown()
+    }
+
+    @Test("fixture permission denial maps to the advertised reject-once option")
+    @MainActor
+    func fixturePermissionRequestCanBeDenied() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let permission = RecordingPermissionService(decision: .denied)
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                permissionPrompt: true,
+                permissionOutcome: "selected:reject-once"
+            ),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "deny permission", clientTurnID: "deny-once"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: deny permission")
+        #expect(await permission.requests.count == 1)
+        await backend.shutdown()
+    }
+
+    @Test("unavailable permission mediation cancels the ACP request instead of approving it")
+    @MainActor
+    func fixturePermissionRequestUnavailableFailsClosed() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let permission = RecordingPermissionService(decision: .unavailable(reason: "hostUnavailable"))
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true, permissionOutcome: "cancelled"),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "handle unavailable permission"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: handle unavailable permission")
+        #expect(await permission.requests.count == 1)
+        await backend.shutdown()
+    }
+
+    @Test("missing permission mediation service cancels the ACP request")
+    @MainActor
+    func missingPermissionServiceFailsClosed() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true, permissionOutcome: "cancelled"),
+            timelines: [.init(id: timelineID, title: "Configured")]
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "handle missing permission service"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: handle missing permission service")
+        await backend.shutdown()
+    }
+
+    @Test("unsupported permission options fail closed without asking the host to approve")
+    @MainActor
+    func unsupportedPermissionOptionsFailClosed() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let permission = RecordingPermissionService(decision: .approved)
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                permissionPrompt: true,
+                permissionOutcome: "cancelled",
+                unsupportedPermissionOptions: true
+            ),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "reject unsupported options"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: reject unsupported options")
+        #expect(await permission.requests.isEmpty)
+        await backend.shutdown()
+    }
+
+    @Test("a cancelled Turn resolves an in-flight permission request with the ACP cancelled outcome")
+    @MainActor
+    func cancelledTurnCancelsPermissionRequest() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let permission = DelayedPermissionService()
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true, permissionOutcome: "cancelled"),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "cancel permission request"),
+                updates: RecordingUpdateSink()
+            )
+        }
+
+        _ = await permission.waitForRequest()
+        await backend.cancel()
+        await permission.resolve(.approved)
+        #expect(try await turn.value == "fixture reply: cancel permission request")
+        await backend.shutdown()
+    }
+
     @Test("agent terminal failures are terminal and leave the backend usable")
     @MainActor
     func agentFailureIsTerminal() async throws {
@@ -296,7 +488,10 @@ struct ACPAscendantBackendTests {
     private func fixtureSettings(
         stateHome: URL,
         supportsList: Bool = true,
-        failClose: Bool = false
+        failClose: Bool = false,
+        permissionPrompt: Bool = false,
+        permissionOutcome: String = "selected:allow-once",
+        unsupportedPermissionOptions: Bool = false
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -308,6 +503,11 @@ struct ACPAscendantBackendTests {
         var fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": statePath]
         if !supportsList { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_NO_LIST"] = "1" }
         if failClose { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CLOSE_ERROR"] = "1" }
+        if permissionPrompt {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION"] = "1"
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME"] = permissionOutcome
+        }
+        if unsupportedPermissionOptions { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED"] = "1" }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
             "command": .string("/usr/bin/node"),

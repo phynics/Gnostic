@@ -59,6 +59,35 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       throw new Error("fixture terminal error");
     }
 
+    if (process.env.GNOSTIC_ACP_FIXTURE_PERMISSION === "1") {
+      const permission = await client.request(acp.methods.client.session.requestPermission, {
+        sessionId: params.sessionId,
+        toolCall: {
+          toolCallId: "fixture-permission-tool",
+          title: "Inspect fixture input",
+          kind: "read",
+          status: "pending",
+        },
+        options: process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED === "1"
+          ? [
+              { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
+              { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
+            ]
+          : [
+              { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+              { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
+            ],
+      });
+      const outcome = process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME ?? "selected:allow-once";
+      if (outcome === "selected:allow-once") {
+        assert.deepEqual(permission.outcome, { outcome: "selected", optionId: "allow-once" });
+      } else if (outcome === "selected:reject-once") {
+        assert.deepEqual(permission.outcome, { outcome: "selected", optionId: "reject-once" });
+      } else {
+        assert.deepEqual(permission.outcome, { outcome: "cancelled" });
+      }
+    }
+
     const messageId = "fixture-message-1";
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
