@@ -531,6 +531,57 @@ struct ACPAscendantBackendTests {
         await runtime.shutdown()
     }
 
+    @Test("runtime-created Timeline does not prevent NodeRuntime restart")
+    @MainActor
+    func runtimeTimelineDoesNotPreventRestart() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let configuredTimelineID = UUID()
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-restart-\(UUID().uuidString.lowercased())"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: ascendantID, name: "Restart fixture", defaultTimelineID: configuredTimelineID, backend: configuration)],
+            timelines: [.init(id: configuredTimelineID, title: "Configured identity", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+
+        let firstRuntime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await firstRuntime.start()
+        let createdTimeline = try await firstRuntime.createTimeline(title: "Process-scoped", ascendantID: ascendantID)
+        #expect(createdTimeline.timelineID != configuredTimelineID)
+        await firstRuntime.shutdown()
+
+        let restartedRuntime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await restartedRuntime.start()
+        let snapshot = await restartedRuntime.snapshot()
+        #expect(snapshot.operatedTimelineIDs == [configuredTimelineID])
+        #expect(await restartedRuntime.timeline(id: configuredTimelineID)?.title == "Configured identity")
+        #expect(await restartedRuntime.timeline(id: createdTimeline.timelineID) == nil)
+        let configuredTurn = try await restartedRuntime.turn(.init(
+            message: "verify configured session survives restart",
+            timelineID: configuredTimelineID,
+            clientTurnID: "configured-session-restart"
+        ))
+        #expect(configuredTurn.text == "fixture reply: verify configured session survives restart")
+        await restartedRuntime.shutdown()
+    }
+
     @Test("Timeline operations are idempotent and unknown removals are ignored")
     @MainActor
     func timelineOperationsAreIdempotent() async throws {
@@ -853,9 +904,9 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
-    @Test("Timeline session mapping survives backend restart and list reconciliation")
+    @Test("runtime Timeline session mappings are discarded after backend restart")
     @MainActor
-    func timelineMappingSurvivesRestart() async throws {
+    func runtimeTimelineMappingIsDiscardedAfterRestart() async throws {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
         let ascendantID = UUID()
@@ -871,17 +922,21 @@ struct ACPAscendantBackendTests {
         await first.shutdown()
 
         let restarted = try backend(settings: settings, timelines: [], ascendantID: ascendantID)
+        let storedSessionMap = try Data(contentsOf: stateHome.url.appendingPathComponent("\(ascendantID.uuidString).json"))
+        let storedSessions = try #require(JSONSerialization.jsonObject(with: storedSessionMap) as? [String: Any])
+        #expect(storedSessions.isEmpty)
         let firstList = try await restarted.operatedTimelines()
         let secondList = try await restarted.operatedTimelines()
-        #expect(firstList.map(\.id) == [timelineID])
-        #expect(secondList.map(\.id) == firstList.map(\.id))
-        let resumedText = try await restarted.runTurn(
-            .init(timelineID: timelineID, message: "resume the durable session"),
-            updates: RecordingUpdateSink()
-        )
-        #expect(resumedText == "fixture reply: resume the durable session")
+        #expect(firstList.isEmpty)
+        #expect(secondList.isEmpty)
+        await #expect(throws: AscendantBackendError.timelineNotFound(timelineID)) {
+            try await restarted.runTurn(
+                .init(timelineID: timelineID, message: "runtime Timelines do not survive restart"),
+                updates: RecordingUpdateSink()
+            )
+        }
         await restarted.removeTimeline(id: UUID())
-        #expect(try await restarted.operatedTimelines().map(\.id) == [timelineID])
+        #expect(try await restarted.operatedTimelines().isEmpty)
         await restarted.shutdown()
     }
 
