@@ -16,6 +16,7 @@ public actor AscendantTurnCoordinator {
     private struct InFlight: Sendable {
         let operationID: String
         let task: Task<String, Error>
+        let cancel: @Sendable () async -> Void
     }
 
     private struct AdmittedIdentity: Sendable {
@@ -137,6 +138,19 @@ public actor AscendantTurnCoordinator {
         _ = await observationScope.dispose()
     }
 
+    /// Cancels one admitted identified Turn without affecting another
+    /// Timeline's lane or any other Turn on the backend.
+    @discardableResult
+    public func cancelTurn(timelineID: UUID, clientTurnID: String) async -> Bool {
+        guard let canonicalID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID),
+              let active = inFlight[Key(timelineID: timelineID, clientTurnID: canonicalID)] else {
+            return false
+        }
+        await active.cancel()
+        active.task.cancel()
+        return true
+    }
+
     /// Waits up to `timeout` for cancelled Turn and lane tasks to settle, so
     /// cooperative work commits its terminal record while observer admission
     /// is still open. A task that outlives the window is abandoned rather than
@@ -221,6 +235,7 @@ public actor AscendantTurnCoordinator {
     public func execute(
         _ request: AscendantTurnRequest,
         ascendantID: UUID,
+        cancel: @escaping @Sendable () async -> Void = {},
         operation: @escaping TurnOperation
     ) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
@@ -373,7 +388,8 @@ public actor AscendantTurnCoordinator {
         let task = lane.task
         inFlight[key] = InFlight(
             operationID: admittedIdentity.operationID,
-            task: task
+            task: task,
+            cancel: cancel
         )
 
         do {

@@ -37,6 +37,44 @@ struct AscendantTurnCoordinatorTests {
         #expect(await probe.starts == 1)
     }
 
+    @Test("explicit cancellation is scoped to one admitted Turn and is replayed as cancelled")
+    func explicitCancellationIsStoredForReplay() async throws {
+        let coordinator = AscendantTurnCoordinator()
+        let probe = TurnProbe()
+        let timelineID = UUID()
+        let request = AscendantTurnRequest(message: "wait", timelineID: timelineID, clientTurnID: "cancel-me")
+        let turn = Task {
+            try await coordinator.execute(request, ascendantID: UUID(), cancel: {
+                await probe.cancelRequested()
+            }) {
+                await probe.enter("cancelled")
+                try await Task.sleep(for: .seconds(30))
+                return "must not complete"
+            }
+        }
+        await probe.waitForStarts(1)
+
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "cancel-me"))
+        do {
+            _ = try await turn.value
+            Issue.record("The explicitly cancelled Turn unexpectedly succeeded.")
+        } catch let error as AscendantTurnError {
+            guard case .cancelled = error else {
+                Issue.record("Expected a cancelled Turn, received \(error).")
+                return
+            }
+        }
+        #expect(await probe.cancellationRequests == 1)
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "cancel-me") == false)
+        await #expect(throws: AscendantTurnError.self) {
+            _ = try await coordinator.execute(request, ascendantID: UUID()) {
+                await probe.enter("unexpected replay operation")
+                return "wrong"
+            }
+        }
+        #expect(await probe.starts == 1)
+    }
+
     @Test("reusing an id with different content is rejected before execution")
     func conflictingTurnIsRejected() async throws {
         let coordinator = AscendantTurnCoordinator()
@@ -408,7 +446,7 @@ struct AscendantTurnCoordinatorTests {
         }
         for _ in 0..<100 {
             if await coordinator.inFlightCount == 2 { break }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(1))
         }
         #expect(await coordinator.inFlightCount == 2)
 
@@ -784,6 +822,9 @@ private actor TurnProbe {
     private(set) var active = 0
     private(set) var maxActive = 0
     private(set) var order: [String] = []
+    private(set) var cancellationRequests = 0
+
+    func cancelRequested() { cancellationRequests += 1 }
 
     func enter(_ label: String) {
         starts += 1

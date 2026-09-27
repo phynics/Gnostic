@@ -72,7 +72,18 @@ public final class TurnService {
             validatedClientTurnID = nil
         }
         let sink = BackendTurnUpdateSink(store: updates, request: turnRequest, clientTurnID: validatedClientTurnID)
-        return try await coordinator.execute(turnRequest, ascendantID: ascendantID) {
+        return try await coordinator.execute(
+            turnRequest,
+            ascendantID: ascendantID,
+            cancel: {
+                guard let session = await self.backendProvider.session(for: ascendantID),
+                      let cancellable = session.backend as? any AscendantBackendTurnCancellation else { return }
+                await cancellable.cancelTurn(
+                    timelineID: turnRequest.timelineID,
+                    clientTurnID: turnRequest.clientTurnID ?? ""
+                )
+            }
+        ) {
             if let validatedClientTurnID {
                 do {
                     try await self.updates.start(
@@ -117,6 +128,10 @@ public final class TurnService {
                 throw error
             }
         }
+    }
+
+    func cancelTurn(timelineID: UUID, clientTurnID: String) async -> Bool {
+        await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: clientTurnID)
     }
 }
 

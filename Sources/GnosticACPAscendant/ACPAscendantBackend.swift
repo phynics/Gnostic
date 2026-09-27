@@ -13,7 +13,7 @@ import Glibc
 ///
 /// This target owns the ACP client process, sessions, and private Timeline map.
 @MainActor
-public final class ACPAscendantBackend: AscendantBackend {
+public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation {
     /// The manifest backend kind served by this implementation.
     public nonisolated static let kind = "acp-client"
     private nonisolated static let processGroupLauncherPath = "/usr/bin/perl"
@@ -302,15 +302,15 @@ public final class ACPAscendantBackend: AscendantBackend {
                     message: "An ACP Turn is already active for this Timeline."
                 ))
             }
-            let activeTurn = ACPActiveTurn(clientTurnID: request.clientTurnID ?? "")
+            let activeTurn = ACPActiveTurn(clientTurnID: request.clientTurnID ?? "", sessionID: sessionID)
             activeTurns[request.timelineID] = activeTurn
             defer {
                 activeTurn.isCancelled = true
                 activeTurns.removeValue(forKey: request.timelineID)
             }
-            let eventStream = updateRouter.beginTurn()
+            let eventStream = updateRouter.beginTurn(sessionID: sessionID.value)
             let forwardingTask = Task {
-                await Self.forward(eventStream, to: updates)
+                await Self.forward(eventStream, to: updates, activeTurn: activeTurn)
             }
             let response: PromptResponse
             do {
@@ -323,12 +323,14 @@ public final class ACPAscendantBackend: AscendantBackend {
                     Task { @MainActor in activeTurn.isCancelled = true }
                 }
             } catch {
-                updateRouter.endTurn()
+                updateRouter.endTurn(sessionID: sessionID.value)
                 let (_, updateError) = await forwardingTask.value
                 if let updateError { throw updateError }
+                if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
                 throw error
             }
-            updateRouter.endTurn()
+            updateRouter.endTurn(sessionID: sessionID.value)
+            if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
             let (text, streamError) = await forwardingTask.value
             if let streamError { throw streamError }
             guard response.stopReason == .endTurn else {
@@ -349,10 +351,21 @@ public final class ACPAscendantBackend: AscendantBackend {
         }
     }
 
-    /// Marks active Turns cancelled so pending ACP permission requests fail closed.
-    /// Sending ACP `session/cancel` remains owned by the cancellation follow-up.
+    /// Marks active Turns cancelled during backend retirement.
     public func cancel() async {
-        activeTurns.values.forEach { $0.isCancelled = true }
+        for activeTurn in activeTurns.values { activeTurn.markCancelled() }
+    }
+
+    /// Sends ACP `session/cancel` only for the matching Timeline Turn.
+    public func cancelTurn(timelineID: UUID, clientTurnID: String) async {
+        guard let activeTurn = activeTurns[timelineID],
+              activeTurn.clientTurnID == clientTurnID,
+              let connection else { return }
+        activeTurn.cancelTurn()
+        try? await connection.sendNotification(
+            method: "session/cancel",
+            params: ACPCancelSessionRequest(sessionId: activeTurn.sessionID)
+        )
     }
 
     /// Closes the ACP transport and terminates the child process.
@@ -449,7 +462,7 @@ public final class ACPAscendantBackend: AscendantBackend {
             let processTransport = ACPProcessStdioTransport(
                 input: output.fileHandleForReading,
                 output: input.fileHandleForWriting,
-                onSessionUpdate: { [updateRouter] update in updateRouter.enqueue(update) },
+                onSessionUpdate: { [updateRouter] sessionID, update in updateRouter.enqueue(sessionID: sessionID.value, update) },
                 onFailure: { [weak self] in
                     Task { @MainActor [weak self] in
                         self?.lifecycleFailure = AscendantBackendLifecycleFailure(
@@ -572,13 +585,16 @@ public final class ACPAscendantBackend: AscendantBackend {
             return try Self.permissionResponse(for: .cancelled)
         }
 
-        let decision = await permissionService.requestApproval(for: BackendPermissionRequest(
-            correlationID: "acp-\(request.id)",
-            timelineID: timelineID,
-            clientTurnID: activeTurn.clientTurnID,
-            toolCallID: permissionRequest.toolCall.toolCallId.value,
-            title: permissionRequest.toolCall.title ?? "External ACP tool call"
-        ))
+        let permissionService = self.permissionService
+        let decision = await activeTurn.requestPermission {
+            await permissionService.requestApproval(for: BackendPermissionRequest(
+                correlationID: "acp-\(request.id)",
+                timelineID: timelineID,
+                clientTurnID: activeTurn.clientTurnID,
+                toolCallID: permissionRequest.toolCall.toolCallId.value,
+                title: permissionRequest.toolCall.title ?? "External ACP tool call"
+            ))
+        }
         guard !activeTurn.isCancelled else {
             return try Self.permissionResponse(for: .cancelled)
         }
@@ -927,11 +943,13 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     private nonisolated static func forward(
         _ events: AsyncStream<SessionUpdate>,
-        to sink: any AscendantBackendUpdateSink
+        to sink: any AscendantBackendUpdateSink,
+        activeTurn: ACPActiveTurn
     ) async -> (String, (any Error)?) {
         var assistantText = ""
         var appendError: (any Error)?
         for await event in events {
+            guard !(await activeTurn.isTurnCancelled) else { continue }
             guard appendError == nil else { continue }
             guard let update = backendUpdate(for: event, assistantText: &assistantText) else { continue }
             do {
@@ -1004,10 +1022,42 @@ private struct ACPInitializeResponse: Decodable {
 @MainActor
 private final class ACPActiveTurn {
     let clientTurnID: String
+    let sessionID: SessionId
     var isCancelled = false
+    var isTurnCancelled = false
+    private var permissionContinuations: [UUID: CheckedContinuation<AscendantPermissionDecision, Never>] = [:]
 
-    init(clientTurnID: String) {
+    init(clientTurnID: String, sessionID: SessionId) {
         self.clientTurnID = clientTurnID
+        self.sessionID = sessionID
+    }
+
+    func markCancelled() {
+        isCancelled = true
+    }
+
+    func cancelTurn() {
+        isCancelled = true
+        isTurnCancelled = true
+        let continuations = permissionContinuations.values
+        permissionContinuations.removeAll()
+        continuations.forEach { $0.resume(returning: .unavailable(reason: "turnCancelled")) }
+    }
+
+    func requestPermission(
+        _ operation: @escaping @Sendable () async -> AscendantPermissionDecision
+    ) async -> AscendantPermissionDecision {
+        guard !isCancelled else { return .unavailable(reason: "turnCancelled") }
+        let requestID = UUID()
+        return await withCheckedContinuation { continuation in
+            permissionContinuations[requestID] = continuation
+            Task { @MainActor [weak self] in
+                let decision = await operation()
+                guard let self,
+                      let continuation = self.permissionContinuations.removeValue(forKey: requestID) else { return }
+                continuation.resume(returning: decision)
+            }
+        }
     }
 }
 
@@ -1036,6 +1086,10 @@ private struct ACPAgentSessionCapabilities: Decodable {
 private struct ACPAdvertisedFeature: Decodable {}
 
 private struct ACPCloseSessionRequest: Encodable {
+    let sessionId: SessionId
+}
+
+private struct ACPCancelSessionRequest: Encodable {
     let sessionId: SessionId
 }
 
@@ -1084,27 +1138,26 @@ private final class ProcessExitWaiter: @unchecked Sendable { // SAFETY: `continu
 
 private final class ACPUpdateRouter: @unchecked Sendable { // SAFETY: The active AsyncStream continuation is read, replaced, and finished only while holding `lock`; AsyncStream continuations support concurrent yields.
     private let lock = NSLock()
-    private var continuation: AsyncStream<SessionUpdate>.Continuation?
+    private var continuations: [String: AsyncStream<SessionUpdate>.Continuation] = [:]
 
-    func beginTurn() -> AsyncStream<SessionUpdate> {
+    func beginTurn(sessionID: String) -> AsyncStream<SessionUpdate> {
         let (stream, continuation) = AsyncStream<SessionUpdate>.makeStream()
         lock.lock()
-        self.continuation?.finish()
-        self.continuation = continuation
+        continuations.removeValue(forKey: sessionID)?.finish()
+        continuations[sessionID] = continuation
         lock.unlock()
         return stream
     }
 
-    func enqueue(_ update: SessionUpdate) {
+    func enqueue(sessionID: String, _ update: SessionUpdate) {
         lock.lock()
-        continuation?.yield(update)
+        continuations[sessionID]?.yield(update)
         lock.unlock()
     }
 
-    func endTurn() {
+    func endTurn(sessionID: String) {
         lock.lock()
-        continuation?.finish()
-        continuation = nil
+        continuations.removeValue(forKey: sessionID)?.finish()
         lock.unlock()
     }
 }

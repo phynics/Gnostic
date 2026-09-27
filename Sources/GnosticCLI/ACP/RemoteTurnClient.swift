@@ -187,6 +187,22 @@ public final class RemoteTurnClient: Sendable {
         }
     }
 
+    /// Sends an explicit cancellation for one identified Timeline Turn.
+    public func cancelTurn(
+        timelineID: UUID,
+        clientTurnID: String,
+        providerID: String
+    ) async throws -> Bool {
+        let turns = try connectedTurns()
+        return try await tracked(providerID) {
+            try await turns.cancel(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                providerID: providerID
+            )
+        }
+    }
+
     /// Reads bounded identified-turn updates retained by the serve runtime.
     /// ACP adapters use this operation to replay updates after a stdio or
     /// broker reconnect without re-running the Timeline turn.

@@ -206,9 +206,12 @@ is the evidence ADR 0005 asked for.
   community SDK. Neither is a Core or production dependency.
 - ADR 0005's extraction trigger stays deferred, now with two concrete second
   backend candidates recorded rather than an assumption.
-- No wire, manifest-shape, protocol-major, or persisted-identity contract
-  changes. `gnostic acp`, the ACP frontend, and the flat `AscendantBackend`
-  contract are untouched.
+- No manifest-shape, protocol-major, or persisted-identity contract changes.
+  GNO-ACPC-006 (#294) adds one explicit `ascendant.turn.cancel` operation,
+  addressed by Timeline and client Turn identity, plus an optional Core
+  cancellation capability. `gnostic acp` maps its `session/cancel` to that
+  operation; backend-wide `cancel()` remains a retirement/shutdown operation.
+  This narrow addition does not add an ACP or process dependency to Core.
 
 ## Reconsideration triggers
 

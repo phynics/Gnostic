@@ -19,6 +19,7 @@ final class NodeRuntimeHost {
         let localWorkspaces: [UUID: any WorkspaceProvider]
         let isAvailable: @MainActor () -> Bool
         let turn: NodeTransport.Turn
+        let cancelTurn: NodeTransport.TurnCancellation
         let timelineStatus: NodeTransport.TimelineStatusLookup
         let selectAscendant: NodeTransport.AscendantSelection
         let createTimeline: NodeTransport.TimelineCreation
@@ -90,6 +91,7 @@ final class NodeRuntimeHost {
             localWorkspaces: wiring.localWorkspaces,
             isAvailable: wiring.isAvailable,
             turn: wiring.turn,
+            cancelTurn: wiring.cancelTurn,
             timelineStatus: wiring.timelineStatus,
             selectAscendant: wiring.selectAscendant,
             createTimeline: wiring.createTimeline,

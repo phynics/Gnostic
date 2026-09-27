@@ -748,10 +748,21 @@ public protocol AscendantBackend: AnyObject, Sendable {
     ///   work failed, and ``AscendantBackendError/lifecycleUnusable(_:)`` when
     ///   the backend can no longer serve its Ascendant.
     func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String
-    /// Cancels the running Turn, if any. Returns once cancellation is requested.
+    /// Cancels all running work for backend retirement or shutdown. This is
+    /// backend-wide; use ``AscendantBackendTurnCancellation`` for one Turn.
     func cancel() async
     /// Releases the backend's resources. Called once, and not concurrently with a Turn.
     func shutdown() async
+}
+
+/// Optional scoped cancellation for one identified Timeline Turn.
+///
+/// `cancel()` remains the backend-wide lifecycle operation. Backends that can
+/// target a user-requested cancellation implement this capability instead.
+@MainActor
+public protocol AscendantBackendTurnCancellation: AnyObject, Sendable {
+    /// Requests cancellation of the identified Turn on this Timeline.
+    func cancelTurn(timelineID: UUID, clientTurnID: String) async
 }
 
 private struct EmptyBackendPermissionService: AscendantBackendPermissionService {

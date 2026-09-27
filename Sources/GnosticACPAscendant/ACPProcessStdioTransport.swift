@@ -20,7 +20,7 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     private let sendContinuation: AsyncStream<JsonRpcMessage>.Continuation
     private let input: FileHandle
     private let output: FileHandle
-    private let onSessionUpdate: @Sendable (SessionUpdate) -> Void
+    private let onSessionUpdate: @Sendable (SessionId, SessionUpdate) -> Void
     private let onFailure: @Sendable () -> Void
     private let lock = NSLock()
     private var started = false
@@ -32,7 +32,7 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (SessionUpdate) -> Void,
+        onSessionUpdate: @escaping @Sendable (SessionId, SessionUpdate) -> Void,
         onFailure: @escaping @Sendable () -> Void
     ) {
         self.input = input
@@ -68,7 +68,7 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
                            let params = notification.params,
                            let paramsData = try? JSONEncoder().encode(params),
                            let sessionNotification = try? JSONDecoder().decode(SessionNotification.self, from: paramsData) {
-                            onSessionUpdate(sessionNotification.update)
+                            onSessionUpdate(sessionNotification.sessionId, sessionNotification.update)
                         }
                         messageContinuation.yield(message)
                     }

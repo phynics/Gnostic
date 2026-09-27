@@ -30,6 +30,7 @@ public final class NodeTransport {
     }
 
     typealias Turn = @MainActor (AscendantTurnRequest) async throws -> AscendantTurnResult
+    typealias TurnCancellation = @MainActor (AscendantTurnCancellationRequest) async -> Bool
     typealias TimelineStatusLookup = @MainActor (UUID) async throws -> TimelineStatus
     typealias AscendantSelection = @MainActor (UUID?) throws -> UUID
     typealias TimelineCreation = @MainActor (String, UUID) async throws -> TimelineStatus
@@ -40,6 +41,7 @@ public final class NodeTransport {
 
     private let isAvailable: @MainActor () -> Bool
     private let turnOperation: Turn
+    private let turnCancellationOperation: TurnCancellation
     private let timelineStatusOperation: TimelineStatusLookup
     private let selectAscendantOperation: AscendantSelection
     private let createTimelineOperation: TimelineCreation
@@ -77,6 +79,7 @@ public final class NodeTransport {
         localWorkspaces: [UUID: any WorkspaceProvider] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         turn: @escaping Turn,
+        cancelTurn: @escaping TurnCancellation = { _ in false },
         timelineStatus: @escaping TimelineStatusLookup,
         selectAscendant: @escaping AscendantSelection,
         createTimeline: @escaping TimelineCreation,
@@ -99,6 +102,7 @@ public final class NodeTransport {
         }
         self.isAvailable = isAvailable
         turnOperation = turn
+        turnCancellationOperation = cancelTurn
         timelineStatusOperation = timelineStatus
         selectAscendantOperation = selectAscendant
         createTimelineOperation = createTimeline
@@ -148,6 +152,10 @@ public final class NodeTransport {
                     guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
                     return try await self.turn(request)
                 },
+                cancel: { [weak self] request in
+                    guard let self, await self.isAvailable() else { return false }
+                    return await self.turnCancellationOperation(request)
+                },
                 replayStore: turnUpdates,
                 isAvailable: { [weak self] in await self?.isAvailable() == true }
             )
@@ -161,6 +169,12 @@ public final class NodeTransport {
             _ = try await registrationScope.acquire(
                 label: "ascendant-turn-replay",
                 acquire: { try await turnProvider.registerReplay(on: communication, context: context) },
+                cleanup: { registration in registration.cancel() }
+            )
+            try hooks.beforeRegistration("ascendant-turn-cancel")
+            _ = try await registrationScope.acquire(
+                label: "ascendant-turn-cancel",
+                acquire: { try await turnProvider.registerCancellation(on: communication, context: context) },
                 cleanup: { registration in registration.cancel() }
             )
 
