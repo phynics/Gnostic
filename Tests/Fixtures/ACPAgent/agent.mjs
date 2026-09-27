@@ -1,25 +1,46 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 
 const statePath = process.env.GNOSTIC_ACP_FIXTURE_STATE;
 assert(statePath, "GNOSTIC_ACP_FIXTURE_STATE is required");
+const parentOnlyKey = process.env.GNOSTIC_ACP_FIXTURE_PARENT_ONLY_KEY;
+assert(!parentOnlyKey || process.env[parentOnlyKey] === undefined, "unconfigured parent environment leaked to fixture");
+if (process.env.GNOSTIC_ACP_FIXTURE_STDERR_SECRET === "1") {
+  process.stderr.write(`fixture diagnostic ${process.env.API_TOKEN}\n`);
+}
+if (process.env.GNOSTIC_ACP_FIXTURE_CHILD_PID_FILE) {
+  const child = spawn("/bin/sleep", ["300"], { stdio: "ignore" });
+  await writeFile(process.env.GNOSTIC_ACP_FIXTURE_CHILD_PID_FILE, String(child.pid));
+}
+if (process.env.GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE) {
+  await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE, `${process.pid}\n`);
+}
+if (process.env.GNOSTIC_ACP_FIXTURE_START_COUNT_FILE) {
+  await appendFile(process.env.GNOSTIC_ACP_FIXTURE_START_COUNT_FILE, "started\n");
+}
 const sessions = await loadSessions();
 let sessionCounter = 0;
 
 const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
-  .onRequest(acp.methods.agent.initialize, () => ({
-    protocolVersion: acp.PROTOCOL_VERSION,
-    agentCapabilities: {
-      sessionCapabilities: {
-        ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : { list: {} }),
-        resume: {},
-        close: {},
+  .onRequest(acp.methods.agent.initialize, async () => {
+    if (process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS) {
+      await new Promise((resolve) => setTimeout(resolve, Number(process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS)));
+    }
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {
+        sessionCapabilities: {
+          ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : { list: {} }),
+          resume: {},
+          close: {},
+        },
       },
-    },
-    agentInfo: { name: "gnostic-deterministic-acp-fixture", version: "1" },
-  }))
+      agentInfo: { name: "gnostic-deterministic-acp-fixture", version: "1" },
+    };
+  })
   .onRequest(acp.methods.agent.session.new, async ({ params }) => {
     let sessionId;
     do {
@@ -51,6 +72,25 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   })
   .onRequest(acp.methods.agent.session.prompt, async ({ params, client }) => {
     if (!sessions.has(params.sessionId)) throw new Error("unknown fixture session");
+    if (process.env.GNOSTIC_ACP_FIXTURE_CRASH_ON_PROMPT === "1") {
+      process.stderr.write(`fixture crash diagnostic ${process.env.API_TOKEN}\n`);
+      process.exit(19);
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_CRASH_ONCE_FILE) {
+      try {
+        await readFile(process.env.GNOSTIC_ACP_FIXTURE_CRASH_ONCE_FILE);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        await writeFile(process.env.GNOSTIC_ACP_FIXTURE_CRASH_ONCE_FILE, "crashed");
+        process.exit(19);
+      }
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS) {
+      if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
+        await writeFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE, "started");
+      }
+      await new Promise((resolve) => setTimeout(resolve, Number(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS)));
+    }
     const prompt = params.prompt
       .filter((block) => block.type === "text")
       .map((block) => block.text)

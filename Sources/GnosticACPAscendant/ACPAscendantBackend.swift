@@ -16,6 +16,7 @@ import Glibc
 public final class ACPAscendantBackend: AscendantBackend {
     /// The manifest backend kind served by this implementation.
     public nonisolated static let kind = "acp-client"
+    private nonisolated static let processGroupLauncherPath = "/usr/bin/perl"
 
     /// The configuration keys accepted by the ACP client backend.
     public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
@@ -42,10 +43,16 @@ public final class ACPAscendantBackend: AscendantBackend {
     private var activeSessionIDs: Set<UUID> = []
     private let sessionMapURL: URL
     private var process: Process?
+    private var stderrPipe: Pipe?
+    private var stderrDrainTask: Task<Void, Never>?
     private var transport: ACPProcessStdioTransport?
     private var connection: ACPProtocolLayer?
+    private var connectionTask: Task<ACPProtocolLayer, Error>?
+    private var connectionTaskID: UUID?
+    private var isShuttingDown = false
     private var sessionCapabilities: ACPAgentSessionCapabilities?
     private let permissionService: any AscendantBackendPermissionService
+    // The backend contract serializes Turns per Timeline; one active entry per Timeline is intentional.
     private var activeTurns: [UUID: ACPActiveTurn] = [:]
     private let updateRouter = ACPUpdateRouter()
     private var lifecycleFailure: AscendantBackendLifecycleFailure?
@@ -123,7 +130,20 @@ public final class ACPAscendantBackend: AscendantBackend {
     /// Revalidates the stored envelope and its process launch settings.
     public func validateConfiguration() throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
-        _ = try Self.parse(configuration)
+        let candidate = try Self.parse(configuration)
+        guard FileManager.default.isExecutableFile(atPath: Self.processGroupLauncherPath) else {
+            throw Self.invalidConfiguration("The ACP backend setting 'command' requires the Perl process-group launcher at /usr/bin/perl.")
+        }
+        let directory = candidate.workingDirectory ?? FileManager.default.currentDirectoryPath
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw Self.invalidConfiguration("The ACP backend setting 'cwd' must name an existing directory.")
+        }
+        do {
+            _ = try resolvedExecutableURL(command: candidate.command, environment: Self.childEnvironment(from: candidate))
+        } catch {
+            throw Self.invalidConfiguration("The ACP backend setting 'command' must name an executable file.")
+        }
     }
 
     /// Returns Gnostic Timelines whose ACP sessions still exist at the agent.
@@ -270,6 +290,18 @@ public final class ACPAscendantBackend: AscendantBackend {
         do {
             let connection = try await requireConnection()
             let sessionID = try await requireSession(for: request.timelineID, connection: connection)
+            guard !isShuttingDown else {
+                throw AscendantBackendError.lifecycleUnusable(.init(
+                    code: "acpBackendShuttingDown",
+                    message: "The ACP backend is shutting down."
+                ))
+            }
+            guard activeTurns[request.timelineID] == nil else {
+                throw AscendantBackendError.terminal(.init(
+                    code: "acpTurnAlreadyActive",
+                    message: "An ACP Turn is already active for this Timeline."
+                ))
+            }
             let activeTurn = ACPActiveTurn(clientTurnID: request.clientTurnID ?? "")
             activeTurns[request.timelineID] = activeTurn
             defer {
@@ -325,12 +357,23 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     /// Closes the ACP transport and terminates the child process.
     public func shutdown() async {
+        await cancel()
+        isShuttingDown = true
+        let pendingConnection = connectionTask
+        pendingConnection?.cancel()
         if let process { await stopProcess(process) }
+        if let pendingConnection { _ = await pendingConnection.result }
+        connectionTask = nil
+        connectionTaskID = nil
         await connection?.close()
         connection = nil
         await transport?.close()
         transport = nil
         process = nil
+        try? stderrPipe?.fileHandleForReading.close()
+        stderrPipe = nil
+        if let stderrDrainTask { await stderrDrainTask.value }
+        stderrDrainTask = nil
         sessionCapabilities = nil
         lifecycleFailure = nil
         activeSessionIDs.removeAll()
@@ -342,25 +385,67 @@ public final class ACPAscendantBackend: AscendantBackend {
 
     private func requireConnection() async throws -> ACPProtocolLayer {
         if let lifecycleFailure { throw AscendantBackendError.lifecycleUnusable(lifecycleFailure) }
+        guard !isShuttingDown else {
+            throw AscendantBackendError.lifecycleUnusable(.init(
+                code: "acpBackendShuttingDown",
+                message: "The ACP backend is shutting down."
+            ))
+        }
+        if let connectionTask { return try await connectionTask.value }
         if let connection { return connection }
+        let taskID = UUID()
+        let task = Task { @MainActor in try await establishConnection() }
+        connectionTaskID = taskID
+        connectionTask = task
+        do {
+            let established = try await task.value
+            if connectionTaskID == taskID {
+                connectionTask = nil
+                connectionTaskID = nil
+            }
+            return established
+        } catch {
+            if connectionTaskID == taskID {
+                connectionTask = nil
+                connectionTaskID = nil
+            }
+            throw error
+        }
+    }
+
+    private func establishConnection() async throws -> ACPProtocolLayer {
         let child = Process()
         let input = Pipe()
         let output = Pipe()
+        let errorOutput = Pipe()
         child.arguments = launchSpec.arguments
         child.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
-        child.environment = ProcessInfo.processInfo.environment.merging(launchSpec.environment) { _, value in value }
+        child.environment = Self.childEnvironment(from: launchSpec)
         child.standardInput = input
         child.standardOutput = output
-        child.standardError = FileHandle.standardError
+        child.standardError = errorOutput
         var connection: ACPProtocolLayer?
-        var connectionStage = "resolve agent executable"
+        var connectionStage = "resolve configured agent executable"
         do {
-            child.executableURL = try resolvedExecutableURL(command: launchSpec.command, environment: child.environment ?? [:])
-            connectionStage = "start agent process"
+            let agentExecutable = try resolvedExecutableURL(command: launchSpec.command, environment: child.environment ?? [:])
+            // Perl sets a dedicated process group before exec so shutdown can signal all descendants.
+            child.executableURL = URL(fileURLWithPath: Self.processGroupLauncherPath)
+            child.arguments = [
+                "-MPOSIX",
+                "-e",
+                "setpgid(0, 0) or die; my $program = shift; exec {$program} $program, @ARGV or die;",
+                agentExecutable.path,
+            ] + launchSpec.arguments
+            connectionStage = "start agent through the Perl process-group launcher"
             try child.run()
             try? input.fileHandleForReading.close()
             try? output.fileHandleForWriting.close()
+            try? errorOutput.fileHandleForWriting.close()
             process = child
+            stderrPipe = errorOutput
+            stderrDrainTask = Task.detached { [readHandle = errorOutput.fileHandleForReading, secrets = launchSpec.environment.values] in
+                await Self.drainStderr(readHandle, redacting: Array(secrets))
+            }
             let processTransport = ACPProcessStdioTransport(
                 input: output.fileHandleForReading,
                 output: input.fileHandleForWriting,
@@ -402,18 +487,22 @@ public final class ACPAscendantBackend: AscendantBackend {
             if !child.isRunning {
                 let lifecycle = AscendantBackendLifecycleFailure(
                     code: "acpTransportUnusable",
-                    message: "Could not connect to the configured ACP agent process while attempting to \(connectionStage): \(error.localizedDescription)"
+                    message: "Could not connect to the configured ACP agent process while attempting to \(connectionStage)."
                 )
                 lifecycleFailure = lifecycle
                 failure = .lifecycleUnusable(lifecycle)
             } else {
                 failure = map(error, context: "Could not initialize the ACP agent")
             }
-            if child.isRunning { child.terminate() }
+            if child.isRunning, !isShuttingDown { await stopProcess(child) }
             await connection?.close()
             self.connection = nil
             self.transport = nil
             process = nil
+            try? errorOutput.fileHandleForReading.close()
+            stderrPipe = nil
+            if let stderrDrainTask { await stderrDrainTask.value }
+            stderrDrainTask = nil
             throw failure
         }
     }
@@ -555,7 +644,10 @@ public final class ACPAscendantBackend: AscendantBackend {
     }
 
     private func stopProcess(_ process: Process) async {
-        guard process.isRunning else { return }
+        guard process.isRunning else {
+            process.waitUntilExit()
+            return
+        }
         let pid = process.processIdentifier
         let gracefulExit = ProcessExitWaiter()
         process.terminationHandler = { _ in gracefulExit.complete(true) }
@@ -563,8 +655,11 @@ public final class ACPAscendantBackend: AscendantBackend {
             gracefulExit.complete(true)
             return
         }
-        process.terminate()
-        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) { return }
+        if kill(-pid, SIGTERM) != 0 { process.terminate() }
+        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) {
+            process.waitUntilExit()
+            return
+        }
 
         let forcedExit = ProcessExitWaiter()
         process.terminationHandler = { _ in forcedExit.complete(true) }
@@ -572,12 +667,18 @@ public final class ACPAscendantBackend: AscendantBackend {
             forcedExit.complete(true)
             return
         }
-        _ = kill(pid, SIGKILL)
+        if kill(-pid, SIGKILL) != 0 { _ = kill(pid, SIGKILL) }
         _ = await forcedExit.wait(timeoutNanoseconds: 1_000_000_000)
+        process.waitUntilExit()
     }
 
     private func map(_ error: any Error, context: String) -> AscendantBackendError {
-        if let backendError = error as? AscendantBackendError { return backendError }
+        if let backendError = error as? AscendantBackendError {
+            if case let .terminal(failure) = backendError {
+                return .terminal(.init(code: failure.code, message: redact(failure.message)))
+            }
+            return backendError
+        }
         if let protocolError = error as? ProtocolError {
             if case .transportClosed = protocolError {
                 let failure = AscendantBackendLifecycleFailure(
@@ -604,12 +705,46 @@ public final class ACPAscendantBackend: AscendantBackend {
             lifecycleFailure = failure
             return .lifecycleUnusable(failure)
         }
-        return .terminal(.init(code: "acpAgentFailure", message: "\(context): \(error.localizedDescription)"))
+        return .terminal(.init(code: "acpAgentFailure", message: redact("\(context): \(error.localizedDescription)")))
+    }
+
+    private func redact(_ message: String) -> String {
+        launchSpec.environment.values
+            .filter { !$0.isEmpty }
+            .sorted { $0.count > $1.count }
+            .reduce(message) { $0.replacingOccurrences(of: $1, with: "[REDACTED]") }
+    }
+
+    private nonisolated static func childEnvironment(from launchSpec: ACPLaunchSpec) -> [String: String] {
+        let inherited = ProcessInfo.processInfo.environment
+        let inheritedAllowlist = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"]
+        var environment = inheritedAllowlist.reduce(into: [String: String]()) { result, key in
+            if let value = inherited[key] { result[key] = value }
+        }
+        for (key, value) in launchSpec.environment { environment[key] = value }
+        return environment
+    }
+
+    private nonisolated static func drainStderr(_ handle: FileHandle, redacting secrets: [String]) async {
+        let redactor = ACPStderrRedactor(secrets: secrets)
+        while !Task.isCancelled {
+            guard let data = try? handle.read(upToCount: 4096), !data.isEmpty else {
+                let finalOutput = redactor.consume(Data(), finishing: true)
+                if !finalOutput.isEmpty { FileHandle.standardError.write(finalOutput) }
+                return
+            }
+            let safeOutput = redactor.consume(data)
+            if !safeOutput.isEmpty { FileHandle.standardError.write(safeOutput) }
+        }
     }
 
     private func resolvedExecutableURL(command: String, environment: [String: String]) throws -> URL {
         if command.contains("/") {
-            return URL(fileURLWithPath: command)
+            let executable = URL(fileURLWithPath: command)
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            return executable
         }
         let searchPath = environment["PATH"] ?? ""
         for directory in searchPath.split(separator: ":") {
