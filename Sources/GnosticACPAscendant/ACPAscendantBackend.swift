@@ -136,6 +136,11 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             updatedAt: now,
             capabilities: .init(backendKind: Self.kind, backendVersion: "0.1.16")
         )
+        if sessionIDs.count != recoveredSessions.count {
+            // Runtime-created Timelines are process-scoped; prune their stale ACP sessions without
+            // making startup depend on this best-effort cleanup write.
+            try? persistSessionMap()
+        }
     }
 
     /// Revalidates the stored envelope and its process launch settings.

@@ -573,6 +573,12 @@ struct ACPAscendantBackendTests {
         #expect(snapshot.operatedTimelineIDs == [configuredTimelineID])
         #expect(await restartedRuntime.timeline(id: configuredTimelineID)?.title == "Configured identity")
         #expect(await restartedRuntime.timeline(id: createdTimeline.timelineID) == nil)
+        let configuredTurn = try await restartedRuntime.turn(.init(
+            message: "verify configured session survives restart",
+            timelineID: configuredTimelineID,
+            clientTurnID: "configured-session-restart"
+        ))
+        #expect(configuredTurn.text == "fixture reply: verify configured session survives restart")
         await restartedRuntime.shutdown()
     }
 
@@ -916,6 +922,9 @@ struct ACPAscendantBackendTests {
         await first.shutdown()
 
         let restarted = try backend(settings: settings, timelines: [], ascendantID: ascendantID)
+        let storedSessionMap = try Data(contentsOf: stateHome.url.appendingPathComponent("\(ascendantID.uuidString).json"))
+        let storedSessions = try #require(JSONSerialization.jsonObject(with: storedSessionMap) as? [String: Any])
+        #expect(storedSessions.isEmpty)
         let firstList = try await restarted.operatedTimelines()
         let secondList = try await restarted.operatedTimelines()
         #expect(firstList.isEmpty)
