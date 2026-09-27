@@ -3,6 +3,11 @@
 import Foundation
 import GnosticCore
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 @testable import GnosticCLI
 
@@ -146,10 +151,27 @@ struct ACPMixedConfigurationTests {
     @Test("a configured ACP Ascendant starts beside a Positronic Ascendant")
     @MainActor
     func startsMixedNodeWithACPBackend() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
         let positronicID = UUID()
         let acpID = UUID()
         let positronicTimelineID = UUID()
         let acpTimelineID = UUID()
+        let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
+            ?? URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Tests/Fixtures/ACPAgent/agent.mjs")
+                .path
+        let fixtureState = stateHome.url.appendingPathComponent("agent-sessions.json").path
+        let fixtureArgs = try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))
+        let fixtureEnvironment = try #require(String(
+            data: JSONEncoder().encode([
+                "GNOSTIC_ACP_FIXTURE_STATE": fixtureState,
+            ]),
+            encoding: .utf8
+        ))
         let manifest = NodeManifest(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-mixed-\(UUID().uuidString)"),
             node: .init(id: UUID()),
@@ -159,7 +181,11 @@ struct ACPMixedConfigurationTests {
                     id: acpID,
                     name: "ACP agent",
                     defaultTimelineID: acpTimelineID,
-                    backend: .init(kind: "acp-client", settings: ["command": .string("fixture-agent")])
+                    backend: .init(kind: "acp-client", settings: [
+                        "command": .string("/usr/bin/node"),
+                        "args": .string(fixtureArgs),
+                        "env": .string(fixtureEnvironment),
+                    ])
                 ),
             ],
             timelines: [
@@ -209,6 +235,31 @@ struct ACPMixedConfigurationTests {
                 Issue.record("Unexpected NodeRuntimeError: \(error)")
                 return
             }
+        }
+    }
+
+    private func makeTemporaryStateHome() throws -> TemporaryStateHome {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-mixed-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let previousValue = getenv("GNOSTIC_STATE_HOME").map { String(cString: $0) }
+        guard setenv("GNOSTIC_STATE_HOME", url.path, 1) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return TemporaryStateHome(url: url, previousValue: previousValue)
+    }
+
+    private struct TemporaryStateHome {
+        let url: URL
+        let previousValue: String?
+
+        func cleanup() {
+            if let previousValue {
+                _ = setenv("GNOSTIC_STATE_HOME", previousValue, 1)
+            } else {
+                _ = unsetenv("GNOSTIC_STATE_HOME")
+            }
+            try? FileManager.default.removeItem(at: url)
         }
     }
 }

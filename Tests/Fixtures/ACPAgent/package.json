@@ -1,0 +1,8 @@
+{
+  "name": "gnostic-acp-agent-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0"
+  }
+}
