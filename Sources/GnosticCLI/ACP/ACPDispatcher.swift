@@ -228,15 +228,20 @@ final class ACPDispatcher: Sendable {
         guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
         cancelledSessions.insert(input.sessionID)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
-        let remoteCancellation = Task {
-            try await client.cancelTurn(
-                timelineID: prompt.timelineID,
-                clientTurnID: prompt.clientTurnID,
-                providerID: prompt.providerID
-            )
+        Task { @MainActor [client] in
+            do {
+                _ = try await client.cancelTurn(
+                    timelineID: prompt.timelineID,
+                    clientTurnID: prompt.clientTurnID,
+                    providerID: prompt.providerID
+                )
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "ACP session cancellation could not be forwarded to the serving runtime.\n".utf8
+                ))
+            }
         }
         await prompt.cancel()
-        _ = try await remoteCancellation.value
         return .dictionary([:])
     }
 

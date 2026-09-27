@@ -358,8 +358,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 
     /// Sends ACP `session/cancel` only for the matching Timeline Turn.
     public func cancelTurn(timelineID: UUID, clientTurnID: String) async {
+        guard let canonicalClientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else { return }
         guard let activeTurn = activeTurns[timelineID],
-              activeTurn.clientTurnID == clientTurnID,
+              activeTurn.clientTurnID == canonicalClientTurnID,
               let connection else { return }
         activeTurn.cancelTurn()
         try? await connection.sendNotification(
@@ -586,14 +587,15 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
 
         let permissionService = self.permissionService
+        let backendPermissionRequest = BackendPermissionRequest(
+            correlationID: "acp-\(request.id)",
+            timelineID: timelineID,
+            clientTurnID: activeTurn.clientTurnID,
+            toolCallID: permissionRequest.toolCall.toolCallId.value,
+            title: permissionRequest.toolCall.title ?? "External ACP tool call"
+        )
         let decision = await activeTurn.requestPermission {
-            await permissionService.requestApproval(for: BackendPermissionRequest(
-                correlationID: "acp-\(request.id)",
-                timelineID: timelineID,
-                clientTurnID: activeTurn.clientTurnID,
-                toolCallID: permissionRequest.toolCall.toolCallId.value,
-                title: permissionRequest.toolCall.title ?? "External ACP tool call"
-            ))
+            await permissionService.requestApproval(for: backendPermissionRequest)
         }
         guard !activeTurn.isCancelled else {
             return try Self.permissionResponse(for: .cancelled)
@@ -1026,6 +1028,7 @@ private final class ACPActiveTurn {
     var isCancelled = false
     var isTurnCancelled = false
     private var permissionContinuations: [UUID: CheckedContinuation<AscendantPermissionDecision, Never>] = [:]
+    private var permissionTasks: [UUID: Task<Void, Never>] = [:]
 
     init(clientTurnID: String, sessionID: SessionId) {
         self.clientTurnID = clientTurnID
@@ -1041,6 +1044,9 @@ private final class ACPActiveTurn {
         isTurnCancelled = true
         let continuations = permissionContinuations.values
         permissionContinuations.removeAll()
+        let tasks = permissionTasks.values
+        permissionTasks.removeAll()
+        tasks.forEach { $0.cancel() }
         continuations.forEach { $0.resume(returning: .unavailable(reason: "turnCancelled")) }
     }
 
@@ -1051,13 +1057,16 @@ private final class ACPActiveTurn {
         let requestID = UUID()
         return await withCheckedContinuation { continuation in
             permissionContinuations[requestID] = continuation
-            Task { @MainActor [weak self] in
+            permissionTasks[requestID] = Task { @MainActor [weak self] in
                 let decision = await operation()
-                guard let self,
-                      let continuation = self.permissionContinuations.removeValue(forKey: requestID) else { return }
-                continuation.resume(returning: decision)
+                self?.resolvePermission(requestID, decision: decision)
             }
         }
+    }
+
+    private func resolvePermission(_ requestID: UUID, decision: AscendantPermissionDecision) {
+        permissionTasks.removeValue(forKey: requestID)
+        permissionContinuations.removeValue(forKey: requestID)?.resume(returning: decision)
     }
 }
 
@@ -1136,7 +1145,7 @@ private final class ProcessExitWaiter: @unchecked Sendable { // SAFETY: `continu
     }
 }
 
-private final class ACPUpdateRouter: @unchecked Sendable { // SAFETY: The active AsyncStream continuation is read, replaced, and finished only while holding `lock`; AsyncStream continuations support concurrent yields.
+private final class ACPUpdateRouter: @unchecked Sendable { // SAFETY: Session-keyed AsyncStream continuations are read, replaced, removed, and finished only while holding `lock`; AsyncStream continuations support concurrent yields.
     private let lock = NSLock()
     private var continuations: [String: AsyncStream<SessionUpdate>.Continuation] = [:]
 

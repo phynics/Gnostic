@@ -34,27 +34,36 @@ struct ACPAscendantBackendTests {
 
     private actor DelayedPermissionService: AscendantBackendPermissionService {
         private var decisionContinuation: CheckedContinuation<AscendantPermissionDecision, Never>?
-        private var requestContinuation: CheckedContinuation<BackendPermissionRequest, Never>?
         private var receivedRequest: BackendPermissionRequest?
+        private(set) var cancellationCount = 0
 
         func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
-            await withCheckedContinuation { continuation in
-                receivedRequest = request
-                requestContinuation?.resume(returning: request)
-                requestContinuation = nil
-                decisionContinuation = continuation
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    receivedRequest = request
+                    decisionContinuation = continuation
+                }
+            } onCancel: {
+                Task { await self.recordCancellation() }
             }
         }
 
-        func waitForRequest() async -> BackendPermissionRequest {
-            if let receivedRequest { return receivedRequest }
-            return await withCheckedContinuation { requestContinuation = $0 }
+        func waitForRequest(timeout: Duration = .seconds(5)) async -> BackendPermissionRequest? {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: timeout)
+            while clock.now < deadline {
+                if let receivedRequest { return receivedRequest }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return receivedRequest
         }
 
         func resolve(_ decision: AscendantPermissionDecision) {
             decisionContinuation?.resume(returning: decision)
             decisionContinuation = nil
         }
+
+        private func recordCancellation() { cancellationCount += 1 }
     }
 
     @MainActor
@@ -397,7 +406,7 @@ struct ACPAscendantBackendTests {
         }
         #expect(FileManager.default.fileExists(atPath: promptStarted.path))
 
-        await backend.cancelTurn(timelineID: firstTimelineID, clientTurnID: "turn-a")
+        await backend.cancelTurn(timelineID: firstTimelineID, clientTurnID: " turn-a ")
 
         do {
             _ = try await first.value
@@ -728,7 +737,11 @@ struct ACPAscendantBackendTests {
             )
         }
 
-        _ = await permission.waitForRequest()
+        guard await permission.waitForRequest() != nil else {
+            Issue.record("The fixture did not issue its permission request before the deadline.")
+            await backend.shutdown()
+            return
+        }
         await backend.cancel()
         await permission.resolve(.approved)
         #expect(try await turn.value == "fixture reply: cancel permission request")
@@ -760,8 +773,16 @@ struct ACPAscendantBackendTests {
             )
         }
 
-        _ = await permission.waitForRequest()
+        guard await permission.waitForRequest() != nil else {
+            Issue.record("The fixture did not issue its permission request before the deadline.")
+            await backend.shutdown()
+            return
+        }
         await backend.cancelTurn(timelineID: timelineID, clientTurnID: "permission-turn")
+        for _ in 0..<100 where await permission.cancellationCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await permission.cancellationCount == 1)
 
         do {
             _ = try await turn.value
