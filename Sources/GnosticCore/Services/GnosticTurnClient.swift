@@ -34,11 +34,9 @@ import Foundation
 ///
 /// ## Cancellation
 ///
-/// There is no `ascendant.turn.cancel` network operation, so this client cannot
-/// stop a Turn that a serve has already started. Cancelling the surrounding
-/// Swift `Task` stops only the local wait. That missing wire operation is owned
-/// as a follow-up by
-/// [phynics/Gnostic#294](https://github.com/phynics/Gnostic/issues/294).
+/// `cancel(timelineID:clientTurnID:providerID:)` sends an explicit, identified
+/// cancellation request. Cancelling the surrounding Swift `Task` alone stops
+/// only the local wait; the serve continues to own the admitted Turn.
 @MainActor
 public final class GnosticTurnClient {
     private let manager: CommunicationManager
@@ -89,6 +87,28 @@ public final class GnosticTurnClient {
             timeout: promptTimeout,
             returning: AscendantTurnResult.self
         )
+    }
+
+    /// Requests cancellation of one admitted identified Turn.
+    ///
+    /// The request is scoped by both Timeline and client Turn identity. A
+    /// `true` result means the serving coordinator accepted cancellation for
+    /// the matching in-flight Turn; it does not guarantee that the backend or
+    /// external agent will stop if it ignores cancellation.
+    public func cancel(
+        timelineID: UUID,
+        clientTurnID: String,
+        providerID: String? = nil
+    ) async throws -> Bool {
+        let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
+        return try await channel.call(
+            AscendantTurnProvider.cancelOperation,
+            request: AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
+            context: "ascendant.turn.cancel request",
+            providerID: target,
+            timeout: timeout,
+            returning: AscendantTurnCancellationResult.self
+        ).cancelled
     }
 
     /// Reads the retained updates for an identified Turn.

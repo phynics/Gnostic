@@ -23,6 +23,7 @@ if (process.env.GNOSTIC_ACP_FIXTURE_START_COUNT_FILE) {
 }
 const sessions = await loadSessions();
 let sessionCounter = 0;
+const cancelledSessions = new Set();
 
 const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   .onRequest(acp.methods.agent.initialize, async () => {
@@ -70,6 +71,12 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     await saveSessions();
     return {};
   })
+  .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {
+    cancelledSessions.add(params.sessionId);
+    if (process.env.GNOSTIC_ACP_FIXTURE_CANCEL_FILE) {
+      await appendFile(process.env.GNOSTIC_ACP_FIXTURE_CANCEL_FILE, `${params.sessionId}\n`);
+    }
+  })
   .onRequest(acp.methods.agent.session.prompt, async ({ params, client }) => {
     if (!sessions.has(params.sessionId)) throw new Error("unknown fixture session");
     if (process.env.GNOSTIC_ACP_FIXTURE_CRASH_ON_PROMPT === "1") {
@@ -85,16 +92,37 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         process.exit(19);
       }
     }
+    const promptText = params.prompt
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+    if (promptText.includes("[fixture:wait]")) {
+      if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
+        await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE, `${params.sessionId}\n`);
+      }
+      const deadline = Date.now() + 20_000;
+      while (!cancelledSessions.has(params.sessionId) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (cancelledSessions.has(params.sessionId)) {
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "late-after-cancel",
+            content: { type: "text", text: "late update" },
+          },
+        });
+        return { stopReason: "cancelled" };
+      }
+    }
     if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS) {
       if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
         await writeFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE, "started");
       }
       await new Promise((resolve) => setTimeout(resolve, Number(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS)));
     }
-    const prompt = params.prompt
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
+    const prompt = promptText;
     if (process.env.GNOSTIC_ACP_FIXTURE_TERMINAL_ERROR === "1" || prompt.includes("[fixture:terminal-error]")) {
       throw new Error("fixture terminal error");
     }

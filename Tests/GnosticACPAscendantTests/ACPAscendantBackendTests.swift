@@ -34,27 +34,36 @@ struct ACPAscendantBackendTests {
 
     private actor DelayedPermissionService: AscendantBackendPermissionService {
         private var decisionContinuation: CheckedContinuation<AscendantPermissionDecision, Never>?
-        private var requestContinuation: CheckedContinuation<BackendPermissionRequest, Never>?
         private var receivedRequest: BackendPermissionRequest?
+        private(set) var cancellationCount = 0
 
         func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
-            await withCheckedContinuation { continuation in
-                receivedRequest = request
-                requestContinuation?.resume(returning: request)
-                requestContinuation = nil
-                decisionContinuation = continuation
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    receivedRequest = request
+                    decisionContinuation = continuation
+                }
+            } onCancel: {
+                Task { await self.recordCancellation() }
             }
         }
 
-        func waitForRequest() async -> BackendPermissionRequest {
-            if let receivedRequest { return receivedRequest }
-            return await withCheckedContinuation { requestContinuation = $0 }
+        func waitForRequest(timeout: Duration = .seconds(5)) async -> BackendPermissionRequest? {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: timeout)
+            while clock.now < deadline {
+                if let receivedRequest { return receivedRequest }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return receivedRequest
         }
 
         func resolve(_ decision: AscendantPermissionDecision) {
             decisionContinuation?.resume(returning: decision)
             decisionContinuation = nil
         }
+
+        private func recordCancellation() { cancellationCount += 1 }
     }
 
     @MainActor
@@ -356,6 +365,71 @@ struct ACPAscendantBackendTests {
             #expect(failure.code == "acpTurnAlreadyActive")
         }
         #expect(try await first.value == "fixture reply: first")
+        await backend.shutdown()
+    }
+
+    @Test("scoped cancellation reaches one ACP session and preserves another Timeline Turn")
+    @MainActor
+    func scopedCancellationStopsOnlyTheAddressedTimeline() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let firstTimelineID = UUID()
+        let secondTimelineID = UUID()
+        let cancelFile = stateHome.url.appendingPathComponent("cancelled-sessions.txt")
+        let promptStarted = stateHome.url.appendingPathComponent("prompt-started")
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                promptStartedFile: promptStarted,
+                cancellationFile: cancelFile
+            ),
+            timelines: [
+                .init(id: firstTimelineID, title: "Cancel target"),
+                .init(id: secondTimelineID, title: "Concurrent survivor"),
+            ]
+        )
+        let cancelledUpdates = RecordingUpdateSink()
+        let first = Task {
+            try await backend.runTurn(
+                .init(timelineID: firstTimelineID, message: "[fixture:wait]", clientTurnID: "turn-a"),
+                updates: cancelledUpdates
+            )
+        }
+        let second = Task {
+            try await backend.runTurn(
+                .init(timelineID: secondTimelineID, message: "survive", clientTurnID: "turn-b"),
+                updates: RecordingUpdateSink()
+            )
+        }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: promptStarted.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: promptStarted.path))
+
+        await backend.cancelTurn(timelineID: firstTimelineID, clientTurnID: " turn-a ")
+
+        do {
+            _ = try await first.value
+            Issue.record("The addressed ACP Turn unexpectedly completed successfully.")
+        } catch let error as AscendantBackendError {
+            guard case .cancelled = error else {
+                Issue.record("Expected ACP cancellation, received \(error).")
+                await backend.shutdown()
+                return
+            }
+        }
+        do {
+            #expect(try await second.value == "fixture reply: survive")
+        } catch {
+            Issue.record("The unrelated Timeline Turn failed after scoped cancellation: \(error).")
+        }
+        let cancellationIDs = (try? String(contentsOf: cancelFile, encoding: .utf8))?
+            .split(whereSeparator: \.isNewline).map(String.init) ?? []
+        let sessionsData = try Data(contentsOf: stateHome.url.appendingPathComponent("\(backend.identity.id.uuidString).json"))
+        let sessions = try #require(JSONSerialization.jsonObject(with: sessionsData) as? [String: [String: Any]])
+        let targetSessionID = try #require(sessions[firstTimelineID.uuidString]?["sessionID"] as? String)
+        #expect(cancellationIDs == [targetSessionID])
+        #expect(await cancelledUpdates.updates.allSatisfy { $0.text != "late update" })
         await backend.shutdown()
     }
 
@@ -663,10 +737,66 @@ struct ACPAscendantBackendTests {
             )
         }
 
-        _ = await permission.waitForRequest()
+        guard await permission.waitForRequest() != nil else {
+            Issue.record("The fixture did not issue its permission request before the deadline.")
+            await backend.shutdown()
+            return
+        }
         await backend.cancel()
         await permission.resolve(.approved)
         #expect(try await turn.value == "fixture reply: cancel permission request")
+        await backend.shutdown()
+    }
+
+    @Test("scoped cancellation settles while host permission remains unresolved")
+    @MainActor
+    func scopedCancellationUnblocksPendingPermission() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let cancelFile = stateHome.url.appendingPathComponent("cancelled-sessions.txt")
+        let permission = DelayedPermissionService()
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                permissionPrompt: true,
+                permissionOutcome: "cancelled",
+                cancellationFile: cancelFile
+            ),
+            timelines: [.init(id: timelineID, title: "Pending permission")],
+            permission: permission
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "wait for permission", clientTurnID: "permission-turn"),
+                updates: RecordingUpdateSink()
+            )
+        }
+
+        guard await permission.waitForRequest() != nil else {
+            Issue.record("The fixture did not issue its permission request before the deadline.")
+            await backend.shutdown()
+            return
+        }
+        await backend.cancelTurn(timelineID: timelineID, clientTurnID: "permission-turn")
+        for _ in 0..<100 where await permission.cancellationCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await permission.cancellationCount == 1)
+
+        do {
+            _ = try await turn.value
+            Issue.record("The Turn with an unresolved permission request unexpectedly succeeded.")
+        } catch let error as AscendantBackendError {
+            guard case .cancelled = error else {
+                Issue.record("Expected cancellation, received \(error).")
+                await backend.shutdown()
+                return
+            }
+        }
+        let cancellationCount = (try? String(contentsOf: cancelFile, encoding: .utf8))?
+            .split(whereSeparator: \.isNewline).count ?? 0
+        #expect(cancellationCount == 1)
         await backend.shutdown()
     }
 
@@ -785,7 +915,8 @@ struct ACPAscendantBackendTests {
         startCountFile: URL? = nil,
         initializeDelayMilliseconds: Int? = nil,
         promptDelayMilliseconds: Int? = nil,
-        promptStartedFile: URL? = nil
+        promptStartedFile: URL? = nil,
+        cancellationFile: URL? = nil
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -818,6 +949,9 @@ struct ACPAscendantBackendTests {
         }
         if let promptStartedFile {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE"] = promptStartedFile.path
+        }
+        if let cancellationFile {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CANCEL_FILE"] = cancellationFile.path
         }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [

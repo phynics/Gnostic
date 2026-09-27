@@ -61,6 +61,33 @@ struct TurnWireContractTests {
         #expect(replay.updates.last?.kind == "completion")
     }
 
+    @Test("cancellation wire request canonicalizes the ID and reports whether a Turn was active")
+    func cancellationRequestIsScopedAndAcknowledged() async throws {
+        let targetTimelineID = timelineID
+        let provider = AscendantTurnProvider(
+            execute: { _ in AscendantTurnResult(text: "unused") },
+            cancel: { request in
+                #expect(request.timelineID == targetTimelineID)
+                #expect(request.clientTurnID == "turn-1")
+                return true
+            }
+        )
+        let parameters = try JSONSerialization.data(withJSONObject: [
+            "protocolMajor": GnosticProtocol.currentMajor,
+            "timelineID": targetTimelineID.uuidString,
+            "clientTurnID": " turn-1 ",
+        ])
+        let response = try await provider.handleCancellation(
+            parameters: String(decoding: parameters, as: UTF8.self)
+        )
+        guard case let .success(result: rawResult, executionInfo: _) = response else {
+            Issue.record("A valid cancellation request unexpectedly failed.")
+            return
+        }
+        let result = try JSONDecoder().decode(AscendantTurnCancellationResult.self, from: Data(rawResult.utf8))
+        #expect(result.cancelled)
+    }
+
     @Test("Canonical IDs deduplicate coordinator execution")
     func canonicalIDsShareCoordinatorResult() async throws {
         let coordinator = AscendantTurnCoordinator()

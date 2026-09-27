@@ -146,6 +146,13 @@ public final class NodeRuntime {
                 guard let self else { throw NodeRuntimeError.notRunning }
                 return try await self.turnService.turn(request)
             },
+            cancelTurn: { [weak self] request in
+                guard let self else { return false }
+                return await self.turnService.cancelTurn(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID
+                )
+            },
             timelineStatus: { [weak self] id in
                 guard let self else { throw NodeRuntimeError.notRunning }
                 return try await self.timelineService.status(for: id)

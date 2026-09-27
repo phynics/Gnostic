@@ -61,9 +61,15 @@ The distinction Gnostic acts on is whether your backend can still serve.
 - `AscendantBackendError.timelineNotFound(_:)` when the Timeline is not yours.
 - `AscendantBackendError.lifecycleUnusable(_:)` wraps
   `AscendantBackendLifecycleFailure` and means the backend can no longer serve
-  its Ascendant at all. `AscendantBackendSupervisor` responds by quarantining
+its Ascendant at all. `AscendantBackendSupervisor` responds by quarantining
   it and attempting one bounded reconstruction. Do not use it for ordinary
   failures.
+
+An explicit cancellation is scoped to a Timeline and an identified client Turn.
+The runtime calls the optional `AscendantBackendTurnCancellation` capability
+when the backend implements it. `cancel()` remains backend-wide and is reserved
+for retirement and shutdown; do not use it to cancel one user's Turn when a
+backend can serve multiple Timelines concurrently.
 
 ## Optional capabilities
 
@@ -130,12 +136,10 @@ registered solely inside a custom running host can be built but not configured
 through the CLI. The production CLI composition is shared by `serve` and
 `config`, and includes the optional `letta` and `acp-client` kinds.
 
-### ACP client configuration
+### ACP client configuration and cancellation
 
-The optional `acp-client` kind records the launch configuration for an external
-ACP agent. In this increment it validates and projects configuration, but does
-not start the process or execute Turns; a Turn returns a terminal
-`acpTurnUnavailable` error until GNO-ACPC-003.
+The optional `acp-client` kind launches an external ACP agent and maps one ACP
+session to each Gnostic Timeline. It executes Turns and forwards their updates.
 
 `args` and `env` are JSON-encoded strings because the generic `config backend
 set` command stores one string per key. The `env.<NAME>` family stores one plain
@@ -162,6 +166,19 @@ the plain and secret values into the future child-process environment, but this
 configuration-only increment does not launch a process or log values. A
 variable cannot be declared in more than one of `env`, `env.<NAME>`, and
 `env-secret.<NAME>`.
+
+When a user sends ACP `session/cancel` through `gnostic acp`, the frontend sends
+the matching Timeline ID and client Turn ID to the serving runtime. The runtime
+requests cancellation only for that admitted Turn. The ACP backend sends
+`session/cancel` to the external agent session mapped to that Timeline, settles
+the Turn as cancelled, and ignores later updates for that Turn. A positive
+runtime acknowledgement means the matching in-flight Turn accepted the cancel
+request; it does not prove the agent stopped. ACP agents may ignore
+`session/cancel` or continue work briefly before stopping. The frontend cannot
+guarantee cancellation for agents that do not honour this request. Cancelling
+the local Swift task or disconnecting a caller alone does not cancel an
+admitted Turn. Backend-wide `cancel()` remains reserved for retirement and
+shutdown.
 
 ## Extending the bundled Positronic backend
 
