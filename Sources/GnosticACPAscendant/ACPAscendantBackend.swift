@@ -609,7 +609,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private func handlePermissionRequest(_ request: JsonRpcRequest) async throws -> JsonValue {
         guard let params = request.params,
               let data = try? JSONEncoder().encode(params),
-              let permissionRequest = try? JSONDecoder().decode(RequestPermissionRequest.self, from: data) else {
+              let permissionRequest = try? JSONDecoder().decode(ACPPermissionRequest.self, from: data) else {
             Self.recordPermissionFailure("malformed request", requestID: String(describing: request.id))
             return try Self.permissionResponse(for: .cancelled)
         }
@@ -630,10 +630,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             return try Self.permissionResponse(for: .cancelled)
         }
 
-        guard permissionRequest.options.count == 2,
-              let allowOption = permissionRequest.options.first(where: { $0.kind == .allowOnce }),
-              let rejectOption = permissionRequest.options.first(where: { $0.kind == .rejectOnce }),
-              allowOption.optionId != rejectOption.optionId else {
+        guard let selection = Self.permissionSelection(for: permissionRequest.options) else {
             Self.recordPermissionFailure(
                 "unsupported permission options",
                 requestID: String(describing: request.id),
@@ -642,7 +639,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 clientTurnID: activeTurn.clientTurnID,
                 toolCallID: permissionRequest.toolCall.toolCallId.value,
                 title: permissionRequest.toolCall.title,
-                options: permissionRequest.options.map { "\($0.optionId.value):\($0.kind.rawValue)" }
+                options: permissionRequest.options.map { "\($0.optionId.value):\($0.kind)" }
             )
             return try Self.permissionResponse(for: .cancelled)
         }
@@ -663,9 +660,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
         switch decision {
         case .approved:
-            return try Self.permissionResponse(for: .selected(allowOption.optionId))
+            return try Self.permissionResponse(for: .selected(selection.allow))
         case .denied:
-            return try Self.permissionResponse(for: .selected(rejectOption.optionId))
+            return try Self.permissionResponse(for: .selected(selection.reject))
         case let .unavailable(reason):
             Self.recordPermissionFailure(
                 "permission mediation unavailable: \(reason)",
@@ -678,6 +675,48 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             )
             return try Self.permissionResponse(for: .cancelled)
         }
+    }
+
+    /// Maps a recognized ACP permission option set to the option Gnostic selects
+    /// for an approved or denied decision.
+    ///
+    /// Two sets are in contract: the ACP allow-once/reject-once pair, and the
+    /// broader `allow_always`/`allow`/`reject` set the Claude Agent adapter
+    /// advertises. Approval selects the narrowest offered allow option
+    /// (`allow_once`, else `allow`) and never the persistent `allow_always`
+    /// option; denial selects `reject_once`, else `reject`. Any other set fails
+    /// closed, so an unknown or out-of-contract advertisement never reaches the
+    /// permission service.
+    private nonisolated static func permissionSelection(
+        for options: [ACPPermissionOption]
+    ) -> (allow: PermissionOptionId, reject: PermissionOptionId)? {
+        let optionIds = options.map(\.optionId)
+        guard Set(optionIds).count == optionIds.count else { return nil }
+        let allowOnce = options.first { $0.kind == "allow_once" }
+        let rejectOnce = options.first { $0.kind == "reject_once" }
+        let allow = options.first { $0.kind == "allow" }
+        let reject = options.first { $0.kind == "reject" }
+        let allowAlwaysCount = options.filter { $0.kind == "allow_always" }.count
+        let rejectAlwaysCount = options.filter { $0.kind == "reject_always" }.count
+        let isAllowOnceSet = options.count == 2
+            && allowOnce != nil
+            && rejectOnce != nil
+            && allow == nil
+            && reject == nil
+            && allowAlwaysCount == 0
+            && rejectAlwaysCount == 0
+        let isClaudeSet = options.count == 3
+            && allowAlwaysCount == 1
+            && allow != nil
+            && reject != nil
+            && allowOnce == nil
+            && rejectOnce == nil
+            && rejectAlwaysCount == 0
+        guard isAllowOnceSet || isClaudeSet else { return nil }
+        let selectedAllow = isAllowOnceSet ? allowOnce : allow
+        let selectedReject = isAllowOnceSet ? rejectOnce : reject
+        guard let selectedAllow, let selectedReject else { return nil }
+        return (allow: selectedAllow.optionId, reject: selectedReject.optionId)
     }
 
     private nonisolated static func permissionResponse(for outcome: RequestPermissionOutcome) throws -> JsonValue {
@@ -1148,6 +1187,35 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 
 private struct ACPInitializeResponse: Decodable {
     let agentCapabilities: ACPAgentCapabilities
+}
+
+private struct ACPPermissionRequest: Decodable, Sendable {
+    let sessionId: SessionId
+    let toolCall: ACPPermissionToolCall
+    let options: [ACPPermissionOption]
+}
+
+/// The tool-call subset Gnostic needs for permission correlation.
+///
+/// This deliberately decodes only `toolCallId` and `title` and does not
+/// re-validate the SDK's optional `kind` / `status` / `content` fields. A
+/// tool-call sub-object the SDK would reject can therefore still reach host
+/// mediation, where the in-contract option-set gate and the host decision keep
+/// it fail-closed and never auto-approved.
+private struct ACPPermissionToolCall: Decodable, Sendable {
+    let toolCallId: ToolCallId
+    let title: String?
+}
+
+/// A permission option whose `kind` is decoded as a raw string.
+///
+/// The ACP SDK's `PermissionOptionKind` enum rejects kind strings that real
+/// adapters advertise — the Claude Agent adapter sends `allow` and `reject` —
+/// so Gnostic decodes the raw kind and applies its own in-contract
+/// classification in `permissionSelection(for:)`.
+private struct ACPPermissionOption: Decodable, Sendable {
+    let optionId: PermissionOptionId
+    let kind: String
 }
 
 @MainActor

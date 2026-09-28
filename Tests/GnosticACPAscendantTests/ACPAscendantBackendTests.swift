@@ -817,6 +817,58 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("Claude Agent approval selects its narrow allow option, not allow_always")
+    @MainActor
+    func claudePermissionApprovalSelectsAllow() async throws {
+        try await assertClaudePermission(
+            decision: .approved,
+            permissionOutcome: "selected:allow"
+        )
+    }
+
+    @Test("Claude Agent denial selects its reject option")
+    @MainActor
+    func claudePermissionDenialSelectsReject() async throws {
+        try await assertClaudePermission(
+            decision: .denied,
+            permissionOutcome: "selected:reject"
+        )
+    }
+
+    @MainActor
+    private func assertClaudePermission(
+        decision: AscendantPermissionDecision,
+        permissionOutcome: String
+    ) async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let permission = RecordingPermissionService(decision: decision)
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                permissionPrompt: true,
+                permissionOutcome: permissionOutcome,
+                claudePermissionOptions: true
+            ),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission,
+            promptTimeoutSeconds: 5
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "handle Claude permission", clientTurnID: "claude-permission"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: handle Claude permission")
+        let requests = await permission.requests
+        #expect(requests.count == 1)
+        #expect(requests.first?.timelineID == timelineID)
+        #expect(requests.first?.clientTurnID == "claude-permission")
+        await backend.shutdown()
+    }
+
     @Test("unavailable permission mediation cancels the ACP request instead of approving it")
     @MainActor
     func fixturePermissionRequestUnavailableFailsClosed() async throws {
@@ -1083,6 +1135,7 @@ struct ACPAscendantBackendTests {
         permissionPrompt: Bool = false,
         permissionOutcome: String = "selected:allow-once",
         unsupportedPermissionOptions: Bool = false,
+        claudePermissionOptions: Bool = false,
         requiredAbsentEnvironmentKey: String? = nil,
         crashOnPrompt: Bool = false,
         descendantPIDFile: URL? = nil,
@@ -1115,6 +1168,7 @@ struct ACPAscendantBackendTests {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME"] = permissionOutcome
         }
         if unsupportedPermissionOptions { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED"] = "1" }
+        if claudePermissionOptions { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_CLAUDE"] = "1" }
         if let requiredAbsentEnvironmentKey {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PARENT_ONLY_KEY"] = requiredAbsentEnvironmentKey
         }
