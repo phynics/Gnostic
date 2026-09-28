@@ -1189,13 +1189,20 @@ private struct ACPInitializeResponse: Decodable {
     let agentCapabilities: ACPAgentCapabilities
 }
 
-private struct ACPPermissionRequest: Decodable {
+private struct ACPPermissionRequest: Decodable, Sendable {
     let sessionId: SessionId
     let toolCall: ACPPermissionToolCall
     let options: [ACPPermissionOption]
 }
 
-private struct ACPPermissionToolCall: Decodable {
+/// The tool-call subset Gnostic needs for permission correlation.
+///
+/// This deliberately decodes only `toolCallId` and `title` and does not
+/// re-validate the SDK's optional `kind` / `status` / `content` fields. A
+/// tool-call sub-object the SDK would reject can therefore still reach host
+/// mediation, where the in-contract option-set gate and the host decision keep
+/// it fail-closed and never auto-approved.
+private struct ACPPermissionToolCall: Decodable, Sendable {
     let toolCallId: ToolCallId
     let title: String?
 }
@@ -1206,7 +1213,7 @@ private struct ACPPermissionToolCall: Decodable {
 /// adapters advertise — the Claude Agent adapter sends `allow` and `reject` —
 /// so Gnostic decodes the raw kind and applies its own in-contract
 /// classification in `permissionSelection(for:)`.
-private struct ACPPermissionOption: Decodable {
+private struct ACPPermissionOption: Decodable, Sendable {
     let optionId: PermissionOptionId
     let kind: String
 }
