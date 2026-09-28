@@ -51,6 +51,15 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private var activeSessionIDs: Set<UUID> = []
     private let sessionMapURL: URL
     private var process: Process?
+    private var processGroupID: pid_t?
+    private var processLeaderWasReaped = false
+#if DEBUG
+    var testLeaderIsRunning: Bool {
+        guard let process else { return false }
+        return isProcessLeaderRunning(process)
+    }
+    var testProcessGroupID: pid_t? { processGroupID }
+#endif
     private var stderrPipe: Pipe?
     private var stderrDrainTask: Task<Void, Never>?
     private var transport: ACPProcessStdioTransport?
@@ -416,7 +425,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         isShuttingDown = true
         let pendingConnection = connectionTask
         pendingConnection?.cancel()
-        if let process { await stopProcess(process) }
+        if let process { await stopProcess(process, processGroupID: processGroupID) }
         if let pendingConnection { _ = await pendingConnection.result }
         connectionTask = nil
         connectionTaskID = nil
@@ -425,6 +434,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         await transport?.close()
         transport = nil
         process = nil
+        processGroupID = nil
+        processLeaderWasReaped = false
         try? stderrPipe?.fileHandleForReading.close()
         stderrPipe = nil
         if let stderrDrainTask { await stderrDrainTask.value }
@@ -493,6 +504,11 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             ] + launchSpec.arguments
             connectionStage = "start agent through the Perl process-group launcher"
             try child.run()
+            // The launcher creates a dedicated process group whose ID is its PID.
+            // Keep the ID independently of Process.isRunning; descendants can
+            // outlive the leader and still belong to this group.
+            processGroupID = child.processIdentifier
+            processLeaderWasReaped = false
             try? input.fileHandleForReading.close()
             try? output.fileHandleForWriting.close()
             try? errorOutput.fileHandleForWriting.close()
@@ -549,11 +565,15 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             } else {
                 failure = map(error, context: "Could not initialize the ACP agent")
             }
-            if child.isRunning, !isShuttingDown { await stopProcess(child) }
+            if processGroupID != nil, !isShuttingDown {
+                await stopProcess(child, processGroupID: processGroupID)
+            }
             await connection?.close()
             self.connection = nil
             self.transport = nil
             process = nil
+            processGroupID = nil
+            processLeaderWasReaped = false
             try? errorOutput.fileHandleForReading.close()
             stderrPipe = nil
             if let stderrDrainTask { await stderrDrainTask.value }
@@ -702,33 +722,101 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
     }
 
-    private func stopProcess(_ process: Process) async {
-        guard process.isRunning else {
-            process.waitUntilExit()
-            return
-        }
-        let pid = process.processIdentifier
-        let gracefulExit = ProcessExitWaiter()
-        process.terminationHandler = { _ in gracefulExit.complete(true) }
-        if !process.isRunning {
-            gracefulExit.complete(true)
-            return
-        }
-        if kill(-pid, SIGTERM) != 0 { process.terminate() }
-        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) {
-            process.waitUntilExit()
+    private func stopProcess(_ process: Process, processGroupID: pid_t?) async {
+        guard let processGroupID, processGroupID > 1 else {
+            if isProcessLeaderRunning(process) { process.terminate() }
+            if !processLeaderWasReaped { process.waitUntilExit() }
             return
         }
 
-        let forcedExit = ProcessExitWaiter()
-        process.terminationHandler = { _ in forcedExit.complete(true) }
-        if !process.isRunning {
-            forcedExit.complete(true)
+        let leaderIsRunning = isProcessLeaderRunning(process)
+        guard processGroupSignalability(processGroupID) == .available else {
+            if leaderIsRunning,
+               getpgid(process.processIdentifier) == processGroupID {
+                process.terminate()
+                if !processLeaderWasReaped { process.waitUntilExit() }
+            } else if !processLeaderWasReaped {
+                process.waitUntilExit()
+            }
             return
         }
-        if kill(-pid, SIGKILL) != 0 { _ = kill(pid, SIGKILL) }
-        _ = await forcedExit.wait(timeoutNanoseconds: 1_000_000_000)
-        process.waitUntilExit()
+
+        let gracefulExit = ProcessExitWaiter()
+        if leaderIsRunning {
+            process.terminationHandler = { _ in gracefulExit.complete(true) }
+        }
+        _ = signalProcessGroup(processGroupID, SIGTERM)
+
+        guard leaderIsRunning else {
+            if !processLeaderWasReaped { process.waitUntilExit() }
+            if await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000) { return }
+            _ = signalProcessGroup(processGroupID, SIGKILL)
+            _ = await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000)
+            return
+        }
+
+        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) {
+            if !processLeaderWasReaped { process.waitUntilExit() }
+            if await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000) { return }
+        }
+
+        let forcedExit = ProcessExitWaiter()
+        let leaderStillRunning = isProcessLeaderRunning(process)
+        if leaderStillRunning {
+            process.terminationHandler = { _ in forcedExit.complete(true) }
+        }
+        _ = signalProcessGroup(processGroupID, SIGKILL)
+        if !leaderStillRunning || processGroupSignalability(processGroupID) == .gone {
+            forcedExit.complete(true)
+        } else {
+            _ = await forcedExit.wait(timeoutNanoseconds: 1_000_000_000)
+        }
+        if !processLeaderWasReaped { process.waitUntilExit() }
+        _ = await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000)
+    }
+
+    private func isProcessLeaderRunning(_ process: Process) -> Bool {
+        guard process.isRunning, !processLeaderWasReaped else { return false }
+        // Foundation.Process may keep `isRunning` stale until its child is
+        // reaped. Probe with WNOHANG so retirement observes an exited leader
+        // without blocking while descendants remain in the process group.
+        var status: Int32 = 0
+        let result = waitpid(process.processIdentifier, &status, WNOHANG)
+        if result == process.processIdentifier || (result == -1 && errno == ECHILD) {
+            processLeaderWasReaped = true
+            return false
+        }
+        return true
+    }
+
+    private func processGroupSignalability(_ processGroupID: pid_t) -> ProcessGroupSignalability {
+        guard kill(-processGroupID, 0) != 0 else { return .available }
+        switch errno {
+        case ESRCH: return .gone
+        case EPERM: return .inaccessible
+        default: return .failed
+        }
+    }
+
+    private func signalProcessGroup(_ processGroupID: pid_t, _ signal: Int32) -> Bool {
+        guard processGroupSignalability(processGroupID) == .available else { return false }
+        return kill(-processGroupID, signal) == 0
+    }
+
+    private func waitForProcessGroupExit(_ processGroupID: pid_t, timeoutNanoseconds: UInt64) async -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ timeoutNanoseconds
+        while true {
+            switch processGroupSignalability(processGroupID) {
+            case .gone:
+                return true
+            case .inaccessible, .failed:
+                return false
+            case .available:
+                break
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     private func map(_ error: any Error, context: String) -> AscendantBackendError {
@@ -1144,6 +1232,13 @@ private struct ACPCancelSessionRequest: Encodable {
 }
 
 private struct ACPEmptyResponse: Decodable {}
+
+private enum ProcessGroupSignalability: Equatable {
+    case available
+    case gone
+    case inaccessible
+    case failed
+}
 
 private final class ProcessExitWaiter: @unchecked Sendable { // SAFETY: `continuation` and `result` are only accessed while holding `lock`.
     private let lock = NSLock()
