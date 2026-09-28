@@ -14,6 +14,9 @@ import Glibc
 /// This target owns the ACP client process, sessions, and private Timeline map.
 @MainActor
 public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation {
+    // Expected page counts are single-digit; this abusive-cursor guard truncates sessions beyond 100 pages.
+    private static let maximumSessionListPages = 100
+
     /// The manifest backend kind served by this implementation.
     public nonisolated static let kind = "acp-client"
     private nonisolated static let processGroupLauncherPath = "/usr/bin/perl"
@@ -175,8 +178,20 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             // session map here so the advertised session-list intersection can
             // include configured Gnostic Timelines on the first startup.
             try await ensureSessions(for: timelineOrder, using: connection)
-            let response = try await connection.listSessions(request: ListSessionsRequest(cwd: workingDirectory))
-            let available = Set(response.sessions.map(\.sessionId))
+            var cursor: Cursor?
+            var seenCursors: Set<Cursor> = []
+            var available: Set<SessionId> = []
+            for _ in 0..<Self.maximumSessionListPages {
+                let response = try await connection.listSessions(
+                    request: ListSessionsRequest(cursor: cursor, cwd: workingDirectory)
+                )
+                available.formUnion(response.sessions.map(\.sessionId))
+                guard let nextCursor = response.nextCursor,
+                      seenCursors.insert(nextCursor).inserted else {
+                    break
+                }
+                cursor = nextCursor
+            }
             return timelineOrder.compactMap { id in
                 guard let sessionID = sessionIDs[id], available.contains(sessionID) else { return nil }
                 return timelines[id]

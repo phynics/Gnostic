@@ -540,7 +540,7 @@ struct ACPAscendantBackendTests {
         let configuredTimelineID = UUID()
         let configuration = AscendantBackendConfiguration(
             kind: ACPAscendantBackend.kind,
-            settings: try fixtureSettings(stateHome: stateHome.url)
+            settings: try fixtureSettings(stateHome: stateHome.url, paginatedListMode: "later-page")
         )
         let manifest = NodeManifest(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-restart-\(UUID().uuidString.lowercased())"),
@@ -580,6 +580,51 @@ struct ACPAscendantBackendTests {
         ))
         #expect(configuredTurn.text == "fixture reply: verify configured session survives restart")
         await restartedRuntime.shutdown()
+    }
+
+    @Test("session list stops when an agent repeats its cursor")
+    @MainActor
+    func sessionListStopsOnRepeatedCursor() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let requestFile = stateHome.url.appendingPathComponent("list-requests.txt")
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                paginatedListMode: "repeating-cursor",
+                listRequestFile: requestFile
+            ),
+            timelines: [.init(id: timelineID, title: "Configured")]
+        )
+        _ = try await backend.createTimeline(id: timelineID, title: "Configured")
+
+        #expect(try await backend.operatedTimelines().map(\.id) == [timelineID])
+        let requests = try String(contentsOf: requestFile, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+        #expect(requests == ["first", "fixture-repeat"])
+        await backend.shutdown()
+    }
+
+    @Test("session list stops at the maximum page count")
+    @MainActor
+    func sessionListStopsAtMaximumPageCount() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let requestFile = stateHome.url.appendingPathComponent("list-requests.txt")
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                paginatedListMode: "unbounded",
+                listRequestFile: requestFile
+            )
+        )
+
+        #expect(try await backend.operatedTimelines().isEmpty)
+        let requests = try String(contentsOf: requestFile, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+        #expect(requests.count == 100)
+        await backend.shutdown()
     }
 
     @Test("Timeline operations are idempotent and unknown removals are ignored")
@@ -991,6 +1036,8 @@ struct ACPAscendantBackendTests {
     private func fixtureSettings(
         stateHome: URL,
         supportsList: Bool = true,
+        paginatedListMode: String? = nil,
+        listRequestFile: URL? = nil,
         failClose: Bool = false,
         permissionPrompt: Bool = false,
         permissionOutcome: String = "selected:allow-once",
@@ -1017,6 +1064,8 @@ struct ACPAscendantBackendTests {
         let statePath = stateHome.appendingPathComponent("agent-sessions.json").path
         var fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": statePath]
         if !supportsList { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_NO_LIST"] = "1" }
+        if let paginatedListMode { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PAGINATED_LIST"] = paginatedListMode }
+        if let listRequestFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE"] = listRequestFile.path }
         if failClose { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CLOSE_ERROR"] = "1" }
         if permissionPrompt {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION"] = "1"
