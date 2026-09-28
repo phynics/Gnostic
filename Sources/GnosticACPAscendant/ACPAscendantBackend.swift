@@ -51,6 +51,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private var activeSessionIDs: Set<UUID> = []
     private let sessionMapURL: URL
     private var process: Process?
+    private var processGroupID: pid_t?
     private var stderrPipe: Pipe?
     private var stderrDrainTask: Task<Void, Never>?
     private var transport: ACPProcessStdioTransport?
@@ -416,7 +417,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         isShuttingDown = true
         let pendingConnection = connectionTask
         pendingConnection?.cancel()
-        if let process { await stopProcess(process) }
+        if let process { await stopProcess(process, processGroupID: processGroupID) }
         if let pendingConnection { _ = await pendingConnection.result }
         connectionTask = nil
         connectionTaskID = nil
@@ -425,6 +426,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         await transport?.close()
         transport = nil
         process = nil
+        processGroupID = nil
         try? stderrPipe?.fileHandleForReading.close()
         stderrPipe = nil
         if let stderrDrainTask { await stderrDrainTask.value }
@@ -493,6 +495,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             ] + launchSpec.arguments
             connectionStage = "start agent through the Perl process-group launcher"
             try child.run()
+            // The launcher creates a dedicated process group whose ID is its PID.
+            // Keep the ID independently of Process.isRunning; descendants can
+            // outlive the leader and still belong to this group.
+            processGroupID = child.processIdentifier
             try? input.fileHandleForReading.close()
             try? output.fileHandleForWriting.close()
             try? errorOutput.fileHandleForWriting.close()
@@ -549,11 +555,14 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             } else {
                 failure = map(error, context: "Could not initialize the ACP agent")
             }
-            if child.isRunning, !isShuttingDown { await stopProcess(child) }
+            if processGroupID != nil, !isShuttingDown {
+                await stopProcess(child, processGroupID: processGroupID)
+            }
             await connection?.close()
             self.connection = nil
             self.transport = nil
             process = nil
+            processGroupID = nil
             try? errorOutput.fileHandleForReading.close()
             stderrPipe = nil
             if let stderrDrainTask { await stderrDrainTask.value }
@@ -702,33 +711,56 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
     }
 
-    private func stopProcess(_ process: Process) async {
-        guard process.isRunning else {
+    private func stopProcess(_ process: Process, processGroupID: pid_t?) async {
+        guard let processGroupID, processGroupID > 1 else {
+            if process.isRunning { process.terminate() }
             process.waitUntilExit()
             return
         }
-        let pid = process.processIdentifier
+        let leaderIsRunning = process.isRunning
         let gracefulExit = ProcessExitWaiter()
-        process.terminationHandler = { _ in gracefulExit.complete(true) }
-        if !process.isRunning {
-            gracefulExit.complete(true)
-            return
+        if leaderIsRunning {
+            process.terminationHandler = { _ in gracefulExit.complete(true) }
         }
-        if kill(-pid, SIGTERM) != 0 { process.terminate() }
-        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) {
+        if kill(-processGroupID, SIGTERM) != 0, process.isRunning { process.terminate() }
+
+        guard leaderIsRunning else {
+            // Reap the exited Foundation.Process leader before waiting for or
+            // force-killing its remaining descendants.
             process.waitUntilExit()
+            if await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000) { return }
+            _ = kill(-processGroupID, SIGKILL)
+            _ = await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000)
             return
         }
 
-        let forcedExit = ProcessExitWaiter()
-        process.terminationHandler = { _ in forcedExit.complete(true) }
-        if !process.isRunning {
-            forcedExit.complete(true)
-            return
+        if await gracefulExit.wait(timeoutNanoseconds: 1_000_000_000) {
+            process.waitUntilExit()
+            if await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000) { return }
         }
-        if kill(-pid, SIGKILL) != 0 { _ = kill(pid, SIGKILL) }
-        _ = await forcedExit.wait(timeoutNanoseconds: 1_000_000_000)
+
+        let forcedExit = ProcessExitWaiter()
+        let leaderStillRunning = process.isRunning
+        if leaderStillRunning {
+            process.terminationHandler = { _ in forcedExit.complete(true) }
+        }
+        _ = kill(-processGroupID, SIGKILL)
+        if !leaderStillRunning || (kill(-processGroupID, 0) != 0 && errno == ESRCH) {
+            forcedExit.complete(true)
+        } else {
+            _ = await forcedExit.wait(timeoutNanoseconds: 1_000_000_000)
+        }
         process.waitUntilExit()
+        _ = await waitForProcessGroupExit(processGroupID, timeoutNanoseconds: 1_000_000_000)
+    }
+
+    private func waitForProcessGroupExit(_ processGroupID: pid_t, timeoutNanoseconds: UInt64) async -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ timeoutNanoseconds
+        while kill(-processGroupID, 0) == 0 || errno != ESRCH {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
     }
 
     private func map(_ error: any Error, context: String) -> AscendantBackendError {

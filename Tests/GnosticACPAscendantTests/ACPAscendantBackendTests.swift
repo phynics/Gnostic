@@ -458,6 +458,46 @@ struct ACPAscendantBackendTests {
         #expect(!isAlive, "ACP child process \(childPID) survived backend shutdown")
     }
 
+    @Test("shutdown cleans the agent process group after its leader exits")
+    @MainActor
+    func shutdownCleansProcessTreeAfterLeaderExit() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let pidFile = stateHome.url.appendingPathComponent("descendant.pid")
+        let leaderExitFile = stateHome.url.appendingPathComponent("leader-exited")
+        let timelineID = UUID()
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                descendantPIDFile: pidFile,
+                processExitFile: leaderExitFile,
+                exitAfterPromptMilliseconds: 25
+            ),
+            timelines: [.init(id: timelineID, title: "Leader exits before retirement")]
+        )
+        _ = try await backend.operatedTimelines()
+        let childPID = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8)))
+        #expect(try await backend.runTurn(
+            .init(timelineID: timelineID, message: "exit leader"),
+            updates: RecordingUpdateSink()
+        ) == "fixture reply: exit leader")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: leaderExitFile.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: leaderExitFile.path), "Fixture leader must exit before backend retirement")
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(kill(childPID, 0) == 0, "Fixture descendant must still be alive before backend retirement")
+
+        await backend.shutdown()
+
+        var isAlive = kill(childPID, 0) == 0
+        for _ in 0..<40 where isAlive {
+            try await Task.sleep(for: .milliseconds(25))
+            isAlive = kill(childPID, 0) == 0
+        }
+        #expect(!isAlive, "ACP descendant \(childPID) survived retirement after its leader exited")
+    }
+
     @Test("an ACP process crash is reported as lifecycle unusable")
     @MainActor
     func crashIsLifecycleUnusable() async throws {
@@ -1045,6 +1085,8 @@ struct ACPAscendantBackendTests {
         requiredAbsentEnvironmentKey: String? = nil,
         crashOnPrompt: Bool = false,
         descendantPIDFile: URL? = nil,
+        processExitFile: URL? = nil,
+        exitAfterPromptMilliseconds: Int? = nil,
         crashOnceMarker: URL? = nil,
         processPIDFile: URL? = nil,
         startCountFile: URL? = nil,
@@ -1077,6 +1119,10 @@ struct ACPAscendantBackendTests {
         }
         if crashOnPrompt { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CRASH_ON_PROMPT"] = "1" }
         if let descendantPIDFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CHILD_PID_FILE"] = descendantPIDFile.path }
+        if let processExitFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE"] = processExitFile.path }
+        if let exitAfterPromptMilliseconds {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS"] = String(exitAfterPromptMilliseconds)
+        }
         if let crashOnceMarker { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CRASH_ONCE_FILE"] = crashOnceMarker.path }
         if let processPIDFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE"] = processPIDFile.path }
         if let startCountFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_START_COUNT_FILE"] = startCountFile.path }

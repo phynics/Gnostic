@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 
@@ -17,6 +18,9 @@ if (process.env.GNOSTIC_ACP_FIXTURE_CHILD_PID_FILE) {
 }
 if (process.env.GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE) {
   await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE, `${process.pid}\n`);
+}
+if (process.env.GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE) {
+  process.on("exit", () => appendFileSync(process.env.GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE, "exited\n"));
 }
 if (process.env.GNOSTIC_ACP_FIXTURE_START_COUNT_FILE) {
   await appendFile(process.env.GNOSTIC_ACP_FIXTURE_START_COUNT_FILE, "started\n");
@@ -235,6 +239,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     const stopReason = prompt.includes("[fixture:max-tokens]") ? "max_tokens"
       : prompt.includes("[fixture:refusal]") ? "refusal"
       : "end_turn";
+    if (process.env.GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS) {
+      setTimeout(() => process.exit(19), Number(process.env.GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS));
+    }
     return { stopReason };
   });
 
