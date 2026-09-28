@@ -450,12 +450,7 @@ struct ACPAscendantBackendTests {
 
         await backend.shutdown()
 
-        var isAlive = kill(childPID, 0) == 0
-        for _ in 0..<40 where isAlive {
-            try await Task.sleep(for: .milliseconds(25))
-            isAlive = kill(childPID, 0) == 0
-        }
-        #expect(!isAlive, "ACP child process \(childPID) survived backend shutdown")
+        try await requireDead(pid: childPID, message: "ACP child process \(childPID) survived backend shutdown")
     }
 
     @Test("shutdown cleans the agent process group after its leader exits")
@@ -464,6 +459,7 @@ struct ACPAscendantBackendTests {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
         let pidFile = stateHome.url.appendingPathComponent("descendant.pid")
+        let leaderPIDFile = stateHome.url.appendingPathComponent("leader.pid")
         let leaderExitFile = stateHome.url.appendingPathComponent("leader-exited")
         let timelineID = UUID()
         let backend = try backend(
@@ -471,7 +467,8 @@ struct ACPAscendantBackendTests {
                 stateHome: stateHome.url,
                 descendantPIDFile: pidFile,
                 processExitFile: leaderExitFile,
-                exitAfterPromptMilliseconds: 25
+                exitAfterPromptMilliseconds: 25,
+                processPIDFile: leaderPIDFile
             ),
             timelines: [.init(id: timelineID, title: "Leader exits before retirement")]
         )
@@ -485,17 +482,21 @@ struct ACPAscendantBackendTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(FileManager.default.fileExists(atPath: leaderExitFile.path), "Fixture leader must exit before backend retirement")
-        try await Task.sleep(for: .milliseconds(150))
+        let leaderPIDText = try String(contentsOf: leaderPIDFile, encoding: .utf8)
+        let leaderPID = try #require(Int32(leaderPIDText.split(whereSeparator: \.isNewline).first ?? ""))
+        let processGroupID = try #require(backend.testProcessGroupID)
+        #expect(processGroupID == leaderPID)
+        for _ in 0..<500 where backend.testLeaderIsRunning {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!backend.testLeaderIsRunning, "Foundation.Process must observe and reap the exited fixture leader before shutdown")
         #expect(kill(childPID, 0) == 0, "Fixture descendant must still be alive before backend retirement")
+        #expect(getpgid(childPID) == processGroupID, "Fixture descendant must remain in the recorded process group")
 
         await backend.shutdown()
 
-        var isAlive = kill(childPID, 0) == 0
-        for _ in 0..<40 where isAlive {
-            try await Task.sleep(for: .milliseconds(25))
-            isAlive = kill(childPID, 0) == 0
-        }
-        #expect(!isAlive, "ACP descendant \(childPID) survived retirement after its leader exited")
+        try await requireDead(pid: childPID, message: "ACP descendant \(childPID) survived retirement after its leader exited")
+        #expect(kill(-processGroupID, 0) != 0 && errno == ESRCH, "Recorded ACP process group survived backend retirement")
     }
 
     @Test("an ACP process crash is reported as lifecycle unusable")
@@ -1150,6 +1151,13 @@ struct ACPAscendantBackendTests {
             "args": .string(try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))),
             "env": .string(try #require(String(data: encodedEnvironment, encoding: .utf8))),
         ]
+    }
+
+    private func requireDead(pid: pid_t, message: String) async throws {
+        for _ in 0..<40 where kill(pid, 0) == 0 {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(kill(pid, 0) != 0, Comment(rawValue: message))
     }
 
     private func makeTemporaryStateHome() throws -> TemporaryStateHome {
