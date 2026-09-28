@@ -168,7 +168,7 @@ target-local workaround when a later released SDK no longer blocks in `start()`.
 | --- | --- | --- | --- |
 | opencode | `opencode acp` | Run `opencode auth login` first. The login is stored in the user's opencode auth store. | Native ACP in `opencode-ai` (1.18.32 observed during this guide's smoke setup; Gnostic does not pin the external CLI). It executes its own tools and does not use Gnostic Workspace tools. The observed file-tool Turn did not request Gnostic permission. |
 | Codex | `npx --yes @agentclientprotocol/codex-acp@1.13.1` | Use the existing ChatGPT login, or configure `CODEX_API_KEY` / `OPENAI_API_KEY` as a secret setting. | `@agentclientprotocol/codex-acp` 1.13.1, pinned in the command to avoid npm tag drift. This adapter fronts Codex App Server; npm and the package registry are required when `npx` must download it. In this Linux container, Codex's sandbox could not create a user namespace on its first attempt, then retried the tool call successfully. Codex owns its approval and sandbox modes; Gnostic mediates only ACP `session/request_permission` calls and does not configure Codex's local policies. See the [Codex ACP adapter documentation](https://github.com/agentclientprotocol/codex-acp#readme). |
-| Claude Agent | `claude-agent-acp` | Use an existing Claude Code login, or configure `ANTHROPIC_API_KEY` as a secret setting. | `@agentclientprotocol/claude-agent-acp` 0.64.0 observed for this guide. This adapter fronts the Claude Agent SDK; its observed `allow_always` / `allow` / `reject` permission options are not supported by the current Gnostic bridge, which fails closed. |
+| Claude Agent | `claude-agent-acp` | Use an existing Claude Code login, or configure `ANTHROPIC_API_KEY` as a secret setting. | `@agentclientprotocol/claude-agent-acp` 0.64.0 observed for this guide. This adapter fronts the Claude Agent SDK. Its observed `allow_always` / `allow` / `reject` permission option set is supported: Gnostic mediates the request and, on approval, selects the narrow `allow` option rather than the persistent `allow_always` option. Out-of-contract option sets still fail closed. |
 
 To select an agent, configure its executable and arguments on the Ascendant.
 For example, OpenCode uses:
@@ -222,6 +222,25 @@ the plain and secret values into the future child-process environment, but this
 configuration-only increment does not launch a process or log values. A
 variable cannot be declared in more than one of `env`, `env.<NAME>`, and
 `env-secret.<NAME>`.
+
+#### Permission option sets
+
+Gnostic bridges an agent's ACP `session/request_permission` request into the
+host's `AscendantBackendPermissionService`. The host decision is the only source
+of approval; no option set is ever auto-approved. Two advertised option sets are
+in contract:
+
+- `allow_once` + `reject_once`, the ACP standard pair.
+- `allow_always` + `allow` + `reject`, observed from the Claude Agent adapter.
+
+On approval Gnostic selects the narrowest offered allow option: `allow_once`
+when present, otherwise `allow`. It never selects the persistent `allow_always`
+option on approval. On denial it selects `reject_once` when present, otherwise
+`reject`. Any other combination, including an unrecognized option kind, fails
+closed: Gnostic answers the ACP request with the cancelled outcome without
+asking the host. Gnostic decodes the advertised option kinds itself instead of
+using the ACP SDK enum because the Claude Agent adapter advertises non-standard
+kind strings.
 
 #### Cancellation
 

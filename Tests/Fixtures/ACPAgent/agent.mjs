@@ -177,9 +177,15 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
           kind: "read",
           status: "pending",
         },
-        options: process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED === "1"
+        options: process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_CLAUDE === "1"
           ? [
               { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
+              { optionId: "allow", name: "Allow", kind: "allow" },
+              { optionId: "reject", name: "Reject", kind: "reject" },
+            ]
+          : process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED === "1"
+          ? [
+              { optionId: "authorize", name: "Authorize", kind: "authorize" },
               { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
             ]
           : [
@@ -188,10 +194,8 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
             ],
       });
       const outcome = process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME ?? "selected:allow-once";
-      if (outcome === "selected:allow-once") {
-        assert.deepEqual(permission.outcome, { outcome: "selected", optionId: "allow-once" });
-      } else if (outcome === "selected:reject-once") {
-        assert.deepEqual(permission.outcome, { outcome: "selected", optionId: "reject-once" });
+      if (outcome.startsWith("selected:")) {
+        assert.deepEqual(permission.outcome, { outcome: "selected", optionId: outcome.slice("selected:".length) });
       } else {
         assert.deepEqual(permission.outcome, { outcome: "cancelled" });
       }
