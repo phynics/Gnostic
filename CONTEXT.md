@@ -79,6 +79,27 @@ Atlas is the optional, Positronic-specific continuity and context architecture
 that supersedes Narrative. Atlas remains outside `GnosticCore`; generic Gnostic
 identity and routing do not depend on it.
 
+## Regime
+
+A Regime is the operating configuration an Ascendant runs under: its Ascendant
+Backend, its selected Modules, its model configuration, and its policies.
+Comparing regimes is a primary use of Gnostic. A Regime is a vocabulary term
+and a Run record field; it is not yet a named Node manifest object.
+
+## Module
+
+A Module is a compiled-in, statically selected experiment or capability that
+extends a Regime. Every Module has an entry in the module registry with an
+owning issue and a lifecycle status (`incubating`, `gated`, `promoted`,
+`parked`, or `archived`). A Module depends on the Gnostic kernel and platform
+kit, and reaches a specific backend only through a hook that backend declares.
+Atlas is a Module.
+
+## Run
+
+A Run is one execution of a scenario under one Regime. It produces a trace and
+a result record that name the Regime and the Module versions used.
+
 ## Bounded legacy Agent terminology
 
 `Agent` is retained only when naming an external protocol boundary, an
