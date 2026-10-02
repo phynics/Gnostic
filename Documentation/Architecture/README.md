@@ -28,6 +28,10 @@ document is historical and is not an accepted architecture decision. [ADR 0007
 records the `ARCHIVE` outcome. The accepted ADR 0006 is the runtime effect and
 terminal observation decision listed above.
 
+## Proposed decisions
+
+- [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — target layering, dependency rule, and Module lifecycle. Owning issue [#440](https://github.com/phynics/Gnostic/issues/440); delivery tracked by [Epic #438](https://github.com/phynics/Gnostic/issues/438).
+
 ## Historical and disposition records
 
 - [ADR 0007 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
