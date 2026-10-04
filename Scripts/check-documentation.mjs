@@ -26,7 +26,7 @@ const REQUIRED_FILES = [
 const ADR_FILES = REQUIRED_FILES.filter((file) => file.includes("/ADRs/"));
 const EXCEPTION_FIELDS = ["id", "rule", "scope", "rationale", "issue", "owner", "reconsiderWhen"];
 const MODULE_FILE = "Documentation/Architecture/experiments.json";
-const MODULE_FIELDS = ["id", "name", "targets", "status", "owningIssue", "gateIssue", "runnable", "reviewBy"];
+const MODULE_FIELDS = ["id", "name", "targets", "status", "owningIssue", "gateIssues", "runnable", "reviewBy"];
 // Lifecycle statuses from ADR 0013. `archived` is terminal: its owning issue is
 // expected to be closed, so only the other statuses demand an open owner.
 const MODULE_STATUSES = ["incubating", "gated", "promoted", "parked", "archived"];
@@ -237,7 +237,7 @@ async function validateExperiments(root, failures, { issueState = null } = {}) {
     for (const field of MODULE_FIELDS) {
       if (!(field in entry)) failures.push(`${prefix}.${field} is required`);
     }
-    for (const field of ["id", "name", "status", "owningIssue", "gateIssue"]) {
+    for (const field of ["id", "name", "status", "owningIssue"]) {
       if (typeof entry[field] !== "string" || entry[field].trim() === "") failures.push(`${prefix}.${field} must be a non-empty string`);
     }
     if (typeof entry.id === "string" && entry.id.trim() !== "") {
@@ -260,8 +260,18 @@ async function validateExperiments(root, failures, { issueState = null } = {}) {
     if (entry.owningIssue && typeof entry.owningIssue === "string" && !ISSUE_URL_PATTERN.test(entry.owningIssue)) {
       failures.push(`${prefix}.owningIssue must be a phynics/Gnostic issue URL`);
     }
-    if (entry.gateIssue && typeof entry.gateIssue === "string" && !ISSUE_URL_PATTERN.test(entry.gateIssue)) {
-      failures.push(`${prefix}.gateIssue must be a phynics/Gnostic issue URL`);
+    if (!Array.isArray(entry.gateIssues)) {
+      failures.push(`${prefix}.gateIssues must be an array`);
+    } else if (entry.gateIssues.length === 0) {
+      failures.push(`${prefix}.gateIssues must name at least one gate issue`);
+    } else {
+      const gates = new Set();
+      for (const gate of entry.gateIssues) {
+        if (typeof gate !== "string" || gate.trim() === "") failures.push(`${prefix}.gateIssues entries must be non-empty strings`);
+        else if (!ISSUE_URL_PATTERN.test(gate)) failures.push(`${prefix}.gateIssues entry '${gate}' must be a phynics/Gnostic issue URL`);
+        else if (gates.has(gate)) failures.push(`${prefix}.gateIssues entry '${gate}' is duplicated`);
+        else gates.add(gate);
+      }
     }
     if (issueState && ACTIVE_MODULE_STATUSES.includes(entry.status) && ISSUE_URL_PATTERN.test(entry.owningIssue ?? "")) {
       let state = stateByUrl.get(entry.owningIssue);
@@ -495,7 +505,7 @@ function writeFixture(root) {
         targets: ["GnosticPositronicAtlas"],
         status: "incubating",
         owningIssue: "https://github.com/phynics/Gnostic/issues/449",
-        gateIssue: "https://github.com/phynics/Gnostic/issues/382",
+        gateIssues: ["https://github.com/phynics/Gnostic/issues/382"],
         runnable: false,
         reviewBy: "2027-01-02",
       }],
@@ -620,9 +630,22 @@ async function selfTest() {
     writeFixture(root);
     await expectFailure(root, options, () => {
       const document = fixtureRegistry();
-      document.modules[0].gateIssue = "https://github.com/phynics/Gnostic/pull/1";
+      document.modules[0].gateIssues = ["https://github.com/phynics/Gnostic/pull/1"];
       writeFileSync(registryFile, JSON.stringify(document));
-    }, "gateIssue must be a phynics/Gnostic issue URL");
+    }, "must be a phynics/Gnostic issue URL");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].gateIssues = [];
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "must name at least one gate issue");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const gate = "https://github.com/phynics/Gnostic/issues/382";
+      const document = fixtureRegistry();
+      document.modules[0].gateIssues = [gate, gate];
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "is duplicated");
     writeFixture(root);
     // A resolver that cannot reach GitHub must not fail the check; only a
     // confirmed closed owner does.

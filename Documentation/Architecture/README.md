@@ -54,8 +54,8 @@ The current compatibility declaration is [0.4.2](../Compatibility/0.4.2.md); it 
 module registry defined by [ADR 0013](ADRs/0013-experimentation-platform.md).
 Every Module has an entry with a unique `id`, a `name`, the `targets` it adds
 to `Package.swift`, a lifecycle `status` (`incubating`, `gated`, `promoted`,
-`parked`, or `archived`), its `owningIssue` and `gateIssue`, whether it is
-`runnable` from a manifest, and a `reviewBy` date.
+`parked`, or `archived`), its `owningIssue` and one or more `gateIssues`,
+whether it is `runnable` from a manifest, and a `reviewBy` date.
 
 `make docs-check` validates the schema, rejects a closed owning issue on an
 active entry, and rejects a target that is not declared in `Package.swift`. An

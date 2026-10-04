@@ -7,7 +7,7 @@
       "targets": ["GnosticPositronicAtlas"],
       "status": "incubating",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/449",
-      "gateIssue": "https://github.com/phynics/Gnostic/issues/382",
+      "gateIssues": ["https://github.com/phynics/Gnostic/issues/382"],
       "runnable": false,
       "reviewBy": "2027-01-02"
     },
@@ -17,7 +17,12 @@
       "targets": ["GnosticRLM", "GnosticRLMGuile", "GnosticRLMChibi"],
       "status": "incubating",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/450",
-      "gateIssue": "https://github.com/phynics/Gnostic/issues/354",
+      "gateIssues": [
+        "https://github.com/phynics/Gnostic/issues/175",
+        "https://github.com/phynics/Gnostic/issues/354",
+        "https://github.com/phynics/Gnostic/issues/355",
+        "https://github.com/phynics/Gnostic/issues/180"
+      ],
       "runnable": true,
       "reviewBy": "2027-01-02"
     },
@@ -27,7 +32,7 @@
       "targets": ["GnosticLettaBackend"],
       "status": "parked",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/327",
-      "gateIssue": "https://github.com/phynics/Gnostic/issues/327",
+      "gateIssues": ["https://github.com/phynics/Gnostic/issues/327"],
       "runnable": true,
       "reviewBy": "2026-12-01"
     },
@@ -37,7 +42,7 @@
       "targets": [],
       "status": "parked",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/426",
-      "gateIssue": "https://github.com/phynics/Gnostic/issues/457",
+      "gateIssues": ["https://github.com/phynics/Gnostic/issues/457"],
       "runnable": false,
       "reviewBy": "2027-01-02"
     }
