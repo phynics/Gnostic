@@ -48,6 +48,25 @@ The current compatibility declaration is [0.4.2](../Compatibility/0.4.2.md); it 
 - [Implementing a Workspace adapter](../Extending/workspace-adapters.md)
 - [ACP SDK evaluation](ACP-SDK-Evaluation.md)
 
+## Experiments and modules
+
+[`experiments.json`](experiments.json) is the versioned machine-readable
+module registry defined by [ADR 0013](ADRs/0013-experimentation-platform.md).
+Every Module has an entry with a unique `id`, a `name`, the `targets` it adds
+to `Package.swift`, a lifecycle `status` (`incubating`, `gated`, `promoted`,
+`parked`, or `archived`), its `owningIssue` and `gateIssue`, whether it is
+`runnable` from a manifest, and a `reviewBy` date.
+
+`make docs-check` validates the schema, rejects a closed owning issue on an
+active entry, and rejects a target that is not declared in `Package.swift`. An
+empty `targets` array is allowed: it means the module has no compiled target
+yet. The issue-state rule runs when `GH_TOKEN` or `GITHUB_TOKEN` reaches the
+GitHub API; the checker self-test always pins the closed-owner rejection so it
+cannot silently rot.
+
+Archived entries may name a closed owning issue: that is the expected terminal
+state, and the entry records the review decision rather than active ownership.
+
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable

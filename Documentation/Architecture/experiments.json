@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "modules": [
+    {
+      "id": "GNO-MOD-ATLAS",
+      "name": "Atlas continuity and context",
+      "targets": ["GnosticPositronicAtlas"],
+      "status": "incubating",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/449",
+      "gateIssue": "https://github.com/phynics/Gnostic/issues/382",
+      "runnable": false,
+      "reviewBy": "2027-01-02"
+    },
+    {
+      "id": "GNO-MOD-RLM",
+      "name": "RLM bounded analysis",
+      "targets": ["GnosticRLM"],
+      "status": "incubating",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/450",
+      "gateIssue": "https://github.com/phynics/Gnostic/issues/354",
+      "runnable": true,
+      "reviewBy": "2027-01-02"
+    },
+    {
+      "id": "GNO-MOD-LETTA",
+      "name": "Letta Ascendant backend",
+      "targets": ["GnosticLettaBackend"],
+      "status": "parked",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/327",
+      "gateIssue": "https://github.com/phynics/Gnostic/issues/327",
+      "runnable": true,
+      "reviewBy": "2026-12-01"
+    },
+    {
+      "id": "GNO-MOD-CONTEXT",
+      "name": "Positronic semantic context compiler",
+      "targets": [],
+      "status": "gated",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/426",
+      "gateIssue": "https://github.com/phynics/Gnostic/issues/457",
+      "runnable": false,
+      "reviewBy": "2027-01-02"
+    }
+  ]
+}

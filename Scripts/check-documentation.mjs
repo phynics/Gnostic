@@ -19,11 +19,19 @@ const REQUIRED_FILES = [
   "Documentation/Architecture/ADRs/0003-pre-1-0-manifest-and-protocol-reset.md",
   "Documentation/Architecture/ADRs/0004-atlas-supersedes-narrative.md",
   "Documentation/Architecture/exceptions.json",
+  "Documentation/Architecture/experiments.json",
   COMPATIBILITY_FILE,
 ];
 
 const ADR_FILES = REQUIRED_FILES.filter((file) => file.includes("/ADRs/"));
 const EXCEPTION_FIELDS = ["id", "rule", "scope", "rationale", "issue", "owner", "reconsiderWhen"];
+const MODULE_FILE = "Documentation/Architecture/experiments.json";
+const MODULE_FIELDS = ["id", "name", "targets", "status", "owningIssue", "gateIssue", "runnable", "reviewBy"];
+// Lifecycle statuses from ADR 0013. `archived` is terminal: its owning issue is
+// expected to be closed, so only the other statuses demand an open owner.
+const MODULE_STATUSES = ["incubating", "gated", "promoted", "parked", "archived"];
+const ACTIVE_MODULE_STATUSES = MODULE_STATUSES.filter((status) => status !== "archived");
+const ISSUE_URL_PATTERN = /^https:\/\/github\.com\/phynics\/Gnostic\/issues\/(\d+)$/;
 
 function parseArguments(argv) {
   const options = { root: process.cwd(), cliPath: null, selfTest: false };
@@ -183,6 +191,92 @@ function validateExceptions(root, failures) {
   });
 }
 
+// Every `.target(...)` and `.executableTarget(...)` name declared in
+// Package.swift. A registry entry may only name targets that exist there.
+function packageTargetNames(packageText) {
+  const names = new Set();
+  const pattern = /\.(?:target|executableTarget|testTarget)\(\s*name:\s*"([^"]+)"/g;
+  for (const match of packageText.matchAll(pattern)) names.add(match[1]);
+  return names;
+}
+
+// `reviewBy` is a UTC calendar date. Reject anything Date cannot parse as an
+// exact ISO day so a typo cannot silently defer a review forever.
+function isISODate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+// Validate the module registry against ADR 0013. `issueState` is an optional
+// async resolver `(issueUrl) => "open" | "closed" | "unknown"`. Callers that can
+// reach GitHub pass one so an active entry owned by a closed issue is rejected;
+// without it the issue-state rule is skipped, not silently passed.
+async function validateExperiments(root, failures, { issueState = null } = {}) {
+  let document;
+  try {
+    document = JSON.parse(readText(root, MODULE_FILE));
+  } catch (error) {
+    failures.push(`${MODULE_FILE}: invalid JSON (${error.message})`);
+    return;
+  }
+  if (document.schemaVersion !== 1) failures.push(`${MODULE_FILE}: schemaVersion must be 1`);
+  if (!Array.isArray(document.modules)) {
+    failures.push(`${MODULE_FILE}: modules must be an array`);
+    return;
+  }
+  const targets = packageTargetNames(readText(root, "Package.swift"));
+  const ids = new Set();
+  const stateByUrl = new Map();
+  for (const [index, entry] of document.modules.entries()) {
+    const prefix = `${MODULE_FILE}: modules[${index}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      failures.push(`${prefix} must be an object`);
+      continue;
+    }
+    for (const field of MODULE_FIELDS) {
+      if (!(field in entry)) failures.push(`${prefix}.${field} is required`);
+    }
+    for (const field of ["id", "name", "status", "owningIssue", "gateIssue"]) {
+      if (typeof entry[field] !== "string" || entry[field].trim() === "") failures.push(`${prefix}.${field} must be a non-empty string`);
+    }
+    if (typeof entry.id === "string" && entry.id.trim() !== "") {
+      if (ids.has(entry.id)) failures.push(`${prefix}.id '${entry.id}' is not unique`);
+      ids.add(entry.id);
+    }
+    if (typeof entry.status === "string" && !MODULE_STATUSES.includes(entry.status)) {
+      failures.push(`${prefix}.status '${entry.status}' must be one of ${MODULE_STATUSES.join(", ")}`);
+    }
+    if (typeof entry.runnable !== "boolean") failures.push(`${prefix}.runnable must be a boolean`);
+    if (!isISODate(entry.reviewBy)) failures.push(`${prefix}.reviewBy must be an ISO date (YYYY-MM-DD)`);
+    if (!Array.isArray(entry.targets)) {
+      failures.push(`${prefix}.targets must be an array`);
+    } else {
+      for (const target of entry.targets) {
+        if (typeof target !== "string" || target.trim() === "") failures.push(`${prefix}.targets entries must be non-empty strings`);
+        else if (!targets.has(target)) failures.push(`${prefix}.targets names unknown Package.swift target '${target}'`);
+      }
+    }
+    if (entry.owningIssue && typeof entry.owningIssue === "string" && !ISSUE_URL_PATTERN.test(entry.owningIssue)) {
+      failures.push(`${prefix}.owningIssue must be a phynics/Gnostic issue URL`);
+    }
+    if (entry.gateIssue && typeof entry.gateIssue === "string" && !ISSUE_URL_PATTERN.test(entry.gateIssue)) {
+      failures.push(`${prefix}.gateIssue must be a phynics/Gnostic issue URL`);
+    }
+    if (issueState && ACTIVE_MODULE_STATUSES.includes(entry.status) && ISSUE_URL_PATTERN.test(entry.owningIssue ?? "")) {
+      let state = stateByUrl.get(entry.owningIssue);
+      if (state === undefined) {
+        state = await issueState(entry.owningIssue);
+        stateByUrl.set(entry.owningIssue, state);
+      }
+      if (state === "closed") failures.push(`${prefix}.owningIssue is closed but status '${entry.status}' is active`);
+      // "unknown" means the resolver could not reach GitHub. Skip it rather
+      // than fail the whole check on a transient network or auth problem; the
+      // self-test pins the closed-owner contract.
+    }
+  }
+}
+
 function swiftTargetBlock(packageText, name) {
   const targetStart = packageText.search(new RegExp(`\\.target\\(\\s*name:\\s*"${name}"`));
   const targetEndMarker = "\n        ),";
@@ -285,7 +379,7 @@ function validateCLI(root, cliPath, failures, cliArgs = [], cliRunner = null) {
   }
 }
 
-export function checkRepository({ root = process.cwd(), cliPath = null, cliArgs = [], cliRunner = null } = {}) {
+export async function checkRepository({ root = process.cwd(), cliPath = null, cliArgs = [], cliRunner = null, issueState = null } = {}) {
   const failures = [];
   for (const file of REQUIRED_FILES) {
     try {
@@ -323,6 +417,11 @@ export function checkRepository({ root = process.cwd(), cliPath = null, cliArgs 
     validateExceptions(root, failures);
   } catch (error) {
     failures.push(`Documentation/Architecture/exceptions.json: ${error.message}`);
+  }
+  try {
+    await validateExperiments(root, failures, { issueState });
+  } catch (error) {
+    failures.push(`${MODULE_FILE}: ${error.message}`);
   }
   try {
     validateResetBaseline(root, failures);
@@ -388,6 +487,19 @@ function writeFixture(root) {
     "Sources/Protocol.swift": "let route = \"me.atkn.gnostic.workspace.invoke\"\n",
     "Documentation/Architecture/README.md": "# Architecture\n\n[ADR 0001](ADRs/0001-axoloty-native-multi-backend-host.md) [ADR 0002](ADRs/0002-gnostic-identity-vs-backend-state.md) [ADR 0003](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md) [ADR 0004](ADRs/0004-atlas-supersedes-narrative.md)\n",
     "Documentation/Architecture/exceptions.json": JSON.stringify({ schemaVersion: 1, exceptions: [] }, null, 2),
+    "Documentation/Architecture/experiments.json": JSON.stringify({
+      schemaVersion: 1,
+      modules: [{
+        id: "GNO-MOD-ATLAS",
+        name: "Atlas continuity and context",
+        targets: ["GnosticPositronicAtlas"],
+        status: "incubating",
+        owningIssue: "https://github.com/phynics/Gnostic/issues/449",
+        gateIssue: "https://github.com/phynics/Gnostic/issues/382",
+        runnable: false,
+        reviewBy: "2027-01-02",
+      }],
+    }, null, 2),
   };
   const adrNames = {
     "0001": "0001-axoloty-native-multi-backend-host.md",
@@ -426,15 +538,16 @@ function writeFixture(root) {
 
 function expectFailure(root, options, mutate, expected) {
   mutate();
-  assert.throws(() => checkRepository({ root, ...options }), (error) => error.message.includes(expected));
+  return assert.rejects(() => checkRepository({ root, ...options }), (error) => error.message.includes(expected));
 }
 
-function selfTest() {
+async function selfTest() {
   const root = mkdtempSync(join(tmpdir(), "gnostic-documentation-check-"));
   try {
     writeFixture(root);
     const options = {
       cliPath: "fixture-gnostic",
+      issueState: async () => "open",
       cliRunner: ({ chain, action }) => {
         if (action === "version") return { status: 0, stdout: `${PACKAGE_VERSION}\n` };
         if (chain.length === 0) return { status: 0, stdout: "SUBCOMMANDS:\n  acp  Run ACP\n" };
@@ -442,9 +555,9 @@ function selfTest() {
         return { status: 0, stdout: "help" };
       },
     };
-    assert.deepEqual(checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
+    assert.deepEqual(await checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
     writeFixture(root);
-    expectFailure(
+    await expectFailure(
       root,
       { ...options, cliRunner: ({ chain, action }) => action === "version"
         ? { status: 0, stdout: "0.2.0\n" }
@@ -452,27 +565,80 @@ function selfTest() {
       () => {},
       "does not match declared package version"
     );
-    expectFailure(root, options, () => writeFileSync(join(root, COMPATIBILITY_FILE), "# Compatibility\n"), `must mention '${PACKAGE_VERSION}'`);
+    await expectFailure(root, options, () => writeFileSync(join(root, COMPATIBILITY_FILE), "# Compatibility\n"), `must mention '${PACKAGE_VERSION}'`);
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n', "")), "Atlas target must depend on GnosticCore");
+    await expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n', "")), "Atlas target must depend on GnosticCore");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/README.md"), "[broken](missing.md)"), "broken local Markdown link");
+    await expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/README.md"), "[broken](missing.md)"), "broken local Markdown link");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "make nonexistent-target\n"), "nonexistent-target");
+    await expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "make nonexistent-target\n"), "nonexistent-target");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "AGENTS.md"), "## Current baseline\n"), "volatile baseline/status");
+    await expectFailure(root, options, () => writeFileSync(join(root, "AGENTS.md"), "## Current baseline\n"), "volatile baseline/status");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "AGENTS.md"), "245 tests\n"), "exact test/suite counts");
+    await expectFailure(root, options, () => writeFileSync(join(root, "AGENTS.md"), "245 tests\n"), "exact test/suite counts");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/exceptions.json"), JSON.stringify({ schemaVersion: 1, exceptions: [{ id: "x" }] })), "exceptions[0].rule");
+    await expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/exceptions.json"), JSON.stringify({ schemaVersion: 1, exceptions: [{ id: "x" }] })), "exceptions[0].rule");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), ".package(path: \"../local\")"), "local-path dependencies");
+    await expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), ".package(path: \"../local\")"), "local-path dependencies");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "gnostic does-not-exist\n"), "documented CLI command 'gnostic does-not-exist'");
+    await expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "gnostic does-not-exist\n"), "documented CLI command 'gnostic does-not-exist'");
     writeFixture(root);
-    expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "list_network_objects\n"), "removed command or operation 'list_network_objects'");
+    await expectFailure(root, options, () => writeFileSync(join(root, "README.md"), "list_network_objects\n"), "removed command or operation 'list_network_objects'");
+
+    // Module registry: malformed entry, unknown target, closed owner, and the
+    // status/runnable/date contract each reject independently.
+    const registryFile = join(root, "Documentation/Architecture/experiments.json");
+    const fixtureRegistry = () => JSON.parse(readText(root, "Documentation/Architecture/experiments.json"));
     writeFixture(root);
-    assert.throws(
+    await expectFailure(root, options, () => writeFileSync(registryFile, JSON.stringify({ schemaVersion: 1, modules: [{ id: "X" }] })), "modules[0].name is required");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].targets = ["GnosticNonexistent"];
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "names unknown Package.swift target 'GnosticNonexistent'");
+    writeFixture(root);
+    await expectFailure(root, { ...options, issueState: async () => "closed" }, () => {}, "owningIssue is closed but status 'incubating' is active");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].status = "bogus";
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "must be one of incubating, gated, promoted, parked, archived");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].runnable = "yes";
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "runnable must be a boolean");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].reviewBy = "2027-13-40";
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "reviewBy must be an ISO date");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].gateIssue = "https://github.com/phynics/Gnostic/pull/1";
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "gateIssue must be a phynics/Gnostic issue URL");
+    writeFixture(root);
+    // A resolver that cannot reach GitHub must not fail the check; only a
+    // confirmed closed owner does.
+    assert.deepEqual(await checkRepository({ root, ...options, issueState: async () => "unknown" }), { checked: REQUIRED_FILES.length, failures: [] });
+    // An archived entry may be owned by a closed issue, so the active-entry
+    // rule must not fire there.
+    writeFixture(root);
+    {
+      const document = fixtureRegistry();
+      document.modules[0].status = "archived";
+      writeFileSync(registryFile, JSON.stringify(document));
+      assert.deepEqual(await checkRepository({ root, ...options, issueState: async () => "closed" }), { checked: REQUIRED_FILES.length, failures: [] });
+    }
+
+    writeFixture(root);
+    await assert.rejects(
       () => checkRepository({
         root,
         ...options,
@@ -483,7 +649,7 @@ function selfTest() {
       (error) => error.message.includes("must advertise 'acp'")
     );
     writeFixture(root);
-    assert.throws(
+    await assert.rejects(
       () => checkRepository({
         root,
         ...options,
@@ -499,14 +665,42 @@ function selfTest() {
   }
 }
 
-function main() {
+// Resolve the state of a phynics/Gnostic issue through the GitHub REST API.
+// Returns "open", "closed", or "unknown" (no token or a failed request).
+function githubIssueStateResolver(token) {
+  return async (issueUrl) => {
+    const number = ISSUE_URL_PATTERN.exec(issueUrl)?.[1];
+    if (!number) return "unknown";
+    try {
+      const response = await fetch(`https://api.github.com/repos/phynics/Gnostic/issues/${number}`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "User-Agent": "gnostic-docs-check",
+        },
+      });
+      if (!response.ok) return "unknown";
+      const state = (await response.json()).state;
+      return state === "open" || state === "closed" ? state : "unknown";
+    } catch {
+      return "unknown";
+    }
+  };
+}
+
+async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.selfTest) {
-    selfTest();
+    await selfTest();
     return;
   }
+  // Enforce the open-owning-issue rule only when GitHub can be reached. The
+  // self-test injects a deterministic resolver instead; CI has no token, and
+  // an unauthenticated API call would rate-limit.
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || null;
+  const issueState = token ? githubIssueStateResolver(token) : null;
   try {
-    checkRepository({ root: options.root, cliPath: options.cliPath });
+    await checkRepository({ root: options.root, cliPath: options.cliPath, issueState });
     console.log("Documentation checks passed");
   } catch (error) {
     console.error(error.message);
@@ -514,4 +708,4 @@ function main() {
   }
 }
 
-main();
+await main();

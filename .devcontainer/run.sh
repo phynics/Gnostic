@@ -10,6 +10,7 @@ build_dir=${BUILD_DIR:-"$root_dir/.build"}
 spm_cache_dir=${SPM_CACHE_DIR:-"${HOME}/.cache/gnostic/swiftpm/swift-6.4.0-linux"}
 build_lock=${BUILD_LOCK:-1}
 extra_container_mounts=${EXTRA_CONTAINER_MOUNTS:-}
+extra_container_env=${EXTRA_CONTAINER_ENV:-}
 
 # BUILD_DIR/SPM_CACHE_DIR may be given relative to the caller's cwd (CI
 # passes ".build" and ".swiftpm-cache"); container runtimes require
@@ -49,5 +50,6 @@ spm_cache_dir=$(cd "$spm_cache_dir" && pwd)
     -v "$build_dir:$workdir/.build" \
     -v "$spm_cache_dir:$workdir/.swiftpm-cache" \
     -w "$workdir" \
+    $extra_container_env \
     $extra_container_mounts \
     "$image" "$@"
