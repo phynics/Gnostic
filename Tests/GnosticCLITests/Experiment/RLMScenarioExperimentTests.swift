@@ -22,15 +22,15 @@ struct RLMScenarioExperimentTests {
         // Runs must use the approved file's text. The Stage 0 harness carries
         // its own copy, which differs for Q7, Q8, Q9, Q11, and Q12.
         let first = try #require(questions.first)
-        #expect(first.question == "What is Gnostic's host boundary, and which PositronicKit values may cross it?")
+        #expect(first.prompt == "What is Gnostic's host boundary, and which PositronicKit values may cross it?")
         let last = try #require(questions.last)
-        #expect(last.question == "How is a backend failure contained, and how is backend retirement bounded?")
-        #expect(last.referenceAnswer.hasPrefix("An ordinary Turn failure leaves the backend healthy and usable;"))
-        #expect(last.referenceAnswer.contains("recorded as an exceeded deadline rather than blocking"))
-        #expect(!last.referenceAnswer.contains("**"))
+        #expect(last.prompt == "How is a backend failure contained, and how is backend retirement bounded?")
+        #expect(last.reference.hasPrefix("An ordinary Turn failure leaves the backend healthy and usable;"))
+        #expect(last.reference.contains("recorded as an exceeded deadline rather than blocking"))
+        #expect(!last.reference.contains("**"))
 
         for question in questions {
-            #expect(!question.referenceAnswer.isEmpty)
+            #expect(!question.reference.isEmpty)
             #expect(!question.evidencePaths.isEmpty, "\(question.id) lists no evidence files")
             for path in question.evidencePaths {
                 #expect(
@@ -237,7 +237,7 @@ struct RLMScenarioExperimentTests {
         .deletingLastPathComponent()
 
     private static let questions = (1...12).map {
-        RLMScenarioQuestion(id: "Q\($0)", question: "question \($0)", referenceAnswer: "answer", evidencePaths: ["A.md"])
+        ExperimentScenarioCase(id: "Q\($0)", prompt: "question \($0)", reference: "answer", evidencePaths: ["A.md"])
     }
 
     private static func identity(

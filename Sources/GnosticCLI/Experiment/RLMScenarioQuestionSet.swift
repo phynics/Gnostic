@@ -1,19 +1,12 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticRLM
+import GnosticKit
 
-/// One frozen scenario question, parsed from `rlm-scenario-questions.md`.
-struct RLMScenarioQuestion: Sendable, Equatable {
-    let id: String
-    let question: String
-    let referenceAnswer: String
-    /// Repository files a correct answer should cite (manifest §5 sufficiency).
-    let evidencePaths: [String]
-
-    var questionSHA256: String { RLMScenarioQuestionSet.hashNormalizedText(question) }
-    var referenceAnswerSHA256: String { RLMScenarioQuestionSet.hashNormalizedText(referenceAnswer) }
-}
+/// The RLM scenario consumes the experiment kit's frozen case model
+/// (GNO-PLAT-031). GNO-PLAT-038 retargets the scenario onto the kit types
+/// directly and deletes this wrapper.
+typealias RLMScenarioQuestion = ExperimentScenarioCase
 
 /// Reads the frozen #354 question set and refuses any text that is not the
 /// approved one, so a live round cannot silently run edited questions.
@@ -28,64 +21,25 @@ enum RLMScenarioQuestionSet {
     ]
 
     static func load(repositoryRoot: URL) throws -> (questions: [RLMScenarioQuestion], sha256: String) {
-        let data = try Data(contentsOf: repositoryRoot.appendingPathComponent(relativePath))
-        let digest = RLMDigest.sha256Hex([UInt8](data))
-        guard digest == pinnedSHA256 else {
-            throw RLMScenarioError.questionSetChanged(expected: pinnedSHA256, actual: digest)
-        }
-        return (try parse(String(decoding: data, as: UTF8.self)), digest)
-    }
-
-    /// Parses `## Qn — …` sections into their question, reference answer, and
-    /// evidence paths. Paragraphs are joined and whitespace is collapsed.
-    static func parse(_ text: String) throws -> [RLMScenarioQuestion] {
-        var questions: [RLMScenarioQuestion] = []
-        let sections = text.components(separatedBy: "\n## Q").dropFirst()
-        for section in sections {
-            guard let idEnd = section.firstIndex(where: { !$0.isNumber }) else { continue }
-            let id = "Q" + section[..<idEnd]
-            guard let question = field("Question", in: section),
-                  let answer = field("Reference answer", in: section),
-                  let evidence = field("Evidence", in: section) else {
-                throw RLMScenarioError.malformedQuestionSet("\(id) is missing a question, reference answer, or evidence field")
+        do {
+            let (cases, sha256) = try ExperimentScenarioCaseSet.load(
+                from: repositoryRoot.appendingPathComponent(relativePath),
+                expectedSHA256: pinnedSHA256
+            )
+            guard cases.map(\.id) == (1...12).map({ "Q\($0)" }) else {
+                throw RLMScenarioError.malformedQuestionSet("expected Q1 through Q12, found \(cases.map(\.id))")
             }
-            questions.append(RLMScenarioQuestion(
-                id: id,
-                question: collapse(question),
-                referenceAnswer: collapse(answer),
-                evidencePaths: codeSpans(in: evidence).filter { $0.contains("/") }
-            ))
+            return (cases, sha256)
+        } catch let error as ExperimentError {
+            switch error {
+            case let .caseSetChanged(expected, actual):
+                throw RLMScenarioError.questionSetChanged(expected: expected, actual: actual)
+            case let .malformedCaseSet(reason):
+                throw RLMScenarioError.malformedQuestionSet(reason)
+            default:
+                throw RLMScenarioError.malformedQuestionSet(error.description)
+            }
         }
-        guard questions.map(\.id) == (1...12).map({ "Q\($0)" }) else {
-            throw RLMScenarioError.malformedQuestionSet("expected Q1 through Q12, found \(questions.map(\.id))")
-        }
-        return questions
-    }
-
-    /// The Stage 0 normalization: inline-code delimiters dropped, whitespace
-    /// collapsed, then SHA-256 over UTF-8.
-    static func hashNormalizedText(_ value: String) -> String {
-        RLMDigest.sha256Hex(value.replacingOccurrences(of: "`", with: "")
-            .split(whereSeparator: \.isWhitespace).joined(separator: " "))
-    }
-
-    private static func field(_ name: String, in section: String) -> String? {
-        guard let start = section.range(of: "**\(name).**") else { return nil }
-        let rest = section[start.upperBound...]
-        let end = rest.range(of: "\n\n")?.lowerBound ?? rest.endIndex
-        return String(rest[..<end])
-    }
-
-    private static func collapse(_ value: String) -> String {
-        value.replacingOccurrences(of: "`", with: "")
-            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    }
-
-    private static func codeSpans(in value: String) -> [String] {
-        value.split(separator: "`", omittingEmptySubsequences: false)
-            .enumerated()
-            .filter { $0.offset % 2 == 1 }
-            .map { String($0.element) }
     }
 }
 

@@ -359,7 +359,7 @@ struct RLMScenarioPreparation: Sendable {
             )
             try await assembly.evaluator.start()
             result = await assembly.engine.run(
-                question: question.question,
+                question: question.prompt,
                 workspaceID: RLMScenarioRepositorySource.workspaceID,
                 source: source
             )
