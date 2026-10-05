@@ -9,6 +9,7 @@ import Synchronization
 import Testing
 
 @testable import GnosticCLI
+@testable import GnosticHost
 
 @Suite("Per-Ascendant Positronic extension selection")
 struct PositronicExtensionSelectionTests {

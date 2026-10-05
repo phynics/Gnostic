@@ -34,7 +34,7 @@ public enum ConfiguredLLMService {
             $0.rawValue.lowercased() == providerName.lowercased()
         }) else { return UnconfiguredLLMService() }
         var configuration = LLMConfiguration(activeProvider: provider)
-        var providerConfiguration = provider.providerConfiguration
+        var providerConfiguration = ProviderConfiguration.makeDefault(for: provider)
         providerConfiguration.endpoint = backend.endpoint ?? providerConfiguration.endpoint
         providerConfiguration.apiKey = backend.apiKey ?? providerConfiguration.apiKey
         providerConfiguration.modelName = backend.model ?? providerConfiguration.modelName

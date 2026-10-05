@@ -7,6 +7,7 @@ import PKContracts
 import Testing
 
 @testable import GnosticCLI
+@testable import GnosticHost
 
 #if os(Linux)
 @Suite("Bounded Workspace analysis tool")

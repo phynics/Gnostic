@@ -129,7 +129,7 @@ private struct RLMLeafModelAdapter: RLMLeafModelClient {
     }
 }
 
-enum RLMWorkerSelection: String, Sendable, CaseIterable {
+public enum RLMWorkerSelection: String, Sendable, CaseIterable {
     case guile
     case chibi
 }
@@ -183,16 +183,16 @@ enum RLMWorkerFactory {
     }
 }
 
-struct RLMRunAssembly {
-    let engine: RLMAnalysisEngine
-    let evaluator: RLMWorkerCellEvaluator
+public struct RLMRunAssembly: Sendable {
+    public let engine: RLMAnalysisEngine
+    public let evaluator: RLMWorkerCellEvaluator
 }
 
-enum RLMRunAssemblyFactory {
+public enum RLMRunAssemblyFactory {
     /// - Parameter leafService: A separate service for leaf queries. The tool
     ///   uses one service for both roles; the #354 experiment passes two so it
     ///   can meter root and leaf calls apart.
-    static func make(
+    public static func make(
         model: any PositronicContributionModelService,
         leafService: (any PositronicContributionModelService)? = nil,
         worker: RLMWorkerSelection,

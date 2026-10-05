@@ -7,6 +7,7 @@ import GnosticRLMProcessWorker
 import Testing
 
 @testable import GnosticCLI
+@testable import GnosticHost
 
 @Suite("RLM worker factory")
 struct RLMWorkerFactoryTests {
