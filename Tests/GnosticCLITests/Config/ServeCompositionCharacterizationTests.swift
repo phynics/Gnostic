@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPAscendant
 import GnosticCore
 import GnosticHost
 import GnosticLettaBackend
@@ -26,16 +27,12 @@ import Testing
 /// | Terminal Turn observers | none |
 @Suite("Serve composition characterization")
 struct ServeCompositionCharacterizationTests {
-    /// The ACP kind is not re-exported to this test target, so name its
-    /// manifest string directly. `BackendComposition` owns the registration.
-    private static let acpKind = "acp-client"
-
     @Test("the serve path installs Positronic, Letta, and ACP backend kinds")
     func backendKinds() {
         #expect(BackendComposition.default.registeredKinds == [
             AscendantAdapterRegistry.positronicKind,
             LettaAscendantBackend.kind,
-            Self.acpKind,
+            ACPAscendantBackend.kind,
         ])
     }
 

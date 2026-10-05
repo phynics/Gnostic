@@ -1,7 +1,10 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPAscendant
+import GnosticCore
 import GnosticHost
+import GnosticLettaBackend
 import Testing
 
 @testable import GnosticRunner
@@ -28,7 +31,11 @@ struct RunnerCompositionTests {
                 == BackendComposition.default.registeredPositronicExtensions
         )
         #expect(
-            RunnerRuntime.composition.registeredKinds.isSuperset(of: ["positronic", "letta", "acp-client"]),
+            RunnerRuntime.composition.registeredKinds.isSuperset(of: [
+                AscendantAdapterRegistry.positronicKind,
+                LettaAscendantBackend.kind,
+                ACPAscendantBackend.kind,
+            ]),
             "The runner must host every backend kind `gnostic serve` has."
         )
         #expect(RunnerRuntime.composition.registeredPositronicExtensions.contains("rlm"))

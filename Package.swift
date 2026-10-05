@@ -222,7 +222,10 @@ let package = Package(
             name: "GnosticRunnerTests",
             dependencies: [
                 "GnosticRunner",
+                "GnosticACPAscendant",
+                "GnosticCore",
                 "GnosticHost",
+                "GnosticLettaBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PKContracts", package: "PositronicKit"),
@@ -244,6 +247,7 @@ let package = Package(
             name: "GnosticCLITests",
             dependencies: [
                 "GnosticCLI",
+                "GnosticACPAscendant",
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticLettaBackend",
