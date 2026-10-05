@@ -239,6 +239,9 @@ enum RLMModule {
                 throw AscendantBackendError.invalidConfiguration("RLM module worker must be guile or chibi")
             }
             return RLMPositronicContribution(runtime: runtime, worker: worker)
+        },
+        prerequisites: { settings in
+            RLMWorkerSelection.prerequisiteChecks(settings: settings)
         }
     )
 }

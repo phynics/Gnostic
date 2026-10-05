@@ -71,6 +71,51 @@ The object inspection command requires an advertised object UUID. Workspace
 tool calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` operation.
 Gnostic does not expose direct file APIs for remote Workspaces.
 
+## Inspect the platform configuration
+
+List the compiled-in modules, their `Documentation/Architecture/experiments.json`
+lifecycle status, and their settings keys. Selecting an `incubating` or `parked`
+module is allowed, but the console prints a warning:
+
+```sh
+gnostic config module list
+gnostic config module list --format json
+gnostic config module keys <ASCENDANT_UUID>
+gnostic config module enable <ASCENDANT_UUID> rlm
+gnostic config module disable <ASCENDANT_UUID> rlm
+```
+
+Show the resolved Regime, which is the same module and model resolution `serve`
+uses. Secrets are always redacted:
+
+```sh
+gnostic config regime show <ASCENDANT_UUID>
+gnostic config regime show <ASCENDANT_UUID> --format json
+```
+
+`gnostic config validate` reports every problem with its manifest path and a
+remediation hint, and exits non-zero when the manifest is invalid. Every
+mutating `config` subcommand accepts `--dry-run`, which prints a redacted diff
+of the resulting manifest and writes nothing.
+
+Run the offline diagnostics before starting the Node. `gnostic doctor` checks
+for a missing manifest, a missing provider or model tier, a module that needs a
+model service with no provider, missing secrets and executor helpers, and the
+registry status of each selected module. Add `--online` to also check broker
+reachability and the protocol major, or `--check-provider` to probe the
+provider endpoint:
+
+```sh
+gnostic doctor
+gnostic doctor --format json
+gnostic doctor --online
+gnostic doctor --check-provider
+```
+
+`gnostic doctor` exits non-zero when any check is an error; warnings do not
+fail the command. The `--format human|json` option is shared by `inspect`,
+`config module`, `config regime`, and `doctor`.
+
 ## Use the consumer session facade
 
 External clients that connect, discover, and read the catalog programmatically

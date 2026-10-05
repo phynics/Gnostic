@@ -22,7 +22,8 @@ struct ConfigCommand: AsyncParsableCommand {
         """,
         subcommands: [
             Init.self, Show.self, Validate.self, Path.self, Broker.self, Backend.self,
-            Ascendant.self, Timeline.self, Workspace.self,
+            Ascendant.self, Timeline.self, Workspace.self, ConfigModuleCommand.self,
+            ConfigRegimeCommand.self,
         ]
     )
 
@@ -39,9 +40,18 @@ struct ConfigCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "init", abstract: "Create a default schema-v2 Node manifest.")
         @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
         var configPath: String?
+        @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+        var dryRun = false
 
         func run() async throws {
-            try ConfigCommandLogic.initialize(store: ConfigCommandLogic.store(for: configPath))
+            let store = ConfigCommandLogic.store(for: configPath)
+            if dryRun {
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: true) { preview in
+                    try ConfigCommandLogic.initialize(store: preview, writeOutput: { _ in })
+                }
+                return
+            }
+            try ConfigCommandLogic.initialize(store: store)
         }
     }
 
@@ -69,9 +79,27 @@ struct ConfigCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "validate", abstract: "Validate the complete manifest without changing it.")
         @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
         var configPath: String?
+        @OptionGroup var formatOptions: OutputFormatOptions
 
         func run() async throws {
-            try ConfigCommandLogic.validate(store: ConfigCommandLogic.store(for: configPath))
+            let format = try formatOptions.resolved()
+            let report = ConfigConsoleLogic.validationReport(store: ConfigCommandLogic.store(for: configPath))
+            switch format {
+            case .human:
+                if report.valid {
+                    print("Configuration is valid.")
+                } else {
+                    for issue in report.issues {
+                        print("\(issue.message)")
+                        print("  path: \(issue.path)")
+                        print("  reason: \(issue.reasonCode)")
+                        print("  hint: \(issue.hint)")
+                    }
+                }
+            case .json:
+                print(try JSONOutput.encode(report))
+            }
+            if !report.valid { throw ExitCode.failure }
         }
     }
 
@@ -104,12 +132,17 @@ struct ConfigCommand: AsyncParsableCommand {
             var namespace: String?
             @Option(name: .long, help: "MQTT username.")
             var username: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.setBroker(
-                    host: host, port: port, namespace: namespace, username: username,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.setBroker(
+                        host: host, port: port, namespace: namespace, username: username,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -117,12 +150,15 @@ struct ConfigCommand: AsyncParsableCommand {
             static let configuration = CommandConfiguration(commandName: "set-password", abstract: "Read the broker password from standard input.")
             @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
             var configPath: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.setBrokerPassword(
-                    ConfigCommandLogic.readSecret(),
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                let password = ConfigCommandLogic.readSecret()
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.setBrokerPassword(password, store: target)
+                }
             }
         }
     }
@@ -156,12 +192,17 @@ struct ConfigCommand: AsyncParsableCommand {
             var key: String
             @Argument(help: "Value to store.")
             var value: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.setBackendValue(
-                    ascendantID: ascendantID, key: key, value: value,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.setBackendValue(
+                        ascendantID: ascendantID, key: key, value: value,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -176,12 +217,18 @@ struct ConfigCommand: AsyncParsableCommand {
             var ascendantID: String
             @Argument(help: "Secret key advertised by the Ascendant's backend kind.")
             var key: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.setBackendSecret(
-                    ascendantID: ascendantID, key: key, value: ConfigCommandLogic.readSecret(),
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                let value = ConfigCommandLogic.readSecret()
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.setBackendSecret(
+                        ascendantID: ascendantID, key: key, value: value,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -211,11 +258,14 @@ struct ConfigCommand: AsyncParsableCommand {
             var configPath: String?
             @Argument(help: "Existing Ascendant UUID.")
             var ascendantID: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.clearBackend(
-                    ascendantID: ascendantID, store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.clearBackend(ascendantID: ascendantID, store: target)
+                }
             }
         }
     }
@@ -246,13 +296,18 @@ struct ConfigCommand: AsyncParsableCommand {
             var description: String = ""
             @Option(name: .long, help: "Backend kind. Must be registered; see 'config backend keys'.")
             var kind: String = AscendantAdapterRegistry.positronicKind
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
             func run() async throws {
                 // The positional wins so that `add "Atlas" --name Other` is not
                 // silently resolved in favour of the less visible spelling.
-                try ConfigCommandLogic.addAscendant(
-                    name: nameArgument ?? name, description: description, kind: kind,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.addAscendant(
+                        name: nameArgument ?? name, description: description, kind: kind,
+                        store: target, writeOutput: dryRun ? { _ in } : { print($0) }
+                    )
+                }
             }
         }
 
@@ -268,12 +323,17 @@ struct ConfigCommand: AsyncParsableCommand {
             var description: String?
             @Option(name: .customLong("default-timeline"), help: "Existing Timeline operated by this Ascendant.")
             var defaultTimeline: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.updateAscendant(
-                    id: id, name: name, description: description, defaultTimelineID: defaultTimeline,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.updateAscendant(
+                        id: id, name: name, description: description, defaultTimelineID: defaultTimeline,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -283,9 +343,14 @@ struct ConfigCommand: AsyncParsableCommand {
             var configPath: String?
             @Argument(help: "Existing resource UUID.")
             var id: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.removeAscendant(id: id, store: ConfigCommandLogic.store(for: configPath))
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.removeAscendant(id: id, store: target)
+                }
             }
         }
     }
@@ -315,12 +380,17 @@ struct ConfigCommand: AsyncParsableCommand {
             var title: String?
             @Option(name: .customLong("operating-ascendant"), help: "Existing Ascendant UUID.")
             var operatingAscendant: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.addTimeline(
-                    title: title ?? titleArgument, operatingAscendantID: operatingAscendant,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.addTimeline(
+                        title: title ?? titleArgument, operatingAscendantID: operatingAscendant,
+                        store: target, writeOutput: dryRun ? { _ in } : { print($0) }
+                    )
+                }
             }
         }
 
@@ -336,16 +406,21 @@ struct ConfigCommand: AsyncParsableCommand {
             var operatingAscendant: String?
             @Flag(name: .customLong("clear-operating-ascendant"), help: "Leave this Timeline without an operating Ascendant.")
             var clearOperatingAscendant = false
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
                 if operatingAscendant != nil && clearOperatingAscendant {
                     throw ValidationError("Use either --operating-ascendant or --clear-operating-ascendant, not both.")
                 }
-                try ConfigCommandLogic.updateTimeline(
-                    id: id, title: title, operatingAscendantID: operatingAscendant,
-                    clearOperatingAscendant: clearOperatingAscendant,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.updateTimeline(
+                        id: id, title: title, operatingAscendantID: operatingAscendant,
+                        clearOperatingAscendant: clearOperatingAscendant,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -355,9 +430,14 @@ struct ConfigCommand: AsyncParsableCommand {
             var configPath: String?
             @Argument(help: "Existing resource UUID.")
             var id: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.removeTimeline(id: id, store: ConfigCommandLogic.store(for: configPath))
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.removeTimeline(id: id, store: target)
+                }
             }
         }
 
@@ -373,6 +453,8 @@ struct ConfigCommand: AsyncParsableCommand {
             var timelineOption: String?
             @Option(name: .customLong("network"), help: "Network Workspace URI; omit for a local Workspace.")
             var networkURI: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
                 let timelineID = timelineOption ?? secondID.map { _ in firstID }
@@ -380,10 +462,13 @@ struct ConfigCommand: AsyncParsableCommand {
                 guard let timelineID, let workspaceID else {
                     throw ValidationError("Provide a Timeline UUID and Workspace UUID.")
                 }
-                try ConfigCommandLogic.attachWorkspace(
-                    timelineID: timelineID, workspaceID: workspaceID, networkURI: networkURI,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.attachWorkspace(
+                        timelineID: timelineID, workspaceID: workspaceID, networkURI: networkURI,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -397,6 +482,8 @@ struct ConfigCommand: AsyncParsableCommand {
             var secondID: String?
             @Option(name: .customLong("timeline"), help: "Timeline UUID.")
             var timelineOption: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
                 let timelineID = timelineOption ?? secondID.map { _ in firstID }
@@ -404,10 +491,13 @@ struct ConfigCommand: AsyncParsableCommand {
                 guard let timelineID, let workspaceID else {
                     throw ValidationError("Provide a Timeline UUID and Workspace UUID.")
                 }
-                try ConfigCommandLogic.detachWorkspace(
-                    timelineID: timelineID, workspaceID: workspaceID,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.detachWorkspace(
+                        timelineID: timelineID, workspaceID: workspaceID,
+                        store: target
+                    )
+                }
             }
         }
     }
@@ -436,12 +526,17 @@ struct ConfigCommand: AsyncParsableCommand {
             var name: String?
             @Option(name: .long, help: "Workspace URI.")
             var uri: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.addWorkspace(
-                    name: name ?? nameArgument, uri: uri,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.addWorkspace(
+                        name: name ?? nameArgument, uri: uri,
+                        store: target, writeOutput: dryRun ? { _ in } : { print($0) }
+                    )
+                }
             }
         }
 
@@ -455,12 +550,17 @@ struct ConfigCommand: AsyncParsableCommand {
             var name: String?
             @Option(name: .long, help: "New Workspace URI.")
             var uri: String?
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.updateWorkspace(
-                    id: id, name: name, uri: uri,
-                    store: ConfigCommandLogic.store(for: configPath)
-                )
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.updateWorkspace(
+                        id: id, name: name, uri: uri,
+                        store: target
+                    )
+                }
             }
         }
 
@@ -470,9 +570,14 @@ struct ConfigCommand: AsyncParsableCommand {
             var configPath: String?
             @Argument(help: "Existing resource UUID.")
             var id: String
+            @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
+            var dryRun = false
 
             func run() async throws {
-                try ConfigCommandLogic.removeWorkspace(id: id, store: ConfigCommandLogic.store(for: configPath))
+                let store = ConfigCommandLogic.store(for: configPath)
+                try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
+                    try ConfigCommandLogic.removeWorkspace(id: id, store: target)
+                }
             }
         }
     }
@@ -676,7 +781,8 @@ public enum ConfigCommandLogic {
         description: String,
         kind: String = AscendantAdapterRegistry.positronicKind,
         store: CLIConfigurationStore,
-        composition: BackendComposition = .default
+        composition: BackendComposition = .default,
+        writeOutput: (String) -> Void = { print($0) }
     ) throws {
         guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("An Ascendant name is required.") }
         guard composition.registeredKinds.contains(kind) else {
@@ -690,8 +796,8 @@ public enum ConfigCommandLogic {
             manifest.ascendants.append(.init(id: ascendantID, name: name, defaultTimelineID: timelineID, description: description, backend: .init(kind: kind)))
             manifest.timelines.append(.init(id: timelineID, title: "\(name) Timeline", operatingAscendantID: ascendantID))
         }
-        printID("Added ascendant", ascendantID)
-        printID("Added default timeline", timelineID)
+        printID("Added ascendant", ascendantID, writeOutput: writeOutput)
+        printID("Added default timeline", timelineID, writeOutput: writeOutput)
     }
 
     public static func updateAscendant(
@@ -723,7 +829,7 @@ public enum ConfigCommandLogic {
         }
     }
 
-    public static func addTimeline(title: String?, operatingAscendantID: String?, store: CLIConfigurationStore) throws {
+    public static func addTimeline(title: String?, operatingAscendantID: String?, store: CLIConfigurationStore, writeOutput: (String) -> Void = { print($0) }) throws {
         guard let title, !title.isEmpty else { throw CLIConfigurationError.invalidArgument("A Timeline title is required.") }
         let timelineID = UUID.makeVersion4()
         let ascendantID = try operatingAscendantID.map { try parseID($0, kind: "ascendant") }
@@ -731,7 +837,7 @@ public enum ConfigCommandLogic {
             if let ascendantID, !manifest.ascendants.contains(where: { $0.id == ascendantID }) { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID) }
             manifest.timelines.append(.init(id: timelineID, title: title, operatingAscendantID: ascendantID))
         }
-        printID("Added timeline", timelineID)
+        printID("Added timeline", timelineID, writeOutput: writeOutput)
     }
 
     public static func updateTimeline(
@@ -791,11 +897,11 @@ public enum ConfigCommandLogic {
         }
     }
 
-    public static func addWorkspace(name: String?, uri: String, store: CLIConfigurationStore) throws {
+    public static func addWorkspace(name: String?, uri: String, store: CLIConfigurationStore, writeOutput: (String) -> Void = { print($0) }) throws {
         guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("A Workspace name is required.") }
         let workspaceID = UUID.makeVersion4()
         _ = try store.mutateManifest { $0.workspaces.append(.init(id: workspaceID, name: name, uri: uri)) }
-        printID("Added workspace", workspaceID)
+        printID("Added workspace", workspaceID, writeOutput: writeOutput)
     }
 
     public static func updateWorkspace(id: String, name: String?, uri: String?, store: CLIConfigurationStore) throws {
@@ -825,8 +931,8 @@ public enum ConfigCommandLogic {
     }
 
 
-    private static func printID(_ label: String, _ id: UUID) {
-        print("\(label): \(id.uuidString.lowercased())")
+    private static func printID(_ label: String, _ id: UUID, writeOutput: (String) -> Void = { print($0) }) {
+        writeOutput("\(label): \(id.uuidString.lowercased())")
     }
 
     private static func initializationSummary(_ manifest: NodeManifest) -> String {

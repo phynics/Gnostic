@@ -50,14 +50,22 @@ struct InspectCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Filter by object type: ascendant, timeline, or workspace.")
         var type: String?
 
+        @OptionGroup var formatOptions: OutputFormatOptions
+
         @MainActor
         func run() async throws {
+            let format = try formatOptions.resolved()
             let entries = try await InspectSession(values: connection.values()).collect()
             let filtered = entries.filter { entry in
                 guard let type else { return true }
                 return entry.objectType == Self.canonicalType(for: type)
             }
-            print(InspectRenderer.listText(filtered), terminator: "")
+            switch format {
+            case .human:
+                print(InspectRenderer.listText(filtered), terminator: "")
+            case .json:
+                print(try InspectRenderer.listJSON(filtered))
+            }
         }
 
         static func canonicalType(for alias: String) -> String {
@@ -85,17 +93,21 @@ struct InspectCommand: AsyncParsableCommand {
         @Flag(name: .long, help: "Emit compact single-line JSON.")
         var json = false
 
+        @OptionGroup var formatOptions: OutputFormatOptions
+
         @MainActor
         func run() async throws {
+            let format = try formatOptions.resolved()
             guard let id = UUID(uuidString: uuid) else {
                 throw InspectError.malformedUUID(uuid)
             }
             let entries = try await InspectSession(values: connection.values()).collect()
             let matching = entries.filter { $0.objectID == id }
             let resolution = InspectRenderer.resolution(for: matching)
+            let wantsJSON = json || format == .json
             switch resolution {
             case .found(let entry):
-                print(try InspectRenderer.objectJSON(entry, compact: json), terminator: json ? "\n" : "")
+                print(try InspectRenderer.objectJSON(entry, compact: json), terminator: wantsJSON ? "\n" : "")
             case .unknown:
                 FileHandle.standardError.write(Data("No advertised object matches '\(uuid)'.\n".utf8))
                 throw ExitCode(2)

@@ -132,6 +132,52 @@ private struct RLMLeafModelAdapter: RLMLeafModelClient {
 public enum RLMWorkerSelection: String, Sendable, CaseIterable {
     case guile
     case chibi
+
+    /// Reports the external prerequisite paths for one worker selection.
+    ///
+    /// The doctor calls this before a run so a missing interpreter or bundled
+    /// script is reported as a check, not as an opaque startup failure.
+    ///
+    /// - Parameter settings: The RLM module's own settings (for example `worker`).
+    /// - Returns: One fact per prerequisite path, in check order.
+    public static func prerequisiteChecks(settings: [String: String]) -> [GnosticModulePrerequisite] {
+        let raw = settings["worker"]?.lowercased() ?? RLMWorkerSelection.guile.rawValue
+        let selection = RLMWorkerSelection(rawValue: raw) ?? .guile
+        switch selection {
+        case .guile:
+            return [
+                executable(name: "guile", path: RLMGuileWorkerConfiguration.defaultExecutablePath, environmentKey: "GNOSTIC_GUILE"),
+                executable(name: "gnostic-rlm-limit-exec", path: RLMGuileWorkerConfiguration.defaultLimitExecutablePath, environmentKey: nil),
+                script(name: "guile-worker-script", path: RLMGuileWorkerConfiguration.defaultWorkerScriptPath),
+            ]
+        case .chibi:
+            return [
+                executable(name: "chibi-scheme", path: RLMChibiWorkerConfiguration.defaultExecutablePath, environmentKey: "GNOSTIC_CHIBI"),
+                executable(name: "gnostic-rlm-limit-exec", path: RLMChibiWorkerConfiguration.defaultLimitExecutablePath, environmentKey: nil),
+                script(name: "chibi-worker-script", path: RLMChibiWorkerConfiguration.defaultWorkerScriptPath),
+            ]
+        }
+    }
+
+    private static func executable(name: String, path: String, environmentKey: String?) -> GnosticModulePrerequisite {
+        let hint = environmentKey.map { "Install \(name) or set \($0) to its path." }
+            ?? "Build the \(name) helper as part of the package."
+        return GnosticModulePrerequisite(
+            name: name,
+            path: path,
+            isAvailable: FileManager.default.isExecutableFile(atPath: path),
+            hint: hint
+        )
+    }
+
+    private static func script(name: String, path: String?) -> GnosticModulePrerequisite {
+        GnosticModulePrerequisite(
+            name: name,
+            path: path ?? "<unbundled>",
+            isAvailable: path.map { FileManager.default.fileExists(atPath: $0) } ?? false,
+            hint: "Build the package so the bundled worker script is present."
+        )
+    }
 }
 
 enum RLMWorkerFactory {
