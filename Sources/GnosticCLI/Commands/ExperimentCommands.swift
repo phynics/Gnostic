@@ -46,6 +46,8 @@ struct ExperimentCommand: AsyncParsableCommand {
                 commands.append(implementation)
             }
         }
+        commands.append(Run.self)
+        commands.append(Export.self)
         commands.append(RLMScenarioRating.self)
         return commands
     }
