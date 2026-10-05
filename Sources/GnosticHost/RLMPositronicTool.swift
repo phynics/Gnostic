@@ -218,21 +218,23 @@ struct RLMPositronicContribution: PositronicContribution {
     }
 }
 
-enum RLMPositronicExtension {
-    static let value = PositronicExtension(
+enum RLMModule {
+    static let value = GnosticModule(
         name: "rlm",
+        registryID: "GNO-MOD-RLM",
         settingKeys: [
             .init(name: "worker", summary: "Bounded Scheme worker to use: guile or chibi."),
         ],
-        requiresModelService: true
-    ) { scope in
-        guard let runtime = scope.runtimeContext else {
-            throw AscendantBackendError.invalidConfiguration("RLM extension has no bound runtime capability context")
+        requiresModelService: true,
+        contribution: { scope in
+            guard let runtime = scope.runtimeContext else {
+                throw AscendantBackendError.invalidConfiguration("RLM module has no bound runtime capability context")
+            }
+            let rawWorker = try scope.stringSetting("worker") ?? RLMWorkerSelection.guile.rawValue
+            guard let worker = RLMWorkerSelection(rawValue: rawWorker.lowercased()) else {
+                throw AscendantBackendError.invalidConfiguration("RLM module worker must be guile or chibi")
+            }
+            return RLMPositronicContribution(runtime: runtime, worker: worker)
         }
-        let rawWorker = try scope.stringSetting("worker") ?? RLMWorkerSelection.guile.rawValue
-        guard let worker = RLMWorkerSelection(rawValue: rawWorker.lowercased()) else {
-            throw AscendantBackendError.invalidConfiguration("RLM extension worker must be guile or chibi")
-        }
-        return RLMPositronicContribution(runtime: runtime, worker: worker)
-    }
+    )
 }

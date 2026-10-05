@@ -397,7 +397,7 @@ struct MixedAscendantConfigurationTests {
             workspaces: [.init(id: workspaceID, name: "Echo", uri: "echo://mixed")]
         )
 
-        let extensions: [String: PositronicExtension] = includeExtension
+        let modules: [String: GnosticModule] = includeExtension
             ? ["fixture": mixedFixtureExtension(probe: contributionProbe)]
             : [:]
         let models: [UUID: MixedScriptedModel] = [plainID: plainModel, extendedID: extendedModel]
@@ -410,7 +410,7 @@ struct MixedAscendantConfigurationTests {
             let contributions = try BackendComposition.contributions(
                 for: ascendant,
                 backend: backend,
-                extensions: extensions
+                modules: modules
             )
             let model: any LLMStreamClient = models[ascendant.id] ?? UnconfiguredLLMService()
             return try await PositronicAscendantAdapter(
@@ -444,8 +444,8 @@ struct MixedAscendantConfigurationTests {
         )
     }
 
-    private func mixedFixtureExtension(probe: MixedContributionProbe) -> PositronicExtension {
-        PositronicExtension(name: "fixture") { _ in
+    private func mixedFixtureExtension(probe: MixedContributionProbe) -> GnosticModule {
+        GnosticModule(name: "fixture") { _ in
             MixedFixtureContribution(
                 label: "fixture",
                 tools: [AnyTool(MixedFixtureTool(callName: "mixed_fixture_tool"))],

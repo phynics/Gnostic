@@ -68,7 +68,7 @@ struct CompositionArchitectureFitnessTests {
             contentsOf: Self.root.appendingPathComponent("Sources/GnosticCLI/Commands/ServeCommand.swift"),
             encoding: .utf8
         )
-        #expect(source.contains("BackendComposition.default.makeAdapters()"))
+        #expect(source.contains("BackendComposition.default.makeAdapters(for: plan.ascendants)"))
         #expect(!source.contains("AscendantAdapterRegistry"))
         #expect(!source.contains("registerBackend("))
         #expect(!source.contains("registerPositronicBackend("))
