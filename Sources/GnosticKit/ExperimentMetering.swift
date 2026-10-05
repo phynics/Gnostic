@@ -59,6 +59,14 @@ public enum ExperimentError: Error, Equatable, CustomStringConvertible {
     case emptyModelResponse
     /// A scripted transport ran out of responses.
     case scriptExhausted
+    /// The frozen case set changed from its approved digest.
+    case caseSetChanged(expected: String, actual: String)
+    /// The frozen case set could not be parsed.
+    case malformedCaseSet(String)
+    /// A pilot artifact is missing or cannot authorise the comparison.
+    case missingPilot(String)
+    /// The resumed artifact belongs to a different round.
+    case manifestMismatch(String)
 
     public var description: String {
         switch self {
@@ -66,6 +74,14 @@ public enum ExperimentError: Error, Equatable, CustomStringConvertible {
             "the model returned an empty response"
         case .scriptExhausted:
             "the scripted model script is exhausted"
+        case let .caseSetChanged(expected, actual):
+            "the frozen case set changed (expected SHA-256 \(expected), found \(actual)); a new case set needs a new manifest version"
+        case let .malformedCaseSet(reason):
+            "the frozen case set could not be parsed: \(reason)"
+        case let .missingPilot(reason):
+            "the comparison needs an accepted pilot: \(reason)"
+        case let .manifestMismatch(reason):
+            "the existing artifact belongs to a different round and cannot be resumed: \(reason)"
         }
     }
 }
