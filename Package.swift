@@ -294,6 +294,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PKContracts", package: "PositronicKit"),
+                .product(name: "PositronicKit", package: "PositronicKit"),
             ]
         ),
     ],

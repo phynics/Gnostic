@@ -3,6 +3,7 @@
 import Foundation
 import GnosticACPAscendant
 import GnosticCore
+import GnosticKit
 import GnosticLettaBackend
 import PositronicKit
 
@@ -210,6 +211,12 @@ public struct BackendComposition: Sendable {
                     modelService: dedicatedModel,
                     allowedWorkspaceIDs: allowedWorkspaceIDs
                 )
+            let pipeline = Self.interceptionPipeline(
+                for: ascendant,
+                backend: backend,
+                modules: modules,
+                runtimeContext: runtimeContext
+            )
             let contributions = try Self.contributions(
                 for: ascendant,
                 backend: backend,
@@ -221,8 +228,37 @@ public struct BackendComposition: Sendable {
                 backend: backend,
                 services: services,
                 timelines: timelines,
-                languageModel: modelClient,
-                contributions: contributions
+                languageModel: InterceptingLLMStreamClient(underlying: modelClient, pipeline: pipeline),
+                contributions: contributions,
+                toolMiddleware: { tools in TurnInterceptionMiddleware.wrap(tools, pipeline: pipeline) }
+            )
+        }
+    }
+
+    /// Builds the Turn interception pipeline the selected modules install.
+    ///
+    /// A malformed selection yields an empty pipeline here and fails later,
+    /// when the Positronic backend factory materializes the Ascendant, so the
+    /// error still surfaces before advertisement. A module without a factory
+    /// contributes nothing.
+    private static func interceptionPipeline(
+        for ascendant: NodeManifest.Ascendant,
+        backend: AscendantBackendConfiguration,
+        modules: [String: GnosticModule],
+        runtimeContext: PositronicContributionRuntimeContext?
+    ) -> TurnInterceptionPipeline {
+        guard let names = try? selectedModuleNames(for: ascendant, backend: backend) else { return .empty }
+        return names.reduce(into: TurnInterceptionPipeline.empty) { pipeline, name in
+            guard let module = modules[name], let factory = module.turnInterception else { return }
+            pipeline = pipeline.appending(
+                factory(
+                    scope(
+                        for: module,
+                        ascendant: ascendant,
+                        backend: backend,
+                        runtimeContext: runtimeContext
+                    )
+                )
             )
         }
     }
