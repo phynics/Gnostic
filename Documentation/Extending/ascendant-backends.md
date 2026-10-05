@@ -319,20 +319,21 @@ aborts the Turn before provider work and leaves the backend healthy, while
 `PositronicTurnInvocationContext.current` to correlate the Ascendant, Timeline,
 and admitted client Turn it is projecting for.
 
-### Selecting extensions per Ascendant
+### Selecting modules per Ascendant
 
-A composition root registers each compiled-in extension on `BackendComposition`,
-keyed by a static name. The extension declares its own settings keys and builds
-its contribution from the settings of the Ascendant that selected it:
+A composition root registers each compiled-in module on `BackendComposition`,
+keyed by a static name. The module declares its own settings keys and builds its
+contribution from the settings of the Ascendant that selected it:
 
 ```swift
 var composition = BackendComposition()
-composition.registerPositronicExtension(PositronicExtension(
+composition.registerModule(GnosticModule(
     name: "notes",
     settingKeys: [
         .init(name: "topic", summary: "Notes topic."),
         .init(name: "token", summary: "Notes credential.", isSecret: true),
-    ]
+    ],
+    terminalTurnObservers: []
 ) { scope in
     NotesContribution(topic: try scope.stringSetting("topic"))
 })
@@ -345,17 +346,23 @@ envelopes without the key behave exactly as before:
 { "kind": "positronic", "settings": { "extensions": ["notes"], "notes.topic": "release" } }
 ```
 
-Extension settings are namespaced `<name>.<key>` in `settings`. Secrets use the
+Module settings are namespaced `<name>.<key>` in `settings`. Secrets use the
 same namespacing in `backend.secrets`, so they stay covered by the structural
 redaction `gnostic config show` applies. The Positronic settings schema includes
-the selection key and every registered extension key, so
+the selection key and every registered module key, so
 `gnostic config backend keys <ascendant-id>` lists them.
 
-Two Positronic Ascendants on one Node may select different sets. Selection is
-static: there is no live enable, disable, or hot reload. An unknown or malformed
-selection fails startup before advertisement and names the extension. The
-rejected alternative, a distinct backend kind per variant, would multiply kinds
-combinatorially and conflict with the single `positronic` kind the adapter
+A module may also declare terminal Turn observers. `serve` and the runner
+install them through `makeAdapters(for:)`, scoped to the Ascendants that select
+the module. A module that selects no observer leaves the runtime path unchanged.
+The descriptor may name an experiment subcommand, but the CLI keeps argument
+parsing: `GnosticHost` never depends on `ArgumentParser`.
+
+Two Positronic Ascendants on one Node may select different module sets.
+Selection is static: there is no live enable, disable, or hot reload. An unknown
+or malformed selection fails startup before advertisement and names the module.
+The rejected alternative, a distinct backend kind per variant, would multiply
+kinds combinatorially and conflict with the single `positronic` kind the adapter
 validates.
 
 ## What stays Gnostic's

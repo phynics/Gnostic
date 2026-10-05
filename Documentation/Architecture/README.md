@@ -58,11 +58,13 @@ to `Package.swift`, a lifecycle `status` (`incubating`, `gated`, `promoted`,
 whether it is `runnable` from a manifest, and a `reviewBy` date.
 
 `make docs-check` validates the schema, rejects a closed owning issue on an
-active entry, and rejects a target that is not declared in `Package.swift`. An
-empty `targets` array is allowed: it means the module has no compiled target
-yet. The issue-state rule runs when `GH_TOKEN` or `GITHUB_TOKEN` reaches the
-GitHub API; the checker self-test always pins the closed-owner rejection so it
-cannot silently rot.
+active entry, and rejects a target that is not declared in `Package.swift`. It
+also rejects a compiled-in module descriptor whose `registryID` has no matching
+entry, so a module and its registry record cannot drift apart. An empty
+`targets` array is allowed: it means the module has no compiled target yet. The
+issue-state rule runs when `GH_TOKEN` or `GITHUB_TOKEN` reaches the GitHub API;
+the checker self-test always pins the closed-owner rejection so it cannot
+silently rot.
 
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.

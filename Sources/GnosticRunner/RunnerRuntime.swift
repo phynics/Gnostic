@@ -35,7 +35,7 @@ final class RunnerRuntime {
     ///     shared `GnosticHost` composition.
     init(plan: NodeLaunchPlan, composition: BackendComposition? = nil) async throws {
         let composition = composition ?? Self.composition
-        runtime = try await NodeRuntime(plan: plan, adapters: composition.makeAdapters())
+        runtime = try await NodeRuntime(plan: plan, adapters: composition.makeAdapters(for: plan.ascendants))
     }
 
     /// Starts the hosted Node and advertises its canonical objects.

@@ -54,7 +54,7 @@ struct ServeCommand: AsyncParsableCommand {
                 return handler
             }
 
-            let adapters = BackendComposition.default.makeAdapters()
+            let adapters = BackendComposition.default.makeAdapters(for: plan.ascendants)
             let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
             do {
                 guard try await start(runtime: runtime, until: terminationMonitor) else { return }

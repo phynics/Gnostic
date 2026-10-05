@@ -285,6 +285,18 @@ async function validateExperiments(root, failures, { issueState = null } = {}) {
       // self-test pins the closed-owner contract.
     }
   }
+
+  // A compiled-in descriptor names the registry entry it implements, so a
+  // module cannot ship without a registry record (ADR 0013).
+  const compiledRegistryIDs = new Set();
+  for (const { text } of sourceFiles(root, "Sources/GnosticHost")) {
+    for (const match of text.matchAll(/registryID:\s*"([^"]+)"/g)) compiledRegistryIDs.add(match[1]);
+  }
+  for (const id of compiledRegistryIDs) {
+    if (!ids.has(id)) {
+      failures.push(`Sources/GnosticHost: compiled-in module registryID '${id}' has no entry in ${MODULE_FILE}`);
+    }
+  }
 }
 
 function swiftTargetBlock(packageText, name) {
@@ -660,6 +672,18 @@ async function selfTest() {
       assert.deepEqual(await checkRepository({ root, ...options, issueState: async () => "closed" }), { checked: REQUIRED_FILES.length, failures: [] });
     }
 
+    writeFixture(root);
+    // A compiled-in descriptor must name a real registry entry.
+    mkdirSync(join(root, "Sources/GnosticHost"), { recursive: true });
+    writeFileSync(
+      join(root, "Sources/GnosticHost/Composition.swift"),
+      'let module = GnosticModule(name: "rlm", registryID: "GNO-MOD-MISSING")\n'
+    );
+    await assert.rejects(
+      () => checkRepository({ root, ...options }),
+      (error) => error.message.includes("registryID 'GNO-MOD-MISSING' has no entry")
+    );
+    rmSync(join(root, "Sources/GnosticHost"), { recursive: true, force: true });
     writeFixture(root);
     await assert.rejects(
       () => checkRepository({

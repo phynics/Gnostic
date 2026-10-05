@@ -61,7 +61,7 @@ struct PositronicExtensionSelectionTests {
             _ = try BackendComposition.contributions(
                 for: ascendant,
                 backend: backend,
-                extensions: ["fixture": fixtureExtension()]
+                modules: ["fixture": fixtureExtension()]
             )
         }
     }
@@ -79,7 +79,7 @@ struct PositronicExtensionSelectionTests {
             _ = try BackendComposition.contributions(
                 for: ascendant,
                 backend: backend,
-                extensions: ["fixture": fixtureExtension()]
+                modules: ["fixture": fixtureExtension()]
             )
         }
     }
@@ -91,7 +91,7 @@ struct PositronicExtensionSelectionTests {
     func twoAscendantsSelectDifferentExtensions() async throws {
         let probe = FixtureExtensionProbe()
         var composition = BackendComposition()
-        composition.registerPositronicExtension(fixtureExtension(probe: probe))
+        composition.registerModule(fixtureExtension(probe: probe))
 
         let selectingID = UUID()
         let selectingTimelineID = UUID()
@@ -150,7 +150,7 @@ struct PositronicExtensionSelectionTests {
         let contributions = try BackendComposition.contributions(
             for: ascendant,
             backend: ascendant.backend,
-            extensions: ["fixture": extensionValue]
+            modules: ["fixture": extensionValue]
         )
         let adapter = try await PositronicAscendantAdapter(
             ascendant: ascendant,
@@ -168,11 +168,11 @@ struct PositronicExtensionSelectionTests {
     @MainActor
     func extensionSettingsAreNamespaced() throws {
         let probe = FixtureExtensionProbe()
-        let alpha = PositronicExtension(name: "alpha", settingKeys: [.init(name: "value", summary: "Alpha value.")]) { scope in
+        let alpha = GnosticModule(name: "alpha", settingKeys: [.init(name: "value", summary: "Alpha value.")]) { scope in
             probe.record(ascendantID: scope.ascendant.id, settings: scope.settings, secrets: scope.secrets)
             return FixtureContribution(label: "alpha")
         }
-        let beta = PositronicExtension(name: "beta", settingKeys: [.init(name: "value", summary: "Beta value.")]) { scope in
+        let beta = GnosticModule(name: "beta", settingKeys: [.init(name: "value", summary: "Beta value.")]) { scope in
             probe.record(ascendantID: scope.ascendant.id, settings: scope.settings, secrets: scope.secrets)
             return FixtureContribution(label: "beta")
         }
@@ -189,7 +189,7 @@ struct PositronicExtensionSelectionTests {
         _ = try BackendComposition.contributions(
             for: ascendant,
             backend: backend,
-            extensions: ["alpha": alpha, "beta": beta]
+            modules: ["alpha": alpha, "beta": beta]
         )
 
         #expect(probe.records.count == 2)
@@ -211,7 +211,7 @@ struct PositronicExtensionSelectionTests {
             allowedWorkspaceIDs: [workspaceID]
         )
         let received = Mutex<Set<UUID>>([])
-        let extensionValue = PositronicExtension(name: "fixture") { scope in
+        let extensionValue = GnosticModule(name: "fixture") { scope in
             received.withLock { $0 = scope.runtimeContext?.allowedWorkspaceIDs ?? [] }
             return FixtureContribution(label: "fixture")
         }
@@ -219,7 +219,7 @@ struct PositronicExtensionSelectionTests {
         _ = try BackendComposition.contributions(
             for: ascendant,
             backend: backend,
-            extensions: ["fixture": extensionValue],
+            modules: ["fixture": extensionValue],
             runtimeContext: runtime
         )
 
@@ -231,7 +231,7 @@ struct PositronicExtensionSelectionTests {
     @Test("the Positronic schema advertises the selection key and name-spaced extension keys")
     func schemaAdvertisesExtensionKeys() {
         var composition = BackendComposition()
-        composition.registerPositronicExtension(fixtureExtension())
+        composition.registerModule(fixtureExtension())
         let schema = composition.settingsSchema(for: AscendantAdapterRegistry.positronicKind)
 
         #expect(composition.registeredPositronicExtensions == ["fixture"])
@@ -244,7 +244,7 @@ struct PositronicExtensionSelectionTests {
     func configListsExtensionKeys() throws {
         let (_, store) = try seeded()
         var composition = BackendComposition()
-        composition.registerPositronicExtension(fixtureExtension())
+        composition.registerModule(fixtureExtension())
         let id = try #require(try store.loadManifest().ascendants.first?.id)
 
         var output: [String] = []
@@ -268,7 +268,7 @@ struct PositronicExtensionSelectionTests {
     func extensionSecretIsStoredAndRedacted() throws {
         let (_, store) = try seeded()
         var composition = BackendComposition()
-        composition.registerPositronicExtension(fixtureExtension())
+        composition.registerModule(fixtureExtension())
         let id = try #require(try store.loadManifest().ascendants.first?.id)
 
         try ConfigCommandLogic.setBackendSecret(
@@ -309,7 +309,7 @@ struct PositronicExtensionSelectionTests {
         let contributions = try BackendComposition.contributions(
             for: ascendant,
             backend: .init(kind: "positronic"),
-            extensions: ["fixture": fixtureExtension()]
+            modules: ["fixture": fixtureExtension()]
         )
 
         #expect(contributions.isEmpty)
@@ -355,8 +355,8 @@ struct PositronicExtensionSelectionTests {
     private func fixtureExtension(
         probe: FixtureExtensionProbe? = nil,
         toolCallName: String = "fixture_tool"
-    ) -> PositronicExtension {
-        PositronicExtension(
+    ) -> GnosticModule {
+        GnosticModule(
             name: "fixture",
             settingKeys: [
                 .init(name: "mode", summary: "Fixture mode."),
