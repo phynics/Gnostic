@@ -33,7 +33,7 @@
       "status": "parked",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/327",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/327"],
-      "runnable": true,
+      "runnable": false,
       "reviewBy": "2026-12-01"
     },
     {

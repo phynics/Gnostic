@@ -66,6 +66,12 @@ issue-state rule runs when `GH_TOKEN` or `GITHUB_TOKEN` reaches the GitHub API;
 the checker self-test always pins the closed-owner rejection so it cannot
 silently rot.
 
+The same check keeps the registry and the compiled-in module descriptors from
+drifting apart in the other direction too: a `runnable` entry must have a
+compiled-in `GnosticModule` descriptor whose `registryID` is that entry's `id`,
+so a module reaches `runnable` only after its descriptor is compiled in. #449
+and #450 own those two wiring steps.
+
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.
 
