@@ -60,7 +60,7 @@ struct RLMModuleExperimentSubcommandTests {
         // descriptor's declared name must equal the CLI parser's own name, so
         // one declaration both routes and documents the command.
         let names = ExperimentCommand.configuration.subcommands.map { $0.configuration.commandName }
-        #expect(names == ["rlm-scenario", "run", "export", "rlm-scenario-rating"])
+        #expect(names == ["rlm-scenario", "run", "export", "replay", "rlm-scenario-rating"])
         #expect(RLMModule.value.experimentSubcommand?.name == ExperimentCommand.RLMScenario.configuration.commandName)
     }
 
