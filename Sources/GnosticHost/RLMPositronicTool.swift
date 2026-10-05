@@ -226,6 +226,10 @@ enum RLMModule {
             .init(name: "worker", summary: "Bounded Scheme worker to use: guile or chibi."),
         ],
         requiresModelService: true,
+        experimentSubcommand: .init(
+            name: "rlm-scenario",
+            abstract: "Run the RLM scenario live stages (pilot or full matrix) against a configured provider."
+        ),
         contribution: { scope in
             guard let runtime = scope.runtimeContext else {
                 throw AscendantBackendError.invalidConfiguration("RLM module has no bound runtime capability context")

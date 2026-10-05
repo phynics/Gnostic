@@ -63,6 +63,19 @@ public struct BackendComposition: Sendable {
         Set(modules.values.filter { $0.contribution != nil }.map(\.name))
     }
 
+    /// The experiment subcommands the registered modules declare, sorted by name.
+    ///
+    /// A module's optional experiment subcommand is live only when its
+    /// descriptor declares it, so an app can discover module-contributed
+    /// subcommands instead of keeping its own module registry. The app owns
+    /// argument parsing and rendering; `GnosticHost` never depends on
+    /// `ArgumentParser`.
+    public var registeredExperimentSubcommands: [GnosticModuleSubcommand] {
+        modules.values
+            .compactMap(\.experimentSubcommand)
+            .sorted { $0.name < $1.name }
+    }
+
     /// The configuration keys one registered kind understands.
     ///
     /// For the bundled Positronic kind the advertised schema also includes
