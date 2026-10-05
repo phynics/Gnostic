@@ -3,6 +3,7 @@
 import ArgumentParser
 import Foundation
 import GnosticCore
+import GnosticHost
 
 /// gnostic config — create and manage the versioned Node resource graph.
 struct ConfigCommand: AsyncParsableCommand {

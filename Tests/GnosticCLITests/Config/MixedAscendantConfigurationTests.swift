@@ -9,6 +9,7 @@ import PositronicKit
 import Testing
 
 @testable import GnosticCLI
+@testable import GnosticHost
 
 /// Proves that one Node hosts distinct Ascendant configurations side by side.
 ///

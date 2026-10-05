@@ -5,20 +5,19 @@ import Testing
 
 @Suite("Backend composition architecture fitness")
 struct CompositionArchitectureFitnessTests {
-    private var root: URL {
+    private static var root: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    /// The one registry reference the CLI may keep outside the composition
-    /// source: the stable kind identifier used as a default flag value. It is a
-    /// constant, not a construction.
+    /// The stable kind identifier is a constant, not a construction, so the
+    /// CLI may keep it as a default flag value outside the composition source.
     private static let allowedRegistryReference = "AscendantAdapterRegistry.positronicKind"
 
-    @Test("GnosticCLI names the Ascendant registry only in the composition source")
+    @Test("GnosticHost owns the Ascendant registry in the composition source")
     func onlyCompositionReferencesRegistry() throws {
-        let sourceRoot = root.appendingPathComponent("Sources/GnosticCLI")
+        let sourceRoot = Self.root.appendingPathComponent("Sources/GnosticHost")
         var referencingPaths: [String] = []
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
             where relativePath.hasSuffix(".swift") {
@@ -36,20 +35,105 @@ struct CompositionArchitectureFitnessTests {
         }
 
         #expect(
-            referencingPaths == ["Config/BackendComposition.swift"],
-            "GnosticCLI must reach AscendantAdapterRegistry only through BackendComposition.swift; found: \(referencingPaths)."
+            referencingPaths == ["BackendComposition.swift"],
+            "GnosticHost must reach AscendantAdapterRegistry only through BackendComposition.swift; found: \(referencingPaths)."
+        )
+    }
+
+    @Test("GnosticCLI keeps no private Ascendant registry")
+    func cliKeepsNoPrivateRegistry() throws {
+        let sourceRoot = Self.root.appendingPathComponent("Sources/GnosticCLI")
+        var referencingPaths: [String] = []
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            let residue = source.replacingOccurrences(of: Self.allowedRegistryReference, with: "")
+            if residue.contains("AscendantAdapterRegistry") {
+                referencingPaths.append(relativePath)
+            }
+        }
+
+        #expect(
+            referencingPaths == [],
+            "GnosticCLI must compose through GnosticHost and must not construct AscendantAdapterRegistry; found: \(referencingPaths)."
         )
     }
 
     @Test("serve obtains its adapters from the composition source")
     func serveUsesComposition() throws {
         let source = try String(
-            contentsOf: root.appendingPathComponent("Sources/GnosticCLI/Commands/ServeCommand.swift"),
+            contentsOf: Self.root.appendingPathComponent("Sources/GnosticCLI/Commands/ServeCommand.swift"),
             encoding: .utf8
         )
         #expect(source.contains("BackendComposition.default.makeAdapters()"))
         #expect(!source.contains("AscendantAdapterRegistry"))
         #expect(!source.contains("registerBackend("))
         #expect(!source.contains("registerPositronicBackend("))
+    }
+
+    @Test("the composition layer does not invert its dependencies")
+    func layerDependencies() throws {
+        let package = try String(contentsOf: Self.root.appendingPathComponent("Package.swift"), encoding: .utf8)
+
+        let coreTarget = try #require(
+            Self.targetBlock(named: "GnosticCore", in: package),
+            "Package.swift must declare a GnosticCore target."
+        )
+        #expect(
+            !coreTarget.contains("GnosticHost"),
+            "GnosticCore must not depend on GnosticHost."
+        )
+
+        let hostTarget = try #require(
+            Self.targetBlock(named: "GnosticHost", in: package),
+            "Package.swift must declare a GnosticHost target."
+        )
+        #expect(
+            !hostTarget.contains("GnosticCLI"),
+            "GnosticHost must not depend on GnosticCLI."
+        )
+        #expect(
+            hostTarget.contains("\"GnosticCore\""),
+            "GnosticHost must build on GnosticCore."
+        )
+
+        let coreImportsHost = try Self.sources(in: "Sources/GnosticCore")
+            .contains { $0.text.contains("import GnosticHost") }
+        #expect(!coreImportsHost, "GnosticCore sources must not import GnosticHost.")
+
+        let hostImportsCLI = try Self.sources(in: "Sources/GnosticHost")
+            .contains { $0.text.contains("import GnosticCLI") }
+        #expect(!hostImportsCLI, "GnosticHost sources must not import GnosticCLI.")
+    }
+
+    /// Extracts one `.target(name: "...")` block, matching the boundary the
+    /// documentation checker uses.
+    private static func targetBlock(named name: String, in package: String) -> String? {
+        guard let start = package.range(of: ".target(\n            name: \"\(name)\"")?.lowerBound else {
+            return nil
+        }
+        let endMarker = "\n        ),"
+        guard let end = package.range(of: endMarker, range: start..<package.endIndex)?.upperBound else {
+            return nil
+        }
+        return String(package[start..<end])
+    }
+
+    private static func sources(in relativePath: String) throws -> [(path: String, text: String)] {
+        let sourceRoot = root.appendingPathComponent(relativePath)
+        return try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
+            .filter { $0.hasSuffix(".swift") }
+            .map { path in
+                (
+                    path,
+                    try String(
+                        contentsOf: sourceRoot.appendingPathComponent(path),
+                        encoding: .utf8
+                    )
+                )
+            }
     }
 }

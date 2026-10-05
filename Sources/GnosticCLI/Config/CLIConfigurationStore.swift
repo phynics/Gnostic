@@ -6,6 +6,7 @@ import Glibc
 #elseif canImport(Darwin)
 import Darwin
 #endif
+import GnosticHost
 
 /// A process-safe, atomically persisted manifest store.
 public struct CLIConfigurationStore: Sendable {

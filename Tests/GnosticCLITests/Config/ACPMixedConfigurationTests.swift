@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticCore
+import GnosticHost
 import Testing
 #if canImport(Darwin)
 import Darwin

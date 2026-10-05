@@ -3,6 +3,7 @@
 import ArgumentParser
 import Foundation
 import GnosticCore
+import GnosticHost
 import Logging
 
 /// `gnostic serve` — a persistent process that advertises Gnostic objects and

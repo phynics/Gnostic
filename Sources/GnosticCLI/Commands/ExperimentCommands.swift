@@ -3,6 +3,7 @@
 import ArgumentParser
 import Foundation
 import GnosticCore
+import GnosticHost
 import GnosticRLM
 import PKContracts
 import PositronicKit

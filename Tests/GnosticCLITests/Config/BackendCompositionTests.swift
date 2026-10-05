@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticCore
+import GnosticHost
 import GnosticLettaBackend
 import Testing
 

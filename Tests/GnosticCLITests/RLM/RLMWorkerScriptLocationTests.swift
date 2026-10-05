@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @testable import GnosticCLI
+@testable import GnosticHost
 
 @Suite("RLM worker script location")
 struct RLMWorkerScriptLocationTests {

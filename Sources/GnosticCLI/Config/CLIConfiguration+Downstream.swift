@@ -40,7 +40,7 @@ extension CLIConfiguration {
         else { return nil }
 
         var configuration = LLMConfiguration(activeProvider: provider)
-        var providerConfig = provider.providerConfiguration
+        var providerConfig = ProviderConfiguration.makeDefault(for: provider)
 
         if let endpoint = llmEndpoint, !endpoint.isEmpty {
             providerConfig.endpoint = endpoint
@@ -60,12 +60,5 @@ extension CLIConfiguration {
 
         configuration.providers[provider] = providerConfig
         return configuration
-    }
-}
-
-extension LLMProvider {
-    /// The configured default provider configuration for this provider.
-    var providerConfiguration: ProviderConfiguration {
-        .makeDefault(for: self)
     }
 }
