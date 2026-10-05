@@ -441,7 +441,11 @@ enum POSIXTCPProbe {
     static func connect(host: String, port: Int, timeout: Double) -> Bool {
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
+        #if canImport(Glibc)
         hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+        #else
+        hints.ai_socktype = SOCK_STREAM
+        #endif
         var result: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, String(port), &hints, &result) == 0, let result else { return false }
         defer { freeaddrinfo(result) }
