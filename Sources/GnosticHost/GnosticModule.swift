@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import GnosticCore
+import GnosticKit
 
 /// One compiled-in module of the Gnostic platform.
 ///
@@ -10,6 +11,7 @@ import GnosticCore
 /// - the settings and secrets keys it reads (``settingKeys``),
 /// - whether it needs a dedicated model service (``requiresModelService``),
 /// - an optional Positronic contribution factory (``contribution``),
+/// - optional Turn interception points (``turnInterception``),
 /// - optional terminal Turn observer factories (``terminalTurnObservers``),
 /// - an optional experiment subcommand (``experimentSubcommand``).
 ///
@@ -41,6 +43,18 @@ public struct GnosticModule: Sendable {
     /// - Returns: The observer the runtime installs.
     public typealias ObserverFactory = @Sendable (GnosticModuleScope) -> any TerminalTurnObserving
 
+    /// Builds the Turn interception points from the module's scoped settings.
+    ///
+    /// The composition layer appends each selected module's pipeline to the
+    /// Ascendant's pipeline in selection order, then installs it around the
+    /// Positronic model client and tool surface. A module that returns an empty
+    /// pipeline changes no Turn. It cannot throw: validate settings in
+    /// ``contribution``, whose failure aborts startup before advertisement.
+    ///
+    /// - Parameter scope: The Ascendant and the module's own settings.
+    /// - Returns: The interception pipeline the composition appends.
+    public typealias InterceptionFactory = @Sendable (GnosticModuleScope) -> TurnInterceptionPipeline
+
     /// The static selection name used in the `extensions` setting.
     public let name: String
     /// The `experiments.json` registry id, when the module has an entry.
@@ -54,6 +68,8 @@ public struct GnosticModule: Sendable {
     public let requiresModelService: Bool
     /// The optional experiment subcommand this module owns.
     public let experimentSubcommand: GnosticModuleSubcommand?
+    /// Builds the Turn interception points for one Ascendant, when it has any.
+    public let turnInterception: InterceptionFactory?
     /// Builds the terminal Turn observers for one Ascendant.
     public let terminalTurnObservers: [ObserverFactory]
     /// Builds the Positronic contribution for one Ascendant, when it has one.
@@ -70,6 +86,9 @@ public struct GnosticModule: Sendable {
     ///   - experimentSubcommand: The optional experiment subcommand.
     ///   - terminalTurnObservers: Builds the terminal Turn observers.
     ///   - contribution: Builds the Positronic contribution.
+    ///   - turnInterception: Builds the Turn interception pipeline. It stays
+    ///     last so existing trailing-closure call sites keep binding to
+    ///     `contribution`.
     public init(
         name: String,
         registryID: String? = nil,
@@ -77,7 +96,8 @@ public struct GnosticModule: Sendable {
         requiresModelService: Bool = false,
         experimentSubcommand: GnosticModuleSubcommand? = nil,
         terminalTurnObservers: [ObserverFactory] = [],
-        contribution: ContributionFactory? = nil
+        contribution: ContributionFactory? = nil,
+        turnInterception: InterceptionFactory? = nil
     ) {
         // Scoping strips the `"\(name)."` prefix from an envelope, so a dot in
         // `name` would let one module read another's settings. Module names are
@@ -92,6 +112,7 @@ public struct GnosticModule: Sendable {
         self.settingKeys = settingKeys
         self.requiresModelService = requiresModelService
         self.experimentSubcommand = experimentSubcommand
+        self.turnInterception = turnInterception
         self.terminalTurnObservers = terminalTurnObservers
         self.contribution = contribution
     }

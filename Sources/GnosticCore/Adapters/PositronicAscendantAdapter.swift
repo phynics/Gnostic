@@ -15,6 +15,7 @@ import struct PositronicKit.TimelineRecord
     private let threadStore: any TimelineRuntimeRepository
     private let networkTools: [AnyTool]
     private let contributionTools: [AnyTool]
+    private let toolMiddleware: @Sendable ([AnyTool]) -> [AnyTool]
     private var workspaceToolsByID: [UUID: [AnyTool]]
     private var workspaceIDsByTimeline: [UUID: [UUID]]
     private let workspaceService: any AscendantBackendWorkspaceService?
@@ -26,7 +27,8 @@ import struct PositronicKit.TimelineRecord
         services: AscendantBackendServices,
         timelines: [NodeManifest.Timeline],
         languageModel: any LLMStreamClient,
-        contributions: [any PositronicContribution] = []
+        contributions: [any PositronicContribution] = [],
+        toolMiddleware: @escaping @Sendable ([AnyTool]) -> [AnyTool] = { $0 }
     ) async throws {
         try AscendantBackendConfigurationValidator.validate(backend)
         configuration = backend
@@ -166,6 +168,7 @@ import struct PositronicKit.TimelineRecord
         threadStore = runtimeRepository
         lifecycleFailure = nil
         workspaceService = services.workspace
+        self.toolMiddleware = toolMiddleware
         networkTools = resolvedNetworkTools
         contributionTools = contributionSurface.tools
         workspaceToolsByID = resolvedWorkspaceToolsByID
@@ -398,7 +401,7 @@ import struct PositronicKit.TimelineRecord
                 let workspaceTools = await availableWorkspaceTools(for: workspaceIDs)
                 let options = TurnOptions(
                     requestID: request.clientTurnID.flatMap(UUID.init(uuidString:)),
-                    tools: workspaceTools + networkTools + contributionTools,
+                    tools: toolMiddleware(workspaceTools + networkTools + contributionTools),
                     maxModelRounds: 5
                 )
                 let handle = try await kit.timelines.open(request.timelineID)
