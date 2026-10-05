@@ -9,17 +9,53 @@ import PKContracts
 import PositronicKit
 
 /// `gnostic experiment` — opt-in evidence runs that are not part of a Node.
+///
+/// The subcommand surface comes from the composition root: module descriptors
+/// declare optional experiment subcommands, and this command registers the
+/// implementation it owns for each declared name. The CLI owns argument
+/// parsing and rendering; `GnosticHost` never depends on `ArgumentParser`.
 struct ExperimentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "experiment",
         abstract: "Run opt-in evidence experiments.",
-        subcommands: [RLMScenario.self, RLMScenarioRating.self]
+        subcommands: experimentSubcommands()
     )
+
+    /// The CLI's implementations for module experiment subcommands, keyed by
+    /// the command name a module descriptor declares.
+    ///
+    /// The mapping is by name so one declaration both routes and documents the
+    /// command: `BackendComposition` decides which names are live from the
+    /// registered modules, and this table binds a live name to the parser that
+    /// owns it.
+    private static let moduleSubcommandImplementations: [String: ParsableCommand.Type] = [
+        RLMScenario.commandName: RLMScenario.self,
+    ]
+
+    /// Every experiment subcommand this CLI exposes.
+    ///
+    /// The rating command is intrinsic to the CLI. Module experiment
+    /// subcommands come from the composed module descriptors, so a module
+    /// that stops declaring its subcommand also stops being advertised and
+    /// routed here.
+    private static func experimentSubcommands() -> [ParsableCommand.Type] {
+        var commands: [ParsableCommand.Type] = []
+        for declared in BackendComposition.default.registeredExperimentSubcommands {
+            if let implementation = moduleSubcommandImplementations[declared.name] {
+                commands.append(implementation)
+            }
+        }
+        commands.append(RLMScenarioRating.self)
+        return commands
+    }
 
     /// `gnostic experiment rlm-scenario` — the #354 live stages (manifest §8).
     struct RLMScenario: AsyncParsableCommand {
+        /// The routing key a module descriptor must declare to expose this command.
+        static let commandName = "rlm-scenario"
+
         static let configuration = CommandConfiguration(
-            commandName: "rlm-scenario",
+            commandName: commandName,
             abstract: "Run the RLM scenario live stages (pilot or full matrix) against a configured provider.",
             discussion: """
             Without --confirm-spend this prints the plan and a worst-case cost ceiling, \

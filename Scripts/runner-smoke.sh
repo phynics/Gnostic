@@ -150,4 +150,40 @@ JSON
 run_until_online "Atlas module" \
     "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-atlas --config "$scratch/atlas.json"
 
+# RLM module case: a manifest that selects the compiled-in RLM module. Startup
+# materializes the Positronic backend with the descriptor's bounded-analysis
+# contribution. The contribution needs no live provider or Scheme worker to
+# build, so accepting this manifest exercises the RLM descriptor seam in the
+# runner executable, not only in tests (#450).
+cat > "$scratch/rlm.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "broker": { "host": "127.0.0.1", "port": 1883, "namespace": "gnostic-smoke-rlm" },
+  "node": { "id": "e51d0000-0000-4000-8000-000000000201", "kind": "node", "approvalMode": "auto", "logLevel": "info" },
+  "ascendants": [
+    {
+      "id": "e51d0000-0000-4000-8000-000000000202",
+      "kind": "positronic",
+      "name": "RLM",
+      "description": "",
+      "metadata": {},
+      "backend": {
+        "kind": "positronic",
+        "schemaVersion": 1,
+        "settings": { "extensions": ["rlm"] },
+        "secrets": {}
+      },
+      "defaultTimelineID": "e51d0000-0000-4000-8000-000000000203"
+    }
+  ],
+  "timelines": [
+    { "id": "e51d0000-0000-4000-8000-000000000203", "kind": "timeline", "title": "RLM", "operatingAscendantID": "e51d0000-0000-4000-8000-000000000202", "flags": [], "attachments": [] }
+  ],
+  "workspaces": []
+}
+JSON
+
+run_until_online "RLM module" \
+    "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-rlm --config "$scratch/rlm.json"
+
 echo "Gnostic runner smoke passed"
