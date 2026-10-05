@@ -67,6 +67,10 @@ public enum ExperimentError: Error, Equatable, CustomStringConvertible {
     case missingPilot(String)
     /// The resumed artifact belongs to a different round.
     case manifestMismatch(String)
+    /// A rating named an unknown or incomplete run.
+    case unknownRating(String)
+    /// A rating was outside the accepted range.
+    case ratingOutOfRange(id: String, score: Int)
 
     public var description: String {
         switch self {
@@ -82,6 +86,10 @@ public enum ExperimentError: Error, Equatable, CustomStringConvertible {
             "the comparison needs an accepted pilot: \(reason)"
         case let .manifestMismatch(reason):
             "the existing artifact belongs to a different round and cannot be resumed: \(reason)"
+        case let .unknownRating(id):
+            "score for unknown or incomplete run \(id)"
+        case let .ratingOutOfRange(id, score):
+            "score \(score) for \(id) is outside the accepted range"
         }
     }
 }
