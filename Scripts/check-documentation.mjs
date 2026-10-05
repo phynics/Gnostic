@@ -297,6 +297,15 @@ async function validateExperiments(root, failures, { issueState = null } = {}) {
       failures.push(`Sources/GnosticHost: compiled-in module registryID '${id}' has no entry in ${MODULE_FILE}`);
     }
   }
+
+  // A `runnable` entry must have a descriptor, so a module cannot advertise
+  // manifest runnability that nothing can build.
+  for (const entry of document.modules) {
+    if (typeof entry.id !== "string" || !entry.runnable) continue;
+    if (!compiledRegistryIDs.has(entry.id)) {
+      failures.push(`${MODULE_FILE}: runnable entry '${entry.id}' has no compiled module descriptor in Sources/GnosticHost`);
+    }
+  }
 }
 
 function swiftTargetBlock(packageText, name) {
@@ -480,7 +489,20 @@ function makeTargetsForRoot(root) {
   return makeTargets(root);
 }
 
+function writeDescriptorFixture(root, registryID) {
+  const path = join(root, "Sources/GnosticHost/RLMModule.swift");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `let value = GnosticModule(
+    name: "rlm",
+    registryID: "${registryID}",
+    settingKeys: [],
+    terminalTurnObservers: []
+) { _ in NotesContribution() }
+`);
+}
+
 function writeFixture(root) {
+  rmSync(join(root, "Sources"), { recursive: true, force: true });
   const files = {
     "AGENTS.md": "# Agent Instructions\n\nUse CONTEXT.md and the architecture index.\n",
     "README.md": "# Fixture\n\nRun `make docs-check`. Protocol: `me.atkn.gnostic.workspace.invoke`.\n\n```sh\ngnostic acp profiles --json\n```\n",
@@ -658,6 +680,27 @@ async function selfTest() {
       document.modules[0].gateIssues = [gate, gate];
       writeFileSync(registryFile, JSON.stringify(document));
     }, "is duplicated");
+    writeFixture(root);
+    // A `runnable` entry must have a compiled-in descriptor: the registry may
+    // not advertise runnability that nothing can build.
+    writeDescriptorFixture(root, "GNO-MOD-ATLAS");
+    assert.deepEqual(await checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].runnable = true;
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "runnable entry 'GNO-MOD-ATLAS' has no compiled module descriptor");
+    writeFixture(root);
+    // A runnable entry whose descriptor names a different registry id is still
+    // uncovered: the id must match the entry, not merely exist.
+    writeDescriptorFixture(root, "GNO-MOD-MISSING");
+    await expectFailure(root, options, () => {
+      const document = fixtureRegistry();
+      document.modules[0].runnable = true;
+      writeFileSync(registryFile, JSON.stringify(document));
+    }, "runnable entry 'GNO-MOD-ATLAS' has no compiled module descriptor");
+
     writeFixture(root);
     // A resolver that cannot reach GitHub must not fail the check; only a
     // confirmed closed owner does.
