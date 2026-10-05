@@ -124,7 +124,7 @@ a Run must compare several regimes.
 | --- | --- |
 | The bundled Positronic Backend lives in `GnosticCore`, and its contribution hook is a Core type. | P7 [#460](https://github.com/phynics/Gnostic/issues/460); reopens ADR 0005 with platform neutrality as the benefit. |
 | The consumer client SDK lives in `GnosticCore`, which links PositronicKit. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
-| Modules have a single compiled-in registration (`GnosticModule`) that covers the contribution, observers, settings, and an optional experiment subcommand; Atlas has no manifest-runnable descriptor yet, so it still installs only in tests. | P2 [#449](https://github.com/phynics/Gnostic/issues/449), [#450](https://github.com/phynics/Gnostic/issues/450) |
+| Modules have a single compiled-in registration (`GnosticModule`) that covers the contribution, observers, settings, and an optional experiment subcommand; Atlas registers and runs through its descriptor, while the RLM experiment subcommand is still wired outside its descriptor. | P2 [#450](https://github.com/phynics/Gnostic/issues/450) |
 | The ACP front end lives in `GnosticCLI`. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
 | Experiment tooling is RLM-specific. | P3 [#457](https://github.com/phynics/Gnostic/issues/457) |
 

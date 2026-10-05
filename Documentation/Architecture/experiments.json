@@ -8,7 +8,7 @@
       "status": "incubating",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/449",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/382"],
-      "runnable": false,
+      "runnable": true,
       "reviewBy": "2027-01-02"
     },
     {
