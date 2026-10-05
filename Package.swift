@@ -22,11 +22,12 @@ let package = Package(
         .executable(name: "gnostic-rlm-scenario", targets: ["GnosticRLMScenario"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic-acp-live-smoke", targets: ["GnosticACPLiveSmoke"]),
+        .executable(name: "gnostic-soak-driver", targets: ["GnosticSoakDriver"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.7.0"),
-        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "6.1.0-rc.1"),
+        .package(url: "https://github.com/phynics/PositronicKit.git", exact: "6.1.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.15.1"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
         .package(url: "https://github.com/aptove/swift-sdk.git", exact: "0.1.16"),
@@ -96,6 +97,7 @@ let package = Package(
             name: "GnosticACPAscendantTests",
             dependencies: [
                 "GnosticACPAscendant",
+                "GnosticAscendantConformance",
                 "GnosticCore",
             ]
         ),
@@ -106,6 +108,13 @@ let package = Package(
                 "GnosticLettaBackend",
             ],
             path: "Tests/Support/GnosticLettaTestSupport"
+        ),
+        .target(
+            name: "GnosticAscendantConformance",
+            dependencies: [
+                "GnosticCore",
+            ],
+            path: "Tests/Support/GnosticAscendantConformance"
         ),
         .target(
             name: "GnosticRLMProcessWorker",
@@ -171,6 +180,7 @@ let package = Package(
         .testTarget(
             name: "GnosticCoreTests",
             dependencies: [
+                "GnosticAscendantConformance",
                 "GnosticCore",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
@@ -193,6 +203,7 @@ let package = Package(
         .testTarget(
             name: "GnosticLettaBackendTests",
             dependencies: [
+                "GnosticAscendantConformance",
                 "GnosticLettaBackend",
                 "GnosticCore",
                 "GnosticLettaTestSupport",
@@ -232,6 +243,13 @@ let package = Package(
         .executableTarget(
             name: "GnosticACPLiveSmoke",
             dependencies: ["GnosticACPAscendant", "GnosticCore"]
+        ),
+        .executableTarget(
+            name: "GnosticSoakDriver",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
         ),
         .testTarget(
             name: "GnosticRunnerTests",

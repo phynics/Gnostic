@@ -22,7 +22,7 @@ public enum WorkspaceReferenceProjection {
             id: reference.id,
             uri: reference.uri.description,
             location: GnosticWorkspaceLocation(rawValue: reference.location.rawValue) ?? .runtime,
-            trustLevel: GnosticWorkspaceTrustLevel(rawValue: reference.trustLevel.rawValue) ?? .full,
+            trustLevel: .full,
             status: providerStatus,
             effectiveStatus: effectiveStatus ?? GnosticWorkspaceEffectiveStatus(providerStatus: providerStatus),
             tools: reference.tools.compactMap { tool in
@@ -90,7 +90,6 @@ public enum WorkspaceReferenceProjection {
                     requiresPermission: tool.requiresPermission
                 ))
             },
-            trustLevel: WorkspaceTrustLevel(rawValue: reference.trustLevel.rawValue) ?? .full,
             status: status,
             createdAt: reference.createdAt
         )

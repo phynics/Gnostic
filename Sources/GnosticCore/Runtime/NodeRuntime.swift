@@ -213,6 +213,27 @@ public final class NodeRuntime {
         backendSupervisor.health(for: ascendantID)
     }
 
+    /// The runtime's bounded in-memory accounting, for soak resource tracking.
+    ///
+    /// - Returns: The retained Turn-ledger counts and their capacities. See
+    ///   ``NodeRuntimeMetrics`` for why the ledger is the growth proxy.
+    public func metrics() async -> NodeRuntimeMetrics {
+        let ledger = await turnCoordinator.retainedStateCounts
+        let capacity = await turnCoordinator.retainedCapacity
+        let timelines = await turnCoordinator.retainedTimelineCount
+        let inFlight = await turnCoordinator.inFlightCount
+        return NodeRuntimeMetrics(
+            inFlightTurns: inFlight,
+            retainedTimelineCount: timelines,
+            retainedIdentityCount: ledger.identities,
+            retainedCompletedCount: ledger.completed,
+            retainedTombstoneCount: ledger.tombstones,
+            retainedCompletedBytes: ledger.completedBytes,
+            identityCapacity: capacity.identities,
+            completedCapacity: capacity.completed
+        )
+    }
+
     public func snapshot() async -> NodeRuntimeSnapshot {
         await registry.snapshot()
     }

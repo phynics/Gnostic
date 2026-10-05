@@ -2,6 +2,7 @@
 
 import Foundation
 @testable import GnosticACPAscendant
+import GnosticAscendantConformance
 import GnosticCore
 import Testing
 #if canImport(Darwin)
@@ -668,6 +669,109 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("an agent that exits during session pagination fails cleanly and a fresh backend recovers")
+    @MainActor
+    func paginationAgentExitIsBoundedAndRecoverable() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let configuredTimelineID = UUID()
+
+        // The faulted agent answers page one with a cursor and exits on page two.
+        let faulted = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                paginatedListMode: "later-page",
+                listExitAfter: 2
+            ),
+            timelines: [.init(id: configuredTimelineID, title: "Configured")]
+        )
+        do {
+            _ = try await faulted.operatedTimelines()
+            Issue.record("Exiting during session pagination did not surface as a failure.")
+        } catch let error as AscendantBackendError {
+            guard case .lifecycleUnusable = error else {
+                Issue.record("Expected lifecycleUnusable from a dead pagination agent, got \(error).")
+                await faulted.shutdown()
+                return
+            }
+        }
+        await faulted.shutdown()
+
+        // A backend without the fault serves the same configured Timeline.
+        let healthy = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, paginatedListMode: "later-page"),
+            timelines: [.init(id: configuredTimelineID, title: "Configured")]
+        )
+        #expect(try await healthy.operatedTimelines().map(\.id) == [configuredTimelineID])
+        let response = try await healthy.runTurn(
+            .init(timelineID: configuredTimelineID, message: "after pagination exit"),
+            updates: RecordingUpdateSink()
+        )
+        #expect(response == "fixture reply: after pagination exit")
+        await healthy.shutdown()
+    }
+
+    @Test("Node startup fails cleanly when the agent exits during pagination and a restart recovers")
+    @MainActor
+    func nodeStartupSurvivesPaginationExit() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+
+        func makeRuntime(listExitAfter: Int?) async throws -> NodeRuntime {
+            let manifest = NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-pagination-\(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(
+                    id: ascendantID,
+                    name: "Pagination fixture",
+                    defaultTimelineID: timelineID,
+                    backend: .init(
+                        kind: ACPAscendantBackend.kind,
+                        settings: try fixtureSettings(
+                            stateHome: stateHome.url,
+                            paginatedListMode: "later-page",
+                            listExitAfter: listExitAfter
+                        )
+                    )
+                )],
+                timelines: [.init(id: timelineID, title: "Configured", operatingAscendantID: ascendantID)]
+            )
+            var adapters = NodeRuntimeAdapters.default
+            adapters.ascendants.registerBackend(
+                kind: ACPAscendantBackend.kind,
+                settings: ACPAscendantBackend.settingsSchema
+            ) { ascendant, configuration, services, timelines in
+                try ACPAscendantBackend(
+                    ascendant: ascendant,
+                    configuration: configuration,
+                    services: services,
+                    timelines: timelines
+                )
+            }
+            let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+            try await runtime.start()
+            return runtime
+        }
+
+        do {
+            _ = try await makeRuntime(listExitAfter: 2)
+            Issue.record("Node startup succeeded while the agent exited during session pagination.")
+        } catch {
+            // Startup must fail rather than hang or crash the process.
+        }
+
+        let restarted = try await makeRuntime(listExitAfter: nil)
+        let turn = try await restarted.turn(.init(
+            message: "restarted after pagination exit",
+            timelineID: timelineID,
+            clientTurnID: "pagination-restart"
+        ))
+        #expect(turn.text == "fixture reply: restarted after pagination exit")
+        await restarted.shutdown()
+    }
+
     @Test("Timeline operations are idempotent and unknown removals are ignored")
     @MainActor
     func timelineOperationsAreIdempotent() async throws {
@@ -940,7 +1044,7 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
-    @Test("a cancelled Turn resolves an in-flight permission request with the ACP cancelled outcome")
+    @Test("a backend-wide cancel resolves an in-flight permission request and surfaces cancellation")
     @MainActor
     func cancelledTurnCancelsPermissionRequest() async throws {
         let stateHome = try makeTemporaryStateHome()
@@ -964,9 +1068,16 @@ struct ACPAscendantBackendTests {
             await backend.shutdown()
             return
         }
+        // Cancelling the backend resumes the in-flight permission request so the
+        // agent is not stranded, and the Turn surfaces as cancelled.
         await backend.cancel()
         await permission.resolve(.approved)
-        #expect(try await turn.value == "fixture reply: cancel permission request")
+        do {
+            _ = try await turn.value
+            Issue.record("A backend-wide cancel left the in-flight Turn uncancelled.")
+        } catch let error as AscendantBackendError {
+            #expect(error == .cancelled)
+        }
         await backend.shutdown()
     }
 
@@ -1117,6 +1228,151 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    // MARK: - AscendantBackend conformance (GNO-PLAT-060, #452)
+
+    @Test("conformance: identity and configuration")
+    @MainActor
+    func conformanceIdentityAndConfiguration() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkIdentityAndConfiguration()
+    }
+
+    @Test("conformance: Timeline lifecycle")
+    @MainActor
+    func conformanceTimelineLifecycle() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkTimelineLifecycle()
+    }
+
+    @Test("conformance: a successful Turn streams and returns text")
+    @MainActor
+    func conformanceSuccessfulTurn() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkSuccessfulTurnStreamsText()
+    }
+
+    @Test("conformance: a terminal failure leaves the backend usable")
+    @MainActor
+    func conformanceTerminalFailure() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkTerminalFailureKeepsBackendUsable()
+    }
+
+    @Test("conformance: backend cancellation interrupts a stalled Turn")
+    @MainActor
+    func conformanceBackendCancellation() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkBackendCancellationInterruptsStall()
+    }
+
+    @Test("conformance: scoped cancellation interrupts a stalled Turn")
+    @MainActor
+    func conformanceScopedCancellation() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkScopedCancellationInterruptsStall()
+    }
+
+    @Test("conformance: health, quarantine, reconstruction, and replay")
+    @MainActor
+    func conformanceHostHealthQuarantineAndReplay() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceHostFixture(stateHome: stateHome.url)
+        try await fixture.suite().checkHealthQuarantineAndReplay()
+    }
+
+    /// The ACP backend does not implement ``AscendantBackendWorkspaceCapability``:
+    /// recorded as an exception in #452.
+    @MainActor
+    private func conformanceFixture(stateHome: URL, signal: AscendantConformanceTurnSignal) -> AscendantConformanceFixture {
+        AscendantConformanceFixture(
+            kind: ACPAscendantBackend.kind,
+            surfaces: [.scopedCancellation, .terminalUpdate],
+            expectedReply: { "fixture reply: \($0)" },
+            awaitTurnStarted: { _ = await signal.waitUntilStarted() },
+            makeBackend: { ascendant, timelines in
+                let startedFile = stateHome.appendingPathComponent("prompt-started-\(UUID().uuidString).txt")
+                watchACPStallStart(url: startedFile, signal: signal)
+                let settings = try self.fixtureSettings(stateHome: stateHome, promptStartedFile: startedFile)
+                let configured = NodeManifest.Ascendant(
+                    id: ascendant.id,
+                    name: ascendant.name,
+                    defaultTimelineID: ascendant.defaultTimelineID,
+                    backend: .init(kind: ACPAscendantBackend.kind, settings: settings)
+                )
+                return try ACPAscendantBackend(
+                    ascendant: configured,
+                    configuration: configured.backend,
+                    services: AscendantBackendServices(permission: AscendantConformancePermissionService()),
+                    timelines: timelines
+                )
+            }
+        )
+    }
+
+    /// A host-level ACP fixture. `shutdown()` makes the live backend report
+    /// lifecycle-unusable, so that breaks it until reconstruction.
+    @MainActor
+    private func conformanceHostFixture(stateHome: URL) -> AscendantHostConformanceFixture {
+        let box = AscendantConformanceBackendBox()
+        return AscendantHostConformanceFixture(
+            kind: ACPAscendantBackend.kind,
+            makeAdapters: {
+                var adapters = NodeRuntimeAdapters.default
+                adapters.ascendants.registerBackend(
+                    kind: ACPAscendantBackend.kind,
+                    settings: ACPAscendantBackend.settingsSchema
+                ) { ascendant, _, services, timelines in
+                    let settings = try self.fixtureSettings(stateHome: stateHome)
+                    let configured = NodeManifest.Ascendant(
+                        id: ascendant.id,
+                        name: ascendant.name,
+                        defaultTimelineID: ascendant.defaultTimelineID,
+                        backend: .init(kind: ACPAscendantBackend.kind, settings: settings)
+                    )
+                    let backend = try ACPAscendantBackend(
+                        ascendant: configured,
+                        configuration: configured.backend,
+                        services: services,
+                        timelines: timelines
+                    )
+                    box.hold(backend)
+                    return backend
+                }
+                return adapters
+            },
+            breakLiveBackend: {
+                await box.backend?.shutdown()
+            }
+        )
+    }
+
+    /// Marks the shared signal once the ACP fixture writes its prompt-started file.
+    private func watchACPStallStart(url: URL, signal: AscendantConformanceTurnSignal) {
+        Task {
+            let deadline = Date().addingTimeInterval(15)
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    await signal.markStarted()
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+    }
+
     @MainActor
     private func fixtureBackend(
         timelines: [NodeManifest.Timeline],
@@ -1130,6 +1386,7 @@ struct ACPAscendantBackendTests {
         stateHome: URL,
         supportsList: Bool = true,
         paginatedListMode: String? = nil,
+        listExitAfter: Int? = nil,
         listRequestFile: URL? = nil,
         failClose: Bool = false,
         permissionPrompt: Bool = false,
@@ -1161,6 +1418,7 @@ struct ACPAscendantBackendTests {
         var fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": statePath]
         if !supportsList { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_NO_LIST"] = "1" }
         if let paginatedListMode { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PAGINATED_LIST"] = paginatedListMode }
+        if let listExitAfter { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_LIST_EXIT_AFTER"] = String(listExitAfter) }
         if let listRequestFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE"] = listRequestFile.path }
         if failClose { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CLOSE_ERROR"] = "1" }
         if permissionPrompt {

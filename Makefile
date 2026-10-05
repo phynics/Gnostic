@@ -26,10 +26,10 @@ ACP_TEST_FILTER ?= GnosticACPAscendantTests
 DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 
-.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke soak verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke soak verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@if [ "$(GNOSTIC_DEVCONTAINER)" = "1" ]; then :; else \
@@ -107,6 +107,11 @@ acp-live-smoke: build
 
 container-smoke: image
 	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/container-smoke.sh
+
+# Long-running resource-bound run over the deterministic ACP fixture agent. It
+# is not part of verify; run it deliberately and read the summary.
+soak: require-package image
+	@BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK="$(BUILD_LOCK)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" ./.devcontainer/run.sh /workspace/Scripts/soak.sh
 
 macos-rlm-smoke: require-package
 	@bash Scripts/macos-rlm-smoke.sh

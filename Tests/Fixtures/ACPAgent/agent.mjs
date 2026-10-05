@@ -27,6 +27,7 @@ if (process.env.GNOSTIC_ACP_FIXTURE_START_COUNT_FILE) {
 }
 const sessions = await loadSessions();
 let sessionCounter = 0;
+let sessionListCount = 0;
 const cancelledSessions = new Set();
 
 const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
@@ -58,6 +59,12 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   .onRequest(acp.methods.agent.session.list, async ({ params }) => {
     if (process.env.GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE) {
       await appendFile(process.env.GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE, `${params.cursor ?? "first"}\n`);
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_LIST_EXIT_AFTER) {
+      sessionListCount += 1;
+      if (sessionListCount >= Number(process.env.GNOSTIC_ACP_FIXTURE_LIST_EXIT_AFTER)) {
+        process.exit(19);
+      }
     }
     const listedSessions = [...sessions]
       .filter(([, info]) => !params.cwd || info.cwd === params.cwd)

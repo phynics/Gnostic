@@ -1,0 +1,99 @@
+name: nightly PositronicKit
+
+# Builds and tests Gnostic against PositronicKit `main` so upstream breakage
+# surfaces before a release pins it. Scheduled and manual only: it never runs on
+# a pull request and is never a required check, so it cannot block work.
+on:
+  schedule:
+    # Off-peak minute; GitHub's scheduler is busiest on the hour.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: PositronicKit branch to test.
+        required: false
+        default: main
+
+concurrency:
+  group: nightly-positronickit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  positronickit-main:
+    name: build and test against PositronicKit main
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Track PositronicKit head
+        run: node Scripts/pin-positronickit-main.mjs "${{ github.event.inputs.ref || 'main' }}"
+
+      # Restore only. A nightly branch resolution must never evict or overwrite
+      # the cache main's pulls and pushes save; it falls back to theirs.
+      - name: Restore SwiftPM and build caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            /tmp/gnostic-swift-build
+            ~/.cache/gnostic/swiftpm
+          key: nightly-positronickit-${{ github.run_id }}
+          restore-keys: |
+            nightly-positronickit-
+            swift-6.4.0-
+
+      - name: make image
+        run: make image
+
+      # Records which upstream commit was tested. make verify then uses locked
+      # resolution against the Package.resolved this produces.
+      - name: Resolve against PositronicKit head
+        run: |
+          make resolve
+          revision=$(node -e 'const p=JSON.parse(require("fs").readFileSync("Package.resolved","utf8"));const pin=p.pins.find(({identity})=>identity==="positronickit");process.stdout.write(pin.state.revision)')
+          echo "POSITRONICKIT_REVISION=$revision" >> "$GITHUB_ENV"
+          echo "PositronicKit revision under test: $revision" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: make verify
+        run: make verify
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-positronickit-logs
+          path: .testing/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Report breakage
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly: PositronicKit main breaks Gnostic"
+          body=$(cat <<EOF
+          The nightly build and test against PositronicKit \`main\` failed.
+
+          - Run: $RUN_URL
+          - PositronicKit revision: ${POSITRONICKIT_REVISION:-unknown}
+
+          Reproduce by pointing Package.swift at \`main\`:
+          \`node Scripts/pin-positronickit-main.mjs main && make resolve && make verify\`.
+
+          Triage before the next PositronicKit release pins the breaking change.
+          EOF
+          )
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

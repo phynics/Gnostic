@@ -146,7 +146,17 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: .init(backendKind: Self.kind, backendVersion: "0.1.16")
+            capabilities: .init(
+                interoperability: Set([
+                    AscendantInteroperabilityCapability.textTurn.rawValue,
+                    AscendantInteroperabilityCapability.streamedUpdates.rawValue,
+                    AscendantInteroperabilityCapability.cancellation.rawValue,
+                    AscendantInteroperabilityCapability.permissionMediation.rawValue,
+                    AscendantInteroperabilityCapability.timelineManagement.rawValue,
+                ]),
+                backendKind: Self.kind,
+                backendVersion: "0.1.16"
+            )
         )
         if sessionIDs.count != recoveredSessions.count {
             // Runtime-created Timelines are process-scoped; prune their stale ACP sessions without
@@ -403,7 +413,19 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 
     /// Marks active Turns cancelled during backend retirement.
     public func cancel() async {
-        for activeTurn in activeTurns.values { activeTurn.markCancelled() }
+        // Backend-wide cancellation must actually reach every live ACP session:
+        // marking the turn alone leaves the agent running until its own deadline
+        // (GNO-PLAT-060 conformance, #452).
+        let connection = self.connection
+        for activeTurn in activeTurns.values {
+            activeTurn.cancelTurn()
+            if let connection {
+                try? await connection.sendNotification(
+                    method: "session/cancel",
+                    params: ACPCancelSessionRequest(sessionId: activeTurn.sessionID)
+                )
+            }
+        }
     }
 
     /// Sends ACP `session/cancel` only for the matching Timeline Turn.
@@ -1230,10 +1252,6 @@ private final class ACPActiveTurn {
     init(clientTurnID: String, sessionID: SessionId) {
         self.clientTurnID = clientTurnID
         self.sessionID = sessionID
-    }
-
-    func markCancelled() {
-        isCancelled = true
     }
 
     func cancelTurn() {

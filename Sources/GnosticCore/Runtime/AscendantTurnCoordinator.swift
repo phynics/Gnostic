@@ -73,6 +73,10 @@ public actor AscendantTurnCoordinator {
 
     internal var retainedIdentityCount: Int { identities.count }
 
+    internal var retainedCapacity: (identities: Int, completed: Int) {
+        (identityCapacity, completedCapacity)
+    }
+
     internal var retainedTimelineCount: Int { timelineTails.count }
 
     internal var inFlightCount: Int { inFlight.count }
