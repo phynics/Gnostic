@@ -32,6 +32,12 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Log level (overrides config): trace, debug, info, warning, or error.")
     var logLevel: String?
 
+    @Option(name: .customLong("metrics-file"), help: "Write a bounded runtime metrics snapshot (JSON) to this file.")
+    var metricsFile: String?
+
+    @Option(name: .customLong("metrics-interval"), help: "Seconds between metrics snapshots (default 5).")
+    var metricsIntervalSeconds: Double = 5
+
     /// Runs the serve process until interrupted.
     @MainActor
     func run() async throws {
@@ -68,6 +74,22 @@ struct ServeCommand: AsyncParsableCommand {
                 let timelineText = timelineID?.uuidString.lowercased() ?? "none"
                 print("gnostic serve online at \(plan.broker.host):\(plan.broker.port) namespace \(plan.broker.namespace) timeline \(timelineText)")
                 print("Press Ctrl-C to shut down.")
+
+                // Soak resource tracking (GNO-PLAT-062, #454). The writer only
+                // runs when a path is given; it never changes serve behavior.
+                let metricsTask = metricsFile.map { path in
+                    Task { @MainActor in
+                        let url = URL(fileURLWithPath: path)
+                        let interval = Duration.seconds(max(1, metricsIntervalSeconds))
+                        while !Task.isCancelled {
+                            if let data = try? JSONEncoder().encode(await runtime.metrics()) {
+                                try? data.write(to: url, options: .atomic)
+                            }
+                            try? await Task.sleep(for: interval)
+                        }
+                    }
+                }
+                defer { metricsTask?.cancel() }
 
                 await terminationMonitor.wait()
             } catch {

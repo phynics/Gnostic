@@ -310,6 +310,25 @@ swift test --cache-path /workspace/.swiftpm-cache --disable-automatic-resolution
 `make acp-smoke` remains the gate; repetitions only help reproduce an
 intermittent failure.
 
+### Soak the serve runtime
+
+`make soak` runs `gnostic serve` with the deterministic ACP fixture agent and
+drives scripted Turns for a configurable duration. It samples the serve
+process's resident size and thread count and the bounded Turn-ledger sizes
+`gnostic serve --metrics-file` reports, and fails when a bound is exceeded. It
+is not part of `make verify`.
+
+```sh
+make soak
+SOAK_DURATION_SECONDS=300 SOAK_MAX_RSS_KB=2097152 make soak
+```
+
+`SOAK_MAX_RSS_KB`, `SOAK_MAX_THREADS`, `SOAK_DURATION_SECONDS`,
+`SOAK_TURNS`, and `SOAK_TURN_INTERVAL_MS` tune the run. PositronicKit's
+in-memory message store exposes no count, so the retained Turn ledger is the
+recorded in-memory growth proxy; admitted identified Turns are capped per
+serve lifetime by the coordinator's identity capacity.
+
 ### Run the RLM scenario live stages
 
 The #354 pilot (Stage 2) and full matrix (Stage 3) call a real provider and

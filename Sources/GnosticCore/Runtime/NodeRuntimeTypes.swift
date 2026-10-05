@@ -104,6 +104,50 @@ public struct NodeRuntimeSnapshot: Sendable, Equatable {
     }
 }
 
+/// The runtime's bounded in-memory accounting, for soak resource tracking.
+///
+/// PositronicKit's `InMemoryMessageStore` exposes no count, so the retained
+/// Turn ledger is the in-memory store Gnostic owns and bounds; it is the
+/// recorded growth proxy for GNO-PLAT-062 (#454).
+public struct NodeRuntimeMetrics: Codable, Sendable, Equatable {
+    /// Identified Turns currently running.
+    public let inFlightTurns: Int
+    /// Timelines the coordinator currently holds a lane for.
+    public let retainedTimelineCount: Int
+    /// Admitted identified Turns retained until runtime shutdown.
+    public let retainedIdentityCount: Int
+    /// Terminal outcomes retained for replay.
+    public let retainedCompletedCount: Int
+    /// Terminal tombstones retained for replay.
+    public let retainedTombstoneCount: Int
+    /// Bytes of retained terminal payloads.
+    public let retainedCompletedBytes: Int
+    /// The bound on ``retainedIdentityCount``.
+    public let identityCapacity: Int
+    /// The bound on ``retainedCompletedCount``.
+    public let completedCapacity: Int
+
+    public init(
+        inFlightTurns: Int,
+        retainedTimelineCount: Int,
+        retainedIdentityCount: Int,
+        retainedCompletedCount: Int,
+        retainedTombstoneCount: Int,
+        retainedCompletedBytes: Int,
+        identityCapacity: Int,
+        completedCapacity: Int
+    ) {
+        self.inFlightTurns = inFlightTurns
+        self.retainedTimelineCount = retainedTimelineCount
+        self.retainedIdentityCount = retainedIdentityCount
+        self.retainedCompletedCount = retainedCompletedCount
+        self.retainedTombstoneCount = retainedTombstoneCount
+        self.retainedCompletedBytes = retainedCompletedBytes
+        self.identityCapacity = identityCapacity
+        self.completedCapacity = completedCapacity
+    }
+}
+
 /// Gnostic's stable, provider-independent projection of an Ascendant identity.
 /// These aliases keep the runtime's existing projection seams independent of
 /// any provider-native type while the backend contract remains canonical.

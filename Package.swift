@@ -22,6 +22,7 @@ let package = Package(
         .executable(name: "gnostic-rlm-scenario", targets: ["GnosticRLMScenario"]),
         .executable(name: "gnostic-runner", targets: ["GnosticRunner"]),
         .executable(name: "gnostic-acp-live-smoke", targets: ["GnosticACPLiveSmoke"]),
+        .executable(name: "gnostic-soak-driver", targets: ["GnosticSoakDriver"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
     ],
     dependencies: [
@@ -242,6 +243,13 @@ let package = Package(
         .executableTarget(
             name: "GnosticACPLiveSmoke",
             dependencies: ["GnosticACPAscendant", "GnosticCore"]
+        ),
+        .executableTarget(
+            name: "GnosticSoakDriver",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
         ),
         .testTarget(
             name: "GnosticRunnerTests",

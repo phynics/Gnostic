@@ -146,7 +146,17 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: .init(backendKind: Self.kind, backendVersion: "0.1.16")
+            capabilities: .init(
+                interoperability: Set([
+                    AscendantInteroperabilityCapability.textTurn.rawValue,
+                    AscendantInteroperabilityCapability.streamedUpdates.rawValue,
+                    AscendantInteroperabilityCapability.cancellation.rawValue,
+                    AscendantInteroperabilityCapability.permissionMediation.rawValue,
+                    AscendantInteroperabilityCapability.timelineManagement.rawValue,
+                ]),
+                backendKind: Self.kind,
+                backendVersion: "0.1.16"
+            )
         )
         if sessionIDs.count != recoveredSessions.count {
             // Runtime-created Timelines are process-scoped; prune their stale ACP sessions without
