@@ -101,7 +101,7 @@ struct ExperimentReplayTests {
                 _ = try await transport.generate(prompt: "q1", tier: .primary)
                 return ExperimentReplayHarnessResult(outcome: "completed")
             } catch {
-                return ExperimentReplayHarnessResult(outcome: "failed", failureCategory: "model")
+                return ExperimentReplayHarnessResult(outcome: "failed")
             }
         }
         #expect(report.matches)

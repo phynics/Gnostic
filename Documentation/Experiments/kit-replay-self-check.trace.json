@@ -1,0 +1,68 @@
+{
+  "events" : [
+    {
+      "detail" : "Confirm the experiment kit is wired.",
+      "failed" : false,
+      "kind" : "modelRequest",
+      "label" : "primary",
+      "sequence" : 1,
+      "turnID" : "replay-self-check"
+    },
+    {
+      "completionTokens" : 0,
+      "detail" : "The experiment kit runs offline, port 8317.",
+      "failed" : false,
+      "kind" : "modelResponse",
+      "label" : "",
+      "promptTokens" : 0,
+      "sequence" : 2,
+      "turnID" : "replay-self-check"
+    },
+    {
+      "detail" : "{}",
+      "failed" : false,
+      "kind" : "toolCall",
+      "label" : "self-check-probe",
+      "sequence" : 3,
+      "turnID" : "replay-self-check"
+    },
+    {
+      "detail" : "port 8317",
+      "failed" : false,
+      "kind" : "toolResult",
+      "label" : "self-check-probe",
+      "sequence" : 4,
+      "turnID" : "replay-self-check"
+    },
+    {
+      "detail" : "Name the port the self-check reports.",
+      "failed" : false,
+      "kind" : "modelRequest",
+      "label" : "utility",
+      "sequence" : 5,
+      "turnID" : "replay-self-check"
+    },
+    {
+      "completionTokens" : 0,
+      "detail" : "Port 8317.",
+      "failed" : false,
+      "kind" : "modelResponse",
+      "label" : "",
+      "promptTokens" : 0,
+      "sequence" : 6,
+      "turnID" : "replay-self-check"
+    },
+    {
+      "detail" : "",
+      "failed" : false,
+      "kind" : "outcome",
+      "label" : "completed",
+      "sequence" : 7,
+      "turnID" : "replay-self-check"
+    }
+  ],
+  "regime" : "kit",
+  "runID" : "kit-replay-self-check",
+  "schemaVersion" : 1,
+  "startedAtUTC" : "2026-10-05T00:00:00Z"
+}

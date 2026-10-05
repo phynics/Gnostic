@@ -197,19 +197,47 @@ from a Node.
 
 ```sh
 gnostic experiment run <module> <scenario> --regime <ascendant-uuid>
+gnostic experiment replay --trace Documentation/Experiments/<file>.trace.json
 gnostic experiment export --artifact Documentation/Experiments/<file>.json
 ```
 
 `run` resolves the `(module, scenario)` pair through a CLI-owned catalog. The
 built-in `kit self-check` scenario runs offline with scripted models and
 assertion scoring. A live scenario names `--regime`, the Positronic Ascendant
-whose provider and models it uses, and follows the spend guard above. `export`
-prints any round artifact as machine-readable JSON.
+whose provider and models it uses, and follows the spend guard above. `replay`
+replays a recorded tape against the built-in harness with no provider contact.
+`export` prints any round artifact as machine-readable JSON.
 
 A module can also contribute its own experiment subcommand through its
 descriptor, as `rlm-scenario` does. That command still consumes the same kit
 runner, artifact, metering, scoring, and spend guard; only the backend glue
 stays with the module.
+
+## Trace and replay
+
+A Run can record a **trace**: model requests and responses, tool calls and
+results, and the outcome, in order and correlated to a Turn. Recording is
+opt-in by construction. Nothing records unless a caller builds an
+`ExperimentTraceRecorder` and wraps a transport or tool executor with
+`TracingExperimentModelTransport` or `TracingExperimentToolExecutor`. The tape
+holds payloads only because that wrapper is present; there is no global switch
+and no production default.
+
+`ExperimentTraceFile` writes the tape as deterministic JSON with sorted keys
+and a trailing newline. `ExperimentTrace.digest()` is the SHA-256 of that
+canonical JSON, so a tape is content-addressable across hosts.
+
+Replay substitutes recorded model responses for live calls.
+`ExperimentReplay.replay(_:using:)` runs a harness over the tape, records what
+the harness actually did, and reports divergences. A changed prompt, a changed
+tier, an exhausted tape, a changed tool step, or a changed outcome is a
+divergence, never a silent pass. Replay contacts no provider.
+
+The built-in `kit replay-self-check` harness replays the committed fixture
+`Documentation/Experiments/kit-replay-self-check.trace.json` inside
+`make verify`. After an intentional harness change, regenerate the fixture with
+`gnostic experiment replay --trace <path> --record` and commit the result; the
+`recordedMatchesFixture` test fails while the committed fixture is stale.
 
 ## Consumer handoff
 

@@ -141,6 +141,10 @@ exception and follows the exception policy.
 - Requests for new PositronicKit APIs for experiments are routed through the
   Turn interception epic, P5
   ([#459](https://github.com/phynics/Gnostic/issues/459)).
+- Trace recording stays opt-in by construction: the platform kit records no
+  payload unless a caller composes a recorder with a tracing transport or tool
+  executor. Replay runs offline, serves recorded model responses, and reports
+  every divergence instead of passing silently.
 
 ## Fitness checks
 
@@ -154,3 +158,6 @@ import inventory. This decision adds, as each layer lands:
   compiled-in module descriptors match registry entries.
 - P7: `GnosticCore` does not depend on PositronicKit, a backend target, the
   platform kit, or any module; the client SDK target does not link a backend.
+- P4: the committed replay fixture reproduces from the current harness inside
+  `make test`; a mutated tape reports a divergence; no recording code runs on
+  a default Run path.

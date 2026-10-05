@@ -190,6 +190,9 @@ public enum ExperimentReplay {
     ) async -> ExperimentReplayReport {
         let source = ReplayingExperimentModelTransport(trace: trace)
         let recorder = ExperimentTraceRecorder(runID: trace.runID)
+        if let firstTurn = trace.events.first?.turnID {
+            await recorder.beginTurn(firstTurn)
+        }
         let transport = TracingExperimentModelTransport(wrapping: source, recorder: recorder)
         let harnessResult = await harness(transport, recorder)
         await recorder.recordOutcome(harnessResult.outcome, failureCategory: harnessResult.failureCategory)
@@ -201,6 +204,11 @@ public enum ExperimentReplay {
         let recordedOutcome = trace.outcome?.label ?? ""
         if harnessResult.outcome != recordedOutcome {
             divergences.append("outcome changed: recorded \(recordedOutcome), replayed \(harnessResult.outcome)")
+        }
+        let recordedSteps = trace.events.filter { $0.kind != .modelResponse }.map(signature)
+        let replayedSteps = (await recorder.snapshot()).filter { $0.kind != .modelResponse }.map(signature)
+        if recordedSteps != replayedSteps {
+            divergences.append("the replayed harness did not reproduce the recorded steps")
         }
         let unused = await source.remaining
         if unused > 0, await source.error == nil {
@@ -214,5 +222,14 @@ public enum ExperimentReplay {
             unusedResponses: unused,
             divergences: divergences
         )
+    }
+
+    /// A stable description of one event for comparing a replay with its tape.
+    ///
+    /// Model responses are excluded: the replay serves them from the tape, so
+    /// they match by construction. The requests, tool calls and results, and
+    /// the outcome must all be reproduced.
+    private static func signature(_ event: ExperimentTraceEvent) -> String {
+        "\(event.kind.rawValue)|\(event.turnID)|\(event.label)|\(event.detail)|\(event.failed)"
     }
 }
