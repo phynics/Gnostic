@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
         .library(name: "GnosticHost", targets: ["GnosticHost"]),
+        .library(name: "GnosticKit", targets: ["GnosticKit"]),
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
         .library(name: "GnosticLettaBackend", targets: ["GnosticLettaBackend"]),
@@ -45,6 +46,7 @@ let package = Package(
             name: "GnosticHost",
             dependencies: [
                 "GnosticCore",
+                "GnosticKit",
                 "GnosticPositronicAtlas",
                 "GnosticLettaBackend",
                 "GnosticACPAscendant",
@@ -66,6 +68,12 @@ let package = Package(
                 "GnosticCore",
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
+            ]
+        ),
+        .target(
+            name: "GnosticKit",
+            dependencies: [
+                "GnosticCore",
             ]
         ),
         .target(
@@ -177,6 +185,12 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GnosticKitTests",
+            dependencies: [
+                "GnosticKit",
+            ]
+        ),
+        .testTarget(
             name: "GnosticLettaBackendTests",
             dependencies: [
                 "GnosticLettaBackend",
@@ -237,6 +251,7 @@ let package = Package(
             dependencies: [
                 "GnosticCore",
                 "GnosticHost",
+                "GnosticKit",
                 "GnosticRLM",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
@@ -251,6 +266,7 @@ let package = Package(
                 "GnosticACPAscendant",
                 "GnosticCore",
                 "GnosticHost",
+                "GnosticKit",
                 "GnosticLettaBackend",
                 "GnosticLettaTestSupport",
                 "GnosticPositronicAtlas",

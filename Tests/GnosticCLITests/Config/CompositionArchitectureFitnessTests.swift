@@ -74,6 +74,35 @@ struct CompositionArchitectureFitnessTests {
         #expect(!source.contains("registerPositronicBackend("))
     }
 
+    @Test("GnosticKit depends on GnosticCore only and imports no backend")
+    func kitDependencyBoundary() throws {
+        let package = try String(contentsOf: Self.root.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let kitTarget = try #require(
+            Self.targetBlock(named: "GnosticKit", in: package),
+            "Package.swift must declare a GnosticKit target."
+        )
+        #expect(
+            kitTarget.contains("\"GnosticCore\""),
+            "GnosticKit must build on GnosticCore."
+        )
+        for forbidden in ["PositronicKit", "PKContracts", "GnosticRLM", "GnosticHost"] {
+            #expect(
+                !kitTarget.contains(forbidden),
+                "GnosticKit must not depend on \(forbidden)."
+            )
+        }
+
+        let kitSources = try Self.sources(in: "Sources/GnosticKit")
+        #expect(!kitSources.isEmpty, "GnosticKit must have sources.")
+        let backendImports = kitSources.filter {
+            $0.text.contains("import PositronicKit") || $0.text.contains("import PKContracts")
+        }
+        #expect(
+            backendImports.isEmpty,
+            "GnosticKit must not import a backend: \(backendImports.map(\.path))."
+        )
+    }
+
     @Test("the composition layer does not invert its dependencies")
     func layerDependencies() throws {
         let package = try String(contentsOf: Self.root.appendingPathComponent("Package.swift"), encoding: .utf8)

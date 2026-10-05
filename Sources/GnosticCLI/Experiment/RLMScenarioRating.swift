@@ -2,6 +2,7 @@
 
 import ArgumentParser
 import Foundation
+import GnosticKit
 import GnosticRLM
 
 /// A blind rating sheet: every completed run, keyed by an opaque ID, with the
@@ -37,8 +38,8 @@ enum RLMScenarioBlindRating {
             guard run.outcome == "completed", let answer = run.answer, let question = byID[run.questionID] else { return nil }
             return RLMScenarioRatingSheet.Item(
                 id: blindID(for: run, round: artifact.round),
-                question: question.question,
-                referenceAnswer: question.referenceAnswer,
+                question: question.prompt,
+                referenceAnswer: question.reference,
                 listedEvidenceFiles: question.evidencePaths,
                 answer: answer,
                 citedEvidence: run.evidence.map { "\($0.path):\($0.startLine)-\($0.endLine)" }

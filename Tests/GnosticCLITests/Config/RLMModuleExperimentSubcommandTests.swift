@@ -60,7 +60,7 @@ struct RLMModuleExperimentSubcommandTests {
         // descriptor's declared name must equal the CLI parser's own name, so
         // one declaration both routes and documents the command.
         let names = ExperimentCommand.configuration.subcommands.map { $0.configuration.commandName }
-        #expect(names == ["rlm-scenario", "rlm-scenario-rating"])
+        #expect(names == ["rlm-scenario", "run", "export", "rlm-scenario-rating"])
         #expect(RLMModule.value.experimentSubcommand?.name == ExperimentCommand.RLMScenario.configuration.commandName)
     }
 
@@ -120,6 +120,13 @@ struct RLMExperimentSubcommandSubprocessTests {
         let ratingHelp = try run(binary: binary, arguments: ["experiment", "rlm-scenario-rating", "--help"])
         #expect(ratingHelp.status == 0, Comment(rawValue: ratingHelp.output))
         #expect(ratingHelp.output.contains("--artifact"))
+
+        let runHelp = try run(binary: binary, arguments: ["experiment", "run", "--help"])
+        #expect(runHelp.status == 0, Comment(rawValue: runHelp.output))
+        #expect(runHelp.output.contains("--confirm-spend"))
+
+        let exportHelp = try run(binary: binary, arguments: ["experiment", "export", "--help"])
+        #expect(exportHelp.status == 0, Comment(rawValue: exportHelp.output))
     }
 
     private func run(binary: String, arguments: [String]) throws -> (status: Int32, output: String) {
