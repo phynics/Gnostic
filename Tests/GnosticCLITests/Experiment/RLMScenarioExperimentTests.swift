@@ -81,40 +81,41 @@ struct RLMScenarioExperimentTests {
     func ceilingFollowsBudget() {
         let plan = Self.plan(stage: .pilot)
         #expect(plan.runKeys.count == 6)
-        #expect(plan.runKeys.prefix(2).map(\.executor) == ["guile", "chibi"])
+        #expect(plan.runKeys.prefix(2).map(\.arm) == ["guile", "chibi"])
         let ceiling = plan.ceiling
         #expect(ceiling.maximumModelCalls == 6 * (8 + 32))
         #expect(ceiling.maximumEstimatedTokens == 6 * 200_000)
         #expect(abs((ceiling.maximumEstimatedCostUSD ?? 0) - 6 * 200_000 * 15 / 1_000_000) < 1e-9)
     }
 
-    @Test("the rating sheet hides the executor and scores round-trip onto runs")
+    @Test("the rating sheet hides the arm and scores round-trip onto runs")
     func ratingSheetIsBlindAndScoresApply() async throws {
         let artifact = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5).run(resuming: nil)
-        let sheet = RLMScenarioBlindRating.sheet(for: artifact, questions: Self.questions)
+        let sheet = ExperimentBlindRating.sheet(for: artifact, cases: Self.questions)
         #expect(sheet.items.count == 6)
         #expect(Set(sheet.items.map(\.id)).count == 6)
         let encoded = String(decoding: try JSONEncoder().encode(sheet), as: UTF8.self)
         #expect(!encoded.contains("guile") && !encoded.contains("chibi"))
 
-        let scored = try RLMScenarioBlindRating.apply([sheet.items[0].id: 7], to: artifact)
+        let scored = try ExperimentBlindRating.apply([sheet.items[0].id: 7], to: artifact)
         #expect(scored.runs.compactMap(\.score) == [7])
-        #expect(throws: RLMScenarioError.self) {
-            _ = try RLMScenarioBlindRating.apply([sheet.items[0].id: 11], to: artifact)
+        #expect(throws: ExperimentError.self) {
+            _ = try ExperimentBlindRating.apply([sheet.items[0].id: 11], to: artifact)
         }
-        #expect(throws: RLMScenarioError.self) {
-            _ = try RLMScenarioBlindRating.apply(["unknown": 5], to: artifact)
+        #expect(throws: ExperimentError.self) {
+            _ = try ExperimentBlindRating.apply(["unknown": 5], to: artifact)
         }
     }
 
     @Test("an unpriced subscription round meters tokens without a dollar ceiling")
     func unpricedRoundHasNoDollarCeiling() async throws {
-        let plan = RLMScenarioPlan(identity: Self.identity(stage: .pilot, pricing: nil), questions: Array(Self.questions.prefix(1)), matrixQuestionCount: 12, pilot: nil)
+        let plan = ExperimentPlan(manifest: Self.manifest(stage: .pilot, pricing: nil), matrixCaseCount: 12, pilot: nil)
         #expect(plan.ceiling.maximumEstimatedCostUSD == nil)
-        let artifact = try await RLMScenarioLiveRunner(
+        let artifact = try await ExperimentRunner(
             plan: plan,
             maximumCostUSD: nil,
-            execute: { _, key in Self.record(key, cost: 0) },
+            scoringRule: ExperimentBlindRating.rule,
+            execute: { key in Self.record(key, cost: 0) },
             persist: { _ in },
             report: { _ in }
         ).run(resuming: nil)
@@ -125,27 +126,18 @@ struct RLMScenarioExperimentTests {
 
     @Test("a light round plans one repetition over the chosen questions")
     func lightRoundPlansFewerRuns() {
-        var identity = Self.identity(stage: .matrix, repetitions: 1)
-        identity = RLMScenarioRoundIdentity(
-            manifestID: identity.manifestID, manifestVersion: identity.manifestVersion, stage: .matrix,
-            gitCommit: identity.gitCommit, workingTreeClean: true, imageDigest: identity.imageDigest,
-            host: identity.host, provider: identity.provider, endpoint: identity.endpoint,
-            rootModel: identity.rootModel, leafModels: identity.leafModels,
-            samplingParameters: identity.samplingParameters, budget: identity.budget,
-            questionSetSHA256: identity.questionSetSHA256, corpusRevisionDigest: identity.corpusRevisionDigest,
-            questionIDs: ["Q2", "Q7"], executors: identity.executors, repetitions: 1, pricing: nil
-        )
-        let plan = RLMScenarioPlan(identity: identity, questions: Self.questions, matrixQuestionCount: 12, pilot: nil)
+        let manifest = Self.manifest(stage: .matrix, repetitions: 1, caseIDs: ["Q2", "Q7"], pricing: nil)
+        let plan = ExperimentPlan(manifest: manifest, matrixCaseCount: 12, pilot: nil)
         #expect(plan.runKeys.count == 4)
         // A three-repetition pilot still authorises a one-repetition matrix.
-        #expect(identity.sharesComparison(with: Self.identity(stage: .pilot, pricing: nil)).isEmpty)
+        #expect(manifest.sharesComparison(with: Self.manifest(stage: .pilot, pricing: nil)).isEmpty)
     }
 
     // MARK: - Runner
 
     @Test("a complete pilot records every run and projects the full matrix")
     func pilotCompletesWithProjection() async throws {
-        let persisted = Recorder<RLMScenarioLiveArtifact>()
+        let persisted = Recorder<ExperimentRunArtifact>()
         let artifact = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5, persisted: persisted).run(resuming: nil)
 
         #expect(artifact.status == "complete")
@@ -156,12 +148,12 @@ struct RLMScenarioExperimentTests {
         // The fixture round uses three repetitions; the projection follows it.
         #expect(projection.projectedRuns == 12 * 3 * 2)
         #expect(abs(projection.projectedCostUSD - 72 * 0.5) < 1e-9)
-        #expect(projection.executors.map(\.executor) == ["chibi", "guile"])
+        #expect(projection.arms.map(\.arm) == ["chibi", "guile"])
     }
 
     @Test("resuming runs only the missing runs")
     func resumeRunsOnlyMissing() async throws {
-        let calls = Recorder<RLMScenarioRunKey>()
+        let calls = Recorder<ExperimentRunKey>()
         let first = try await Self.runner(stage: .pilot, maxCost: 1.2, runCost: 0.5).run(resuming: nil)
         #expect(first.status == "stopped-at-cost-ceiling")
         #expect(first.runs.count == 2)
@@ -175,23 +167,8 @@ struct RLMScenarioExperimentTests {
 
     @Test("an artifact from a different round is never resumed")
     func differentRoundIsRefused() async throws {
-        var existing = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5).run(resuming: nil)
-        existing = RLMScenarioLiveArtifact(
-            schemaVersion: existing.schemaVersion,
-            round: Self.identity(stage: .pilot, rootModel: "other-model"),
-            status: existing.status,
-            updatedAtUTC: existing.updatedAtUTC,
-            ceiling: existing.ceiling,
-            authorisedMaximumCostUSD: existing.authorisedMaximumCostUSD,
-            pilot: nil,
-            scoringRule: existing.scoringRule,
-            measurements: existing.measurements,
-            runs: existing.runs,
-            costActualUSD: existing.costActualUSD,
-            costComplete: existing.costComplete,
-            costProjection: nil
-        )
-        await #expect(throws: RLMScenarioError.roundMismatch("differs in rootModel, leafModels")) {
+        let existing = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5, rootModel: "other-model").run(resuming: nil)
+        await #expect(throws: ExperimentError.manifestMismatch("differs in regime")) {
             _ = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5).run(resuming: existing)
         }
     }
@@ -202,28 +179,28 @@ struct RLMScenarioExperimentTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let pilotURL = directory.appendingPathComponent("pilot.json")
-        let matrix = Self.identity(stage: .matrix)
+        let matrix = Self.manifest(stage: .matrix)
 
-        #expect(throws: RLMScenarioError.self) {
-            _ = try RLMScenarioArtifactFile.authorisingPilot(at: pilotURL, displayPath: "pilot.json", for: matrix)
+        #expect(throws: ExperimentError.self) {
+            _ = try ExperimentArtifactFile.authorisingPilot(at: pilotURL, displayPath: "pilot.json", for: matrix)
         }
 
         let stopped = try await Self.runner(stage: .pilot, maxCost: 0.6, runCost: 0.5).run(resuming: nil)
-        try RLMScenarioArtifactFile.write(stopped, to: pilotURL)
-        #expect(throws: RLMScenarioError.self) {
-            _ = try RLMScenarioArtifactFile.authorisingPilot(at: pilotURL, displayPath: "pilot.json", for: matrix)
+        try ExperimentArtifactFile.write(stopped, to: pilotURL)
+        #expect(throws: ExperimentError.self) {
+            _ = try ExperimentArtifactFile.authorisingPilot(at: pilotURL, displayPath: "pilot.json", for: matrix)
         }
 
         let complete = try await Self.runner(stage: .pilot, maxCost: 100, runCost: 0.5).run(resuming: nil)
-        try RLMScenarioArtifactFile.write(complete, to: pilotURL)
-        #expect(throws: RLMScenarioError.self) {
-            _ = try RLMScenarioArtifactFile.authorisingPilot(
+        try ExperimentArtifactFile.write(complete, to: pilotURL)
+        #expect(throws: ExperimentError.self) {
+            _ = try ExperimentArtifactFile.authorisingPilot(
                 at: pilotURL,
                 displayPath: "pilot.json",
-                for: Self.identity(stage: .matrix, rootModel: "other-model")
+                for: Self.manifest(stage: .matrix, rootModel: "other-model")
             )
         }
-        let reference = try RLMScenarioArtifactFile.authorisingPilot(at: pilotURL, displayPath: "pilot.json", for: matrix)
+        let reference = try ExperimentArtifactFile.authorisingPilot(at: pilotURL, displayPath: "pilot.json", for: matrix)
         #expect(reference.path == "pilot.json")
         #expect(reference.projection == complete.costProjection)
     }
@@ -240,52 +217,58 @@ struct RLMScenarioExperimentTests {
         ExperimentScenarioCase(id: "Q\($0)", prompt: "question \($0)", reference: "answer", evidencePaths: ["A.md"])
     }
 
-    private static func identity(
+    private static func manifest(
         stage: RLMScenarioStage,
         rootModel: String = "root-model",
         repetitions: Int = 3,
-        pricing: RLMScenarioPricing? = RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
-    ) -> RLMScenarioRoundIdentity {
-        RLMScenarioRoundIdentity(
+        caseIDs: [String]? = nil,
+        pricing: ExperimentPricing? = ExperimentPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
+    ) -> ExperimentRunManifest {
+        ExperimentRunManifest(
             manifestID: "rlm-scenario-manifest-v1",
             manifestVersion: "v7",
-            stage: stage,
+            segment: stage.rawValue,
+            regime: ExperimentRegime(
+                backendKind: "positronic",
+                modules: ["rlm"],
+                modelTiers: ["primary": rootModel, "utility": "utility", "fast": "fast"],
+                provider: "Anthropic",
+                endpoint: "https://example.invalid",
+                policies: ["scenario": "rlm-scenario"]
+            ),
             gitCommit: "commit",
             workingTreeClean: true,
             imageDigest: "sha256:image",
             host: "linux/x86_64",
-            provider: "Anthropic",
-            endpoint: "https://example.invalid",
-            rootModel: rootModel,
-            leafModels: RLMScenarioLeafModels(primary: rootModel, utility: "utility", fast: "fast"),
             samplingParameters: "defaults",
-            budget: RLMScenarioBudgetDescription(.standard),
-            questionSetSHA256: "questions",
+            budget: RLMScenarioPreparation.budgetDescription(.standard),
+            caseSetSHA256: "questions",
             corpusRevisionDigest: "corpus",
-            questionIDs: stage == .pilot ? ["Q1"] : questions.map(\.id),
-            executors: ["guile", "chibi"],
+            caseIDs: caseIDs ?? (stage == .pilot ? ["Q1"] : questions.map(\.id)),
+            arms: ["guile", "chibi"],
             repetitions: repetitions,
             pricing: pricing
         )
     }
 
-    private static func plan(stage: RLMScenarioStage) -> RLMScenarioPlan {
+    private static func plan(stage: RLMScenarioStage, rootModel: String = "root-model") -> ExperimentPlan {
         // A pilot plan holds only its selected question, as the command builds it.
-        let selected = stage == .pilot ? Array(questions.prefix(1)) : questions
-        return RLMScenarioPlan(identity: identity(stage: stage), questions: selected, matrixQuestionCount: questions.count, pilot: nil)
+        ExperimentPlan(manifest: manifest(stage: stage, rootModel: rootModel), matrixCaseCount: questions.count, pilot: nil)
     }
 
     private static func runner(
         stage: RLMScenarioStage,
         maxCost: Double,
         runCost: Double,
-        persisted: Recorder<RLMScenarioLiveArtifact> = Recorder(),
-        calls: Recorder<RLMScenarioRunKey> = Recorder()
-    ) -> RLMScenarioLiveRunner {
-        RLMScenarioLiveRunner(
-            plan: plan(stage: stage),
+        rootModel: String = "root-model",
+        persisted: Recorder<ExperimentRunArtifact> = Recorder(),
+        calls: Recorder<ExperimentRunKey> = Recorder()
+    ) -> ExperimentRunner {
+        ExperimentRunner(
+            plan: plan(stage: stage, rootModel: rootModel),
             maximumCostUSD: maxCost,
-            execute: { _, key in
+            scoringRule: ExperimentBlindRating.rule,
+            execute: { key in
                 calls.append(key)
                 return record(key, cost: runCost)
             },
@@ -294,21 +277,24 @@ struct RLMScenarioExperimentTests {
         )
     }
 
-    private static func record(_ key: RLMScenarioRunKey, cost: Double) -> RLMScenarioRunRecord {
-        RLMScenarioRunRecord(
-            questionID: key.questionID,
-            executor: key.executor,
+    private static func record(_ key: ExperimentRunKey, cost: Double) -> ExperimentRunRecord {
+        ExperimentRunRecord(
+            caseID: key.caseID,
+            arm: key.arm,
             repetition: key.repetition,
             startedAtUTC: "2026-09-25T00:00:00Z",
             outcome: "completed",
             failure: nil,
             answer: "answer",
             evidence: [],
-            snapshotRevisionDigest: "corpus",
+            sourceRevisionDigest: "corpus",
             wallMilliseconds: 10,
-            metrics: RLMScenarioRunMetrics(RLMRunMetrics(snapshotID: "s")),
-            rootUsage: RLMScenarioUsage(calls: 2, promptTokens: 100, completionTokens: 10),
-            leafUsage: RLMScenarioUsage(calls: 1, promptTokens: 50, completionTokens: 5),
+            metrics: ExperimentRunMetrics(values: [
+                "rootIterations": 1,
+                "leafModelCalls": 1,
+            ]),
+            rootUsage: ExperimentUsage(calls: 2, promptTokens: 100, completionTokens: 10),
+            leafUsage: ExperimentUsage(calls: 1, promptTokens: 50, completionTokens: 5),
             costUSD: cost,
             costComplete: true,
             score: nil
