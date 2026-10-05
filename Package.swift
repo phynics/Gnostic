@@ -45,6 +45,7 @@ let package = Package(
             name: "GnosticHost",
             dependencies: [
                 "GnosticCore",
+                "GnosticPositronicAtlas",
                 "GnosticLettaBackend",
                 "GnosticACPAscendant",
                 "GnosticRLM",
@@ -252,6 +253,7 @@ let package = Package(
                 "GnosticHost",
                 "GnosticLettaBackend",
                 "GnosticLettaTestSupport",
+                "GnosticPositronicAtlas",
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
                 "GnosticRLMProcessWorker",

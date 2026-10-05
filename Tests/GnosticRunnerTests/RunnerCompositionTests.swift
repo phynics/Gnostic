@@ -39,6 +39,7 @@ struct RunnerCompositionTests {
             "The runner must host every backend kind `gnostic serve` has."
         )
         #expect(RunnerRuntime.composition.registeredPositronicExtensions.contains("rlm"))
+        #expect(RunnerRuntime.composition.registeredPositronicExtensions.contains("atlas"))
     }
 
     @Test("RunnerRuntime keeps no private Ascendant registry")

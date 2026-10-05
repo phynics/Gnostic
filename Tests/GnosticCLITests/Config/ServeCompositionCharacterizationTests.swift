@@ -22,7 +22,7 @@ import Testing
 /// | Dimension | `gnostic serve` installs |
 /// | --- | --- |
 /// | Backend kinds | `positronic`, `letta`, `acp-client` |
-/// | Positronic extensions | `rlm` |
+/// | Positronic extensions | `atlas`, `rlm` |
 /// | Workspace adapters | `echo` (the Core default) |
 /// | Terminal Turn observers | none |
 @Suite("Serve composition characterization")
@@ -36,9 +36,9 @@ struct ServeCompositionCharacterizationTests {
         ])
     }
 
-    @Test("the serve path installs the rlm Positronic extension")
+    @Test("the serve path installs the atlas and rlm Positronic extensions")
     func positronicExtensions() {
-        #expect(BackendComposition.default.registeredPositronicExtensions == ["rlm"])
+        #expect(BackendComposition.default.registeredPositronicExtensions == ["atlas", "rlm"])
     }
 
     @Test("the serve path installs the echo Workspace adapter and no terminal observer")

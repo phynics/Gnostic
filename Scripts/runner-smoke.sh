@@ -115,4 +115,39 @@ JSON
 run_until_online "non-Positronic Letta backend" \
     "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-letta --config "$scratch/letta.json"
 
+# Module case: a manifest that selects the compiled-in Atlas module. Startup
+# builds the descriptor's Positronic contribution and installs its terminal
+# Turn observer, so accepting this manifest exercises the module seam in the
+# runner executable, not only in tests (#449).
+cat > "$scratch/atlas.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "broker": { "host": "127.0.0.1", "port": 1883, "namespace": "gnostic-smoke-atlas" },
+  "node": { "id": "e51d0000-0000-4000-8000-000000000101", "kind": "node", "approvalMode": "auto", "logLevel": "info" },
+  "ascendants": [
+    {
+      "id": "e51d0000-0000-4000-8000-000000000102",
+      "kind": "positronic",
+      "name": "Atlas",
+      "description": "",
+      "metadata": {},
+      "backend": {
+        "kind": "positronic",
+        "schemaVersion": 1,
+        "settings": { "extensions": ["atlas"] },
+        "secrets": {}
+      },
+      "defaultTimelineID": "e51d0000-0000-4000-8000-000000000103"
+    }
+  ],
+  "timelines": [
+    { "id": "e51d0000-0000-4000-8000-000000000103", "kind": "timeline", "title": "Atlas", "operatingAscendantID": "e51d0000-0000-4000-8000-000000000102", "flags": [], "attachments": [] }
+  ],
+  "workspaces": []
+}
+JSON
+
+run_until_online "Atlas module" \
+    "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-atlas --config "$scratch/atlas.json"
+
 echo "Gnostic runner smoke passed"

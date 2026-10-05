@@ -41,6 +41,7 @@ public struct BackendComposition: Sendable {
     /// credentials and network access.
     public static var `default`: BackendComposition {
         var composition = BackendComposition()
+        composition.registerModule(AtlasModule.value)
         composition.registerModule(RLMModule.value)
         composition.registerLettaBackend()
         composition.registerACPBackend()
