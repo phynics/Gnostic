@@ -410,8 +410,9 @@ their Timelines are not durable yet.
 
 ## Run the standalone runner
 
-`gnostic-runner` is a development smoke-test executable. It advertises generic
-Gnostic objects and stays online until you stop it. The development container
+`gnostic-runner` is a development smoke-test executable. It hosts a Gnostic
+Node through the same composition root as `gnostic serve`, advertises generic
+Gnostic objects, and stays online until you stop it. The development container
 provides an anonymous Mosquitto listener at `127.0.0.1:1883`. This path needs no
 repository, LLM, or broker credentials.
 
@@ -424,7 +425,9 @@ make runner-smoke
 
 The runner accepts `--host`, `--port`, and `--namespace`. Each missing option
 falls back to `GNOSTIC_HOST`, `GNOSTIC_PORT`, or `GNOSTIC_NAMESPACE`, then to
-`127.0.0.1`, `1883`, or `gnostic`.
+`127.0.0.1`, `1883`, or `gnostic`. `--config` selects a Node manifest and falls
+back to `GNOSTIC_CONFIG`; without either, the runner hosts the default graph.
+The resolved broker always overrides the manifest's broker.
 
 The runner starts an online Axoloty host when invoked without `--help`. It does
 not ship the former fixture scenario. `make test` verifies test-only consumer

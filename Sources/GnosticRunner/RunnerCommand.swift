@@ -12,6 +12,9 @@ struct GnosticRunner: AsyncParsableCommand {
         abstract: "Advertise Gnostic objects and drive the Ascendant-network PoC."
     )
 
+    @Option(name: .customLong("config"), help: "Path to the node manifest (overrides GNOSTIC_CONFIG).")
+    var configPath: String?
+
     @Option(help: "MQTT broker host (defaults to GNOSTIC_HOST or 127.0.0.1).")
     var host: String?
 
@@ -24,17 +27,19 @@ struct GnosticRunner: AsyncParsableCommand {
     @MainActor
     func run() async throws {
         let configuration = try RunnerConfiguration.resolve(
-            flags: RunnerParsingFlags(host: host, port: port, namespace: namespace),
+            flags: RunnerParsingFlags(host: host, port: port, namespace: namespace, config: configPath),
             environment: ProcessInfo.processInfo.environment
         )
-        let runtime = try RunnerRuntime(configuration: configuration)
-        defer { runtime.shutdown() }
-        try await runtime.start()
+        let runtime = try await RunnerRuntime(configuration: configuration)
+        do {
+            try await runtime.start()
+        } catch {
+            await runtime.shutdown()
+            throw error
+        }
         print("gnostic-runner online at \(configuration.host):\(configuration.port) namespace \(configuration.namespace)")
         await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
             _ = continuation
         }
     }
 }
-
-/// Structured parsing failures for the runner's command-line configuration.

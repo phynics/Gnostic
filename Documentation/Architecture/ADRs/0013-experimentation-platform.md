@@ -124,7 +124,6 @@ a Run must compare several regimes.
 | --- | --- |
 | The bundled Positronic Backend lives in `GnosticCore`, and its contribution hook is a Core type. | P7 [#460](https://github.com/phynics/Gnostic/issues/460); reopens ADR 0005 with platform neutrality as the benefit. |
 | The consumer client SDK lives in `GnosticCore`, which links PositronicKit. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
-| The composition root now lives in `GnosticHost`; `GnosticRunner` keeps a second, narrower one until it composes through `GnosticHost`. | P1 [#443](https://github.com/phynics/Gnostic/issues/443) and [GNO-PLAT-012 #446](https://github.com/phynics/Gnostic/issues/446) |
 | Modules have no single registration; observers are installed only by tests. | P2 [#447](https://github.com/phynics/Gnostic/issues/447) |
 | The ACP front end lives in `GnosticCLI`. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
 | Experiment tooling is RLM-specific. | P3 [#457](https://github.com/phynics/Gnostic/issues/457) |
