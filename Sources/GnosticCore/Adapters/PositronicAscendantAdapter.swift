@@ -75,11 +75,11 @@ import struct PositronicKit.TimelineRecord
             )
         )
 
+        // 6.1.0 dropped the unused tool store and `toolPersistence:` parameter.
         let stores = (
             InMemoryAgentStore(),
             InMemoryMessageStore(),
-            InMemoryWorkspacePersistence(),
-            InMemoryToolPersistence()
+            InMemoryWorkspacePersistence()
         )
         let runtimeRepository = InMemoryTimelineRuntimeRepository()
         try await stores.0.saveAgent(agent)
@@ -125,7 +125,6 @@ import struct PositronicKit.TimelineRecord
             persistence: .init(
                 runtimeRepository: runtimeRepository,
                 workspacePersistence: stores.2,
-                toolPersistence: stores.3,
                 agentStore: stores.0,
                 workspaceBindingRepository: runtimeRepository
             ),

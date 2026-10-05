@@ -158,7 +158,11 @@ struct ProjectionAndCatalogTests {
             createdAt: decoded.createdAt
         ))
         let projected = WorkspaceReferenceProjection.networkReference(from: runtimeReference)
-        #expect(projected.trustLevel == networkReference.trustLevel)
+        // PositronicKit 6.1.0 removed WorkspaceReference.trustLevel because the
+        // runtime never read it. The adapter therefore projects the Gnostic
+        // default (``.full``); the Gnostic wire value above still round-trips
+        // through its own object encoding.
+        #expect(projected.trustLevel == .full)
         #expect(projected.status == networkReference.status)
         #expect(projected.tools == networkReference.tools)
     }
