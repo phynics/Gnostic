@@ -6,7 +6,7 @@ import Foundation
 ///
 /// The kit owns this vocabulary so it never names a backend-specific tier type.
 /// A backend adapter maps its own tiers onto these cases.
-public enum ExperimentModelTier: String, Sendable, Equatable, CaseIterable {
+public enum ExperimentModelTier: String, Sendable, Equatable, CaseIterable, Codable {
     case primary
     case utility
     case fast
@@ -59,6 +59,8 @@ public enum ExperimentError: Error, Equatable, CustomStringConvertible {
     case emptyModelResponse
     /// A scripted transport ran out of responses.
     case scriptExhausted
+    /// A scripted transport was told to fail.
+    case scriptFailure(String)
     /// The frozen case set changed from its approved digest.
     case caseSetChanged(expected: String, actual: String)
     /// The frozen case set could not be parsed.
@@ -78,6 +80,8 @@ public enum ExperimentError: Error, Equatable, CustomStringConvertible {
             "the model returned an empty response"
         case .scriptExhausted:
             "the scripted model script is exhausted"
+        case let .scriptFailure(reason):
+            "the scripted model failed: \(reason)"
         case let .caseSetChanged(expected, actual):
             "the frozen case set changed (expected SHA-256 \(expected), found \(actual)); a new case set needs a new manifest version"
         case let .malformedCaseSet(reason):
