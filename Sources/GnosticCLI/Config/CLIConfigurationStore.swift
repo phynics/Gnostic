@@ -87,6 +87,50 @@ public struct CLIConfigurationStore: Sendable {
         }
     }
 
+    /// Loads the current manifest, or an empty manifest when none exists.
+    ///
+    /// A preview needs a before-image even when the file does not exist yet,
+    /// so `config init --dry-run` can show what it would create.
+    ///
+    /// - Returns: The manifest, or an empty graph for the default broker.
+    public func loadManifestOrEmpty() throws -> NodeManifest {
+        guard FileManager.default.fileExists(atPath: path().path) else {
+            let defaults = CLIConfiguration.defaults
+            return NodeManifest.empty(
+                broker: .init(host: defaults.mqttHost, port: defaults.mqttPort, namespace: defaults.mqttNamespace)
+            )
+        }
+        return try loadManifest()
+    }
+
+    /// Creates an isolated, writable copy of this store for a dry run.
+    ///
+    /// The preview copies the current manifest into a temporary directory and
+    /// returns a store rooted there. A mutation applied to the preview store
+    /// writes only to the copy, so the caller can compare before and after and
+    /// then discard the copy. The lock and atomic-write behavior are unchanged.
+    ///
+    /// - Returns: A preview store and its cleanup handle.
+    /// - Throws: A write error when the temporary copy cannot be created.
+    public func previewManifest() throws -> ManifestPreview {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-config-preview-\(UUID.makeVersion4().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: path().path) {
+                let destination = directory.appendingPathComponent(Self.defaultFileName)
+                try FileManager.default.copyItem(at: path(), to: destination)
+            }
+            return ManifestPreview(
+                store: CLIConfigurationStore(baseDirectory: directory, environment: environment),
+                directory: directory
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw CLIConfigurationError.writeFailed(directory)
+        }
+    }
+
     /// Mutates the manifest under the same lock used for reads and atomically replaces the file.
     @discardableResult
     public func mutateManifest(_ mutation: (inout NodeManifest) throws -> Void) throws -> NodeManifest {
@@ -251,6 +295,26 @@ public struct CLIConfigurationStore: Sendable {
         var result = manifest
         result.broker = .init(host: configuration.mqttHost, port: configuration.mqttPort, namespace: configuration.mqttNamespace, username: configuration.mqttUsername, password: configuration.mqttPassword).normalized()
         return result
+    }
+}
+
+/// A writable manifest copy for `config --dry-run`.
+///
+/// The handle owns the temporary directory. Call ``discard()`` when the diff
+/// is complete so a dry run leaves no state behind.
+public struct ManifestPreview: Sendable {
+    /// The store rooted at the temporary copy.
+    public let store: CLIConfigurationStore
+    private let directory: URL
+
+    init(store: CLIConfigurationStore, directory: URL) {
+        self.store = store
+        self.directory = directory
+    }
+
+    /// Removes the temporary copy.
+    public func discard() {
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 

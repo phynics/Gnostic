@@ -49,6 +49,19 @@ public enum InspectRenderer {
         return (lines.isEmpty ? "(no advertised objects)" : lines.joined(separator: "\n")) + "\n"
     }
 
+    /// Renders `inspect list` output as a JSON array of object objects.
+    ///
+    /// - Parameter entries: The entries, in any order.
+    /// - Returns: Pretty-printed JSON text.
+    /// - Throws: `EncodingError` when an entry cannot be encoded.
+    public static func listJSON(_ entries: [NetworkCatalogEntry]) throws -> String {
+        let sorted = entries.sorted(by: {
+            ($0.objectID.uuidString, $0.providerID) < ($1.objectID.uuidString, $1.providerID)
+        })
+        let objects = try sorted.map { try objectJSON($0, compact: true) }
+        return "[\n" + objects.joined(separator: ",\n") + "\n]"
+    }
+
     /// Renders a single catalogued entry as deterministic JSON.
     ///
     /// Known projection fields and retained unknown dynamic fields are included

@@ -3,6 +3,30 @@
 import GnosticCore
 import GnosticKit
 
+/// One external prerequisite a module needs before it can run.
+///
+/// A prerequisite names an executable or script the host depends on. The value
+/// is a fact about this machine, not about the manifest, so it is computed at
+/// read time and never persisted.
+public struct GnosticModulePrerequisite: Sendable, Equatable {
+    /// The prerequisite name, for example `guile`.
+    public let name: String
+    /// The path that was checked.
+    public let path: String
+    /// Whether the path exists and is usable.
+    public let isAvailable: Bool
+    /// A remediation hint shown when the path is unavailable.
+    public let hint: String
+
+    /// Creates one prerequisite fact.
+    public init(name: String, path: String, isAvailable: Bool, hint: String) {
+        self.name = name
+        self.path = path
+        self.isAvailable = isAvailable
+        self.hint = hint
+    }
+}
+
 /// One compiled-in module of the Gnostic platform.
 ///
 /// A module is selected per Ascendant through the backend-owned `extensions`
@@ -31,6 +55,13 @@ public struct GnosticModule: Sendable {
     /// - Throws: ``AscendantBackendError/invalidConfiguration(_:)`` when the
     ///   module's settings are missing or malformed.
     public typealias ContributionFactory = @Sendable (GnosticModuleScope) throws -> any PositronicContribution
+
+    /// Reports the external prerequisites a module needs for one Ascendant.
+    ///
+    /// - Parameter settings: The module's own settings with the module name
+    ///   prefix stripped.
+    /// - Returns: One fact per prerequisite path.
+    public typealias PrerequisiteFactory = @Sendable ([String: String]) -> [GnosticModulePrerequisite]
 
     /// Builds one terminal Turn observer from the module's scoped settings.
     ///
@@ -74,6 +105,12 @@ public struct GnosticModule: Sendable {
     public let terminalTurnObservers: [ObserverFactory]
     /// Builds the Positronic contribution for one Ascendant, when it has one.
     public let contribution: ContributionFactory?
+    /// Reports the module's external prerequisites for one Ascendant's settings.
+    ///
+    /// The doctor reads this to check executor helpers without building a
+    /// contribution. The settings are the module's own keys with the module
+    /// name prefix stripped.
+    public let prerequisites: PrerequisiteFactory?
 
     /// Creates one compiled-in module.
     ///
@@ -86,6 +123,7 @@ public struct GnosticModule: Sendable {
     ///   - experimentSubcommand: The optional experiment subcommand.
     ///   - terminalTurnObservers: Builds the terminal Turn observers.
     ///   - contribution: Builds the Positronic contribution.
+    ///   - prerequisites: Reports the module's external prerequisites.
     ///   - turnInterception: Builds the Turn interception pipeline. It stays
     ///     last so existing trailing-closure call sites keep binding to
     ///     `contribution`.
@@ -97,6 +135,7 @@ public struct GnosticModule: Sendable {
         experimentSubcommand: GnosticModuleSubcommand? = nil,
         terminalTurnObservers: [ObserverFactory] = [],
         contribution: ContributionFactory? = nil,
+        prerequisites: PrerequisiteFactory? = nil,
         turnInterception: InterceptionFactory? = nil
     ) {
         // Scoping strips the `"\(name)."` prefix from an envelope, so a dot in
@@ -115,6 +154,7 @@ public struct GnosticModule: Sendable {
         self.turnInterception = turnInterception
         self.terminalTurnObservers = terminalTurnObservers
         self.contribution = contribution
+        self.prerequisites = prerequisites
     }
 }
 

@@ -55,6 +55,37 @@ public struct BackendComposition: Sendable {
     /// Every compiled-in module, by static name.
     public var registeredModules: Set<String> { Set(modules.keys) }
 
+    /// Every compiled-in module descriptor, sorted by static name.
+    ///
+    /// The descriptors carry the settings schema, model-service requirement,
+    /// experiment subcommand, and registry identity of each module. A
+    /// diagnostics console reads them without constructing a backend or a
+    /// language model.
+    public var moduleDescriptors: [GnosticModule] {
+        modules.values.sorted { $0.name < $1.name }
+    }
+
+    /// Looks up one compiled-in module by static name.
+    ///
+    /// - Parameter name: The `extensions` selection name.
+    /// - Returns: The descriptor, or `nil` when no compiled module has that name.
+    public func moduleDescriptor(named name: String) -> GnosticModule? { modules[name] }
+
+    /// Resolves the modules one Ascendant selects through `extensions`.
+    ///
+    /// This is the same resolution `serve` performs when it materializes an
+    /// Ascendant, so a configuration console can display exactly what the
+    /// runtime composes. It validates the selection shape but does not build a
+    /// contribution, a model client, or a credential-backed backend.
+    ///
+    /// - Parameter ascendant: The Ascendant whose backend envelope is read.
+    /// - Returns: The selected module names, in selection order.
+    /// - Throws: ``AscendantBackendError/invalidConfiguration(_:)`` when
+    ///   `extensions` is not an array of distinct non-empty names.
+    public func selectedModuleNames(for ascendant: NodeManifest.Ascendant) throws -> [String] {
+        try Self.selectedModuleNames(for: ascendant, backend: ascendant.backend)
+    }
+
     /// Every compiled-in module that installs a Positronic contribution.
     ///
     /// This is ``registeredModules`` filtered to modules that build a
