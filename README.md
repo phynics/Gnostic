@@ -314,7 +314,10 @@ intermittent failure.
 
 The #354 pilot (Stage 2) and full matrix (Stage 3) call a real provider and
 cost money. `gnostic experiment rlm-scenario` runs them using the provider,
-models, and key of a configured Positronic Ascendant. Run it through the
+models, and key of a configured Positronic Ascendant. It is a thin consumer of
+the experiment kit: the round runner, artifact resume, metering, scoring rule,
+and spend guard come from `GnosticKit`, and only the corpus snapshot, worker
+preflight, and pinned-image gate are RLM-specific. Run it through the
 container so each run records the pinned image:
 
 ```sh

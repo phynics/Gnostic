@@ -53,6 +53,11 @@ struct ExperimentCommand: AsyncParsableCommand {
     }
 
     /// `gnostic experiment rlm-scenario` — the #354 live stages (manifest §8).
+    ///
+    /// The kit owns the mundane round machinery (`ExperimentRunner`,
+    /// `ExperimentArtifactFile`, metering, scoring, and spend guard). This
+    /// command carries only RLM-specific glue: the corpus snapshot, the worker
+    /// preflight, the pinned-image gate, and the RLM run record mapping.
     struct RLMScenario: AsyncParsableCommand {
         /// The routing key a module descriptor must declare to expose this command.
         static let commandName = "rlm-scenario"
@@ -86,7 +91,7 @@ struct ExperimentCommand: AsyncParsableCommand {
         var questions: [String] = []
 
         @Option(name: .long, help: "Repetitions per question and executor (1–3).")
-        var repetitions: Int = RLMScenarioRoundIdentity.defaultRepetitions
+        var repetitions: Int = RLMScenarioStage.defaultRepetitions
 
         @Option(name: .long, parsing: .upToNextOption, help: "Executors to compare: guile and/or chibi.")
         var executor: [String] = RLMWorkerSelection.allCases.map(\.rawValue)
@@ -126,11 +131,11 @@ struct ExperimentCommand: AsyncParsableCommand {
             let root = URL(fileURLWithPath: repository).standardizedFileURL
             let preparation = try await RLMScenarioPreparation.prepare(command: self, root: root)
             let plan = preparation.plan
-            let outputPath = output ?? plan.identity.stage.defaultArtifactPath
+            let outputPath = output ?? preparation.stage.defaultArtifactPath
             let outputURL = URL(fileURLWithPath: outputPath, relativeTo: root)
-            let existing = try RLMScenarioArtifactFile.read(outputURL)
+            let existing = try ExperimentArtifactFile.read(outputURL)
             if let existing {
-                let differences = plan.identity.differences(from: existing.round)
+                let differences = plan.manifest.differences(from: existing.manifest)
                 guard differences.isEmpty else {
                     throw RLMScenarioError.roundMismatch("\(outputPath) differs in \(differences.joined(separator: ", "))")
                 }
@@ -145,11 +150,13 @@ struct ExperimentCommand: AsyncParsableCommand {
                 return
             }
 
-            let runner = RLMScenarioLiveRunner(
+            let runner = ExperimentRunner(
                 plan: plan,
                 maximumCostUSD: maxCost,
+                scoringRule: ExperimentBlindRating.rule,
+                measurements: RLMScenarioMeasurements.unavailable,
                 execute: preparation.execute,
-                persist: { try RLMScenarioArtifactFile.write($0, to: outputURL) },
+                persist: { try ExperimentArtifactFile.write($0, to: outputURL) },
                 report: { print($0) }
             )
             let artifact = try await runner.run(resuming: existing)
@@ -158,11 +165,39 @@ struct ExperimentCommand: AsyncParsableCommand {
     }
 }
 
+/// Manifest §8 live stages.
+enum RLMScenarioStage: String, Sendable, CaseIterable {
+    /// Stage 2: one question, both executors.
+    case pilot
+    /// Stage 3: the chosen questions (all 12 by default), both executors.
+    case matrix
+
+    /// Manifest v7: the owner accepted a light sample, one repetition by default.
+    static let defaultRepetitions = 1
+    static let maximumRepetitions = 3
+
+    var defaultArtifactPath: String {
+        switch self {
+        case .pilot: "Documentation/Experiments/rlm-scenario-stage2.json"
+        case .matrix: "Documentation/Experiments/rlm-scenario-stage3.json"
+        }
+    }
+}
+
+/// The RLM scenario's unavailable measurements, recorded in every artifact.
+enum RLMScenarioMeasurements {
+    static let unavailable = [
+        ExperimentMeasurementStatus(id: "M7", status: "requires-rater", reason: "Each completed run's score is set after collection by the blind LLM evaluator (v7 §5)."),
+        ExperimentMeasurementStatus(id: "M8", status: "unavailable", reason: "Arm D (ordinary Positronic Workspace analysis) has no headless runner, so M8 is not required (§2)."),
+    ]
+}
+
 /// Resolves the round's fixed parameters and builds the production run path.
 struct RLMScenarioPreparation: Sendable {
-    let plan: RLMScenarioPlan
+    let stage: RLMScenarioStage
+    let plan: ExperimentPlan
     let preflight: @Sendable () async throws -> Void
-    let execute: RLMScenarioLiveRunner.Execute
+    let execute: ExperimentRunner.Execute
 
     static let budget = RLMRunBudget.standard
 
@@ -176,13 +211,13 @@ struct RLMScenarioPreparation: Sendable {
             }
             return selection
         }
-        guard (1...RLMScenarioRoundIdentity.maximumRepetitions).contains(command.repetitions) else {
-            throw RLMScenarioError.invalidArguments("--repetitions must be between 1 and \(RLMScenarioRoundIdentity.maximumRepetitions)")
+        guard (1...RLMScenarioStage.maximumRepetitions).contains(command.repetitions) else {
+            throw RLMScenarioError.invalidArguments("--repetitions must be between 1 and \(RLMScenarioStage.maximumRepetitions)")
         }
         guard !executors.isEmpty, Set(executors).count == executors.count else {
             throw RLMScenarioError.invalidArguments("--executor must name distinct executors")
         }
-        let pricing: RLMScenarioPricing?
+        let pricing: ExperimentPricing?
         switch (command.inputPrice, command.outputPrice, command.pricesDate) {
         case (nil, nil, nil):
             pricing = nil
@@ -190,13 +225,13 @@ struct RLMScenarioPreparation: Sendable {
             guard input >= 0, output >= 0 else {
                 throw RLMScenarioError.invalidArguments("prices must not be negative")
             }
-            pricing = RLMScenarioPricing(inputUSDPerMillionTokens: input, outputUSDPerMillionTokens: output, ratesDate: date)
+            pricing = ExperimentPricing(inputUSDPerMillionTokens: input, outputUSDPerMillionTokens: output, ratesDate: date)
         default:
             throw RLMScenarioError.invalidArguments("pass all of --input-price, --output-price, and --prices-date, or none for a flat-rate subscription")
         }
 
         let (questions, questionSetSHA256) = try RLMScenarioQuestionSet.load(repositoryRoot: root)
-        let selected: [RLMScenarioQuestion]
+        let selected: [ExperimentScenarioCase]
         switch stage {
         case .pilot:
             guard let pilotQuestion = questions.first(where: { $0.id == command.question }) else {
@@ -234,46 +269,75 @@ struct RLMScenarioPreparation: Sendable {
         )
         let git = RLMScenarioGit(root: root)
 
-        let identity = RLMScenarioRoundIdentity(
+        let manifest = ExperimentRunManifest(
             manifestID: "rlm-scenario-manifest-v1",
             manifestVersion: "v7",
-            stage: stage,
+            segment: stage.rawValue,
+            regime: ExperimentRegime(
+                backendKind: AscendantAdapterRegistry.positronicKind,
+                modules: ["rlm"],
+                modelTiers: [
+                    "primary": provider.modelName,
+                    "utility": provider.utilityModel,
+                    "fast": provider.fastModel,
+                ],
+                provider: configuration.activeProvider.rawValue,
+                endpoint: provider.endpoint,
+                policies: ["scenario": "rlm-scenario"]
+            ),
             gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"] ?? git.head(),
             workingTreeClean: git.isClean(),
             imageDigest: imageDigest,
             host: "\(RLMScenarioHost.operatingSystem)/\(RLMScenarioHost.architecture)",
-            provider: configuration.activeProvider.rawValue,
-            endpoint: provider.endpoint,
-            rootModel: provider.modelName,
-            leafModels: RLMScenarioLeafModels(primary: provider.modelName, utility: provider.utilityModel, fast: provider.fastModel),
             samplingParameters: "provider defaults (the RLM adapters set no generation parameters)",
-            budget: RLMScenarioBudgetDescription(budget),
-            questionSetSHA256: questionSetSHA256,
+            budget: budgetDescription(budget),
+            caseSetSHA256: questionSetSHA256,
             corpusRevisionDigest: corpus.revisionDigest,
-            questionIDs: selected.map(\.id),
-            executors: executors.map(\.rawValue),
+            caseIDs: selected.map(\.id),
+            arms: executors.map(\.rawValue),
             repetitions: command.repetitions,
             pricing: pricing
         )
 
-        var pilot: RLMScenarioPilotReference?
+        var pilot: ExperimentPilotReference?
         if stage == .matrix {
             guard let pilotPath = command.pilot else {
                 throw RLMScenarioError.pilotRequired("pass --pilot with the completed Stage 2 artifact")
             }
-            pilot = try RLMScenarioArtifactFile.authorisingPilot(
+            pilot = try ExperimentArtifactFile.authorisingPilot(
                 at: URL(fileURLWithPath: pilotPath, relativeTo: root),
                 displayPath: pilotPath,
-                for: identity
+                for: manifest
             )
         }
 
         let transport = LLMStreamClientExperimentTransport(client: client)
         return Self(
-            plan: RLMScenarioPlan(identity: identity, questions: selected, matrixQuestionCount: questions.count, pilot: pilot),
+            stage: stage,
+            plan: ExperimentPlan(manifest: manifest, matrixCaseCount: questions.count, pilot: pilot),
             preflight: { try await preflightExecutors(executors, policy: policy) },
-            execute: { question, key in
-                await executeRun(
+            execute: { key in
+                guard let question = selected.first(where: { $0.id == key.caseID }) else {
+                    return ExperimentRunRecord(
+                        caseID: key.caseID,
+                        arm: key.arm,
+                        repetition: key.repetition,
+                        startedAtUTC: ISO8601DateFormatter().string(from: Date()),
+                        outcome: "failed",
+                        failureCategory: "unknown-case",
+                        failure: "no selected case for \(key.caseID)",
+                        answer: nil,
+                        evidence: [],
+                        sourceRevisionDigest: nil,
+                        wallMilliseconds: 0,
+                        metrics: ExperimentRunMetrics(),
+                        rootUsage: ExperimentUsage(),
+                        leafUsage: ExperimentUsage(),
+                        costUSD: 0,
+                        costComplete: true
+                    )
+                }
+                return await executeRun(
                     question: question,
                     key: key,
                     transport: transport,
@@ -283,6 +347,22 @@ struct RLMScenarioPreparation: Sendable {
                     corpusRevision: corpus.revisionDigest
                 )
             }
+        )
+    }
+
+    /// Maps the RLM host budget onto the kit budget the runner and ceiling use.
+    static func budgetDescription(_ budget: RLMRunBudget) -> ExperimentBudget {
+        ExperimentBudget(
+            wallDurationSeconds: budget.maxWallDuration.components.seconds,
+            modelCalls: budget.maxRootIterations + budget.maxLeafModelCalls,
+            estimatedModelTokens: budget.maxEstimatedModelTokens,
+            additional: [
+                "rootIterations": budget.maxRootIterations,
+                "leafModelCalls": budget.maxLeafModelCalls,
+                "cellRepairs": budget.maxCellRepairs,
+                "corpusBytesRead": budget.maxCorpusBytesRead,
+                "evidenceReferences": budget.maxEvidenceReferences,
+            ]
         )
     }
 
@@ -332,14 +412,14 @@ struct RLMScenarioPreparation: Sendable {
     }
 
     private static func executeRun(
-        question: RLMScenarioQuestion,
-        key: RLMScenarioRunKey,
-        transport: any RLMScenarioModelTransport,
-        pricing: RLMScenarioPricing?,
+        question: ExperimentScenarioCase,
+        key: ExperimentRunKey,
+        transport: any ExperimentModelTransport,
+        pricing: ExperimentPricing?,
         policy: RLMCorpusPolicy,
         source: RLMScenarioRepositorySource,
         corpusRevision: String
-    ) async -> RLMScenarioRunRecord {
+    ) async -> ExperimentRunRecord {
         let rootModel = ExperimentMeteredModel(transport: transport)
         let leafModel = ExperimentMeteredModel(transport: transport)
         let rootService = PositronicContributionModelServiceAdapter(service: rootModel)
@@ -354,7 +434,7 @@ struct RLMScenarioPreparation: Sendable {
             let assembly = try RLMRunAssemblyFactory.make(
                 model: rootService,
                 leafService: leafService,
-                worker: RLMWorkerSelection(rawValue: key.executor) ?? .guile,
+                worker: RLMWorkerSelection(rawValue: key.arm) ?? .guile,
                 budget: budget,
                 policy: policy,
                 progressSink: nil
@@ -377,13 +457,13 @@ struct RLMScenarioPreparation: Sendable {
         var outcome = "failed"
         var failure = setupFailure
         var answer: String?
-        var evidence: [RLMScenarioEvidence] = []
+        var evidence: [ExperimentEvidence] = []
         switch result?.outcome {
         case let .completed(text, references)?:
             outcome = "completed"
             answer = text
             evidence = references.map {
-                RLMScenarioEvidence(chunkID: $0.chunkID, path: $0.path, startLine: $0.startLine, endLine: $0.endLine)
+                ExperimentEvidence(id: $0.chunkID, path: $0.path, startLine: $0.startLine, endLine: $0.endLine)
             }
         case let .failed(runFailure)?:
             failure = runFailure.description
@@ -396,19 +476,20 @@ struct RLMScenarioPreparation: Sendable {
         }
         let revision = result.map { _ in corpusRevision }
 
-        return RLMScenarioRunRecord(
-            questionID: key.questionID,
-            executor: key.executor,
+        return ExperimentRunRecord(
+            caseID: key.caseID,
+            arm: key.arm,
             repetition: key.repetition,
             startedAtUTC: startedAt,
             outcome: outcome,
+            failureCategory: setupFailure == nil ? nil : "setup",
             failure: failure,
             answer: answer,
             evidence: evidence,
-            snapshotRevisionDigest: revision,
+            sourceRevisionDigest: revision,
             wallMilliseconds: Double(elapsed.components.seconds) * 1_000
                 + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000,
-            metrics: RLMScenarioRunMetrics(result?.metrics ?? .unavailable()),
+            metrics: ExperimentRunMetrics(values: metricsValues(result?.metrics ?? .unavailable())),
             rootUsage: rootUsage,
             leafUsage: leafUsage,
             costUSD: pricing?.cost(of: usage) ?? 0,
@@ -416,11 +497,28 @@ struct RLMScenarioPreparation: Sendable {
             score: nil
         )
     }
+
+    /// Maps the RLM deterministic counters onto the kit's named metrics.
+    private static func metricsValues(_ metrics: RLMRunMetrics) -> [String: Double] {
+        [
+            "rootIterations": Double(metrics.rootIterations),
+            "rootCellRejections": Double(metrics.rootCellRejections),
+            "runtimeFailures": Double(metrics.runtimeFailures),
+            "repairs": Double(metrics.repairs),
+            "leafModelCalls": Double(metrics.leafModelCalls),
+            "leafPrompts": Double(metrics.leafPrompts),
+            "corpusSearchCalls": Double(metrics.corpusSearchCalls),
+            "corpusReadCalls": Double(metrics.corpusReadCalls),
+            "contextReadBytes": Double(metrics.contextReadBytes),
+            "estimatedModelTokens": Double(metrics.estimatedModelTokens),
+            "evidenceReferences": Double(metrics.evidenceReferences),
+        ]
+    }
 }
 
 /// A transport the preflight uses: it proves no model call happens there.
-private struct RLMScenarioRefusingTransport: RLMScenarioModelTransport {
-    func generate(prompt _: String, tier _: ExperimentModelTier) async throws -> RLMScenarioGeneration {
+private struct RLMScenarioRefusingTransport: ExperimentModelTransport {
+    func generate(prompt _: String, tier _: ExperimentModelTier) async throws -> ExperimentGeneration {
         throw RLMFailure.rootModelFailed("preflight does not contact a provider")
     }
 }
@@ -515,40 +613,41 @@ struct RLMScenarioGit {
 }
 
 enum RLMScenarioPlanRenderer {
-    static func render(plan: RLMScenarioPlan, existing: RLMScenarioLiveArtifact?, outputPath: String) -> String {
-        let identity = plan.identity
+    static func render(plan: ExperimentPlan, existing: ExperimentRunArtifact?, outputPath: String) -> String {
+        let manifest = plan.manifest
         let ceiling = plan.ceiling
+        let tiers = manifest.regime.modelTiers
         var lines = [
-            "RLM scenario \(identity.stage.rawValue) (manifest \(identity.manifestVersion))",
-            "  Provider: \(identity.provider) at \(identity.endpoint)",
-            "  Root model: \(identity.rootModel); leaf models: primary \(identity.leafModels.primary), utility \(identity.leafModels.utility), fast \(identity.leafModels.fast)",
-            "  Questions: \(identity.questionIDs.joined(separator: ", ")) × \(identity.repetitions) repetitions × \(identity.executors.joined(separator: ", "))",
-            "  Commit: \(identity.gitCommit)\(identity.workingTreeClean ? "" : " (working tree has uncommitted changes)")",
-            "  Image: \(identity.imageDigest ?? "unpinned host \(identity.host)")",
-            "  Corpus revision: \(identity.corpusRevisionDigest)",
+            "RLM scenario \(manifest.segment) (manifest \(manifest.manifestVersion))",
+            "  Provider: \(manifest.regime.provider) at \(manifest.regime.endpoint)",
+            "  Root model: \(tiers["primary"] ?? "?"); leaf models: primary \(tiers["primary"] ?? "?"), utility \(tiers["utility"] ?? "?"), fast \(tiers["fast"] ?? "?")",
+            "  Questions: \(manifest.caseIDs.joined(separator: ", ")) × \(manifest.repetitions) repetitions × \(manifest.arms.joined(separator: ", "))",
+            "  Commit: \(manifest.gitCommit)\(manifest.workingTreeClean ? "" : " (working tree has uncommitted changes)")",
+            "  Image: \(manifest.imageDigest ?? "unpinned host \(manifest.host)")",
+            "  Corpus revision: \(manifest.corpusRevisionDigest ?? "none")",
             "  Artifact: \(outputPath)\(existing.map { " (resuming \($0.runs.count) recorded runs)" } ?? "")",
             "  Worst case: \(ceiling.runs) runs, ≤ \(ceiling.maximumModelCalls) model calls, ≤ \(ceiling.maximumEstimatedTokens) estimated tokens"
                 + (ceiling.maximumEstimatedCostUSD.map { String(format: ", ≈ $%.2f at the higher of the given rates", $0) } ?? " (unpriced: flat-rate subscription)"),
         ]
         if let pilot = plan.pilot {
-            let cost = identity.pricing == nil ? "unpriced" : String(format: "$%.2f", pilot.projection.projectedCostUSD)
+            let cost = manifest.pricing == nil ? "unpriced" : String(format: "$%.2f", pilot.projection.projectedCostUSD)
             lines.append("  Pilot projection for this matrix: \(pilot.projection.projectedRuns) runs, \(cost)\(pilot.projection.costComplete ? "" : " (lower bound: some calls reported no usage)")")
         }
         return lines.joined(separator: "\n")
     }
 
-    static func summary(_ artifact: RLMScenarioLiveArtifact) -> String {
+    static func summary(_ artifact: ExperimentRunArtifact) -> String {
         let completed = artifact.runs.filter { $0.outcome == "completed" }.count
-        let usage = artifact.runs.map(\.totalUsage).reduce(RLMScenarioUsage(), +)
-        let spend = artifact.round.pricing == nil
+        let usage = artifact.runs.map(\.totalUsage).reduce(ExperimentUsage(), +)
+        let spend = artifact.manifest.pricing == nil
             ? "used \(usage.promptTokens) prompt and \(usage.completionTokens) completion tokens (unpriced)"
             : String(format: "spent $%.4f", artifact.costActualUSD)
         var lines = [
             "Status: \(artifact.status). \(completed) of \(artifact.runs.count) runs completed; \(spend)\(artifact.costComplete ? "" : " (lower bound)").",
         ]
         if let projection = artifact.costProjection {
-            let perRun = projection.executors.map { String(format: "%@ ≈ %.0f calls, %.0f tokens per run", $0.executor, $0.meanModelCalls, $0.meanPromptTokens + $0.meanCompletionTokens) }
-            lines.append("Projected full matrix: \(projection.projectedRuns) runs (\(perRun.joined(separator: "; ")))\(artifact.round.pricing == nil ? "" : String(format: ", $%.2f", projection.projectedCostUSD)). Accept this before running --stage matrix.")
+            let perArm = projection.arms.map { String(format: "%@ ≈ %.0f calls, %.0f tokens per run", $0.arm, $0.meanModelCalls, $0.meanPromptTokens + $0.meanCompletionTokens) }
+            lines.append("Projected full matrix: \(projection.projectedRuns) runs (\(perArm.joined(separator: "; ")))\(artifact.manifest.pricing == nil ? "" : String(format: ", $%.2f", projection.projectedCostUSD)). Accept this before running --stage matrix.")
         }
         return lines.joined(separator: "\n")
     }

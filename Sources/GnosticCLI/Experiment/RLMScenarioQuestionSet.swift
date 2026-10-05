@@ -3,13 +3,12 @@
 import Foundation
 import GnosticKit
 
-/// The RLM scenario consumes the experiment kit's frozen case model
-/// (GNO-PLAT-031). GNO-PLAT-038 retargets the scenario onto the kit types
-/// directly and deletes this wrapper.
-typealias RLMScenarioQuestion = ExperimentScenarioCase
-
 /// Reads the frozen #354 question set and refuses any text that is not the
 /// approved one, so a live round cannot silently run edited questions.
+///
+/// The kit owns the frozen case model (`ExperimentScenarioCase`). This wrapper
+/// is RLM-only glue: it pins the #354 file and digests, asserts the Q1–Q12
+/// shape, and maps the kit's structured failures onto ``RLMScenarioError``.
 enum RLMScenarioQuestionSet {
     static let relativePath = "Documentation/Experiments/rlm-scenario-questions.md"
     /// The SHA-256 of the approved file, as recorded by the Stage 0 artifact.
@@ -20,7 +19,7 @@ enum RLMScenarioQuestionSet {
         "Documentation/Architecture",
     ]
 
-    static func load(repositoryRoot: URL) throws -> (questions: [RLMScenarioQuestion], sha256: String) {
+    static func load(repositoryRoot: URL) throws -> (questions: [ExperimentScenarioCase], sha256: String) {
         do {
             let (cases, sha256) = try ExperimentScenarioCaseSet.load(
                 from: repositoryRoot.appendingPathComponent(relativePath),
