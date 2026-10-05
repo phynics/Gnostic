@@ -73,6 +73,12 @@ compiled-in `GnosticModule` descriptor whose `registryID` is that entry's `id`,
 so a module reaches `runnable` only after its descriptor is compiled in. #449
 and #450 own those two wiring steps.
 
+The platform kit boundary is enforced the same way. `GnosticCore` must not
+depend on or import `GnosticKit`; the kit must depend on `GnosticCore` and no
+other `Gnostic` target; and `Sources/GnosticKit` must not import a Positronic
+backend. The kernel therefore stays below the kit, so P7 can extract Positronic
+from `GnosticCore` without touching the kit.
+
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.
 

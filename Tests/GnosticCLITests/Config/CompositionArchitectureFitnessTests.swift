@@ -85,9 +85,21 @@ struct CompositionArchitectureFitnessTests {
             kitTarget.contains("\"GnosticCore\""),
             "GnosticKit must build on GnosticCore."
         )
-        for forbidden in ["PositronicKit", "PKContracts", "GnosticRLM", "GnosticHost"] {
+        for forbidden in ["PositronicKit", "PKContracts"] {
             #expect(
                 !kitTarget.contains(forbidden),
+                "GnosticKit must not depend on \(forbidden)."
+            )
+        }
+        // ADR 0013: the kit sits above the kernel and below modules, so
+        // GnosticCore is the only Gnostic target it may depend on.
+        for forbidden in [
+            "GnosticCLI", "GnosticHost", "GnosticPositronicAtlas",
+            "GnosticLettaBackend", "GnosticACPAscendant", "GnosticRLM",
+            "GnosticRLMGuile", "GnosticRLMChibi", "GnosticRLMProcessWorker",
+        ] {
+            #expect(
+                !kitTarget.contains("\"\(forbidden)\""),
                 "GnosticKit must not depend on \(forbidden)."
             )
         }
@@ -115,6 +127,11 @@ struct CompositionArchitectureFitnessTests {
             !coreTarget.contains("GnosticHost"),
             "GnosticCore must not depend on GnosticHost."
         )
+        // ADR 0013: the kernel stays below the platform kit.
+        #expect(
+            !coreTarget.contains("GnosticKit"),
+            "GnosticCore must not depend on GnosticKit."
+        )
 
         let hostTarget = try #require(
             Self.targetBlock(named: "GnosticHost", in: package),
@@ -132,6 +149,10 @@ struct CompositionArchitectureFitnessTests {
         let coreImportsHost = try Self.sources(in: "Sources/GnosticCore")
             .contains { $0.text.contains("import GnosticHost") }
         #expect(!coreImportsHost, "GnosticCore sources must not import GnosticHost.")
+
+        let coreImportsKit = try Self.sources(in: "Sources/GnosticCore")
+            .contains { $0.text.contains("import GnosticKit") }
+        #expect(!coreImportsKit, "GnosticCore sources must not import GnosticKit.")
 
         let hostImportsCLI = try Self.sources(in: "Sources/GnosticHost")
             .contains { $0.text.contains("import GnosticCLI") }
