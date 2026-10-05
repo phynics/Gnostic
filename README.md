@@ -274,6 +274,7 @@ process and is needed only for a Node that advertises no identity.
 
 - [Implement an Ascendant backend](Documentation/Extending/ascendant-backends.md)
 - [Implement a Workspace adapter](Documentation/Extending/workspace-adapters.md)
+- [Build an experiment on the platform kit](Documentation/Extending/experiment-kit.md)
 
 ## Develop and validate
 
