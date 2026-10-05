@@ -669,6 +669,109 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("an agent that exits during session pagination fails cleanly and a fresh backend recovers")
+    @MainActor
+    func paginationAgentExitIsBoundedAndRecoverable() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let configuredTimelineID = UUID()
+
+        // The faulted agent answers page one with a cursor and exits on page two.
+        let faulted = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                paginatedListMode: "later-page",
+                listExitAfter: 2
+            ),
+            timelines: [.init(id: configuredTimelineID, title: "Configured")]
+        )
+        do {
+            _ = try await faulted.operatedTimelines()
+            Issue.record("Exiting during session pagination did not surface as a failure.")
+        } catch let error as AscendantBackendError {
+            guard case .lifecycleUnusable = error else {
+                Issue.record("Expected lifecycleUnusable from a dead pagination agent, got \(error).")
+                await faulted.shutdown()
+                return
+            }
+        }
+        await faulted.shutdown()
+
+        // A backend without the fault serves the same configured Timeline.
+        let healthy = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, paginatedListMode: "later-page"),
+            timelines: [.init(id: configuredTimelineID, title: "Configured")]
+        )
+        #expect(try await healthy.operatedTimelines().map(\.id) == [configuredTimelineID])
+        let response = try await healthy.runTurn(
+            .init(timelineID: configuredTimelineID, message: "after pagination exit"),
+            updates: RecordingUpdateSink()
+        )
+        #expect(response == "fixture reply: after pagination exit")
+        await healthy.shutdown()
+    }
+
+    @Test("Node startup fails cleanly when the agent exits during pagination and a restart recovers")
+    @MainActor
+    func nodeStartupSurvivesPaginationExit() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+
+        func makeRuntime(listExitAfter: Int?) async throws -> NodeRuntime {
+            let manifest = NodeManifest(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-pagination-\(UUID().uuidString.lowercased())"),
+                node: .init(id: UUID()),
+                ascendants: [.init(
+                    id: ascendantID,
+                    name: "Pagination fixture",
+                    defaultTimelineID: timelineID,
+                    backend: .init(
+                        kind: ACPAscendantBackend.kind,
+                        settings: try fixtureSettings(
+                            stateHome: stateHome.url,
+                            paginatedListMode: "later-page",
+                            listExitAfter: listExitAfter
+                        )
+                    )
+                )],
+                timelines: [.init(id: timelineID, title: "Configured", operatingAscendantID: ascendantID)]
+            )
+            var adapters = NodeRuntimeAdapters.default
+            adapters.ascendants.registerBackend(
+                kind: ACPAscendantBackend.kind,
+                settings: ACPAscendantBackend.settingsSchema
+            ) { ascendant, configuration, services, timelines in
+                try ACPAscendantBackend(
+                    ascendant: ascendant,
+                    configuration: configuration,
+                    services: services,
+                    timelines: timelines
+                )
+            }
+            let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+            try await runtime.start()
+            return runtime
+        }
+
+        do {
+            _ = try await makeRuntime(listExitAfter: 2)
+            Issue.record("Node startup succeeded while the agent exited during session pagination.")
+        } catch {
+            // Startup must fail rather than hang or crash the process.
+        }
+
+        let restarted = try await makeRuntime(listExitAfter: nil)
+        let turn = try await restarted.turn(.init(
+            message: "restarted after pagination exit",
+            timelineID: timelineID,
+            clientTurnID: "pagination-restart"
+        ))
+        #expect(turn.text == "fixture reply: restarted after pagination exit")
+        await restarted.shutdown()
+    }
+
     @Test("Timeline operations are idempotent and unknown removals are ignored")
     @MainActor
     func timelineOperationsAreIdempotent() async throws {
@@ -1283,6 +1386,7 @@ struct ACPAscendantBackendTests {
         stateHome: URL,
         supportsList: Bool = true,
         paginatedListMode: String? = nil,
+        listExitAfter: Int? = nil,
         listRequestFile: URL? = nil,
         failClose: Bool = false,
         permissionPrompt: Bool = false,
@@ -1314,6 +1418,7 @@ struct ACPAscendantBackendTests {
         var fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": statePath]
         if !supportsList { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_NO_LIST"] = "1" }
         if let paginatedListMode { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PAGINATED_LIST"] = paginatedListMode }
+        if let listExitAfter { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_LIST_EXIT_AFTER"] = String(listExitAfter) }
         if let listRequestFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_LIST_REQUEST_FILE"] = listRequestFile.path }
         if failClose { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CLOSE_ERROR"] = "1" }
         if permissionPrompt {
