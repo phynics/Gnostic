@@ -4,6 +4,7 @@ import ArgumentParser
 import Foundation
 import GnosticCore
 import GnosticHost
+import GnosticKit
 import GnosticRLM
 import PKContracts
 import PositronicKit
@@ -265,7 +266,7 @@ struct RLMScenarioPreparation: Sendable {
             )
         }
 
-        let transport = RLMScenarioStreamTransport(client: client)
+        let transport = LLMStreamClientExperimentTransport(client: client)
         return Self(
             plan: RLMScenarioPlan(identity: identity, questions: selected, matrixQuestionCount: questions.count, pilot: pilot),
             preflight: { try await preflightExecutors(executors, policy: policy) },
@@ -309,11 +310,12 @@ struct RLMScenarioPreparation: Sendable {
     /// Starts and stops each worker with no model attached, so a missing
     /// interpreter fails before any spend instead of as a recorded run.
     private static func preflightExecutors(_ executors: [RLMWorkerSelection], policy: RLMCorpusPolicy) async throws {
-        let unused = RLMScenarioMeteredModel(transport: RLMScenarioRefusingTransport())
+        let unused = ExperimentMeteredModel(transport: RLMScenarioRefusingTransport())
+        let unusedService = PositronicContributionModelServiceAdapter(service: unused)
         for executor in executors {
             do {
                 let assembly = try RLMRunAssemblyFactory.make(
-                    model: unused,
+                    model: unusedService,
                     worker: executor,
                     budget: budget,
                     policy: policy,
@@ -336,8 +338,10 @@ struct RLMScenarioPreparation: Sendable {
         source: RLMScenarioRepositorySource,
         corpusRevision: String
     ) async -> RLMScenarioRunRecord {
-        let rootModel = RLMScenarioMeteredModel(transport: transport)
-        let leafModel = RLMScenarioMeteredModel(transport: transport)
+        let rootModel = ExperimentMeteredModel(transport: transport)
+        let leafModel = ExperimentMeteredModel(transport: transport)
+        let rootService = PositronicContributionModelServiceAdapter(service: rootModel)
+        let leafService = PositronicContributionModelServiceAdapter(service: leafModel)
         let startedAt = ISO8601DateFormatter().string(from: Date())
         let clock = ContinuousClock()
         let started = clock.now
@@ -346,8 +350,8 @@ struct RLMScenarioPreparation: Sendable {
         var setupFailure: String?
         do {
             let assembly = try RLMRunAssemblyFactory.make(
-                model: rootModel,
-                leafService: leafModel,
+                model: rootService,
+                leafService: leafService,
                 worker: RLMWorkerSelection(rawValue: key.executor) ?? .guile,
                 budget: budget,
                 policy: policy,
@@ -414,7 +418,7 @@ struct RLMScenarioPreparation: Sendable {
 
 /// A transport the preflight uses: it proves no model call happens there.
 private struct RLMScenarioRefusingTransport: RLMScenarioModelTransport {
-    func generate(prompt _: String, tier _: PositronicContributionModelTier) async throws -> RLMScenarioGeneration {
+    func generate(prompt _: String, tier _: ExperimentModelTier) async throws -> RLMScenarioGeneration {
         throw RLMFailure.rootModelFailed("preflight does not contact a provider")
     }
 }

@@ -2,6 +2,7 @@
 
 import ArgumentParser
 import Foundation
+import GnosticKit
 import GnosticRLM
 
 /// A blind rating sheet: every completed run, keyed by an opaque ID, with the

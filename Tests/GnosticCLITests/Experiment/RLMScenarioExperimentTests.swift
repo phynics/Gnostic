@@ -1,11 +1,13 @@
 import Foundation
 import GnosticCore
+import GnosticKit
 import GnosticRLM
 import PKContracts
 import PositronicKit
 import Synchronization
 import Testing
 @testable import GnosticCLI
+@testable import GnosticHost
 
 @Suite("RLM scenario live experiment")
 struct RLMScenarioExperimentTests {
@@ -68,28 +70,9 @@ struct RLMScenarioExperimentTests {
 
     @Test("the stream transport keeps the provider-reported usage")
     func streamTransportKeepsUsage() async throws {
-        let transport = RLMScenarioStreamTransport(client: UsageReportingClient(usage: LLMTokenUsage(promptTokens: 120, completionTokens: 30)))
+        let transport = LLMStreamClientExperimentTransport(client: UsageReportingClient(usage: LLMTokenUsage(promptTokens: 120, completionTokens: 30)))
         let generation = try await transport.generate(prompt: "p", tier: .fast)
-        #expect(generation == RLMScenarioGeneration(text: "(finish \"a\" '())", promptTokens: 120, completionTokens: 30))
-    }
-
-    @Test("metering counts calls and marks calls whose provider reported no usage")
-    func meteringCountsUsage() async throws {
-        let model = RLMScenarioMeteredModel(transport: FixedTransport(responses: [
-            RLMScenarioGeneration(text: "one", promptTokens: 100, completionTokens: 10),
-            RLMScenarioGeneration(text: "two", promptTokens: nil, completionTokens: nil),
-            RLMScenarioGeneration(text: "  ", promptTokens: 5, completionTokens: 0),
-        ]))
-        _ = try await model.generate(prompt: "a", tier: .primary)
-        _ = try await model.generate(prompt: "b", tier: .fast)
-        await #expect(throws: RLMFailure.self) {
-            _ = try await model.generate(prompt: "c", tier: .fast)
-        }
-
-        let usage = await model.usage
-        #expect(usage == RLMScenarioUsage(calls: 3, promptTokens: 105, completionTokens: 10, callsWithoutUsage: 1))
-        let pricing = RLMScenarioPricing(inputUSDPerMillionTokens: 3, outputUSDPerMillionTokens: 15, ratesDate: "2026-09-25")
-        #expect(abs(pricing.cost(of: usage) - (105 * 3 + 10 * 15) / 1_000_000) < 1e-12)
+        #expect(generation == ExperimentGeneration(text: "(finish \"a\" '())", promptTokens: 120, completionTokens: 30))
     }
 
     // MARK: - Plan, scoring, and projection
@@ -340,18 +323,6 @@ private final class Recorder<Value: Sendable>: Sendable {
 
     func append(_ value: Value) {
         storage.withLock { $0.append(value) }
-    }
-}
-
-private actor FixedTransport: RLMScenarioModelTransport {
-    private var responses: [RLMScenarioGeneration]
-
-    init(responses: [RLMScenarioGeneration]) {
-        self.responses = responses
-    }
-
-    func generate(prompt _: String, tier _: PositronicContributionModelTier) async throws -> RLMScenarioGeneration {
-        responses.removeFirst()
     }
 }
 
