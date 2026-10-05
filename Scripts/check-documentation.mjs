@@ -346,6 +346,37 @@ function validateResetBaseline(root, failures) {
   }
 }
 
+// ADR 0013: the platform kit sits above the kernel and below modules. The
+// kernel never depends on the kit, and the kit depends on the kernel only, so
+// P7 can extract Positronic from Core without touching the kit.
+function validatePlatformKit(root, failures) {
+  const packageText = readText(root, "Package.swift");
+  const coreTarget = swiftTargetBlock(packageText, "GnosticCore");
+  if (!coreTarget) {
+    failures.push("Package.swift: GnosticCore target is missing");
+  } else if (coreTarget.includes("GnosticKit")) {
+    failures.push("Package.swift: GnosticCore must not depend on GnosticKit");
+  }
+  const kitTarget = swiftTargetBlock(packageText, "GnosticKit");
+  if (!kitTarget) {
+    failures.push("Package.swift: GnosticKit target is missing");
+  } else {
+    if (!kitTarget.includes('"GnosticCore"')) failures.push("Package.swift: GnosticKit target must depend on GnosticCore");
+    if (kitTarget.includes("PositronicKit")) failures.push("Package.swift: GnosticKit must not depend on PositronicKit");
+    for (const target of ["GnosticCLI", "GnosticHost", "GnosticPositronicAtlas", "GnosticLettaBackend", "GnosticACPAscendant", "GnosticRLM", "GnosticRLMGuile", "GnosticRLMChibi", "GnosticRLMProcessWorker"]) {
+      if (kitTarget.includes(`"${target}"`)) failures.push(`Package.swift: GnosticKit must not depend on ${target}`);
+    }
+  }
+  for (const { path, text } of sourceFiles(root, "Sources/GnosticCore")) {
+    if (/import\s+GnosticKit\b/.test(text)) failures.push(`${relative(root, path)}: GnosticCore must not import GnosticKit`);
+  }
+  for (const { path, text } of sourceFiles(root, "Sources/GnosticKit")) {
+    if (/import\s+(?:PositronicKit|PKContracts|PK[A-Za-z]+Provider)\b/.test(text)) {
+      failures.push(`${relative(root, path)}: GnosticKit must not import a backend`);
+    }
+  }
+}
+
 function validateVolatileText(root, failures) {
   for (const file of ["AGENTS.md", "README.md"]) {
     const text = readText(root, file);
@@ -460,6 +491,11 @@ export async function checkRepository({ root = process.cwd(), cliPath = null, cl
     failures.push(`RESET-006 baseline: ${error.message}`);
   }
   try {
+    validatePlatformKit(root, failures);
+  } catch (error) {
+    failures.push(`ADR 0013 platform kit: ${error.message}`);
+  }
+  try {
     validateADRs(root, failures);
   } catch (error) {
     failures.push(`Documentation/Architecture/ADRs: ${error.message}`);
@@ -511,6 +547,7 @@ function writeFixture(root) {
     "Package.swift": `let package = Package(
     products: [
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
+        .library(name: "GnosticKit", targets: ["GnosticKit"]),
     ],
     targets: [
         .target(
@@ -523,11 +560,18 @@ function writeFixture(root) {
                 .product(name: "PositronicKit", package: "PositronicKit"),
             ]
         ),
+        .target(
+            name: "GnosticKit",
+            dependencies: [
+                "GnosticCore",
+            ]
+        ),
     ]
 )
 `,
     [COMPATIBILITY_FILE]: `# Compatibility\n\n- Package version: \`${PACKAGE_VERSION}\`.\n\nPackage ${PACKAGE_VERSION} uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n`,
     "Sources/GnosticCore/Core.swift": "let core = true\n",
+    "Sources/GnosticKit/Kit.swift": "let kit = true\n",
     "Sources/Protocol.swift": "let route = \"me.atkn.gnostic.workspace.invoke\"\n",
     "Documentation/Architecture/README.md": "# Architecture\n\n[ADR 0001](ADRs/0001-axoloty-native-multi-backend-host.md) [ADR 0002](ADRs/0002-gnostic-identity-vs-backend-state.md) [ADR 0003](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md) [ADR 0004](ADRs/0004-atlas-supersedes-narrative.md)\n",
     "Documentation/Architecture/exceptions.json": JSON.stringify({ schemaVersion: 1, exceptions: [] }, null, 2),
@@ -700,6 +744,41 @@ async function selfTest() {
       document.modules[0].runnable = true;
       writeFileSync(registryFile, JSON.stringify(document));
     }, "runnable entry 'GNO-MOD-ATLAS' has no compiled module descriptor");
+
+    writeFixture(root);
+    // ADR 0013: the kernel stays below the platform kit.
+    await expectFailure(root, options, () => {
+      const packageText = readText(root, "Package.swift").replace(
+        '.target(\n            name: "GnosticCore"\n        ),',
+        '.target(\n            name: "GnosticCore",\n            dependencies: [\n                "GnosticKit",\n            ]\n        ),'
+      );
+      writeFileSync(join(root, "Package.swift"), packageText);
+    }, "GnosticCore must not depend on GnosticKit");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      writeFileSync(join(root, "Sources/GnosticCore/KitImport.swift"), "import GnosticKit\n");
+    }, "GnosticCore must not import GnosticKit");
+    writeFixture(root);
+    // The kit depends on the kernel only: no module or composition target.
+    await expectFailure(root, options, () => {
+      const packageText = readText(root, "Package.swift").replace(
+        '            dependencies: [\n                "GnosticCore",\n            ]',
+        '            dependencies: [\n                "GnosticCore",\n                "GnosticRLM",\n            ]'
+      );
+      writeFileSync(join(root, "Package.swift"), packageText);
+    }, "GnosticKit must not depend on GnosticRLM");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const packageText = readText(root, "Package.swift").replace(
+        '.target(\n            name: "GnosticKit",\n            dependencies: [\n                "GnosticCore",\n            ]\n        ),',
+        '.target(\n            name: "GnosticKit"\n        ),'
+      );
+      writeFileSync(join(root, "Package.swift"), packageText);
+    }, "GnosticKit target must depend on GnosticCore");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      writeFileSync(join(root, "Sources/GnosticKit/Backend.swift"), "import PositronicKit\n");
+    }, "GnosticKit must not import a backend");
 
     writeFixture(root);
     // A resolver that cannot reach GitHub must not fail the check; only a
