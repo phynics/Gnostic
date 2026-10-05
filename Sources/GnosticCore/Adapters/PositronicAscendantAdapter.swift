@@ -314,9 +314,14 @@ import struct PositronicKit.TimelineRecord
 
     public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         try requireUsable()
+        // The mandatory contract reports an unoperated Timeline as
+        // `timelineNotFound`; the kit's own not-found error must not leak.
+        guard try await operatedTimelines().contains(where: { $0.id == id }) else {
+            throw AscendantBackendError.timelineNotFound(id)
+        }
         try await kit.timelines.rename(id, to: title)
         guard let thread = try await operatedTimelines().first(where: { $0.id == id }) else {
-            throw NodeRuntimeError.missingTimeline(id)
+            throw AscendantBackendError.timelineNotFound(id)
         }
         return thread
     }

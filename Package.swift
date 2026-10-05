@@ -96,6 +96,7 @@ let package = Package(
             name: "GnosticACPAscendantTests",
             dependencies: [
                 "GnosticACPAscendant",
+                "GnosticAscendantConformance",
                 "GnosticCore",
             ]
         ),
@@ -106,6 +107,13 @@ let package = Package(
                 "GnosticLettaBackend",
             ],
             path: "Tests/Support/GnosticLettaTestSupport"
+        ),
+        .target(
+            name: "GnosticAscendantConformance",
+            dependencies: [
+                "GnosticCore",
+            ],
+            path: "Tests/Support/GnosticAscendantConformance"
         ),
         .target(
             name: "GnosticRLMProcessWorker",
@@ -171,6 +179,7 @@ let package = Package(
         .testTarget(
             name: "GnosticCoreTests",
             dependencies: [
+                "GnosticAscendantConformance",
                 "GnosticCore",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
@@ -193,6 +202,7 @@ let package = Package(
         .testTarget(
             name: "GnosticLettaBackendTests",
             dependencies: [
+                "GnosticAscendantConformance",
                 "GnosticLettaBackend",
                 "GnosticCore",
                 "GnosticLettaTestSupport",

@@ -2,6 +2,7 @@
 
 import Foundation
 @testable import GnosticACPAscendant
+import GnosticAscendantConformance
 import GnosticCore
 import Testing
 #if canImport(Darwin)
@@ -940,7 +941,7 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
-    @Test("a cancelled Turn resolves an in-flight permission request with the ACP cancelled outcome")
+    @Test("a backend-wide cancel resolves an in-flight permission request and surfaces cancellation")
     @MainActor
     func cancelledTurnCancelsPermissionRequest() async throws {
         let stateHome = try makeTemporaryStateHome()
@@ -964,9 +965,16 @@ struct ACPAscendantBackendTests {
             await backend.shutdown()
             return
         }
+        // Cancelling the backend resumes the in-flight permission request so the
+        // agent is not stranded, and the Turn surfaces as cancelled.
         await backend.cancel()
         await permission.resolve(.approved)
-        #expect(try await turn.value == "fixture reply: cancel permission request")
+        do {
+            _ = try await turn.value
+            Issue.record("A backend-wide cancel left the in-flight Turn uncancelled.")
+        } catch let error as AscendantBackendError {
+            #expect(error == .cancelled)
+        }
         await backend.shutdown()
     }
 
@@ -1115,6 +1123,151 @@ struct ACPAscendantBackendTests {
         )
         #expect(response == "fixture reply: backend remains usable")
         await backend.shutdown()
+    }
+
+    // MARK: - AscendantBackend conformance (GNO-PLAT-060, #452)
+
+    @Test("conformance: identity and configuration")
+    @MainActor
+    func conformanceIdentityAndConfiguration() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkIdentityAndConfiguration()
+    }
+
+    @Test("conformance: Timeline lifecycle")
+    @MainActor
+    func conformanceTimelineLifecycle() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkTimelineLifecycle()
+    }
+
+    @Test("conformance: a successful Turn streams and returns text")
+    @MainActor
+    func conformanceSuccessfulTurn() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkSuccessfulTurnStreamsText()
+    }
+
+    @Test("conformance: a terminal failure leaves the backend usable")
+    @MainActor
+    func conformanceTerminalFailure() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkTerminalFailureKeepsBackendUsable()
+    }
+
+    @Test("conformance: backend cancellation interrupts a stalled Turn")
+    @MainActor
+    func conformanceBackendCancellation() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkBackendCancellationInterruptsStall()
+    }
+
+    @Test("conformance: scoped cancellation interrupts a stalled Turn")
+    @MainActor
+    func conformanceScopedCancellation() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkScopedCancellationInterruptsStall()
+    }
+
+    @Test("conformance: health, quarantine, reconstruction, and replay")
+    @MainActor
+    func conformanceHostHealthQuarantineAndReplay() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceHostFixture(stateHome: stateHome.url)
+        try await fixture.suite().checkHealthQuarantineAndReplay()
+    }
+
+    /// The ACP backend does not implement ``AscendantBackendWorkspaceCapability``:
+    /// recorded as an exception in #452.
+    @MainActor
+    private func conformanceFixture(stateHome: URL, signal: AscendantConformanceTurnSignal) -> AscendantConformanceFixture {
+        AscendantConformanceFixture(
+            kind: ACPAscendantBackend.kind,
+            surfaces: [.scopedCancellation, .terminalUpdate],
+            expectedReply: { "fixture reply: \($0)" },
+            awaitTurnStarted: { _ = await signal.waitUntilStarted() },
+            makeBackend: { ascendant, timelines in
+                let startedFile = stateHome.appendingPathComponent("prompt-started-\(UUID().uuidString).txt")
+                watchACPStallStart(url: startedFile, signal: signal)
+                let settings = try self.fixtureSettings(stateHome: stateHome, promptStartedFile: startedFile)
+                let configured = NodeManifest.Ascendant(
+                    id: ascendant.id,
+                    name: ascendant.name,
+                    defaultTimelineID: ascendant.defaultTimelineID,
+                    backend: .init(kind: ACPAscendantBackend.kind, settings: settings)
+                )
+                return try ACPAscendantBackend(
+                    ascendant: configured,
+                    configuration: configured.backend,
+                    services: AscendantBackendServices(permission: AscendantConformancePermissionService()),
+                    timelines: timelines
+                )
+            }
+        )
+    }
+
+    /// A host-level ACP fixture. `shutdown()` makes the live backend report
+    /// lifecycle-unusable, so that breaks it until reconstruction.
+    @MainActor
+    private func conformanceHostFixture(stateHome: URL) -> AscendantHostConformanceFixture {
+        let box = AscendantConformanceBackendBox()
+        return AscendantHostConformanceFixture(
+            kind: ACPAscendantBackend.kind,
+            makeAdapters: {
+                var adapters = NodeRuntimeAdapters.default
+                adapters.ascendants.registerBackend(
+                    kind: ACPAscendantBackend.kind,
+                    settings: ACPAscendantBackend.settingsSchema
+                ) { ascendant, _, services, timelines in
+                    let settings = try self.fixtureSettings(stateHome: stateHome)
+                    let configured = NodeManifest.Ascendant(
+                        id: ascendant.id,
+                        name: ascendant.name,
+                        defaultTimelineID: ascendant.defaultTimelineID,
+                        backend: .init(kind: ACPAscendantBackend.kind, settings: settings)
+                    )
+                    let backend = try ACPAscendantBackend(
+                        ascendant: configured,
+                        configuration: configured.backend,
+                        services: services,
+                        timelines: timelines
+                    )
+                    box.hold(backend)
+                    return backend
+                }
+                return adapters
+            },
+            breakLiveBackend: {
+                await box.backend?.shutdown()
+            }
+        )
+    }
+
+    /// Marks the shared signal once the ACP fixture writes its prompt-started file.
+    private func watchACPStallStart(url: URL, signal: AscendantConformanceTurnSignal) {
+        Task {
+            let deadline = Date().addingTimeInterval(15)
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    await signal.markStarted()
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
     }
 
     @MainActor
