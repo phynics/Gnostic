@@ -41,10 +41,10 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .customLong("turn-log"), help: "Path to the durable Turn event log (overrides GNOSTIC_STATE_HOME).")
     var turnLogPath: String?
 
-    /// Resolves the durable state directory. An explicit `--turn-log` names a
-    /// file; its parent directory is the state home. Otherwise
-    /// `GNOSTIC_STATE_HOME` opts in, and an unset state directory keeps the
-    /// default in-memory behavior.
+    /// Resolves the durable state directory used for derived state. An explicit
+    /// `--turn-log` names a file; its parent directory is the state home.
+    /// Otherwise `GNOSTIC_STATE_HOME` opts in, and an unset state directory
+    /// keeps the default in-memory behavior.
     private func resolveStateHome(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
@@ -55,17 +55,21 @@ struct ServeCommand: AsyncParsableCommand {
         return URL(fileURLWithPath: stateHome, isDirectory: true)
     }
 
-    /// Resolves the durable Turn event log location under the state home.
-    private func resolveTurnLogURL(
+    /// Resolves the durable Turn event log location. An explicit `--turn-log`
+    /// is used verbatim; otherwise the log is derived under the state home.
+    func resolveTurnLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        resolveStateHome(environment: environment)?.appendingPathComponent("turn-events-v1.jsonl")
+        if let turnLogPath, !turnLogPath.isEmpty {
+            return URL(fileURLWithPath: turnLogPath)
+        }
+        return resolveStateHome(environment: environment)?.appendingPathComponent("turn-events-v1.jsonl")
     }
 
     /// Resolves the per-Ascendant Timeline transcript directory under the
     /// state home. Timeline durability is opt-in for the same reason the Turn
     /// log is: an unset state directory keeps the process-scoped default.
-    private func resolveTimelineStoreDirectory(
+    func resolveTimelineStoreDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
         resolveStateHome(environment: environment)?.appendingPathComponent("timelines", isDirectory: true)
