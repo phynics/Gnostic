@@ -14,6 +14,8 @@ recovery. It does not deliver backend transcript durability or a file-backed
 `TimelineRuntimeRepository`; both remain tracked by the follow-up issues named
 under [Consequences](#consequences). The first module adopters, the Atlas and
 Context stores, land under [#532](https://github.com/phynics/Gnostic/issues/532).
+Retention, the reconsideration trigger this record named, lands under
+[#533](https://github.com/phynics/Gnostic/issues/533).
 
 ## Context
 
@@ -65,6 +67,23 @@ The primitive owns no Gnostic type. Any layer that can define a `Codable`,
 `enableDurability(at:)` recovers the records and rebuilds the same bounded
 ledger — including compaction — that the live process held. Journaling writes
 after the in-memory mutation, so a journal failure never corrupts live state.
+
+### Retention: size-bounded checkpoint compaction
+
+The log is bounded by size. `AscendantTurnUpdateStore` takes `maxJournalBytes`
+(default 4 MiB; `--turn-log-max-bytes`; `0` disables compaction). Once the
+journal exceeds the bound, the store replaces it with one checkpoint record per
+retained Turn. Each checkpoint carries the state recovery would rebuild from
+the `started`/`update`/`finished` records it supersedes — message digest, next
+sequence, bounded updates, and the compacted, terminal, and finished flags — so
+a restart sees the same ledger.
+
+Compaction never drops a prefix. The Turn ledger rebuilds an accumulated
+assistant-text snapshot from the ordered prefix, so deleting the oldest records
+would change recovery; a checkpoint preserves it. `AppendOnlyEventLog.replaceAll`
+writes the replacement to a temporary sibling, flushes it, and renames it over
+the log, so a crash leaves either the previous log or the complete replacement.
+The rewrite is skipped when it would not shrink the file.
 
 ### Durability is opt-in
 
@@ -121,6 +140,18 @@ quarantine, summaries, and cascade delete.
   capture, quarantine, summaries, and cascade delete — a large, high-risk
   change that would not fit one reviewable increment. Deferred to its own
   issue.
+- **Segment rotation with oldest-segment deletion.** The Turn ledger rebuilds a
+  cumulative compaction snapshot from the ordered prefix, so dropping the
+  oldest records changes the recovered replay. Checkpoint compaction preserves
+  it.
+- **Age-only retention.** A high-write node can fill the disk inside the
+  window; size is the disk guard. Age remains a possible second dimension if
+  operators need it.
+- **A separate snapshot file plus journal truncation.** Two-file atomicity is
+  hard; a crash between the snapshot and the truncation double-applies updates,
+  which carry no dedup sequence.
+- **A new `turn-events-v2` file format.** The `.checkpoint` event is additive;
+  a same-cycle format bump adds migration cost for no wire gain.
 - **Always-on durability.** It would change the default serve path, create
   state for operators who did not ask for it, and couple a write to every
   Turn. Opt-in keeps the default behavior identical to ADR 0008.
@@ -145,6 +176,10 @@ quarantine, summaries, and cascade delete.
   it and keeps the valid prefix.
 - The kernel gains one dependency-free file under `Persistence/`.
 - The default in-memory serve path and the wire contract do not change.
+- The durable Turn log is bounded by `maxJournalBytes` (default 4 MiB); it no
+  longer grows with the serve lifetime. A checkpoint written by this version is
+  not readable by an older binary, which treats it as a corrupt tail and
+  truncates from it; the pre-1.0 state format makes no downgrade guarantee.
 - The Atlas and Context module stores replay their journaled state on restart
   through the same primitive.
 - Backend transcript durability and a file-backed `TimelineRuntimeRepository`
@@ -153,9 +188,10 @@ quarantine, summaries, and cascade delete.
 ## Reconsideration triggers
 
 Reconsider when a durable `TimelineRuntimeRepository` lands, when a consumer
-needs cross-restart backend transcript resume, when the log needs retention or
-rotation policy, or when the checksum must detect tampering rather than
-torn writes.
+needs cross-restart backend transcript resume, when a second adopter needs the
+same retention bound (extract a shared component then), when the log must
+survive a downgrade to an older binary, or when the checksum must detect
+tampering rather than torn writes.
 
 ## Fitness
 
@@ -163,17 +199,20 @@ This record is checked by `make verify`, `make docs-check`, and
 `git diff --check`. The architecture fitness suite already scans `GnosticCore`
 sources for forbidden imports; the `Persistence/AppendOnlyEventLog.swift` file
 must import only `Foundation`. The behavioral evidence is the focused test
-suite: the primitive round-trips, truncates a torn tail, and refuses a corrupt
-middle record; the store replays a restarted ledger with compaction and digest
-intact and skips a start beyond its live retention bound. The module adoption
-adds recovery suites in `GnosticPositronicAtlasTests` and
-`GnosticPositronicContextTests`. The default serve path
-adds no file and no write.
+suite: the primitive round-trips, truncates a torn tail, refuses a corrupt
+middle record, and atomically replaces its contents; the store replays a
+restarted ledger with compaction and digest intact, skips a start beyond its
+live retention bound, and keeps its journal within `maxJournalBytes` while
+recovering the same ledger. `ServeStateHomeTests` pins the compaction-bound
+resolution. The module adoption adds recovery suites in
+`GnosticPositronicAtlasTests` and `GnosticPositronicContextTests`. The default
+serve path adds no file and no write.
 
 ## Links
 
 - [GNO-PLAT-P8 #461 — durable Turn event log](https://github.com/phynics/Gnostic/issues/461)
 - [Adopt the log in the Atlas and Context module stores #532](https://github.com/phynics/Gnostic/issues/532)
+- [Define retention and rotation for the durable Turn event log #533](https://github.com/phynics/Gnostic/issues/533)
 - [Epic #438 — experimentation platform](https://github.com/phynics/Gnostic/issues/438)
 - [ADR 0008 — runtime-created Timeline durability](0008-runtime-created-timeline-durability.md)
 - [ADR 0013 — experimentation platform layering](0013-experimentation-platform.md)
