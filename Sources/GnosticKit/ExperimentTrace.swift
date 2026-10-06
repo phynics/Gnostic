@@ -161,10 +161,28 @@ public actor ExperimentTraceRecorder {
     private var events: [ExperimentTraceEvent] = []
     private var turnCount = 1
     private var currentTurnID = "turn-1"
+    private var journal: ExperimentTraceJournal?
 
     /// Creates a recorder for one run.
     public init(runID: String) {
         self.runID = runID
+    }
+
+    /// Enables durable journaling at `url` and recovers the tape already on disk.
+    ///
+    /// Call before recording. Recovery seeds the events and continues the
+    /// current Turn, so a crashed Run resumes its tape instead of overwriting it.
+    public func enableJournal(at url: URL) throws {
+        let journal = ExperimentTraceJournal(fileURL: url)
+        let recovered = try journal.recover()
+        events = recovered
+        if let last = recovered.last {
+            currentTurnID = last.turnID
+            if last.turnID.hasPrefix("turn-"), let number = Int(last.turnID.dropFirst("turn-".count)) {
+                turnCount = number
+            }
+        }
+        self.journal = journal
     }
 
     /// The Turn id new events attach to.
@@ -238,7 +256,7 @@ public actor ExperimentTraceRecorder {
         completionTokens: Int? = nil,
         failed: Bool = false
     ) {
-        events.append(ExperimentTraceEvent(
+        let event = ExperimentTraceEvent(
             sequence: events.count + 1,
             turnID: currentTurnID,
             kind: kind,
@@ -247,6 +265,10 @@ public actor ExperimentTraceRecorder {
             promptTokens: promptTokens,
             completionTokens: completionTokens,
             failed: failed
-        ))
+        )
+        events.append(event)
+        // The tape stays valid when the journal fails: the event is already in
+        // memory, and a later recovery simply drops the unwritten record.
+        _ = try? journal?.append(event)
     }
 }
