@@ -92,10 +92,12 @@ public struct ContextHierarchyBuilder: Sendable {
         while groups < count, count / groups < descriptor.minimumFanOut {
             groups += 1
         }
-        let size = (count + groups - 1) / groups
+        let base = count / groups
+        let remainder = count % groups
         var ranges: [Range<Int>] = []
         var start = 0
-        while start < count {
+        for index in 0..<groups {
+            let size = base + (index < remainder ? 1 : 0)
             let end = min(start + size, count)
             ranges.append(start..<end)
             start = end

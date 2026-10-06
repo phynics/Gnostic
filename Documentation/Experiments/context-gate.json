@@ -1,0 +1,122 @@
+{
+  "arms" : [
+    {
+      "arm" : "raw-history",
+      "checksPassed" : 13,
+      "checksTotal" : 14,
+      "curatorCalls" : 0,
+      "inputTokens" : 1117,
+      "outputTokens" : 0,
+      "projectionCharacters" : 4470,
+      "recall" : 0.9285714285714286,
+      "recallByObligation" : {
+        "back-reference" : 1,
+        "concurrent-root" : 1,
+        "correction" : 1,
+        "exact-value" : 1,
+        "fact" : 1,
+        "malicious-tool-text" : 0.5,
+        "negative-constraint" : 1,
+        "open-item" : 1,
+        "self-maintenance" : 1,
+        "supersession" : 1,
+        "tool-evidence" : 1
+      }
+    },
+    {
+      "arm" : "pk-compression",
+      "checksPassed" : 7,
+      "checksTotal" : 14,
+      "curatorCalls" : 0,
+      "inputTokens" : 68,
+      "outputTokens" : 0,
+      "projectionCharacters" : 273,
+      "recall" : 0.5,
+      "recallByObligation" : {
+        "back-reference" : 0,
+        "concurrent-root" : 0,
+        "correction" : 0,
+        "exact-value" : 1,
+        "fact" : 1,
+        "malicious-tool-text" : 0.5,
+        "negative-constraint" : 1,
+        "open-item" : 0,
+        "self-maintenance" : 0,
+        "supersession" : 1,
+        "tool-evidence" : 0
+      }
+    },
+    {
+      "arm" : "one-shot-summary",
+      "checksPassed" : 5,
+      "checksTotal" : 14,
+      "curatorCalls" : 1,
+      "inputTokens" : 220,
+      "outputTokens" : 0,
+      "projectionCharacters" : 881,
+      "recall" : 0.35714285714285715,
+      "recallByObligation" : {
+        "back-reference" : 0,
+        "concurrent-root" : 0,
+        "correction" : 0,
+        "exact-value" : 0.5,
+        "fact" : 1,
+        "malicious-tool-text" : 0.5,
+        "negative-constraint" : 1,
+        "open-item" : 0,
+        "self-maintenance" : 0,
+        "supersession" : 0,
+        "tool-evidence" : 0
+      }
+    },
+    {
+      "arm" : "incremental-flat",
+      "checksPassed" : 14,
+      "checksTotal" : 14,
+      "curatorCalls" : 43,
+      "inputTokens" : 135,
+      "outputTokens" : 0,
+      "projectionCharacters" : 543,
+      "recall" : 1,
+      "recallByObligation" : {
+        "back-reference" : 1,
+        "concurrent-root" : 1,
+        "correction" : 1,
+        "exact-value" : 1,
+        "fact" : 1,
+        "malicious-tool-text" : 1,
+        "negative-constraint" : 1,
+        "open-item" : 1,
+        "self-maintenance" : 1,
+        "supersession" : 1,
+        "tool-evidence" : 1
+      }
+    },
+    {
+      "arm" : "hierarchical-cover",
+      "checksPassed" : 14,
+      "checksTotal" : 14,
+      "curatorCalls" : 43,
+      "inputTokens" : 135,
+      "outputTokens" : 0,
+      "projectionCharacters" : 543,
+      "recall" : 1,
+      "recallByObligation" : {
+        "back-reference" : 1,
+        "concurrent-root" : 1,
+        "correction" : 1,
+        "exact-value" : 1,
+        "fact" : 1,
+        "malicious-tool-text" : 1,
+        "negative-constraint" : 1,
+        "open-item" : 1,
+        "self-maintenance" : 1,
+        "supersession" : 1,
+        "tool-evidence" : 1
+      }
+    }
+  ],
+  "bestCurationArm" : "incremental-flat",
+  "decision" : "SIMPLIFY",
+  "rationale" : "Flat leaf carry reaches 100% recall at 543 characters and beats raw history 93%, but the hierarchical cover is identical (543 characters). Keep the flat carry; drop the hierarchy from the epic."
+}

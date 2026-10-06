@@ -177,7 +177,7 @@ public struct FixtureContextCurator: ContextCurator {
         ),
         Rule(
             key: "tool-42",
-            needle: "answer is 42",
+            needle: "Tool result: the answer is 42",
             category: .facts,
             origin: .toolEvidence,
             status: .verified,
