@@ -181,6 +181,16 @@ public struct ContextCarryState: Codable, Sendable, Equatable {
     public func items(in category: ContextCarryCategory) -> [ContextCarryItem] {
         items.filter { $0.category == category }
     }
+
+    /// The items that a later claim has not superseded.
+    public var activeItems: [ContextCarryItem] {
+        items.filter { $0.epistemicStatus != .superseded }
+    }
+
+    /// The items a later claim superseded, kept for provenance.
+    public var historicalItems: [ContextCarryItem] {
+        items.filter { $0.epistemicStatus == .superseded }
+    }
 }
 
 /// The exact source range a context node covers.
