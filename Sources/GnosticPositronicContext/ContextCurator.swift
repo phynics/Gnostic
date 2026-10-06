@@ -89,7 +89,7 @@ public struct ContextEpisodeReplay: Sendable {
                 activeCarry: active,
                 descriptor: descriptor
             )
-            leaves.append(ContextLeafProposal(episode: episode, proposal: proposal))
+            leaves.append(ContextLeafProposal(episode: episode, proposal: proposal, curatorVersion: curator.version))
             // Simple accumulation. GNO-CTX-005 replaces this with the
             // deterministic carry reducer.
             active = ContextCarryState(items: active.items + proposal.items)

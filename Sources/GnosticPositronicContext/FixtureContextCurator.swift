@@ -20,14 +20,23 @@ public struct FixtureContextCurator: ContextCurator {
         activeCarry: ContextCarryState,
         descriptor: ContextDescriptor
     ) async throws -> ContextProposal {
-        var items: [ContextCarryItem] = []
-        var topicLabels: [String] = []
+        var citationsByKey: [String: [String]] = [:]
+        var order: [String] = []
         for message in episode.messages {
             for rule in Self.rules where message.text.localizedCaseInsensitiveContains(rule.needle) {
-                items.append(rule.item(citing: message.id))
-                if !topicLabels.contains(rule.topic) {
-                    topicLabels.append(rule.topic)
+                if citationsByKey[rule.key] == nil {
+                    order.append(rule.key)
                 }
+                citationsByKey[rule.key, default: []].append(message.id)
+            }
+        }
+        var topicLabels: [String] = []
+        var items: [ContextCarryItem] = []
+        for key in order {
+            guard let rule = Self.rules.first(where: { $0.key == key }), let citations = citationsByKey[key] else { continue }
+            items.append(rule.item(citing: citations))
+            if !topicLabels.contains(rule.topic) {
+                topicLabels.append(rule.topic)
             }
         }
         return ContextProposal(
@@ -50,14 +59,14 @@ public struct FixtureContextCurator: ContextCurator {
         let topic: String
         let supersedes: String?
 
-        func item(citing messageID: String) -> ContextCarryItem {
+        func item(citing messageIDs: [String]) -> ContextCarryItem {
             ContextCarryItem(
                 id: key,
                 category: category,
                 text: text,
                 origin: origin,
                 epistemicStatus: status,
-                citations: [ContextCitation(messageID: messageID)],
+                citations: messageIDs.map(ContextCitation.init(messageID:)),
                 supersedes: supersedes,
                 topicLabels: [topic]
             )
@@ -168,7 +177,7 @@ public struct FixtureContextCurator: ContextCurator {
         ),
         Rule(
             key: "tool-42",
-            needle: "tool proved the answer is 42",
+            needle: "answer is 42",
             category: .facts,
             origin: .toolEvidence,
             status: .verified,

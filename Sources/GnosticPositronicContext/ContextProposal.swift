@@ -101,11 +101,19 @@ public struct ContextLeafProposal: Sendable, Equatable {
     public let episode: ContextEpisode
     /// The proposal.
     public let proposal: ContextProposal
+    /// The curator version that produced the proposal.
+    public let curatorVersion: String
 
     /// Creates a leaf proposal.
-    public init(episode: ContextEpisode, proposal: ContextProposal) {
+    ///
+    /// - Parameters:
+    ///   - episode: The episode the proposal covers.
+    ///   - proposal: The proposal.
+    ///   - curatorVersion: The curator version.
+    public init(episode: ContextEpisode, proposal: ContextProposal, curatorVersion: String) {
         self.episode = episode
         self.proposal = proposal
+        self.curatorVersion = curatorVersion
     }
 
     /// The host-computed coverage range.
