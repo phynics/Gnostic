@@ -84,7 +84,19 @@ import struct PositronicKit.TimelineRecord
             InMemoryMessageStore(),
             InMemoryWorkspacePersistence()
         )
-        let runtimeRepository = InMemoryTimelineRuntimeRepository()
+        // The host may hand the adapter a durable store through the optional
+        // capability. Without it, the backend keeps its process-scoped reference
+        // repository.
+        let runtimeRepository: any TimelineRuntimeRepository
+        let workspaceBindingRepository: any WorkspaceBindingRepository
+        if let store = services.capability(BackendTimelineStoreCapability.self) {
+            runtimeRepository = store.repository
+            workspaceBindingRepository = store.workspaceBindingRepository
+        } else {
+            let inMemory = InMemoryTimelineRuntimeRepository()
+            runtimeRepository = inMemory
+            workspaceBindingRepository = inMemory
+        }
         try await stores.0.saveAgent(agent)
         for configuration in timelines {
             let thread = TimelineRecord(
@@ -93,7 +105,12 @@ import struct PositronicKit.TimelineRecord
                 attachedAgentID: ascendant.id,
                 isPrivate: false
             )
-            try await runtimeRepository.saveTimeline(thread)
+            // A durable store already holds a prior seed. Re-saving the plan
+            // record would reset its timestamps and grow the journal with a
+            // no-op, so seed only the Timelines the store does not know yet.
+            if try await runtimeRepository.fetchTimeline(id: configuration.id) == nil {
+                try await runtimeRepository.saveTimeline(thread)
+            }
             for workspaceID in configuration.attachments.map(\.workspaceID) {
                 guard let reference = references[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
                 guard reference.status == .available,
@@ -129,7 +146,7 @@ import struct PositronicKit.TimelineRecord
                 runtimeRepository: runtimeRepository,
                 workspacePersistence: stores.2,
                 agentStore: stores.0,
-                workspaceBindingRepository: runtimeRepository
+                workspaceBindingRepository: workspaceBindingRepository
             ),
             runtime: .init(
                 workspaceCreator: factory,

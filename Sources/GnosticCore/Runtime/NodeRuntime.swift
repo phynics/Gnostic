@@ -63,16 +63,24 @@ public final class NodeRuntime {
     public convenience init(
         plan: NodeLaunchPlan,
         adapters: NodeRuntimeAdapters = .default,
-        turnLogURL: URL? = nil
+        turnLogURL: URL? = nil,
+        timelineStoreDirectory: URL? = nil
     ) async throws {
-        try await self.init(plan: plan, adapters: adapters, retirementPolicy: .live, turnLogURL: turnLogURL)
+        try await self.init(
+            plan: plan,
+            adapters: adapters,
+            retirementPolicy: .live,
+            turnLogURL: turnLogURL,
+            timelineStoreDirectory: timelineStoreDirectory
+        )
     }
 
     init(
         plan: NodeLaunchPlan,
         adapters: NodeRuntimeAdapters = .default,
         retirementPolicy: BackendRetirementPolicy,
-        turnLogURL: URL? = nil
+        turnLogURL: URL? = nil,
+        timelineStoreDirectory: URL? = nil
     ) async throws {
         try NodeAssembly.validate(plan, adapters: adapters)
         self.plan = plan
@@ -113,7 +121,8 @@ public final class NodeRuntime {
                 permissionCoordinator: permissionCoordinator,
                 lifetime: runtimeHost.lifetime,
                 projectionRelay: projectionRelay,
-                retirementSupervisor: retirementSupervisor
+                retirementSupervisor: retirementSupervisor,
+                runtimeTimelineDirectory: timelineStoreDirectory
             )
             registry = products.registry
             backendSupervisor = products.supervisor

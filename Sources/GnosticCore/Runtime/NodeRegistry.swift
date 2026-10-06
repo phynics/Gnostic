@@ -118,9 +118,8 @@ public actor NodeRegistry {
             }
         }
         let configuredOperatedIDs = Set(plan.timelines.filter { $0.operatingAscendantID != nil }.map(\.id))
-        guard Set(projected.keys) == configuredOperatedIDs else {
-            let missing = configuredOperatedIDs.subtracting(projected.keys).first
-                ?? Set(projected.keys).subtracting(configuredOperatedIDs).first!
+        guard configuredOperatedIDs.isSubset(of: Set(projected.keys)) else {
+            let missing = configuredOperatedIDs.subtracting(projected.keys).first!
             throw NodeRuntimeError.missingTimeline(missing)
         }
         for configuration in plan.timelines {
@@ -147,6 +146,32 @@ public actor NodeRegistry {
                 timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
             }
             timelines[configuration.id] = .init(timeline: timeline, operatorID: configuration.operatingAscendantID, provenance: .configured)
+        }
+
+        // Adopt Timelines a durable backend persisted but the launch plan does
+        // not list: a runtime Timeline created before a restart. Adoption makes
+        // it routable again without rewriting the plan.
+        for (id, value) in projected where !configuredOperatedIDs.contains(id) {
+            guard let operatorID = value.ascendantID, ascendantIDs.contains(operatorID) else {
+                throw NodeRuntimeError.unknownAscendant(value.ascendantID ?? id)
+            }
+            timelines[id] = .init(
+                timeline: .init(
+                    id: value.id,
+                    title: value.title,
+                    attachedWorkspaceIDs: [],
+                    ascendantID: value.ascendantID,
+                    isArchived: value.isArchived,
+                    isPrivate: value.isPrivate,
+                    createdAt: value.createdAt,
+                    updatedAt: value.updatedAt
+                ),
+                operatorID: operatorID,
+                provenance: .runtime
+            )
+            attachmentIntents[id] = []
+            timelineMetadata[id] = ("timeline", [])
+            backendRevisions[operatorID] = backendRevisions[operatorID] ?? 0
         }
 
         for workspace in plan.workspaces {

@@ -134,6 +134,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private let permissionCoordinator: AscendantPermissionCoordinator
     private let projectionRelay: NodeProjectionRelay
     private let backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?
+    private let backendTimelineCapabilities: [UUID: BackendTimelineStoreCapability]
     private var backendWorkspaceAttachment: ((UUID, UUID, UUID, UUID) async throws -> Void)?
 
     private var ascendantAdapters: [UUID: any AscendantBackend]
@@ -155,6 +156,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         permissionCoordinator: AscendantPermissionCoordinator,
         projectionRelay: NodeProjectionRelay,
         backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?,
+        backendTimelineCapabilities: [UUID: BackendTimelineStoreCapability] = [:],
         ascendantAdapters: [UUID: any AscendantBackend],
         backendIdentities: [AscendantBackendIdentity],
         backendSpecs: [UUID: BackendSpec],
@@ -170,6 +172,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         self.permissionCoordinator = permissionCoordinator
         self.projectionRelay = projectionRelay
         self.backendWorkspaceCapability = backendWorkspaceCapability
+        self.backendTimelineCapabilities = backendTimelineCapabilities
         self.ascendantAdapters = ascendantAdapters
         self.backendIdentities = backendIdentities
         self.backendSpecs = backendSpecs
@@ -348,6 +351,9 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
                 var optionalCapabilities: [any AscendantBackendOptionalCapability] = [attachmentCapability]
                 if let workspaceCapability = self.backendWorkspaceCapability {
                     optionalCapabilities.insert(workspaceCapability, at: 0)
+                }
+                if let timelineCapability = self.backendTimelineCapabilities[ascendantID] {
+                    optionalCapabilities.append(timelineCapability)
                 }
                 let services = AscendantBackendServices(
                     workspace: self.backendWorkspaceService,

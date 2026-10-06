@@ -35,6 +35,29 @@ struct NodeRegistryTests {
         }
     }
 
+    @Test("a persisted runtime Timeline is adopted on restart")
+    func persistedRuntimeTimelineIsAdopted() async throws {
+        let fixture = try Fixture()
+        let now = Date(timeIntervalSince1970: 2)
+        let runtimeID = UUID(uuidString: "B21D0000-0000-4000-8000-000000000006")!
+        let persisted = AscendantRuntimeTimeline(
+            id: runtimeID,
+            title: "Runtime",
+            attachedWorkspaceIDs: [],
+            ascendantID: fixture.ascendantID,
+            isArchived: false,
+            isPrivate: false,
+            createdAt: now,
+            updatedAt: now
+        )
+
+        let registry = try NodeRegistry(plan: fixture.plan, operatedTimelines: [fixture.operated, persisted])
+        #expect(await registry.timeline(id: runtimeID)?.provenance == .runtime)
+        #expect(await registry.operatorID(forTimeline: runtimeID) == fixture.ascendantID)
+        #expect(await registry.attachmentIntent(for: runtimeID).isEmpty)
+        #expect(await registry.snapshot().operatedTimelineIDs.contains(runtimeID))
+    }
+
     @Test("concurrent runtime Timeline creation preserves identity and requested operator")
     func concurrentCreationIsAtomic() async throws {
         let fixture = try Fixture()
