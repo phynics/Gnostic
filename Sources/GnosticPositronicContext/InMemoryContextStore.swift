@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 
 /// An actor-backed in-memory store for accepted context nodes.
 ///
@@ -10,6 +11,11 @@ import Foundation
 ///
 /// The store is linear-Timeline only. It has no `branchHeadID`; branch-aware
 /// coverage is an epic follow-up.
+///
+/// Durability is opt-in through ``enableDurability(at:)``. When enabled, the
+/// store journals each mutation through the shared append-only log primitive,
+/// so derived context state survives a restart. The journal persists derived
+/// node bodies, not conversation transcripts.
 public actor InMemoryContextStore {
     /// The per-partition state.
     private struct Partition {
@@ -21,9 +27,59 @@ public actor InMemoryContextStore {
     }
 
     private var partitions: [ContextStoreKey: Partition] = [:]
+    private var journal: AppendOnlyEventLog<ContextStoreEvent>?
 
     /// Creates an empty store.
     public init() {}
+
+    /// Enables durable journaling at `url` and recovers the state already on
+    /// disk.
+    ///
+    /// Call before the first mutation. Recovery replays the valid prefix of the
+    /// journal through the store's own mutation path, so accepted nodes,
+    /// checkpoint bookkeeping, and projection revisions are rebuilt exactly as
+    /// they stood when the previous process stopped. A torn or corrupt tail is
+    /// truncated by the log primitive. Journaling is off until this method is
+    /// called.
+    ///
+    /// Live memory stays authoritative: each mutating call applies in memory
+    /// first and only then appends to the journal, so a journal failure never
+    /// corrupts accepted state.
+    ///
+    /// - Parameter url: The append-only journal file.
+    /// - Throws: ``ContextError`` when a recorded mutation is invalid, or
+    ///   `EventLogError` when the journal cannot be read or written.
+    public func enableDurability(at url: URL) throws {
+        let log = AppendOnlyEventLog<ContextStoreEvent>(fileURL: url)
+        for envelope in try log.recover() {
+            try apply(envelope.payload)
+        }
+        journal = log
+    }
+
+    private func apply(_ event: ContextStoreEvent) throws {
+        switch event {
+        case let .inserted(node, key):
+            try insert(node, for: key)
+        case let .checkpointCandidate(nodeID, key):
+            try insertCheckpointCandidate(nodeID, for: key)
+        case let .checkpointInserted(checkpoint, key):
+            try insertCheckpoint(checkpoint, for: key)
+        case let .activeCheckpoint(checkpointID, key):
+            try setActiveCheckpoint(checkpointID, for: key)
+        case let .projectionRevision(value, key):
+            var partition = partitions[key] ?? Partition()
+            partition.projectionRevision = value
+            partitions[key] = partition
+        case .removedAll:
+            removeAll()
+        }
+    }
+
+    private func journalRecord(_ event: ContextStoreEvent) throws {
+        guard let journal else { return }
+        try journal.append(event)
+    }
 
     /// Inserts an accepted node.
     ///
@@ -51,6 +107,7 @@ public actor InMemoryContextStore {
         }
         partition.nodes[node.id] = node
         partitions[key] = partition
+        try journalRecord(.inserted(node, key))
     }
 
     /// Returns one accepted node.
@@ -114,6 +171,7 @@ public actor InMemoryContextStore {
         guard !partition.checkpointCandidates.contains(nodeID) else { return }
         partition.checkpointCandidates.append(nodeID)
         partitions[key] = partition
+        try journalRecord(.checkpointCandidate(nodeID, key))
     }
 
     /// Returns the checkpoint candidate node IDs, in insertion order.
@@ -148,6 +206,7 @@ public actor InMemoryContextStore {
         }
         partition.checkpoints[checkpoint.id] = checkpoint
         partitions[key] = partition
+        try journalRecord(.checkpointInserted(checkpoint, key))
     }
 
     /// Returns one accepted checkpoint.
@@ -173,6 +232,7 @@ public actor InMemoryContextStore {
         var partition = partitions[key] ?? Partition()
         partition.activeCheckpointID = checkpointID
         partitions[key] = partition
+        try journalRecord(.activeCheckpoint(checkpointID, key))
     }
 
     /// Returns the active checkpoint ID.
@@ -201,6 +261,7 @@ public actor InMemoryContextStore {
         var partition = partitions[key] ?? Partition()
         partition.projectionRevision += 1
         partitions[key] = partition
+        try? journalRecord(.projectionRevision(partition.projectionRevision, key))
         return partition.projectionRevision
     }
 
@@ -218,5 +279,6 @@ public actor InMemoryContextStore {
     /// the store never held it.
     public func removeAll() {
         partitions.removeAll()
+        try? journalRecord(.removedAll)
     }
 }

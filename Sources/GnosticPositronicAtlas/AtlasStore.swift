@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import PKContracts
 
 /// Structured failures raised by the Atlas store.
@@ -185,6 +186,7 @@ public actor InMemoryAtlasStore: AtlasStore {
     private var reportHeads: [AscendantShardID: UInt64] = [:]
     private var history: [AtlasAcceptedPatch] = []
     private var receipts: [AtlasPatchID: AtlasCommitReceipt] = [:]
+    private var journal: AppendOnlyEventLog<AtlasStoreEvent>?
 
     /// Creates an empty store for one Ascendant.
     public init(ascendantID: UUID, bindingID: UUID = UUID()) {
@@ -199,6 +201,62 @@ public actor InMemoryAtlasStore: AtlasStore {
         self.ascendantID = binding.ascendantID
         self.binding = binding
         self.state = AscendantAtlas(ascendantID: binding.ascendantID)
+    }
+
+    /// Enables durable journaling at `url` and recovers the state already on
+    /// disk.
+    ///
+    /// Call before the first mutation. Recovery replays the valid prefix of the
+    /// journal through the store's own mutation path, so Shard registrations,
+    /// the report log, accepted state, and accepted history are rebuilt exactly
+    /// as they stood when the previous process stopped. A torn or corrupt tail
+    /// is truncated by the log primitive. Journaling is off until this method
+    /// is called.
+    ///
+    /// Live memory stays authoritative: each mutating call applies in memory
+    /// first and only then appends to the journal, so a journal failure never
+    /// corrupts accepted state.
+    ///
+    /// - Parameter url: The append-only journal file.
+    /// - Throws: ``AtlasStoreError`` when a recorded mutation is invalid for
+    ///   this store's Ascendant, or `EventLogError` when the journal cannot be
+    ///   read or written.
+    public func enableDurability(at url: URL) throws {
+        let log = AppendOnlyEventLog<AtlasStoreEvent>(fileURL: url)
+        for envelope in try log.recover() {
+            try applyJournal(envelope.payload)
+        }
+        journal = log
+    }
+
+    private func applyJournal(_ event: AtlasStoreEvent) throws {
+        switch event {
+        case let .registered(shard):
+            _ = try register(shard)
+        case let .appended(report):
+            _ = try append(report)
+        case let .accepted(patch):
+            _ = try compareAndSwap(capture: replayCapture(for: patch), patch: patch)
+        }
+    }
+
+    /// Rebuilds the capture a recorded patch was accepted against without
+    /// recomputing it from the current report head. Recomputing would produce a
+    /// different capture when reports were appended after the original capture,
+    /// so the recorded patch identity is authoritative.
+    private func replayCapture(for patch: AtlasPatch) -> AtlasIntegrationCapture {
+        AtlasIntegrationCapture(
+            id: patch.captureID,
+            state: state,
+            registrations: canonicalShards(),
+            watermarks: patch.watermarks,
+            pendingReports: patch.claimedReportIDs.compactMap { reports[$0] }
+        )
+    }
+
+    private func journalRecord(_ event: AtlasStoreEvent) throws {
+        guard let journal else { return }
+        try journal.append(event)
     }
 
     /// Registers an immutable Shard binding. Exact repeats are idempotent.
@@ -219,6 +277,7 @@ public actor InMemoryAtlasStore: AtlasStore {
 
         shards[shard.id] = shard
         reportHeads[shard.id] = 0
+        try journalRecord(.registered(shard))
         return AtlasRegistrationResult(shard: shard, wasInserted: true)
     }
 
@@ -237,6 +296,7 @@ public actor InMemoryAtlasStore: AtlasStore {
         reports[report.id] = report
         reportDrafts[report.id] = draft
         reportHeads[draft.shardID] = sequence
+        try journalRecord(.appended(report))
         return AtlasAppendResult(report: report, wasInserted: true)
     }
 
@@ -265,6 +325,7 @@ public actor InMemoryAtlasStore: AtlasStore {
             projectedVersion: report.projectedVersion
         )
         reportHeads[report.shardID] = report.sequence
+        try journalRecord(.appended(report))
         return AtlasAppendResult(report: report, wasInserted: true)
     }
 
@@ -345,6 +406,7 @@ public actor InMemoryAtlasStore: AtlasStore {
         state = nextState
         history.append(accepted)
         receipts[patch.id] = receipt
+        try journalRecord(.accepted(patch))
         return receipt
     }
 
