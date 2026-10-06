@@ -107,7 +107,9 @@ Turn's bounded updates. Gnostic owns one shared log primitive in the kernel;
 a restarted store replays the valid prefix and truncates a torn tail.
 Durability is opt-in, so a serve without a configured state directory keeps its
 in-memory ledger. The log stores bounded update payloads and a prompt digest,
-never prompt text.
+never prompt text. The durable log is bounded by size: once it exceeds
+`maxJournalBytes`, the store replaces it with one checkpoint per retained Turn,
+which preserves the recovered ledger.
 
 ## Bounded legacy Agent terminology
 

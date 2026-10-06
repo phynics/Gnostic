@@ -106,6 +106,37 @@ struct TurnLogCommandTests {
         #expect(report.turns.map(\.clientTurnID) == ["a", "b"])
     }
 
+    @Test("a compaction checkpoint is summarized as one compacted turn")
+    func checkpointRecordIsSummarized() throws {
+        let (log, url) = makeLog(in: try makeFolder())
+        let timelineID = UUID()
+        try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .checkpoint(
+            TurnJournalCheckpoint(
+                messageDigest: 9,
+                nextSequence: 3,
+                updates: [
+                    AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi"),
+                    AscendantTurnUpdate(sequence: 2, kind: "done", terminal: true),
+                ],
+                compacted: true,
+                terminal: true,
+                finished: true
+            )
+        )))
+        let report = TurnLogReport(scan: try log.scan(), path: url.path, exists: true)
+        #expect(report.recordCount == 1)
+        #expect(report.turnCount == 1)
+        let turn = try #require(report.turns.first)
+        #expect(turn.compacted)
+        #expect(turn.events == 1)
+        #expect(turn.updates == 2)
+        #expect(turn.finished)
+        #expect(turn.messageDigest == 9)
+        #expect(turn.lastSequence == 2)
+        #expect(turn.terminal == true)
+        #expect(report.humanDescription().contains("compacted"))
+    }
+
     @Test("a torn tail is reported and the file is left unchanged")
     func tornTailReported() throws {
         let (log, url) = makeLog(in: try makeFolder())

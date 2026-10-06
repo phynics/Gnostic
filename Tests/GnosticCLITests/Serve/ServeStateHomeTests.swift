@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import Testing
 @testable import GnosticCLI
 
@@ -41,5 +42,17 @@ struct ServeStateHomeTests {
 
         #expect(command.resolveTurnLogURL(environment: [:]) == nil)
         #expect(command.resolveTimelineStoreDirectory(environment: [:]) == nil)
+    }
+
+    @Test("the turn log compaction bound defaults and accepts an override")
+    func turnLogCompactionBoundResolution() throws {
+        let defaulted = try ServeCommand.parse([])
+        #expect(defaulted.resolveTurnLogMaxBytes() == AscendantTurnUpdateStore.defaultMaxJournalBytes)
+
+        let overridden = try ServeCommand.parse(["--turn-log-max-bytes", "1048576"])
+        #expect(overridden.resolveTurnLogMaxBytes() == 1_048_576)
+
+        let disabled = try ServeCommand.parse(["--turn-log-max-bytes", "0"])
+        #expect(disabled.resolveTurnLogMaxBytes() == 0)
     }
 }

@@ -43,6 +43,7 @@ struct TurnLogReport: Codable, Equatable {
         var events = 0
         var updates = 0
         var finished = false
+        var compacted = false
         var startedAt: Date?
         var lastRecordedAt: Date?
         var messageDigest: UInt64?
@@ -72,6 +73,19 @@ struct TurnLogReport: Codable, Equatable {
                 accumulator.terminal = update.terminal
             case .finished:
                 accumulator.finished = true
+            case .checkpoint(let checkpoint):
+                accumulator.compacted = true
+                if let digest = checkpoint.messageDigest {
+                    accumulator.messageDigest = digest
+                }
+                accumulator.updates += checkpoint.updates.count
+                if checkpoint.finished {
+                    accumulator.finished = true
+                }
+                accumulator.terminal = checkpoint.terminal
+                if checkpoint.nextSequence > 0 {
+                    accumulator.lastSequence = checkpoint.nextSequence - 1
+                }
             }
             accumulators[key] = accumulator
         }
@@ -83,6 +97,7 @@ struct TurnLogReport: Codable, Equatable {
                 events: accumulator.events,
                 updates: accumulator.updates,
                 finished: accumulator.finished,
+                compacted: accumulator.compacted,
                 startedAt: accumulator.startedAt.map(timestamp),
                 lastRecordedAt: accumulator.lastRecordedAt.map(timestamp),
                 messageDigest: accumulator.messageDigest,
@@ -130,6 +145,8 @@ struct TurnSummary: Codable, Equatable {
     let updates: Int
     /// Whether the Turn's retention slot was released.
     let finished: Bool
+    /// Whether a compaction checkpoint represents the Turn.
+    let compacted: Bool
     /// When the Turn's `.started` record was written.
     let startedAt: String?
     /// When the Turn's last record was written.
@@ -173,6 +190,9 @@ extension TurnSummary {
         var detail = "events=\(events) updates=\(updates)"
         if finished {
             detail += " finished"
+        }
+        if compacted {
+            detail += " compacted"
         }
         if let lastSequence {
             detail += " sequence=\(lastSequence)"

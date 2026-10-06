@@ -74,6 +74,9 @@ public actor AscendantTurnUpdateStore {
     private let maxBytes: Int
     private let maxEntries: Int
     private let eventBufferCapacity: Int
+    /// The journal is compacted once its on-disk size exceeds this bound.
+    /// Zero or less disables compaction.
+    private let maxJournalBytes: Int
     private var entries: [Key: Entry] = [:]
     private var entryOrder: [Key] = []
     private var journal: AppendOnlyEventLog<TurnEventRecord>?
@@ -88,7 +91,8 @@ public actor AscendantTurnUpdateStore {
         maxEvents: Int = 1_024,
         maxBytes: Int = 1_048_576,
         maxEntries: Int = 256,
-        eventBufferCapacity: Int = 256
+        eventBufferCapacity: Int = 256,
+        maxJournalBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes
     ) {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
@@ -96,10 +100,14 @@ public actor AscendantTurnUpdateStore {
         self.maxBytes = max(256, maxBytes)
         self.maxEntries = max(1, maxEntries)
         self.eventBufferCapacity = max(1, eventBufferCapacity)
+        self.maxJournalBytes = max(0, maxJournalBytes)
         (eventStream, eventContinuation) = AsyncStream<Event>.makeStream(
             bufferingPolicy: .bufferingNewest(self.eventBufferCapacity)
         )
     }
+
+    /// The default on-disk bound for the durable Turn event log.
+    public static let defaultMaxJournalBytes = 4 * 1_048_576
 
     func events() -> AsyncStream<Event> { eventStream }
 
@@ -118,6 +126,7 @@ public actor AscendantTurnUpdateStore {
             applyJournalRecord(record.payload)
         }
         journal = log
+        compactJournalIfNeeded()
     }
 
     private func applyJournalRecord(_ record: TurnEventRecord) {
@@ -130,6 +139,8 @@ public actor AscendantTurnUpdateStore {
                 try applyRecoveredUpdate(timelineID: record.timelineID, clientTurnID: clientTurnID, update: update)
             case .finished:
                 finish(timelineID: record.timelineID, clientTurnID: clientTurnID)
+            case .checkpoint(let snapshot):
+                try applyCheckpoint(snapshot, timelineID: record.timelineID, clientTurnID: clientTurnID)
             }
         } catch Error.capacityExceeded {
             // The journal outgrew the live retention bound; skip deterministically.
@@ -141,6 +152,70 @@ public actor AscendantTurnUpdateStore {
     private func journalRecord(_ record: TurnEventRecord) throws {
         guard let journal else { return }
         try journal.append(record)
+        compactJournalIfNeeded()
+    }
+
+    /// Replaces the journal with one checkpoint per retained Turn once it
+    /// exceeds ``maxJournalBytes``.
+    ///
+    /// Compaction keeps `recover()` semantics: a checkpoint carries the same
+    /// bounded state recovery would rebuild from the records it supersedes, so
+    /// a restarted store sees the same ledger. The rewrite is skipped when it
+    /// would not shrink the file, which keeps a misconfigured bound from
+    /// rewriting on every append.
+    private func compactJournalIfNeeded() {
+        guard let journal, maxJournalBytes > 0 else { return }
+        guard let currentBytes = try? journal.byteCount(),
+              currentBytes > UInt64(maxJournalBytes)
+        else { return }
+        let records = checkpointRecords()
+        guard !records.isEmpty, let projectedBytes = Self.encodedSize(records),
+              projectedBytes < Int(currentBytes)
+        else { return }
+        try? journal.replaceAll(with: records)
+    }
+
+    /// One checkpoint per retained Turn, in retention order.
+    private func checkpointRecords() -> [TurnEventRecord] {
+        entryOrder.compactMap { key in
+            guard let entry = entries[key] else { return nil }
+            return TurnEventRecord(
+                timelineID: key.timelineID,
+                clientTurnID: key.clientTurnID,
+                event: .checkpoint(TurnJournalCheckpoint(
+                    messageDigest: entry.messageDigest,
+                    nextSequence: entry.nextSequence,
+                    updates: entry.updates,
+                    compacted: entry.compacted,
+                    terminal: entry.terminal,
+                    finished: entry.finished
+                ))
+            )
+        }
+    }
+
+    /// Replaces one retained Turn's state with a compaction checkpoint.
+    private func applyCheckpoint(
+        _ snapshot: TurnJournalCheckpoint,
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID
+    ) throws {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        if entries[key] == nil {
+            evictFinishedEntriesIfNeeded(for: key)
+            guard entries.count < maxEntries else { throw Error.capacityExceeded }
+        }
+        entries[key] = Entry(
+            updates: snapshot.updates,
+            nextSequence: snapshot.nextSequence,
+            bytes: snapshot.updates.reduce(0) { $0 + Self.encodedSize($1) },
+            terminal: snapshot.terminal,
+            finished: snapshot.finished,
+            compacted: snapshot.compacted,
+            messageDigest: snapshot.messageDigest
+        )
+        touch(key)
+        evictIfNeeded()
     }
 
     public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) throws {
@@ -396,6 +471,17 @@ public actor AscendantTurnUpdateStore {
 
     private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {
         (try? JSONEncoder().encode(update).count) ?? 0
+    }
+
+    /// The projected on-disk size of `records`, including framing overhead, or
+    /// `nil` when a record cannot be encoded.
+    private static func encodedSize(_ records: [TurnEventRecord]) -> Int? {
+        var total = 0
+        for record in records {
+            guard let size = try? JSONEncoder().encode(record).count else { return nil }
+            total += size + 32
+        }
+        return total
     }
 
     private static func bounded(_ update: AscendantTurnUpdate, maxBytes: Int) -> AscendantTurnUpdate {

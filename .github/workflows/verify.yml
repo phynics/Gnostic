@@ -11,6 +11,12 @@ concurrency:
 
 permissions:
   contents: read
+  # `make verify` runs `make docs-check`, which resolves each active module's
+  # owning issue through the GitHub API. Without `issues: read` the resolver
+  # gets a non-OK response, degrades to "unknown", and silently skips the
+  # open-owning-issue rule (GNO-PLAT-023 #537). Grant the read scope so the
+  # rule runs on every pull request and every push to main.
+  issues: read
 
 # The smoke targets need only the image and a build, not `make verify`, so they
 # run in a parallel job. Each job builds the image from
@@ -50,6 +56,11 @@ jobs:
         run: make container-smoke
 
       - name: make verify
+        env:
+          # `make docs-check` forwards GH_TOKEN into the dev container
+          # (`EXTRA_CONTAINER_ENV` in the Makefile), so the issue-state rule
+          # cannot be skipped for lack of a token.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make verify
 
       # Only main saves. A pull request entry is restorable only from its own

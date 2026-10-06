@@ -11,6 +11,38 @@ public enum TurnEventKind: Codable, Sendable, Equatable {
     case update(AscendantTurnUpdate)
     /// The Turn's retention slot was released.
     case finished
+    /// A bounded snapshot of one retained Turn, written by journal compaction.
+    case checkpoint(TurnJournalCheckpoint)
+}
+
+/// The bounded state of one retained Turn at the moment of journal compaction.
+///
+/// A checkpoint record carries the same information recovery would rebuild
+/// from the `started`/`update`/`finished` records it supersedes, so replacing
+/// the journal with checkpoints does not change the recovered ledger.
+public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
+    public let messageDigest: UInt64?
+    public let nextSequence: Int
+    public let updates: [AscendantTurnUpdate]
+    public let compacted: Bool
+    public let terminal: Bool
+    public let finished: Bool
+
+    public init(
+        messageDigest: UInt64?,
+        nextSequence: Int,
+        updates: [AscendantTurnUpdate],
+        compacted: Bool,
+        terminal: Bool,
+        finished: Bool
+    ) {
+        self.messageDigest = messageDigest
+        self.nextSequence = nextSequence
+        self.updates = updates
+        self.compacted = compacted
+        self.terminal = terminal
+        self.finished = finished
+    }
 }
 
 /// One durable record in the Turn event journal.

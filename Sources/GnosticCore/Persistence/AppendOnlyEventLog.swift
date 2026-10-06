@@ -116,16 +116,7 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
     public func append(_ payload: Payload) throws -> EventLogEnvelope<Payload> {
         try createFileIfNeeded()
         let recordedAt = Date()
-        let milliseconds = Int64((recordedAt.timeIntervalSince1970 * 1_000).rounded())
-        let json = try JSONEncoder().encode(payload)
-        var body = Data(String(milliseconds).utf8)
-        body.append(0x20)
-        body.append(json)
-
-        var frame = Data(Self.hex(Self.checksum(body)).utf8)
-        frame.append(0x20)
-        frame.append(body)
-        frame.append(0x0A)
+        let frame = try encodedFrame(payload, at: recordedAt)
 
         let handle = try FileHandle(forWritingTo: fileURL)
         defer { try? handle.close() }
@@ -135,6 +126,54 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
             try handle.synchronize()
         }
         return EventLogEnvelope(recordedAt: recordedAt, payload: payload)
+    }
+
+    /// The current size of the log file in bytes, or zero when it does not exist.
+    public func byteCount() throws -> UInt64 {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return 0 }
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    /// Atomically replaces the entire log with `payloads`.
+    ///
+    /// Use this only to write a bounded checkpoint that supersedes the current
+    /// contents; normal writes must use ``append(_:)``. The replacement is
+    /// written to a temporary sibling file, flushed, and renamed over the log,
+    /// so a crash leaves either the previous log or the complete replacement,
+    /// never a partial file. The replacement keeps `0o600` permissions, and the
+    /// next ``append(_:)`` resumes after the replacement.
+    public func replaceAll(with payloads: [Payload]) throws {
+        try createFileIfNeeded()
+        var data = Data()
+        for payload in payloads {
+            data.append(try encodedFrame(payload, at: Date()))
+        }
+
+        let temporaryURL = fileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp")
+        guard FileManager.default.createFile(
+            atPath: temporaryURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw EventLogError.cannotOpenFile(path: temporaryURL.path)
+        }
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        do {
+            try handle.write(contentsOf: data)
+            if synchronizeEachAppend {
+                try handle.synchronize()
+            }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: temporaryURL)
     }
 
     /// Reads every valid record without modifying the file.
@@ -226,6 +265,20 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
             recordedAt: Date(timeIntervalSince1970: Double(milliseconds) / 1_000),
             payload: payload
         )
+    }
+
+    private func encodedFrame(_ payload: Payload, at recordedAt: Date) throws -> Data {
+        let milliseconds = Int64((recordedAt.timeIntervalSince1970 * 1_000).rounded())
+        let json = try JSONEncoder().encode(payload)
+        var body = Data(String(milliseconds).utf8)
+        body.append(0x20)
+        body.append(json)
+
+        var frame = Data(Self.hex(Self.checksum(body)).utf8)
+        frame.append(0x20)
+        frame.append(body)
+        frame.append(0x0A)
+        return frame
     }
 
     private func createFileIfNeeded() throws {

@@ -41,6 +41,12 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .customLong("turn-log"), help: "Path to the durable Turn event log (overrides GNOSTIC_STATE_HOME).")
     var turnLogPath: String?
 
+    @Option(
+        name: .customLong("turn-log-max-bytes"),
+        help: "Byte bound for the durable Turn event log before it is compacted (default 4194304; 0 disables compaction)."
+    )
+    var turnLogMaxBytes: Int?
+
     /// The shared durable-state resolver. `gnostic turn-log` uses the same type
     /// so the viewer and the writer resolve identical paths.
     private var turnLogLocation: TurnLogLocation {
@@ -53,6 +59,13 @@ struct ServeCommand: AsyncParsableCommand {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
         turnLogLocation.turnLogURL(environment: environment)
+    }
+
+    /// Resolves the compaction bound for the durable Turn event log. The store
+    /// default applies unless the operator overrides it; a non-positive value
+    /// disables compaction.
+    func resolveTurnLogMaxBytes() -> Int {
+        turnLogMaxBytes ?? AscendantTurnUpdateStore.defaultMaxJournalBytes
     }
 
     /// Resolves the per-Ascendant Timeline transcript directory under the
@@ -91,6 +104,7 @@ struct ServeCommand: AsyncParsableCommand {
                 plan: plan,
                 adapters: adapters,
                 turnLogURL: resolveTurnLogURL(),
+                turnLogMaxBytes: resolveTurnLogMaxBytes(),
                 timelineStoreDirectory: resolveTimelineStoreDirectory()
             )
             do {

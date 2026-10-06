@@ -64,6 +64,7 @@ public final class NodeRuntime {
         plan: NodeLaunchPlan,
         adapters: NodeRuntimeAdapters = .default,
         turnLogURL: URL? = nil,
+        turnLogMaxBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
         timelineStoreDirectory: URL? = nil
     ) async throws {
         try await self.init(
@@ -71,6 +72,7 @@ public final class NodeRuntime {
             adapters: adapters,
             retirementPolicy: .live,
             turnLogURL: turnLogURL,
+            turnLogMaxBytes: turnLogMaxBytes,
             timelineStoreDirectory: timelineStoreDirectory
         )
     }
@@ -80,6 +82,7 @@ public final class NodeRuntime {
         adapters: NodeRuntimeAdapters = .default,
         retirementPolicy: BackendRetirementPolicy,
         turnLogURL: URL? = nil,
+        turnLogMaxBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
         timelineStoreDirectory: URL? = nil
     ) async throws {
         try NodeAssembly.validate(plan, adapters: adapters)
@@ -90,7 +93,7 @@ public final class NodeRuntime {
         self.adapters = adapters
         let coordinator = RuntimeLifecycleCoordinator()
         let retirementSupervisor = BackendRetirementSupervisor(policy: retirementPolicy)
-        let updates = AscendantTurnUpdateStore()
+        let updates = AscendantTurnUpdateStore(maxJournalBytes: turnLogMaxBytes)
         if let turnLogURL {
             try await updates.enableDurability(at: turnLogURL)
         }
