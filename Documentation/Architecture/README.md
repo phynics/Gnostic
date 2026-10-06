@@ -79,6 +79,11 @@ other `Gnostic` target; and `Sources/GnosticKit` must not import a Positronic
 backend. The kernel therefore stays below the kit, so P7 can extract Positronic
 from `GnosticCore` without touching the kit.
 
+`GnosticProtocol` is the backend-neutral wire boundary below `GnosticCore`. It
+depends only on Axoloty and `AxolotyWire`, carries no PositronicKit or kernel
+dependency, and `GnosticCore` re-exports it for source compatibility. ADR 0005
+records the boundary and its fitness checks.
+
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.
 
@@ -87,7 +92,9 @@ state, and the entry records the review decision rather than active ownership.
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
 exception registry. It records one accepted exception, `GNO-EXC-0001`, for the
 Coaty vocabulary that `GnosticCore` still publishes through
-`Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift`. Every
+`Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift` and that
+`GnosticProtocol` publishes through
+`Sources/GnosticProtocol/CoatyObjectModel.swift`. Every
 exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,

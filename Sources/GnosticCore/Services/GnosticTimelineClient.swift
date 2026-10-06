@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// A public client that creates and renames remote Timelines.
 ///

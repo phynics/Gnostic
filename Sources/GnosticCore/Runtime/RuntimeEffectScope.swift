@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// The lifecycle states exposed by an effect scope.
 enum RuntimeEffectScopeState: Sendable, Equatable {

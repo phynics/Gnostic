@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// Failures raised while materializing or running a validated node plan.
 public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {

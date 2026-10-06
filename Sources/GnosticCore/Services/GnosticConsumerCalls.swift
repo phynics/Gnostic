@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// The failure vocabulary every public consumer client error shares.
 ///

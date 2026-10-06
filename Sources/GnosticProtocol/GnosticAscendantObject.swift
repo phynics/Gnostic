@@ -75,7 +75,7 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable { //
 
     /// Creates a network projection without exposing provider-native state.
     public init(
-        identity: AscendantRuntimeIdentity,
+        identity: AscendantBackendIdentity,
         backendHealth: AscendantBackendHealth = .unknown,
         nodeID: UUID? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor

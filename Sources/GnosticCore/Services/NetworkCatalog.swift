@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// A change retained by the catalog after ingesting a network lifecycle event.
 public enum NetworkCatalogChange: Sendable {

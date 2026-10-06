@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 public struct AscendantPermissionResponse: Codable, Sendable {
     public let protocolMajor: Int

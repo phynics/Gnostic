@@ -80,9 +80,9 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourcePaths = [
-            "Sources/GnosticCore/Objects/GnosticWorkspaceObject.swift",
-            "Sources/GnosticCore/Objects/GnosticWorkspaceTypes.swift",
-            "Sources/GnosticCore/Services/NetworkCatalogStructures.swift",
+            "Sources/GnosticProtocol/GnosticWorkspaceObject.swift",
+            "Sources/GnosticProtocol/GnosticWorkspaceTypes.swift",
+            "Sources/GnosticProtocol/NetworkCatalogStructures.swift",
         ]
         for relativePath in sourcePaths {
             let source = try String(
@@ -225,7 +225,7 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourcePaths = [
-            "Sources/GnosticCore/Objects/GnosticAscendantObject.swift",
+            "Sources/GnosticProtocol/GnosticAscendantObject.swift",
             "Sources/GnosticCore/Runtime/AscendantBackend.swift",
             "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
             "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
@@ -437,6 +437,47 @@ struct BackendArchitectureFitnessTests {
         #expect(frontendTarget.contains("\"GnosticCore\""))
         #expect(package.contains("name: \"GnosticCLI\""))
         #expect(package.contains("\"GnosticACPFrontend\",\n                \"GnosticCore\""))
+    }
+
+    @Test("the GnosticProtocol target is dependency-free of kernel and host layers")
+    func protocolTargetHasNoKernelDependencies() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let protocolRoot = rootURL.appendingPathComponent("Sources/GnosticProtocol")
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: protocolRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: protocolRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for forbidden in [
+                "import GnosticCore",
+                "import GnosticHost",
+                "import GnosticKit",
+                "import PositronicKit",
+                "import PKContracts",
+                "import PKPrompt",
+                "import ACP",
+            ] {
+                #expect(
+                    !source.contains(forbidden),
+                    "The wire boundary must not import '\(forbidden)' in GnosticProtocol/\(relativePath)."
+                )
+            }
+        }
+
+        let package = try String(
+            contentsOf: rootURL.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        let protocolTarget = try #require(Self.targetBlock(named: "GnosticProtocol", in: package))
+        #expect(protocolTarget.contains("Axoloty"))
+        #expect(!protocolTarget.contains("GnosticCore"))
+        #expect(!protocolTarget.contains("PositronicKit"))
+        let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
+        #expect(coreTarget.contains("\"GnosticProtocol\""))
     }
 
     private static func targetBlock(named name: String, in package: String) -> String? {

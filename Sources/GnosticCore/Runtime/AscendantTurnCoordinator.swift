@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// Serializes and deduplicates stateful Ascendant Timeline turns for one serve
 /// lifetime. A caller may disappear after admission; the coordinator-owned task

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// Keeps bounded identified-turn updates for one serve lifetime. It never
 /// stores prompt text or tool arguments beyond the bounded update payload.

@@ -9,6 +9,7 @@ let package = Package(
         .iOS("26.0"),
     ],
     products: [
+        .library(name: "GnosticProtocol", targets: ["GnosticProtocol"]),
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
         .library(name: "GnosticHost", targets: ["GnosticHost"]),
         .library(name: "GnosticKit", targets: ["GnosticKit"]),
@@ -36,8 +37,16 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "GnosticProtocol",
+            dependencies: [
+                .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "AxolotyWire", package: "Axoloty"),
+            ]
+        ),
+        .target(
             name: "GnosticCore",
             dependencies: [
+                "GnosticProtocol",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyMQTT", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),

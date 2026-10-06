@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// A public client that runs Turns, streams their updates, replays them by
 /// client turn ID, and answers permission requests.
