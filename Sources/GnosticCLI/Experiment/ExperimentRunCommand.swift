@@ -5,6 +5,7 @@ import Foundation
 import GnosticCore
 import GnosticHost
 import GnosticKit
+import GnosticPositronicContext
 import GnosticRLM
 import PKContracts
 import PositronicKit
@@ -44,13 +45,25 @@ enum ExperimentScenarioCatalog {
     }
 
     /// The built-in scenarios by module.
-    static let builtIn: [String: [String]] = ["kit": ["self-check"]]
+    static let builtIn: [String: [String]] = ["kit": ["self-check"], "context": ["baselines", "gate"]]
 
     /// Resolves one entry.
     static func entry(module: String, scenario: String) throws -> Entry {
         switch (module, scenario) {
         case ("kit", "self-check"):
             Entry(requiresRegime: false, makeDriver: { _ in SelfCheckScenario.driver }, matrixCaseCount: 1)
+        case ("context", "baselines"):
+            Entry(
+                requiresRegime: false,
+                makeDriver: { _ in ContextBenchmarkDriver() },
+                matrixCaseCount: ContextFixtureTranscript.cases.count
+            )
+        case ("context", "gate"):
+            Entry(
+                requiresRegime: false,
+                makeDriver: { _ in ContextGateDriver() },
+                matrixCaseCount: ContextFixtureTranscript.cases.count
+            )
         default:
             throw ExperimentCommandError.unknownScenario(
                 module: module,
@@ -232,7 +245,54 @@ extension ExperimentCommand {
             )
         }
     }
+}
 
+extension ExperimentCommand {
+    /// `gnostic experiment context-gate`.
+    ///
+    /// Runs the offline hypothesis gate and writes the machine-readable numbers
+    /// and the Markdown decision record. No provider is contacted.
+    struct ContextGateCommand: AsyncParsableCommand {
+        static let commandName = "context-gate"
+
+        static let configuration = CommandConfiguration(
+            commandName: commandName,
+            abstract: "Run the offline context hypothesis gate and record the decision.",
+            discussion: """
+            Scores five strategies on the shared planted obligations with deterministic \
+            assertions, then writes Documentation/Experiments/context-gate.json and \
+            context-gate.md. Every arm runs through the fixture seam, so no provider is contacted.
+            """
+        )
+
+        @Option(name: .long, help: "Repository root.")
+        var repository: String = "."
+
+        @Option(name: .long, help: "JSON output path.")
+        var output: String?
+
+        @Option(name: .long, help: "Markdown output path.")
+        var markdown: String?
+
+        func run() async throws {
+            let root = URL(fileURLWithPath: repository).standardizedFileURL
+            let result = try await ContextGate().run()
+            let jsonPath = output ?? "Documentation/Experiments/context-gate.json"
+            let markdownPath = markdown ?? "Documentation/Experiments/context-gate.md"
+            try result.jsonData().write(to: URL(fileURLWithPath: jsonPath, relativeTo: root))
+            try result.markdown().write(
+                to: URL(fileURLWithPath: markdownPath, relativeTo: root),
+                atomically: true,
+                encoding: .utf8
+            )
+            print(result.summary())
+            print("JSON: \(jsonPath)")
+            print("Markdown: \(markdownPath)")
+        }
+    }
+}
+
+extension ExperimentCommand {
     /// `gnostic experiment export --artifact <path>`.
     struct Export: ParsableCommand {
         static let commandName = "export"

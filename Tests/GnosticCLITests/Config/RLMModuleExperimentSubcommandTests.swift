@@ -55,12 +55,13 @@ struct RLMModuleExperimentSubcommandTests {
 
     @Test("the CLI composes its experiment commands from the descriptor's name")
     func cliComposesFromModuleDescriptors() {
-        // The experiment command surface is exactly the intrinsic rating
-        // command plus the module-declared subcommands, in legacy order. The
-        // descriptor's declared name must equal the CLI parser's own name, so
-        // one declaration both routes and documents the command.
+        // The experiment command surface is exactly the intrinsic commands
+        // (the offline context gate and the rating command) plus the
+        // module-declared subcommands, in legacy order. The descriptor's
+        // declared name must equal the CLI parser's own name, so one
+        // declaration both routes and documents the command.
         let names = ExperimentCommand.configuration.subcommands.map { $0.configuration.commandName }
-        #expect(names == ["rlm-scenario", "run", "export", "replay", "rlm-scenario-rating"])
+        #expect(names == ["rlm-scenario", "run", "export", "replay", "context-gate", "rlm-scenario-rating"])
         #expect(RLMModule.value.experimentSubcommand?.name == ExperimentCommand.RLMScenario.configuration.commandName)
     }
 
@@ -127,6 +128,10 @@ struct RLMExperimentSubcommandSubprocessTests {
 
         let exportHelp = try run(binary: binary, arguments: ["experiment", "export", "--help"])
         #expect(exportHelp.status == 0, Comment(rawValue: exportHelp.output))
+
+        let gateHelp = try run(binary: binary, arguments: ["experiment", "context-gate", "--help"])
+        #expect(gateHelp.status == 0, Comment(rawValue: gateHelp.output))
+        #expect(gateHelp.output.contains("--output"))
     }
 
     private func run(binary: String, arguments: [String]) throws -> (status: Int32, output: String) {

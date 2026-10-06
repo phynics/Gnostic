@@ -360,7 +360,7 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
         // Experiment targets incubate outside Core. Core may host their adapters
         // through the flat AscendantBackend contract without importing them.
-        let experimentTargets = ["GnosticPositronicAtlas", "RLM", "Letta", "GnosticACPAscendant"]
+        let experimentTargets = ["GnosticPositronicAtlas", "GnosticPositronicContext", "RLM", "Letta", "GnosticACPAscendant"]
 
         let package = try String(
             contentsOf: rootURL.appendingPathComponent("Package.swift"),
