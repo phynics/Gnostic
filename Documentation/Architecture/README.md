@@ -65,15 +65,16 @@ active entry, and rejects a target that is not declared in `Package.swift`. It
 also rejects a compiled-in module descriptor whose `registryID` has no matching
 entry, so a module and its registry record cannot drift apart. An empty
 `targets` array is allowed: it means the module has no compiled target yet. The
-issue-state rule runs when `GH_TOKEN` or `GITHUB_TOKEN` reaches the GitHub API;
-the checker self-test always pins the closed-owner rejection so it cannot
-silently rot.
+`verify` workflow passes `GITHUB_TOKEN` to `make verify`, so the issue-state
+rule runs on every pull request and every push to `main`; the checker self-test
+always pins the closed-owner rejection so the rule itself cannot silently rot.
 
 The same check keeps the registry and the compiled-in module descriptors from
 drifting apart in the other direction too: a `runnable` entry must have a
 compiled-in `GnosticModule` descriptor whose `registryID` is that entry's `id`,
 so a module reaches `runnable` only after its descriptor is compiled in. #449
-and #450 own those two wiring steps.
+and #450 delivered those two wiring steps; once closed, the entries name the
+open umbrella epic #438 so the registry invariant holds.
 
 The platform kit boundary is enforced the same way. `GnosticCore` must not
 depend on or import `GnosticKit`; the kit must depend on `GnosticCore` and no

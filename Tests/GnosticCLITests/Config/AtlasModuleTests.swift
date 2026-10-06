@@ -37,7 +37,11 @@ struct AtlasModuleTests {
 
         #expect(registryID == "GNO-MOD-ATLAS")
         #expect(entry["runnable"] as? Bool == true)
-        #expect((entry["owningIssue"] as? String)?.contains("/449") == true)
+        // The registry entry must name the open issue that owns the module's
+        // lifecycle. The wiring issue #449 is closed, so it moved to the
+        // umbrella epic #438 (GNO-PLAT-023 #537). `make docs-check` enforces
+        // the same open-owner rule when a token reaches the GitHub API.
+        #expect((entry["owningIssue"] as? String)?.contains("/438") == true)
     }
 
     @Test("an Ascendant that selects atlas installs its contribution and one recorder")
