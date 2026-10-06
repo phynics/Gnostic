@@ -26,6 +26,10 @@ public enum ContextError: Error, Equatable, CustomStringConvertible {
     case invalidCitation
     /// The carry reduction could not cover the hierarchy exactly once.
     case coverageGap
+    /// A checkpoint cut fell between an assistant tool call and its tool result.
+    case toolTransactionSplit
+    /// A checkpoint lost a carry item the deterministic reduction requires.
+    case carrySurvivalFailed
 
     /// A payload-free human-readable description.
     public var description: String {
@@ -46,6 +50,10 @@ public enum ContextError: Error, Equatable, CustomStringConvertible {
             "the proposal citation is not allowed"
         case .coverageGap:
             "the carry reduction does not cover the hierarchy exactly once"
+        case .toolTransactionSplit:
+            "the checkpoint cut splits a tool transaction"
+        case .carrySurvivalFailed:
+            "the checkpoint carry is missing a required item"
         }
     }
 }

@@ -123,18 +123,61 @@ struct ContextStoreTests {
         #expect(await store.rootNodeIDs(for: key) == [parent.id])
     }
 
-    @Test("checkpoint candidates are idempotent and the active checkpoint must exist")
-    func checkpointBookkeeping() async throws {
+    @Test("checkpoint candidates are idempotent and must name a stored node")
+    func checkpointCandidatesAreIdempotent() async throws {
         let store = InMemoryContextStore()
         let node = leaf(messageIDs: ["m-0"])
         try await store.insert(node, for: key)
         try await store.insertCheckpointCandidate(node.id, for: key)
         try await store.insertCheckpointCandidate(node.id, for: key)
         #expect(await store.checkpointCandidates(for: key) == [node.id])
-        try await store.setActiveCheckpoint(node.id, for: key)
-        #expect(await store.activeCheckpoint(for: key) == node.id)
+        await #expect(throws: ContextError.unknownSourceRange) {
+            try await store.insertCheckpointCandidate("missing", for: key)
+        }
+    }
+
+    @Test("checkpoint insertion is idempotent and a conflicting body is a conflict")
+    func checkpointInsertionIsIdempotent() async throws {
+        let store = InMemoryContextStore()
+        let checkpoint = makeCheckpoint(coveredNodeIDs: ["n-0"])
+        try await store.insertCheckpoint(checkpoint, for: key)
+        try await store.insertCheckpoint(checkpoint, for: key)
+        #expect(await store.checkpoint(id: checkpoint.id, for: key) == checkpoint)
+        let conflicting = makeCheckpoint(
+            coveredNodeIDs: ["n-0"],
+            carry: ContextCarryState(items: [carryItem(id: "a")])
+        )
+        #expect(conflicting.id == checkpoint.id)
+        await #expect(throws: ContextError.conflictingBody) {
+            try await store.insertCheckpoint(conflicting, for: key)
+        }
+    }
+
+    @Test("the active checkpoint resolves, must exist, and clears")
+    func activeCheckpointResolves() async throws {
+        let store = InMemoryContextStore()
+        let checkpoint = makeCheckpoint(coveredNodeIDs: ["n-0"])
+        try await store.insertCheckpoint(checkpoint, for: key)
+        try await store.setActiveCheckpoint(checkpoint.id, for: key)
+        #expect(await store.activeCheckpointID(for: key) == checkpoint.id)
+        #expect(await store.activeCheckpoint(for: key) == checkpoint)
+        try await store.setActiveCheckpoint(nil, for: key)
+        #expect(await store.activeCheckpoint(for: key) == nil)
         await #expect(throws: ContextError.unknownSourceRange) {
             try await store.setActiveCheckpoint("missing", for: key)
+        }
+    }
+
+    @Test("checkpoints partition with their Ascendant and Timeline")
+    func checkpointsPartitionByStoreKey() async throws {
+        let store = InMemoryContextStore()
+        let checkpoint = makeCheckpoint(coveredNodeIDs: ["n-0"])
+        try await store.insertCheckpoint(checkpoint, for: key)
+        let otherAscendant = ContextStoreKey(ascendantID: "asc-2", timelineID: "tl-1")
+        #expect(await store.checkpoint(id: checkpoint.id, for: otherAscendant) == nil)
+        let foreign = makeCheckpoint(timelineID: "tl-2", coveredNodeIDs: ["n-0"])
+        await #expect(throws: ContextError.crossTimeline) {
+            try await store.insertCheckpoint(foreign, for: key)
         }
     }
 
@@ -171,6 +214,23 @@ struct ContextStoreTests {
             coverage: ContextSourceRange.hostComputed(timelineID: "tl-1", messageIDs: messageIDs),
             carry: carry,
             curatorVersion: "fixture-v1"
+        )
+    }
+
+    private func makeCheckpoint(
+        timelineID: String = "tl-1",
+        coveredNodeIDs: [String],
+        carry: ContextCarryState = ContextCarryState()
+    ) -> ContextCheckpoint {
+        ContextCheckpoint(
+            ascendantID: "asc-1",
+            timelineID: timelineID,
+            throughMessageID: "m-1",
+            sourceRange: ContextSourceRange.hostComputed(timelineID: timelineID, messageIDs: ["m-0", "m-1"]),
+            coveredNodeIDs: coveredNodeIDs,
+            carry: carry,
+            curatorVersion: "checkpoint-v1",
+            revision: 1
         )
     }
 

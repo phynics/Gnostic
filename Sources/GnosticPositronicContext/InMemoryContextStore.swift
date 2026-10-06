@@ -15,6 +15,7 @@ public actor InMemoryContextStore {
     private struct Partition {
         var nodes: [String: ContextNode] = [:]
         var checkpointCandidates: [String] = []
+        var checkpoints: [String: ContextCheckpoint] = [:]
         var activeCheckpointID: String?
         var projectionRevision = 0
     }
@@ -123,27 +124,72 @@ public actor InMemoryContextStore {
         partitions[key]?.checkpointCandidates ?? []
     }
 
-    /// Sets the active checkpoint.
+    /// Inserts one accepted checkpoint.
+    ///
+    /// A duplicate checkpoint with an identical body is idempotent. A different
+    /// body for the same content-addressed ID is a structured error.
     ///
     /// - Parameters:
-    ///   - nodeID: The checkpoint node ID, or `nil` to clear it.
-    ///   - key: The partition.
-    /// - Throws: ``ContextError/unknownSourceRange`` when the node does not exist.
-    public func setActiveCheckpoint(_ nodeID: String?, for key: ContextStoreKey) throws {
-        if let nodeID, partitions[key]?.nodes[nodeID] == nil {
-            throw ContextError.unknownSourceRange
+    ///   - checkpoint: The checkpoint to insert.
+    ///   - key: The Ascendant and Timeline partition.
+    /// - Throws: ``ContextError/crossTimeline`` when the checkpoint names another
+    ///   Timeline, or ``ContextError/conflictingBody`` when the ID already maps
+    ///   to a different body.
+    public func insertCheckpoint(_ checkpoint: ContextCheckpoint, for key: ContextStoreKey) throws {
+        guard checkpoint.timelineID == key.timelineID,
+              checkpoint.sourceRange.timelineID == key.timelineID
+        else {
+            throw ContextError.crossTimeline
         }
         var partition = partitions[key] ?? Partition()
-        partition.activeCheckpointID = nodeID
+        if let existing = partition.checkpoints[checkpoint.id] {
+            guard existing == checkpoint else { throw ContextError.conflictingBody }
+            return
+        }
+        partition.checkpoints[checkpoint.id] = checkpoint
         partitions[key] = partition
     }
 
-    /// Returns the active checkpoint node ID.
+    /// Returns one accepted checkpoint.
+    ///
+    /// - Parameters:
+    ///   - id: The checkpoint ID.
+    ///   - key: The partition.
+    /// - Returns: The checkpoint, or `nil`.
+    public func checkpoint(id: String, for key: ContextStoreKey) -> ContextCheckpoint? {
+        partitions[key]?.checkpoints[id]
+    }
+
+    /// Sets the active checkpoint.
+    ///
+    /// - Parameters:
+    ///   - checkpointID: The checkpoint ID, or `nil` to clear it.
+    ///   - key: The partition.
+    /// - Throws: ``ContextError/unknownSourceRange`` when the checkpoint does not exist.
+    public func setActiveCheckpoint(_ checkpointID: String?, for key: ContextStoreKey) throws {
+        if let checkpointID, partitions[key]?.checkpoints[checkpointID] == nil {
+            throw ContextError.unknownSourceRange
+        }
+        var partition = partitions[key] ?? Partition()
+        partition.activeCheckpointID = checkpointID
+        partitions[key] = partition
+    }
+
+    /// Returns the active checkpoint ID.
     ///
     /// - Parameter key: The partition.
-    /// - Returns: The active checkpoint node ID, or `nil`.
-    public func activeCheckpoint(for key: ContextStoreKey) -> String? {
+    /// - Returns: The active checkpoint ID, or `nil`.
+    public func activeCheckpointID(for key: ContextStoreKey) -> String? {
         partitions[key]?.activeCheckpointID
+    }
+
+    /// Returns the active checkpoint.
+    ///
+    /// - Parameter key: The partition.
+    /// - Returns: The active checkpoint, or `nil`.
+    public func activeCheckpoint(for key: ContextStoreKey) -> ContextCheckpoint? {
+        guard let partition = partitions[key], let id = partition.activeCheckpointID else { return nil }
+        return partition.checkpoints[id]
     }
 
     /// Advances the projection revision by one and returns the new value.
