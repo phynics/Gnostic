@@ -39,6 +39,15 @@ public final class NodeTransport {
     typealias TimelineRename = @MainActor (TimelineUpdateRequest) async throws -> TimelineStatus
     typealias WorkspaceList = @MainActor () async -> [WorkspaceListing]
     typealias WorkspaceMutation = @MainActor (WorkspaceOpsRequest) async throws -> Bool
+    typealias DiagnosticsNode = @MainActor () async throws -> NodeDiagnostics
+    typealias DiagnosticsAscendant = @MainActor (UUID) async throws -> AscendantDiagnostics
+    typealias DiagnosticsTimeline = @MainActor (UUID) async throws -> TimelineDiagnostics
+
+    /// Capabilities the serving Node injects into every Ascendant projection.
+    ///
+    /// Diagnostics are served by the Node itself, not by any Ascendant backend,
+    /// so the Node advertises the capability on every Ascendant it projects.
+    static let advertisedNodeCapabilities: Set<String> = [GnosticCapability.diagnostics]
 
     private let isAvailable: @MainActor () -> Bool
     private let turnOperation: Turn
@@ -59,6 +68,9 @@ public final class NodeTransport {
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
     private let workspaceProvider: MultiplexedWorkspaceProvider?
+    private let diagnosticsNodeOperation: DiagnosticsNode
+    private let diagnosticsAscendantOperation: DiagnosticsAscendant
+    private let diagnosticsTimelineOperation: DiagnosticsTimeline
     private let scope: RuntimeEffectScope
     private let registrationScope: RuntimeEffectScope
     private let responderScope: RuntimeEffectScope
@@ -89,6 +101,9 @@ public final class NodeTransport {
         listWorkspaces: @escaping WorkspaceList,
         attachWorkspace: @escaping WorkspaceMutation,
         detachWorkspace: @escaping WorkspaceMutation,
+        diagnosticsNode: @escaping DiagnosticsNode = { throw NodeRuntimeError.notRunning },
+        diagnosticsAscendant: @escaping DiagnosticsAscendant = { _ in throw NodeRuntimeError.notRunning },
+        diagnosticsTimeline: @escaping DiagnosticsTimeline = { _ in throw NodeRuntimeError.notRunning },
         hooks: TestHooks = .none
     ) {
         self.communication = communication
@@ -112,6 +127,9 @@ public final class NodeTransport {
         listWorkspacesOperation = listWorkspaces
         attachWorkspaceOperation = attachWorkspace
         detachWorkspaceOperation = detachWorkspace
+        diagnosticsNodeOperation = diagnosticsNode
+        diagnosticsAscendantOperation = diagnosticsAscendant
+        diagnosticsTimelineOperation = diagnosticsTimeline
         scope = try! RuntimeEffectScope(name: "node-transport")
         registrationScope = try! RuntimeEffectScope(name: "transport-registrations")
         responderScope = try! RuntimeEffectScope(name: "transport-responders")
@@ -249,6 +267,27 @@ public final class NodeTransport {
                 acquire: { try await workspace.register(on: communication, context: context) },
                 cleanup: { registrations in registrations.forEach { $0.cancel() } }
             )
+
+            let diagnostics = DiagnosticsProvider(
+                node: { [weak self] in
+                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
+                    return try await self.diagnosticsNodeOperation()
+                },
+                ascendant: { [weak self] ascendantID in
+                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
+                    return try await self.diagnosticsAscendantOperation(ascendantID)
+                },
+                timeline: { [weak self] timelineID in
+                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
+                    return try await self.diagnosticsTimelineOperation(timelineID)
+                }
+            )
+            try hooks.beforeRegistration("diagnostics")
+            _ = try await registrationScope.acquire(
+                label: "diagnostics",
+                acquire: { try await diagnostics.register(on: communication, context: context) },
+                cleanup: { registrations in registrations.forEach { $0.cancel() } }
+            )
         } catch {
             await cancel()
             throw error
@@ -303,7 +342,12 @@ public final class NodeTransport {
         replacing: Bool
     ) {
         guard isAvailable(), let lifecycle, advertisementTeardownInstalled else { return }
-        let object = GnosticAscendantObject(identity: identity, backendHealth: health, nodeID: nodeID)
+        let object = GnosticAscendantObject(
+            identity: identity,
+            backendHealth: health,
+            nodeID: nodeID,
+            nodeCapabilities: Self.advertisedNodeCapabilities
+        )
         advertisedObjects[object.objectId.string] = object
         if replacing { lifecycle.readvertiseDiscoverableObject(object: object) }
         else { lifecycle.advertiseDiscoverableObject(object: object) }
@@ -358,7 +402,12 @@ public final class NodeTransport {
 
     private func discoverableObjects() async -> [CoatyObject] {
         var objects: [CoatyObject] = ascendantIdentities().map {
-            GnosticAscendantObject(identity: $0, backendHealth: ascendantHealth($0.id), nodeID: nodeID)
+            GnosticAscendantObject(
+                identity: $0,
+                backendHealth: ascendantHealth($0.id),
+                nodeID: nodeID,
+                nodeCapabilities: Self.advertisedNodeCapabilities
+            )
         }
         if let registry {
             objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0, nodeID: nodeID) }

@@ -74,7 +74,7 @@ struct RuntimeObservationIntegrationTests {
             "observe-ascendant", "observe-timeline", "observe-workspace", "observe-deadvertise",
             "turn-observation", "workspace-handler", "workspace-query-responder", "ascendant-turn",
             "ascendant-turn-replay", "ascendant-turn-cancel", "permission-handler", "permission-observation", "timeline-status",
-            "timeline-management", "workspace-operations", "discover-responder", "advertisement-teardown",
+            "timeline-management", "workspace-operations", "diagnostics", "discover-responder", "advertisement-teardown",
             "advertisements", "permission", "registrations", "responders", "turn-update-publisher",
             "network-resolution", "subscription", "transport",
         ]

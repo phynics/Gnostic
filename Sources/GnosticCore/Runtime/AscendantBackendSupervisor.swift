@@ -141,6 +141,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private let backendIdentities: [AscendantBackendIdentity]
     private let backendSpecs: [UUID: BackendSpec]
     private var backendHealthByID: [UUID: AscendantBackendHealth]
+    private var quarantinedAscendantIDs: Set<UUID> = []
     private var backendLeases: [UUID: UUID]
     /// Retained so a factory cannot reissue an instance with late calls from a prior lease.
     private var retiredBackends: [any AscendantBackend] = []
@@ -192,6 +193,14 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
 
     func health(for ascendantID: UUID) -> AscendantBackendHealth {
         backendHealthByID[ascendantID] ?? .unknown
+    }
+
+    /// The Ascendants whose bound backend is quarantined after a lifecycle failure.
+    var quarantinedAscendants: Set<UUID> { quarantinedAscendantIDs }
+
+    /// Returns whether the Ascendant's backend is quarantined after a lifecycle failure.
+    func isQuarantined(_ ascendantID: UUID) -> Bool {
+        quarantinedAscendantIDs.contains(ascendantID)
     }
 
     func enabledToolIDs(for timelineID: UUID) async throws -> [String] {
@@ -300,6 +309,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         guard backendSpecs[ascendantID] != nil,
               let backend = ascendantAdapters.removeValue(forKey: ascendantID) else { return }
         backendHealthByID[ascendantID] = .failed
+        quarantinedAscendantIDs.insert(ascendantID)
         readvertiseAscendant(ascendantID, health: .failed)
         backendLeases.removeValue(forKey: ascendantID)
         await registry.invalidateBackendLease(for: ascendantID)
@@ -320,6 +330,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         ascendantAdapters.removeAll()
         backendLeases.removeAll()
         for backend in backends { backendHealthByID[backend.id] = .unknown }
+        quarantinedAscendantIDs.removeAll()
         retiredBackends.append(contentsOf: backends.map(\.backend))
         await backendRetirementSupervisor.retire(backends, stage: stage)
     }
@@ -404,6 +415,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
                 self.backendLeases[ascendantID] = lease
                 self.ascendantAdapters[ascendantID] = created
                 self.backendHealthByID[ascendantID] = .healthy
+                self.quarantinedAscendantIDs.remove(ascendantID)
                 self.readvertiseAscendant(ascendantID, health: .healthy)
                 candidate = nil
                 return created

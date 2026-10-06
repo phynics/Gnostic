@@ -29,6 +29,9 @@ final class NodeRuntimeHost {
         let listWorkspaces: NodeTransport.WorkspaceList
         let attachWorkspace: NodeTransport.WorkspaceMutation
         let detachWorkspace: NodeTransport.WorkspaceMutation
+        let diagnosticsNode: NodeTransport.DiagnosticsNode
+        let diagnosticsAscendant: NodeTransport.DiagnosticsAscendant
+        let diagnosticsTimeline: NodeTransport.DiagnosticsTimeline
     }
 
     let lifecycleCoordinator: RuntimeLifecycleCoordinator
@@ -100,7 +103,10 @@ final class NodeRuntimeHost {
             renameTimeline: wiring.renameTimeline,
             listWorkspaces: wiring.listWorkspaces,
             attachWorkspace: wiring.attachWorkspace,
-            detachWorkspace: wiring.detachWorkspace
+            detachWorkspace: wiring.detachWorkspace,
+            diagnosticsNode: wiring.diagnosticsNode,
+            diagnosticsAscendant: wiring.diagnosticsAscendant,
+            diagnosticsTimeline: wiring.diagnosticsTimeline
         )
         self.refreshUnresolved = refreshUnresolved
     }

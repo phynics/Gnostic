@@ -824,6 +824,92 @@ struct BackendLifecycleTests {
         #expect(await detachRuntime.timeline(id: timelineID)?.attachedWorkspaceIDs == [workspaceID])
     }
 
+    @Test("diagnostics read live payload-free state without mutating it")
+    @MainActor
+    func diagnosticsReadLiveStateWithoutMutation() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000361")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000362")!
+        let probe = LifecycleBackendProbe()
+        let runtime = try await NodeRuntime(
+            plan: makeManifest(
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+                timelines: [.init(id: timelineID, title: "First", operatingAscendantID: ascendantID)]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: probe, outcomes: [ascendantID: [.success]])
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let node = await runtime.diagnosticsNodeSnapshot()
+        #expect(node.ascendents.contains { $0.id == ascendantID && !$0.quarantined })
+        #expect(node.timelines.contains { $0.id == timelineID && $0.operatingAscendantID == ascendantID })
+        #expect(node.turns.inFlight == 0)
+
+        let ascendant = try await runtime.diagnosticsAscendantSnapshot(ascendantID)
+        #expect(ascendant.ascendant.id == ascendantID)
+        #expect(ascendant.privateTimelineID == timelineID)
+
+        let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
+        #expect(timeline.timeline.id == timelineID)
+
+        // Reading diagnostics does not change canonical state.
+        #expect(await runtime.snapshot().timelineIDs == [timelineID])
+        #expect(await runtime.backendHealth(for: ascendantID) == .healthy)
+
+        let unknownAscendant = UUID()
+        await #expect(throws: NodeRuntimeError.unknownAscendant(unknownAscendant)) {
+            _ = try await runtime.diagnosticsAscendantSnapshot(unknownAscendant)
+        }
+        let unknownTimeline = UUID()
+        await #expect(throws: NodeRuntimeError.missingTimeline(unknownTimeline)) {
+            _ = try await runtime.diagnosticsTimelineSnapshot(unknownTimeline)
+        }
+    }
+
+    @Test("a running Node serves capability-gated diagnostics to a consumer")
+    @MainActor
+    func runningNodeServesDiagnosticsToConsumer() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000363")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000364")!
+        let namespace = "diagnostics-e2e-\(UUID().uuidString.lowercased())"
+        let probe = LifecycleBackendProbe()
+        let runtime = try await NodeRuntime(
+            plan: makeManifest(
+                namespace: namespace,
+                ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+                timelines: [.init(id: timelineID, title: "First", operatingAscendantID: ascendantID)]
+            ).compileLaunchPlan(),
+            adapters: makeAdapters(probe: probe, outcomes: [ascendantID: [.success]])
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let session = try GnosticConsumerSession(
+            broker: GnosticBrokerSettings(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(2)
+        )
+        do {
+            try await session.start()
+            try await session.discover()
+            let client = try session.diagnosticsClient(timeout: .seconds(2))
+
+            let node = try await client.node()
+            #expect(node.ascendents.contains { $0.id == ascendantID })
+            #expect(node.timelines.contains { $0.id == timelineID })
+
+            let ascendant = try await client.ascendant(ascendantID)
+            #expect(ascendant.ascendant.id == ascendantID)
+
+            let timeline = try await client.timeline(timelineID)
+            #expect(timeline.timeline.id == timelineID)
+        } catch {
+            await session.stop()
+            throw error
+        }
+        await session.stop()
+    }
+
     private func makeAdapters(probe: LifecycleBackendProbe, outcomes: [UUID: [LifecycleFixtureBackend.Outcome]]) -> NodeRuntimeAdapters {
         var adapters = NodeRuntimeAdapters.default
         adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
@@ -863,9 +949,13 @@ struct BackendLifecycleTests {
         return adapters
     }
 
-    private func makeManifest(ascendants: [NodeManifest.Ascendant], timelines: [NodeManifest.Timeline]) -> NodeManifest {
+    private func makeManifest(
+        namespace: String = "backend-lifecycle-\(UUID().uuidString.lowercased())",
+        ascendants: [NodeManifest.Ascendant],
+        timelines: [NodeManifest.Timeline]
+    ) -> NodeManifest {
         NodeManifest(
-            broker: .init(host: "127.0.0.1", port: 1883, namespace: "backend-lifecycle-\(UUID().uuidString.lowercased())"),
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
             node: .init(id: UUID()),
             ascendants: ascendants,
             timelines: timelines

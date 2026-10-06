@@ -9,7 +9,7 @@ struct GnosticCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gnostic",
         abstract: "Inspect Axoloty objects, configure MQTT and Positronic details, and expose ACP.",
-        version: "0.4.2",
+        version: "0.4.3",
         subcommands: [ConfigCommand.self, InspectCommand.self, ServeCommand.self, ACPCommand.self, ExperimentCommand.self, DoctorCommand.self, TurnLogCommand.self]
     )
 }

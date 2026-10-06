@@ -202,6 +202,18 @@ public final class NodeRuntime {
             detachWorkspace: { [weak self] request in
                 guard let self else { throw NodeRuntimeError.notRunning }
                 return try await self.workspaceService.detach(request)
+            },
+            diagnosticsNode: { [weak self] in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return await self.diagnosticsNodeSnapshot()
+            },
+            diagnosticsAscendant: { [weak self] id in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.diagnosticsAscendantSnapshot(id)
+            },
+            diagnosticsTimeline: { [weak self] id in
+                guard let self else { throw NodeRuntimeError.notRunning }
+                return try await self.diagnosticsTimelineSnapshot(id)
             }
         )
         runtimeHost.configure(
@@ -276,6 +288,125 @@ public final class NodeRuntime {
     /// verification without exposing effect diagnostics as domain state.
     func observationSnapshot() async -> RuntimeEffectSnapshot {
         await turnCoordinator.observationSnapshot()
+    }
+
+    /// Returns a payload-free live snapshot for the whole Node.
+    ///
+    /// This is a read-only projection of canonical runtime state. It never
+    /// carries Turn bodies, secrets, or effect details, and it never mutates
+    /// the registry, the backend supervisor, or the Turn coordinator.
+    func diagnosticsNodeSnapshot() async -> NodeDiagnostics {
+        let ascendents = backendSupervisor.identities
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+            .map { identity in
+                DiagnosticsAscendantSummary(
+                    id: identity.id,
+                    name: identity.name,
+                    health: backendSupervisor.health(for: identity.id),
+                    quarantined: backendSupervisor.isQuarantined(identity.id)
+                )
+            }
+        let timelineIDs = await registry.listTimelines()
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
+        var timelines: [DiagnosticsTimelineSummary] = []
+        for timelineID in timelineIDs {
+            guard let record = await registry.timeline(id: timelineID) else { continue }
+            timelines.append(DiagnosticsTimelineSummary(
+                id: record.id,
+                title: record.timeline.title,
+                operatingAscendantID: record.operatorID
+            ))
+        }
+
+        let workspaceIDs = await registry.snapshot().workspaceIDs
+        let workspaces = await diagnosticsWorkspaceSummaries(ids: workspaceIDs)
+        let retained = await turnCoordinator.retainedStateCounts
+        let observation = await turnCoordinator.observationSnapshot()
+        let turns = DiagnosticsTurnCounters(
+            inFlight: await turnCoordinator.inFlightCount,
+            completed: retained.completed,
+            observationPending: await turnCoordinator.observationPendingCount,
+            observationClosed: await turnCoordinator.observationIsClosed
+        )
+        let observer = DiagnosticsObserverDrain(
+            liveObservations: observation.liveEffects.count,
+            cleanupFailures: observation.cleanupFailures.count,
+            retainedInFlight: retained.identities,
+            retainedCompleted: retained.completed,
+            retainedTombstones: retained.tombstones
+        )
+        return NodeDiagnostics(
+            nodeID: plan.nodeID,
+            ascendents: Array(ascendents.prefix(GnosticWirePayload.maximumListItems)),
+            timelines: Array(timelines.prefix(GnosticWirePayload.maximumListItems)),
+            workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems)),
+            turns: turns,
+            observer: observer
+        )
+    }
+
+    /// Returns a payload-free live snapshot for one Ascendant.
+    func diagnosticsAscendantSnapshot(_ ascendantID: UUID) async throws -> AscendantDiagnostics {
+        guard let identity = backendSupervisor.identities.first(where: { $0.id == ascendantID }) else {
+            throw NodeRuntimeError.unknownAscendant(ascendantID)
+        }
+        let privateTimelineID = identity.privateTimelineID
+        let operated = await registry.listTimelines()
+            .filter { $0.id == privateTimelineID || $0.attachedAscendantID == ascendantID }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        var timelines: [DiagnosticsTimelineSummary] = []
+        for timeline in operated {
+            timelines.append(DiagnosticsTimelineSummary(
+                id: timeline.id,
+                title: timeline.title,
+                operatingAscendantID: await registry.operatorID(forTimeline: timeline.id)
+            ))
+        }
+        return AscendantDiagnostics(
+            ascendant: DiagnosticsAscendantSummary(
+                id: identity.id,
+                name: identity.name,
+                health: backendSupervisor.health(for: identity.id),
+                quarantined: backendSupervisor.isQuarantined(identity.id)
+            ),
+            description: identity.description,
+            backendKind: identity.capabilities.backendKind,
+            backendVersion: identity.capabilities.backendVersion,
+            capabilities: identity.capabilities.interoperability.sorted(),
+            privateTimelineID: identity.privateTimelineID,
+            primaryWorkspaceID: identity.primaryWorkspaceID,
+            timelines: Array(timelines.prefix(GnosticWirePayload.maximumListItems))
+        )
+    }
+
+    /// Returns a payload-free live snapshot for one Timeline.
+    func diagnosticsTimelineSnapshot(_ timelineID: UUID) async throws -> TimelineDiagnostics {
+        guard let record = await registry.timeline(id: timelineID) else {
+            throw NodeRuntimeError.missingTimeline(timelineID)
+        }
+        let workspaces = await diagnosticsWorkspaceSummaries(ids: record.timeline.attachedWorkspaceIDs)
+        return TimelineDiagnostics(
+            timeline: DiagnosticsTimelineSummary(
+                id: record.id,
+                title: record.timeline.title,
+                operatingAscendantID: record.operatorID
+            ),
+            workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems))
+        )
+    }
+
+    private func diagnosticsWorkspaceSummaries(ids: [UUID]) async -> [DiagnosticsWorkspaceSummary] {
+        var summaries: [DiagnosticsWorkspaceSummary] = []
+        for id in ids.sorted(by: { $0.uuidString < $1.uuidString }) {
+            guard let record = await registry.workspace(id: id) else { continue }
+            summaries.append(DiagnosticsWorkspaceSummary(
+                id: record.id,
+                uri: record.uri,
+                status: GnosticWorkspaceEffectiveStatus(rawValue: record.status.rawValue) ?? .unsupported
+            ))
+        }
+        return summaries
     }
 
     public func advertisedWorkspaceIDs() -> [UUID] {

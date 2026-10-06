@@ -21,6 +21,8 @@ public enum AscendantInteroperabilityCapability: String, Codable, Sendable, Equa
     case workspaceAttachment = "me.atkn.gnostic.capability.workspace.attach"
     /// Invoking a tool advertised by an attached Workspace.
     case workspaceToolInvocation = "me.atkn.gnostic.capability.workspace.tool"
+    /// Reading payload-free live runtime diagnostics from the serving Node.
+    case diagnostics = "me.atkn.gnostic.capability.diagnostics"
 }
 
 /// Runtime health of an Ascendant's bound backend.

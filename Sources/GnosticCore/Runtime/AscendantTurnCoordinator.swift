@@ -82,6 +82,10 @@ public actor AscendantTurnCoordinator {
 
     internal var inFlightCount: Int { inFlight.count }
 
+    internal var observationPendingCount: Int { observationPending }
+
+    internal var observationIsClosed: Bool { observationClosed }
+
     internal func observationSnapshot() async -> RuntimeEffectSnapshot {
         await observationScope.snapshot()
     }
