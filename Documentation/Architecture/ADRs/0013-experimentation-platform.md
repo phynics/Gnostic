@@ -162,7 +162,8 @@ import inventory. This decision adds, as each layer lands:
   `make test`; a mutated tape reports a divergence; no recording code runs on
   a default Run path.
 - P8: `Sources/GnosticCore/Persistence/AppendOnlyEventLog.swift` imports only
-  `Foundation`; the durable Turn log is opt-in, and a restarted store replays
-  its journaled bounded updates, compaction, and message digest; the Atlas and
+  `Foundation`; the durable Turn log is opt-in, a restarted store replays its
+  journaled bounded updates, compaction, and message digest, and the log stays
+  within its size bound by checkpoint compaction; the Atlas and
   Context module stores replay their journaled state through the same primitive
   ([ADR 0014](0014-durable-turn-event-log.md)).

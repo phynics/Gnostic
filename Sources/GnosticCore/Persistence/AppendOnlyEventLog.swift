@@ -36,6 +36,51 @@ public struct EventLogEnvelope<Payload: Codable & Sendable & Equatable>: Sendabl
     }
 }
 
+/// Why a read-only scan stopped before the end of an ``AppendOnlyEventLog``.
+public enum EventLogTailKind: String, Codable, Sendable, Equatable {
+    /// The final record is incomplete or fails verification, as after a crash.
+    case torn
+    /// A record before the end of the file is malformed or unreadable.
+    case corrupt
+}
+
+/// The unreadable suffix a read-only scan found.
+public struct EventLogTail: Sendable, Equatable {
+    /// Whether the suffix looks like an interrupted final write or real damage.
+    public let kind: EventLogTailKind
+    /// A human-readable explanation of why decoding stopped.
+    public let reason: String
+    /// The number of bytes that decoded successfully.
+    public let validByteCount: Int
+    /// The total size of the scanned file.
+    public let totalByteCount: Int
+
+    public init(
+        kind: EventLogTailKind,
+        reason: String,
+        validByteCount: Int,
+        totalByteCount: Int
+    ) {
+        self.kind = kind
+        self.reason = reason
+        self.validByteCount = validByteCount
+        self.totalByteCount = totalByteCount
+    }
+}
+
+/// The result of a read-only ``AppendOnlyEventLog/scan()``.
+public struct EventLogScan<Payload: Codable & Sendable & Equatable>: Sendable, Equatable {
+    /// Every record that decoded successfully, in append order.
+    public let records: [EventLogEnvelope<Payload>]
+    /// The unreadable suffix, or `nil` when the whole file decoded.
+    public let tail: EventLogTail?
+
+    public init(records: [EventLogEnvelope<Payload>], tail: EventLogTail?) {
+        self.records = records
+        self.tail = tail
+    }
+}
+
 /// A crash-safe, append-only record log.
 ///
 /// The log stores one self-framed record per line:
@@ -71,16 +116,7 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
     public func append(_ payload: Payload) throws -> EventLogEnvelope<Payload> {
         try createFileIfNeeded()
         let recordedAt = Date()
-        let milliseconds = Int64((recordedAt.timeIntervalSince1970 * 1_000).rounded())
-        let json = try JSONEncoder().encode(payload)
-        var body = Data(String(milliseconds).utf8)
-        body.append(0x20)
-        body.append(json)
-
-        var frame = Data(Self.hex(Self.checksum(body)).utf8)
-        frame.append(0x20)
-        frame.append(body)
-        frame.append(0x0A)
+        let frame = try encodedFrame(payload, at: recordedAt)
 
         let handle = try FileHandle(forWritingTo: fileURL)
         defer { try? handle.close() }
@@ -92,27 +128,119 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
         return EventLogEnvelope(recordedAt: recordedAt, payload: payload)
     }
 
+    /// The current size of the log file in bytes, or zero when it does not exist.
+    public func byteCount() throws -> UInt64 {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return 0 }
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    /// Atomically replaces the entire log with `payloads`.
+    ///
+    /// Use this only to write a bounded checkpoint that supersedes the current
+    /// contents; normal writes must use ``append(_:)``. The replacement is
+    /// written to a temporary sibling file, flushed, and renamed over the log,
+    /// so a crash leaves either the previous log or the complete replacement,
+    /// never a partial file. The replacement keeps `0o600` permissions, and the
+    /// next ``append(_:)`` resumes after the replacement.
+    public func replaceAll(with payloads: [Payload]) throws {
+        try createFileIfNeeded()
+        var data = Data()
+        for payload in payloads {
+            data.append(try encodedFrame(payload, at: Date()))
+        }
+
+        let temporaryURL = fileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp")
+        guard FileManager.default.createFile(
+            atPath: temporaryURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw EventLogError.cannotOpenFile(path: temporaryURL.path)
+        }
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        do {
+            try handle.write(contentsOf: data)
+            if synchronizeEachAppend {
+                try handle.synchronize()
+            }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: temporaryURL)
+    }
+
+    /// Reads every valid record without modifying the file.
+    ///
+    /// The scan verifies each record checksum and reports the first unreadable
+    /// record as a ``EventLogTail``. Unlike ``recover()``, it never truncates or
+    /// creates the file, so a read-only viewer can inspect the log while the
+    /// writer keeps ownership of recovery.
+    public func scan() throws -> EventLogScan<Payload> {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return EventLogScan(records: [], tail: nil)
+        }
+        let data = try Data(contentsOf: fileURL)
+        return walk(data)
+    }
+
     /// Reads every valid record, in append order.
     ///
-    /// A torn or corrupt tail is truncated so it cannot accumulate.
+    /// A torn or corrupt tail is truncated so it cannot accumulate. Recovery
+    /// uses the same decode walk as ``scan()`` so the two cannot diverge.
     public func recover() throws -> [EventLogEnvelope<Payload>] {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-        let data = try Data(contentsOf: fileURL)
-        var envelopes: [EventLogEnvelope<Payload>] = []
+        let scan = try scan()
+        if let tail = scan.tail {
+            try truncate(to: tail.validByteCount)
+        }
+        return scan.records
+    }
+
+    private func walk(_ data: Data) -> EventLogScan<Payload> {
+        var records: [EventLogEnvelope<Payload>] = []
         var validByteCount = 0
         var cursor = data.startIndex
+        var tail: EventLogTail?
         while cursor < data.endIndex {
-            guard let newline = data[cursor...].firstIndex(of: 0x0A) else { break }
+            guard let newline = data[cursor...].firstIndex(of: 0x0A) else {
+                tail = EventLogTail(
+                    kind: .torn,
+                    reason: "the final record has no terminating newline",
+                    validByteCount: validByteCount,
+                    totalByteCount: data.count
+                )
+                break
+            }
             let line = data[cursor..<newline]
-            guard let envelope = try? decode(line) else { break }
-            envelopes.append(envelope)
-            validByteCount = data.distance(from: data.startIndex, to: data.index(after: newline))
-            cursor = data.index(after: newline)
+            do {
+                records.append(try decode(line))
+                validByteCount = data.distance(from: data.startIndex, to: data.index(after: newline))
+                cursor = data.index(after: newline)
+            } catch {
+                let isFinalLine = data.index(after: newline) >= data.endIndex
+                tail = EventLogTail(
+                    kind: isFinalLine ? .torn : .corrupt,
+                    reason: Self.reason(for: error),
+                    validByteCount: validByteCount,
+                    totalByteCount: data.count
+                )
+                break
+            }
         }
-        if validByteCount < data.count {
-            try truncate(to: validByteCount)
+        return EventLogScan(records: records, tail: tail)
+    }
+
+    private static func reason(for error: any Swift.Error) -> String {
+        if let localized = error as? LocalizedError, let description = localized.errorDescription {
+            return description
         }
-        return envelopes
+        return "\(error)"
     }
 
     private func decode(_ line: Data) throws -> EventLogEnvelope<Payload> {
@@ -137,6 +265,20 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
             recordedAt: Date(timeIntervalSince1970: Double(milliseconds) / 1_000),
             payload: payload
         )
+    }
+
+    private func encodedFrame(_ payload: Payload, at recordedAt: Date) throws -> Data {
+        let milliseconds = Int64((recordedAt.timeIntervalSince1970 * 1_000).rounded())
+        let json = try JSONEncoder().encode(payload)
+        var body = Data(String(milliseconds).utf8)
+        body.append(0x20)
+        body.append(json)
+
+        var frame = Data(Self.hex(Self.checksum(body)).utf8)
+        frame.append(0x20)
+        frame.append(body)
+        frame.append(0x0A)
+        return frame
     }
 
     private func createFileIfNeeded() throws {

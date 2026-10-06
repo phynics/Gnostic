@@ -137,6 +137,24 @@ gnostic doctor --check-provider
 fail the command. The `--format human|json` option is shared by `inspect`,
 `config module`, `config regime`, and `doctor`.
 
+## Inspect the durable Turn event log
+
+When `gnostic serve` runs with a durable Turn log (`--turn-log` or
+`GNOSTIC_STATE_HOME`), `gnostic turn-log` reads it without changing it. The
+command lists journaled turns grouped by Timeline and client turn id, verifies
+each record checksum, and reports a torn or corrupt tail:
+
+```sh
+gnostic turn-log
+gnostic turn-log --turn-log /var/lib/gnostic/turn-events-v1.jsonl
+gnostic turn-log --format json
+```
+
+`gnostic turn-log` resolves the same path as `serve`: an explicit `--turn-log`,
+else `GNOSTIC_STATE_HOME/turn-events-v1.jsonl`. With neither it reports that no
+log is configured. It exits `2` when it finds a torn or corrupt tail and leaves
+the tail in place; the writer-owned recovery truncates it on the next `serve`.
+
 ## Use the consumer session facade
 
 External clients that connect, discover, and read the catalog programmatically

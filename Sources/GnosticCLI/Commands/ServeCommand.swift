@@ -41,18 +41,16 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .customLong("turn-log"), help: "Path to the durable Turn event log (overrides GNOSTIC_STATE_HOME).")
     var turnLogPath: String?
 
-    /// Resolves the durable state directory used for derived state. An explicit
-    /// `--turn-log` names a file; its parent directory is the state home.
-    /// Otherwise `GNOSTIC_STATE_HOME` opts in, and an unset state directory
-    /// keeps the default in-memory behavior.
-    private func resolveStateHome(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> URL? {
-        if let turnLogPath, !turnLogPath.isEmpty {
-            return URL(fileURLWithPath: turnLogPath).deletingLastPathComponent()
-        }
-        guard let stateHome = environment["GNOSTIC_STATE_HOME"], !stateHome.isEmpty else { return nil }
-        return URL(fileURLWithPath: stateHome, isDirectory: true)
+    @Option(
+        name: .customLong("turn-log-max-bytes"),
+        help: "Byte bound for the durable Turn event log before it is compacted (default 4194304; 0 disables compaction)."
+    )
+    var turnLogMaxBytes: Int?
+
+    /// The shared durable-state resolver. `gnostic turn-log` uses the same type
+    /// so the viewer and the writer resolve identical paths.
+    private var turnLogLocation: TurnLogLocation {
+        TurnLogLocation(turnLogPath: turnLogPath)
     }
 
     /// Resolves the durable Turn event log location. An explicit `--turn-log`
@@ -60,10 +58,14 @@ struct ServeCommand: AsyncParsableCommand {
     func resolveTurnLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        if let turnLogPath, !turnLogPath.isEmpty {
-            return URL(fileURLWithPath: turnLogPath)
-        }
-        return resolveStateHome(environment: environment)?.appendingPathComponent("turn-events-v1.jsonl")
+        turnLogLocation.turnLogURL(environment: environment)
+    }
+
+    /// Resolves the compaction bound for the durable Turn event log. The store
+    /// default applies unless the operator overrides it; a non-positive value
+    /// disables compaction.
+    func resolveTurnLogMaxBytes() -> Int {
+        turnLogMaxBytes ?? AscendantTurnUpdateStore.defaultMaxJournalBytes
     }
 
     /// Resolves the per-Ascendant Timeline transcript directory under the
@@ -72,7 +74,7 @@ struct ServeCommand: AsyncParsableCommand {
     func resolveTimelineStoreDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        resolveStateHome(environment: environment)?.appendingPathComponent("timelines", isDirectory: true)
+        turnLogLocation.timelineStoreDirectory(environment: environment)
     }
 
     /// Runs the serve process until interrupted.
@@ -102,6 +104,7 @@ struct ServeCommand: AsyncParsableCommand {
                 plan: plan,
                 adapters: adapters,
                 turnLogURL: resolveTurnLogURL(),
+                turnLogMaxBytes: resolveTurnLogMaxBytes(),
                 timelineStoreDirectory: resolveTimelineStoreDirectory()
             )
             do {
