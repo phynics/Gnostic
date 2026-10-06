@@ -403,6 +403,24 @@ struct BackendArchitectureFitnessTests {
         }
     }
 
+    @Test("the durable event log primitive has no Gnostic or backend dependency")
+    func durableEventLogIsDependencyFree() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Persistence/AppendOnlyEventLog.swift"),
+            encoding: .utf8
+        )
+        for forbiddenModule in ["GnosticProtocol", "GnosticKit", "GnosticHost", "PositronicKit", "PKContracts", "Axoloty"] {
+            #expect(
+                !Self.imports(forbiddenModule, in: source),
+                "The shared durable event log primitive must not import '\(forbiddenModule)'."
+            )
+        }
+    }
+
     @Test("the ACP server front end is a separate target, not part of GnosticCLI")
     func acpFrontendIsNotInCLI() throws {
         let rootURL = URL(fileURLWithPath: #filePath)

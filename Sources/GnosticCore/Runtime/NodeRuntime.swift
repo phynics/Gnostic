@@ -60,14 +60,19 @@ public final class NodeRuntime {
             projectionRelay.projectTimeline(timeline, replacing: replacing)
         }
     )
-    public convenience init(plan: NodeLaunchPlan, adapters: NodeRuntimeAdapters = .default) async throws {
-        try await self.init(plan: plan, adapters: adapters, retirementPolicy: .live)
+    public convenience init(
+        plan: NodeLaunchPlan,
+        adapters: NodeRuntimeAdapters = .default,
+        turnLogURL: URL? = nil
+    ) async throws {
+        try await self.init(plan: plan, adapters: adapters, retirementPolicy: .live, turnLogURL: turnLogURL)
     }
 
     init(
         plan: NodeLaunchPlan,
         adapters: NodeRuntimeAdapters = .default,
-        retirementPolicy: BackendRetirementPolicy
+        retirementPolicy: BackendRetirementPolicy,
+        turnLogURL: URL? = nil
     ) async throws {
         try NodeAssembly.validate(plan, adapters: adapters)
         self.plan = plan
@@ -78,6 +83,9 @@ public final class NodeRuntime {
         let coordinator = RuntimeLifecycleCoordinator()
         let retirementSupervisor = BackendRetirementSupervisor(policy: retirementPolicy)
         let updates = AscendantTurnUpdateStore()
+        if let turnLogURL {
+            try await updates.enableDurability(at: turnLogURL)
+        }
         turnUpdates = updates
         permissionCoordinator = AscendantPermissionCoordinator(updates: updates)
         turnCoordinator = AscendantTurnCoordinator(observers: adapters.terminalTurnObservers)

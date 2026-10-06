@@ -227,6 +227,12 @@ and no production default.
 and a trailing newline. `ExperimentTrace.digest()` is the SHA-256 of that
 canonical JSON, so a tape is content-addressable across hosts.
 
+A Run can also journal its tape durably. `ExperimentTraceJournal` writes each
+event through the kernel's append-only log, and
+`ExperimentTraceRecorder.enableJournal(at:)` recovers a partial tape after a
+crash and continues its current Turn. Journaling is opt-in like recording
+itself: a recorder without a journal keeps its in-memory tape.
+
 Replay substitutes recorded model responses for live calls.
 `ExperimentReplay.replay(_:using:)` runs a harness over the tape, records what
 the harness actually did, and reports divergences. A changed prompt, a changed

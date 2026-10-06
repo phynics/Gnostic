@@ -38,6 +38,23 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .customLong("metrics-interval"), help: "Seconds between metrics snapshots (default 5).")
     var metricsIntervalSeconds: Double = 5
 
+    @Option(name: .customLong("turn-log"), help: "Path to the durable Turn event log (overrides GNOSTIC_STATE_HOME).")
+    var turnLogPath: String?
+
+    /// Resolves the durable Turn event log location. The log is opt-in: an
+    /// explicit `--turn-log` wins, otherwise `GNOSTIC_STATE_HOME` opts in, and
+    /// an unset state directory keeps the default in-memory behavior.
+    private func resolveTurnLogURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        if let turnLogPath, !turnLogPath.isEmpty {
+            return URL(fileURLWithPath: turnLogPath)
+        }
+        guard let stateHome = environment["GNOSTIC_STATE_HOME"], !stateHome.isEmpty else { return nil }
+        return URL(fileURLWithPath: stateHome, isDirectory: true)
+            .appendingPathComponent("turn-events-v1.jsonl")
+    }
+
     /// Runs the serve process until interrupted.
     @MainActor
     func run() async throws {
@@ -61,7 +78,11 @@ struct ServeCommand: AsyncParsableCommand {
             }
 
             let adapters = BackendComposition.default.makeAdapters(for: plan.ascendants)
-            let runtime = try await NodeRuntime(plan: plan, adapters: adapters)
+            let runtime = try await NodeRuntime(
+                plan: plan,
+                adapters: adapters,
+                turnLogURL: resolveTurnLogURL()
+            )
             do {
                 guard try await start(runtime: runtime, until: terminationMonitor) else { return }
                 let snapshot = await runtime.snapshot()

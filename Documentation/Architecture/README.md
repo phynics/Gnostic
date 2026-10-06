@@ -20,6 +20,7 @@ whether its decision is delivered or remains a target.
 9. [ADR 0009 — Multi-configuration Ascendant hosting on one Node](ADRs/0009-multi-configuration-ascendant-hosting.md)
 10. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md)
 11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md)
+12. [ADR 0014 — Durable Turn event log](ADRs/0014-durable-turn-event-log.md)
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch

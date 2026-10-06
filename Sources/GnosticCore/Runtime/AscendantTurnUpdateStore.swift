@@ -76,6 +76,7 @@ public actor AscendantTurnUpdateStore {
     private let eventBufferCapacity: Int
     private var entries: [Key: Entry] = [:]
     private var entryOrder: [Key] = []
+    private var journal: AppendOnlyEventLog<TurnEventRecord>?
 
     internal var retainedStateCounts: (entries: Int, bytes: Int) {
         (entries.count, entries.values.reduce(0) { $0 + $1.bytes })
@@ -106,6 +107,42 @@ public actor AscendantTurnUpdateStore {
         eventContinuation.finish()
     }
 
+    /// Enables durable journaling at `url` and rebuilds retained turns from the
+    /// records already on disk.
+    ///
+    /// Call before the first `start`. Recovery replays the bounded updates that
+    /// were journaled, so a restarted process sees the same replay ledger.
+    public func enableDurability(at url: URL) throws {
+        let log = AppendOnlyEventLog<TurnEventRecord>(fileURL: url)
+        for record in try log.recover() {
+            applyJournalRecord(record.payload)
+        }
+        journal = log
+    }
+
+    private func applyJournalRecord(_ record: TurnEventRecord) {
+        let clientTurnID = ValidatedClientTurnID(rawValue: record.clientTurnID)
+        do {
+            switch record.event {
+            case .started(let messageDigest):
+                try start(timelineID: record.timelineID, clientTurnID: clientTurnID, messageDigest: messageDigest)
+            case .update(let update):
+                try applyRecoveredUpdate(timelineID: record.timelineID, clientTurnID: clientTurnID, update: update)
+            case .finished:
+                finish(timelineID: record.timelineID, clientTurnID: clientTurnID)
+            }
+        } catch Error.capacityExceeded {
+            // The journal outgrew the live retention bound; skip deterministically.
+        } catch {
+            // Recovery never fails a serve start on one unreadable record.
+        }
+    }
+
+    private func journalRecord(_ record: TurnEventRecord) throws {
+        guard let journal else { return }
+        try journal.append(record)
+    }
+
     public func start(timelineID: UUID, clientTurnID: String, message: String? = nil) throws {
         let validated = try validatedClientTurnID(clientTurnID)
         try start(timelineID: timelineID, clientTurnID: validated, message: message)
@@ -116,16 +153,25 @@ public actor AscendantTurnUpdateStore {
     }
 
     internal func start(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String? = nil) throws {
+        try start(timelineID: timelineID, clientTurnID: clientTurnID, messageDigest: message.map { Self.messageDigest($0) })
+    }
+
+    internal func start(timelineID: UUID, clientTurnID: ValidatedClientTurnID, messageDigest: UInt64?) throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard entries[key] == nil else { return }
         evictFinishedEntriesIfNeeded(for: key)
         guard entries.count < maxEntries else { throw Error.capacityExceeded }
         entries[key] = Entry(
             updates: [], nextSequence: 1, bytes: 0, terminal: false, finished: false, compacted: false,
-            messageDigest: message.map { Self.messageDigest($0) }
+            messageDigest: messageDigest
         )
         touch(key)
         evictIfNeeded()
+        try journalRecord(TurnEventRecord(
+            timelineID: timelineID,
+            clientTurnID: clientTurnID.rawValue,
+            event: .started(messageDigest: messageDigest)
+        ))
     }
 
     public func finish(timelineID: UUID, clientTurnID: String) throws {
@@ -139,6 +185,13 @@ public actor AscendantTurnUpdateStore {
         entry.finished = true
         entries[key] = entry
         evictIfNeeded()
+        // The finish marker is an eviction hint. A dropped marker costs only a
+        // recovered entry that stays unfinished until it is finished again.
+        try? journalRecord(TurnEventRecord(
+            timelineID: timelineID,
+            clientTurnID: clientTurnID.rawValue,
+            event: .finished
+        ))
     }
 
     @discardableResult
@@ -196,56 +249,89 @@ public actor AscendantTurnUpdateStore {
             ),
             maxBytes: min(maxBytes / 2, 1_200)
         )
-        entry.nextSequence += 1
-        entry.updates.append(update)
-        entry.bytes += Self.encodedSize(update)
-        entry.terminal = entry.terminal || terminal
-
-        if entry.updates.count > maxEvents || entry.bytes > maxBytes {
-            var snapshotText = ""
-            var snapshotToolStates: [AscendantToolState] = []
-            var snapshotPermissionStates: [AscendantPermissionState] = []
-            var snapshotSequence = 0
-            // Reserve half of the byte budget for the accumulated snapshot.
-            while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
-                guard entry.updates.count > 1 else { break }
-                let removed = entry.updates.removeFirst()
-                entry.bytes -= Self.encodedSize(removed)
-                snapshotSequence = max(snapshotSequence, removed.sequence)
-                if removed.carriesAssistantText {
-                    snapshotText += removed.text ?? ""
-                }
-                if let toolState = removed.toolState {
-                    Self.upsert(toolState, into: &snapshotToolStates)
-                }
-                for toolState in removed.toolStates {
-                    Self.upsert(toolState, into: &snapshotToolStates)
-                }
-                if let permissionState = removed.permissionState {
-                    Self.upsert(permissionState, into: &snapshotPermissionStates)
-                }
-                for permissionState in removed.permissionStates {
-                    Self.upsert(permissionState, into: &snapshotPermissionStates)
-                }
-                entry.compacted = true
-            }
-            if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty {
-                let snapshot = Self.bounded(AscendantTurnUpdate(
-                    sequence: snapshotSequence,
-                    kind: AscendantTurnUpdateKind.assistantTextSnapshot.rawValue,
-                    text: snapshotText.isEmpty ? nil : snapshotText,
-                    toolStates: snapshotToolStates,
-                    permissionStates: snapshotPermissionStates
-                ), maxBytes: max(1, maxBytes - entry.bytes))
-                entry.updates.insert(snapshot, at: 0)
-                entry.bytes += Self.encodedSize(snapshot)
-            }
-        }
+        apply(update, into: &entry)
         entries[key] = entry
         touch(key)
         evictIfNeeded()
         eventContinuation.yield(Event(protocolMajor: protocolMajor, timelineID: timelineID, clientTurnID: clientTurnID.rawValue, update: update))
+        try journalRecord(TurnEventRecord(
+            protocolMajor: protocolMajor,
+            timelineID: timelineID,
+            clientTurnID: clientTurnID.rawValue,
+            event: .update(update)
+        ))
         return update
+    }
+
+    /// Applies one bounded update to an entry and compacts if needed.
+    private func apply(_ update: AscendantTurnUpdate, into entry: inout Entry) {
+        entry.nextSequence = max(entry.nextSequence, update.sequence + 1)
+        entry.updates.append(update)
+        entry.bytes += Self.encodedSize(update)
+        entry.terminal = entry.terminal || update.terminal
+        compactIfNeeded(&entry)
+    }
+
+    private func compactIfNeeded(_ entry: inout Entry) {
+        guard entry.updates.count > maxEvents || entry.bytes > maxBytes else { return }
+        var snapshotText = ""
+        var snapshotToolStates: [AscendantToolState] = []
+        var snapshotPermissionStates: [AscendantPermissionState] = []
+        var snapshotSequence = 0
+        // Reserve half of the byte budget for the accumulated snapshot.
+        while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
+            guard entry.updates.count > 1 else { break }
+            let removed = entry.updates.removeFirst()
+            entry.bytes -= Self.encodedSize(removed)
+            snapshotSequence = max(snapshotSequence, removed.sequence)
+            if removed.carriesAssistantText {
+                snapshotText += removed.text ?? ""
+            }
+            if let toolState = removed.toolState {
+                Self.upsert(toolState, into: &snapshotToolStates)
+            }
+            for toolState in removed.toolStates {
+                Self.upsert(toolState, into: &snapshotToolStates)
+            }
+            if let permissionState = removed.permissionState {
+                Self.upsert(permissionState, into: &snapshotPermissionStates)
+            }
+            for permissionState in removed.permissionStates {
+                Self.upsert(permissionState, into: &snapshotPermissionStates)
+            }
+            entry.compacted = true
+        }
+        if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty {
+            let snapshot = Self.bounded(AscendantTurnUpdate(
+                sequence: snapshotSequence,
+                kind: AscendantTurnUpdateKind.assistantTextSnapshot.rawValue,
+                text: snapshotText.isEmpty ? nil : snapshotText,
+                toolStates: snapshotToolStates,
+                permissionStates: snapshotPermissionStates
+            ), maxBytes: max(1, maxBytes - entry.bytes))
+            entry.updates.insert(snapshot, at: 0)
+            entry.bytes += Self.encodedSize(snapshot)
+        }
+    }
+
+    private func applyRecoveredUpdate(
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID,
+        update: AscendantTurnUpdate
+    ) throws {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        if entries[key] == nil {
+            evictFinishedEntriesIfNeeded(for: key)
+            guard entries.count < maxEntries else { throw Error.capacityExceeded }
+        }
+        var entry = entries[key] ?? Entry(
+            updates: [], nextSequence: 1, bytes: 0, terminal: false, finished: false, compacted: false,
+            messageDigest: nil
+        )
+        apply(update, into: &entry)
+        entries[key] = entry
+        touch(key)
+        evictIfNeeded()
     }
 
     public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) throws -> AscendantTurnReplay {
