@@ -503,8 +503,13 @@ export async function checkRepository({ root = process.cwd(), cliPath = null, cl
   try {
     const readme = readText(root, "README.md");
     const source = sourceText(root);
-    for (const phrase of ["list_network_objects", "inspect_network_object", "gnostic chat", "gnostic turn"]) {
+    for (const phrase of ["list_network_objects", "inspect_network_object", "gnostic chat"]) {
       if (readme.includes(phrase)) failures.push(`README.md: removed command or operation '${phrase}' is still documented`);
+    }
+    // The removed command is the bare `gnostic turn`; `gnostic turn-log` is a
+    // distinct, supported command (#534), so match the bare form only.
+    if (/(?:^|[^\w-])gnostic turn(?:\s|$|`)/m.test(readme)) {
+      failures.push("README.md: removed command or operation 'gnostic turn' is still documented");
     }
     for (const identifier of new Set([...readme.matchAll(/\bme\.atkn\.gnostic\.[A-Za-z0-9_.-]+/g)].map((match) => match[0]))) {
       if (!source.includes(identifier)) failures.push(`README.md: protocol identifier '${identifier}' does not occur in Sources`);
@@ -643,6 +648,9 @@ async function selfTest() {
         return { status: 0, stdout: "help" };
       },
     };
+    assert.deepEqual(await checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
+    // `gnostic turn-log` is a distinct command from the removed bare `gnostic turn`.
+    writeFileSync(join(root, "README.md"), `${readText(root, "README.md")}\ngnostic turn-log --format json\n`);
     assert.deepEqual(await checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
     writeFixture(root);
     await expectFailure(
