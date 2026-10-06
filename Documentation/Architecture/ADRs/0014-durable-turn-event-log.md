@@ -12,7 +12,8 @@ serve-restart durability.
 This record delivers the **Gnostic-owned Turn event log** and its crash
 recovery. It does not deliver backend transcript durability or a file-backed
 `TimelineRuntimeRepository`; both remain tracked by the follow-up issues named
-under [Consequences](#consequences).
+under [Consequences](#consequences). The first module adopters, the Atlas and
+Context stores, land under [#532](https://github.com/phynics/Gnostic/issues/532).
 
 ## Context
 
@@ -79,11 +80,30 @@ in-memory, exactly as ADR 0008 describes.
 continues its current Turn, so a crashed Run resumes recording instead of
 overwriting it.
 
+### Module adopters: the Atlas and Context stores
+
+Issue [#532](https://github.com/phynics/Gnostic/issues/532) adopts the same
+primitive in the first two modules named by ADR 0013.
+`InMemoryAtlasStore` journals `AtlasStoreEvent` (`registered`, `appended`,
+`accepted`) and `InMemoryContextStore` journals `ContextStoreEvent`
+(`inserted`, `checkpointCandidate`, `activeCheckpoint`, `projectionRevision`,
+`removedAll`). Each store gains `enableDurability(at:)`, which recovers the
+valid prefix and replays it through the store's own mutation path before the
+journal is installed. Journaling stays opt-in and writes after the in-memory
+mutation, so both module stores share one recovery shape with the kernel
+adopter.
+
 ### Privacy
 
 The journal stores bounded update payloads and the prompt **digest**, never
 prompt text. Conflict detection on replay still works, and no conversation
 content is written at rest by this decision.
+
+The module journals persist derived module state (Atlas report content,
+Context node bodies) that the store already holds for the process, never
+conversation transcripts. Module durability is opt-in at the store API: a
+process that never calls `enableDurability(at:)` writes no module content at
+rest.
 
 ### Boundary
 
@@ -125,8 +145,10 @@ quarantine, summaries, and cascade delete.
   it and keeps the valid prefix.
 - The kernel gains one dependency-free file under `Persistence/`.
 - The default in-memory serve path and the wire contract do not change.
+- The Atlas and Context module stores replay their journaled state on restart
+  through the same primitive.
 - Backend transcript durability and a file-backed `TimelineRuntimeRepository`
-  remain open work, with Atlas and Context adoption as separate follow-ups.
+  remain open work.
 
 ## Reconsideration triggers
 
@@ -143,12 +165,15 @@ sources for forbidden imports; the `Persistence/AppendOnlyEventLog.swift` file
 must import only `Foundation`. The behavioral evidence is the focused test
 suite: the primitive round-trips, truncates a torn tail, and refuses a corrupt
 middle record; the store replays a restarted ledger with compaction and digest
-intact and skips a start beyond its live retention bound. The default serve path
+intact and skips a start beyond its live retention bound. The module adoption
+adds recovery suites in `GnosticPositronicAtlasTests` and
+`GnosticPositronicContextTests`. The default serve path
 adds no file and no write.
 
 ## Links
 
 - [GNO-PLAT-P8 #461 — durable Turn event log](https://github.com/phynics/Gnostic/issues/461)
+- [Adopt the log in the Atlas and Context module stores #532](https://github.com/phynics/Gnostic/issues/532)
 - [Epic #438 — experimentation platform](https://github.com/phynics/Gnostic/issues/438)
 - [ADR 0008 — runtime-created Timeline durability](0008-runtime-created-timeline-durability.md)
 - [ADR 0013 — experimentation platform layering](0013-experimentation-platform.md)
