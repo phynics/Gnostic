@@ -8,6 +8,7 @@ import PKContracts
 import PositronicKit
 import Testing
 
+@testable import GnosticACPFrontend
 @testable import GnosticCLI
 @testable import GnosticHost
 

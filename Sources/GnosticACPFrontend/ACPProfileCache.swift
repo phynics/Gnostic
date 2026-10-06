@@ -4,17 +4,23 @@ import Foundation
 
 /// The broker identity is part of the cache key so a profile cannot leak from
 /// one local Gnostic namespace into another.
-struct ACPProfileCacheKey: Codable, Equatable, Sendable {
-    let host: String
-    let port: Int
-    let namespace: String
+public struct ACPProfileCacheKey: Codable, Equatable, Sendable {
+    public let host: String
+    public let port: Int
+    public let namespace: String
+
+    public init(host: String, port: Int, namespace: String) {
+        self.host = host
+        self.port = port
+        self.namespace = namespace
+    }
 }
 
 /// A short-lived cache for dynamic ACP profile sources. Profile discovery is
 /// metadata, not a live-session operation, so a bounded cache avoids opening a
 /// new MQTT connection for every Pi startup/configuration evaluation.
-struct ACPProfileCache: Sendable {
-    static let maxAge: TimeInterval = 30
+public struct ACPProfileCache: Sendable {
+    public static let maxAge: TimeInterval = 30
 
     private struct Entry: Codable, Sendable {
         let version: Int
@@ -25,11 +31,11 @@ struct ACPProfileCache: Sendable {
 
     private let url: URL
 
-    init(url: URL? = nil) {
+    public init(url: URL? = nil) {
         self.url = url ?? Self.defaultURL()
     }
 
-    func load(for key: ACPProfileCacheKey, now: Date = Date()) -> ACPProfileBundle? {
+    public func load(for key: ACPProfileCacheKey, now: Date = Date()) -> ACPProfileBundle? {
         guard let data = try? Data(contentsOf: url),
               let entry = try? JSONDecoder().decode(Entry.self, from: data),
               entry.version == 1,
@@ -41,7 +47,7 @@ struct ACPProfileCache: Sendable {
         return entry.bundle
     }
 
-    func store(
+    public func store(
         _ bundle: ACPProfileBundle,
         for key: ACPProfileCacheKey,
         generatedAt: Date = Date()
@@ -70,7 +76,7 @@ extension ACPProfileBundle {
     /// A profile that pins `--provider` names one serve process, so it stops
     /// resolving as soon as that process is replaced. Bundles cached before the
     /// node-bound contract have that shape and are discarded on load.
-    var isRestartStable: Bool {
+    public var isRestartStable: Bool {
         profiles.allSatisfy { !$0.args.contains("--provider") }
     }
 }

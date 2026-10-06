@@ -124,7 +124,7 @@ a Run must compare several regimes.
 | --- | --- |
 | The bundled Positronic Backend lives in `GnosticCore`, and its contribution hook is a Core type. | P7 [#460](https://github.com/phynics/Gnostic/issues/460); reopens ADR 0005 with platform neutrality as the benefit. |
 | The consumer client SDK lives in `GnosticCore`, which links PositronicKit. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
-| The ACP front end lives in `GnosticCLI`. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
+| The ACP front end lives in `GnosticCLI`. | P7 [#460](https://github.com/phynics/Gnostic/issues/460); delivered as the `GnosticACPFrontend` library target. |
 
 These are tracked deviations from a target, not architecture exceptions; they
 do not enter `exceptions.json`. A new deviation that is not on this list is an

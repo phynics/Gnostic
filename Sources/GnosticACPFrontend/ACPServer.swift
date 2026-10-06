@@ -4,12 +4,12 @@ import Foundation
 
 /// Runs one ACP agent process over LF-delimited JSON-RPC stdio.
 @MainActor
-struct ACPServer: Sendable {
+public struct ACPServer: Sendable {
     private let session: JSONRPCSession
     private let client: RemoteTurnClient
     private let requestBroker: ACPClientRequestBroker
 
-    init(
+    public init(
         client: RemoteTurnClient,
         ascendantID: UUID?,
         providerID: String? = nil,
@@ -46,7 +46,7 @@ struct ACPServer: Sendable {
         )
     }
 
-    func run() async throws {
+    public func run() async throws {
         try await client.connect()
         do {
             while true {

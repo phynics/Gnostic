@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
         .library(name: "GnosticLettaBackend", targets: ["GnosticLettaBackend"]),
+        .library(name: "GnosticACPFrontend", targets: ["GnosticACPFrontend"]),
         .library(name: "GnosticACPAscendant", targets: ["GnosticACPAscendant"]),
         .library(name: "GnosticRLMGuile", targets: ["GnosticRLMGuile"]),
         .library(name: "GnosticRLMChibi", targets: ["GnosticRLMChibi"]),
@@ -84,6 +85,13 @@ let package = Package(
             name: "GnosticLettaBackend",
             dependencies: [
                 "GnosticCore",
+            ]
+        ),
+        .target(
+            name: "GnosticACPFrontend",
+            dependencies: [
+                "GnosticCore",
+                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .target(
@@ -267,6 +275,7 @@ let package = Package(
         .executableTarget(
             name: "GnosticCLI",
             dependencies: [
+                "GnosticACPFrontend",
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticKit",
@@ -280,6 +289,7 @@ let package = Package(
         .testTarget(
             name: "GnosticCLITests",
             dependencies: [
+                "GnosticACPFrontend",
                 "GnosticCLI",
                 "GnosticACPAscendant",
                 "GnosticCore",

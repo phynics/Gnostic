@@ -325,7 +325,7 @@ public final class RemoteTurnClient: Sendable {
     }
 
     /// Reads the stable serving node identity from a catalog entry.
-    nonisolated static func nodeID(of entry: NetworkCatalogEntry) -> UUID? {
+    public nonisolated static func nodeID(of entry: NetworkCatalogEntry) -> UUID? {
         guard case let .string(raw) = entry.knownProperties["nodeID"] else { return nil }
         return UUID(uuidString: raw)
     }

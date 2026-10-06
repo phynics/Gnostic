@@ -5,11 +5,11 @@ import Foundation
 /// Durable metadata for ACP sessions. Conversation content remains in the
 /// remote Timeline; this file only lets a restarted ACP child recover its
 /// identity and validate the original client workspace.
-actor ACPSessionRegistry {
+public actor ACPSessionRegistry {
     private let url: URL
     private var records: [String: ACPSessionRecord]
 
-    init(url: URL? = nil) {
+    public init(url: URL? = nil) {
         self.url = url ?? Self.defaultURL()
         records = Self.load(from: self.url)
     }
