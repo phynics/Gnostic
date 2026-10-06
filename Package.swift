@@ -214,6 +214,7 @@ let package = Package(
         .testTarget(
             name: "GnosticPositronicContextTests",
             dependencies: [
+                "GnosticCore",
                 "GnosticPositronicContext",
                 "GnosticKit",
                 .product(name: "PKContracts", package: "PositronicKit"),
