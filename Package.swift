@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "GnosticHost", targets: ["GnosticHost"]),
         .library(name: "GnosticKit", targets: ["GnosticKit"]),
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
+        .library(name: "GnosticPositronicContext", targets: ["GnosticPositronicContext"]),
         .library(name: "GnosticRLM", targets: ["GnosticRLM"]),
         .library(name: "GnosticLettaBackend", targets: ["GnosticLettaBackend"]),
         .library(name: "GnosticACPAscendant", targets: ["GnosticACPAscendant"]),
@@ -75,6 +76,16 @@ let package = Package(
             name: "GnosticKit",
             dependencies: [
                 "GnosticCore",
+            ]
+        ),
+        .target(
+            name: "GnosticPositronicContext",
+            dependencies: [
+                "GnosticCore",
+                "GnosticKit",
+                .product(name: "PositronicKit", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
+                .product(name: "PKPrompt", package: "PositronicKit"),
             ]
         ),
         .target(
@@ -201,6 +212,15 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GnosticPositronicContextTests",
+            dependencies: [
+                "GnosticPositronicContext",
+                "GnosticKit",
+                .product(name: "PKContracts", package: "PositronicKit"),
+                .product(name: "PKPrompt", package: "PositronicKit"),
+            ]
+        ),
+        .testTarget(
             name: "GnosticLettaBackendTests",
             dependencies: [
                 "GnosticAscendantConformance",
@@ -270,6 +290,7 @@ let package = Package(
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticKit",
+                "GnosticPositronicContext",
                 "GnosticRLM",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),

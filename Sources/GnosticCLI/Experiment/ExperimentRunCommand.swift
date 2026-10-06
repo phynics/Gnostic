@@ -5,6 +5,7 @@ import Foundation
 import GnosticCore
 import GnosticHost
 import GnosticKit
+import GnosticPositronicContext
 import GnosticRLM
 import PKContracts
 import PositronicKit
@@ -44,13 +45,19 @@ enum ExperimentScenarioCatalog {
     }
 
     /// The built-in scenarios by module.
-    static let builtIn: [String: [String]] = ["kit": ["self-check"]]
+    static let builtIn: [String: [String]] = ["kit": ["self-check"], "context": ["baselines"]]
 
     /// Resolves one entry.
     static func entry(module: String, scenario: String) throws -> Entry {
         switch (module, scenario) {
         case ("kit", "self-check"):
             Entry(requiresRegime: false, makeDriver: { _ in SelfCheckScenario.driver }, matrixCaseCount: 1)
+        case ("context", "baselines"):
+            Entry(
+                requiresRegime: false,
+                makeDriver: { _ in ContextBenchmarkDriver() },
+                matrixCaseCount: ContextFixtureTranscript.cases.count
+            )
         default:
             throw ExperimentCommandError.unknownScenario(
                 module: module,

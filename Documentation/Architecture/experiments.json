@@ -39,8 +39,8 @@
     {
       "id": "GNO-MOD-CONTEXT",
       "name": "Positronic semantic context compiler",
-      "targets": [],
-      "status": "parked",
+      "targets": ["GnosticPositronicContext"],
+      "status": "incubating",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/426",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/457"],
       "runnable": false,
