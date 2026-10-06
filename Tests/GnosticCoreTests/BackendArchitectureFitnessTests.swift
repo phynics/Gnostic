@@ -452,18 +452,18 @@ struct BackendArchitectureFitnessTests {
                 contentsOf: protocolRoot.appendingPathComponent(relativePath),
                 encoding: .utf8
             )
-            for forbidden in [
-                "import GnosticCore",
-                "import GnosticHost",
-                "import GnosticKit",
-                "import PositronicKit",
-                "import PKContracts",
-                "import PKPrompt",
-                "import ACP",
+            for module in [
+                "GnosticCore",
+                "GnosticHost",
+                "GnosticKit",
+                "PositronicKit",
+                "PKContracts",
+                "PKPrompt",
+                "ACP",
             ] {
                 #expect(
-                    !source.contains(forbidden),
-                    "The wire boundary must not import '\(forbidden)' in GnosticProtocol/\(relativePath)."
+                    !Self.imports(module, in: source),
+                    "The wire boundary must not import '\(module)' in GnosticProtocol/\(relativePath)."
                 )
             }
         }
@@ -478,6 +478,19 @@ struct BackendArchitectureFitnessTests {
         #expect(!protocolTarget.contains("PositronicKit"))
         let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
         #expect(coreTarget.contains("\"GnosticProtocol\""))
+    }
+
+    /// Returns `true` when `source` imports the given module, ignoring an
+    /// optional declaration kind (`import struct Foo.Bar`). Comments and
+    /// strings that merely name an import do not match.
+    private static func imports(_ module: String, in source: String) -> Bool {
+        let kinds = "typealias|struct|class|enum|protocol|let|var|func"
+        let pattern = #"^[ \t]*import[ \t]+(?:(?:"# + kinds + #")[ \t]+)?"# + NSRegularExpression.escapedPattern(for: module) + #"\b"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) else {
+            return false
+        }
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        return expression.firstMatch(in: source, range: range) != nil
     }
 
     private static func targetBlock(named name: String, in package: String) -> String? {

@@ -39,11 +39,17 @@ public enum ManifestJSONValue: Codable, Equatable, Sendable {
         return value
     }
 
-    public var encodedByteCount: Int {
+    var encodedByteCount: Int {
         (try? JSONEncoder().encode(self).count) ?? Int.max
     }
 
-    public var maximumDepth: Int {
+    /// Returns `true` when this value fits the given nesting-depth and entry
+    /// limits. Callers own the limits; the projection helpers stay internal.
+    public func isWithinLimits(maxDepth: Int, maxEntries: Int) -> Bool {
+        maximumDepth <= maxDepth && entryCount <= maxEntries
+    }
+
+    var maximumDepth: Int {
         switch self {
         case .string, .number, .bool, .null: return 1
         case let .object(values): return 1 + (values.values.map(\.maximumDepth).max() ?? 0)
@@ -51,7 +57,7 @@ public enum ManifestJSONValue: Codable, Equatable, Sendable {
         }
     }
 
-    public var entryCount: Int {
+    var entryCount: Int {
         switch self {
         case .string, .number, .bool, .null: return 1
         case let .object(values): return values.count + values.values.reduce(0) { $0 + $1.entryCount }

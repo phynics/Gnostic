@@ -470,7 +470,10 @@ public final class CommunicationManager {
         self.identity = identity; self.namespace = namespace
         let dispatch = CompatibilityDispatch()
         self.dispatch = dispatch
-        let runtimeIdentity = try RuntimeIdentity(id: uuid16(identity.objectId.foundationUUID), name: identity.name)
+        guard let objectUUID = UUID(uuidString: identity.objectId.string) else {
+            throw AxolotyError.invalidArgument(argument: "identity", reason: "objectId is not a UUID")
+        }
+        let runtimeIdentity = try RuntimeIdentity(id: uuid16(objectUUID), name: identity.name)
         let capacities = try RuntimeCapacities(
             protocolMaximumPayloadBytes: GnosticWirePayload.maximumBytes,
             protocolMaximumTopicBytes: GnosticWirePayload.maximumTopicBytes

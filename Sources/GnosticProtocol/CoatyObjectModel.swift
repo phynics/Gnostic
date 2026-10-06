@@ -44,7 +44,6 @@ public struct CoatyUUID: Codable, CustomStringConvertible, Hashable, Sendable {
     }
 
     public var description: String { string }
-    public var foundationUUID: UUID { uuid }
 }
 
 open class CoatyObject: Codable, @unchecked Sendable { // SAFETY: Axoloty-compatible reference base; shared instances stay within one isolation domain.

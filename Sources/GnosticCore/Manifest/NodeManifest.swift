@@ -31,7 +31,7 @@ public struct AscendantBackendConfiguration: Codable, Equatable, Sendable {
         guard settings.keys.allSatisfy({ !$0.isEmpty }), secrets.keys.allSatisfy({ !$0.isEmpty }) else { return false }
         guard settings.count + secrets.count <= Self.maxEntryCount else { return false }
         let values = Array(settings.values) + Array(secrets.values)
-        guard values.allSatisfy({ $0.maximumDepth <= Self.maxNestingDepth && $0.entryCount <= Self.maxEntryCount }) else { return false }
+        guard values.allSatisfy({ $0.isWithinLimits(maxDepth: Self.maxNestingDepth, maxEntries: Self.maxEntryCount) }) else { return false }
         let bytes = (try? JSONEncoder().encode(self).count) ?? Int.max
         return bytes <= Self.maxJSONBytes
     }

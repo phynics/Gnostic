@@ -78,6 +78,10 @@ public enum GnosticProtocol {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Bounds a status code to the HTTP range the wire contract accepts.
+    ///
+    /// A value outside `100...599` becomes `500`, so a malformed peer status
+    /// cannot escape the protocol envelope.
     public static func boundedStatusCode(_ value: Int) -> Int {
         guard (100...599).contains(value) else { return 500 }
         return value
@@ -115,14 +119,14 @@ public enum GnosticProtocol {
 
 /// Stable, backend-independent interoperability capabilities.
 public enum GnosticCapability {
-    public static let textTurnInput = "me.atkn.gnostic.capability.turn.text"
-    public static let streamedTurnUpdates = "me.atkn.gnostic.capability.turn.stream"
-    public static let turnCancellation = "me.atkn.gnostic.capability.turn.cancel"
-    public static let turnReplay = "me.atkn.gnostic.capability.turn.replay"
-    public static let permissionMediation = "me.atkn.gnostic.capability.permission.mediation"
-    public static let timelineManagement = "me.atkn.gnostic.capability.timeline.management"
-    public static let workspaceAttachment = "me.atkn.gnostic.capability.workspace.attach"
-    public static let workspaceToolInvocation = "me.atkn.gnostic.capability.workspace.tool"
+    public static let textTurnInput = AscendantInteroperabilityCapability.textTurn.rawValue
+    public static let streamedTurnUpdates = AscendantInteroperabilityCapability.streamedUpdates.rawValue
+    public static let turnCancellation = AscendantInteroperabilityCapability.cancellation.rawValue
+    public static let turnReplay = AscendantInteroperabilityCapability.replay.rawValue
+    public static let permissionMediation = AscendantInteroperabilityCapability.permissionMediation.rawValue
+    public static let timelineManagement = AscendantInteroperabilityCapability.timelineManagement.rawValue
+    public static let workspaceAttachment = AscendantInteroperabilityCapability.workspaceAttachment.rawValue
+    public static let workspaceToolInvocation = AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue
 
     public static let stable: Set<String> = [
         textTurnInput,
