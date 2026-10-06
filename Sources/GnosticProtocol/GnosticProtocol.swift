@@ -127,6 +127,7 @@ public enum GnosticCapability {
     public static let timelineManagement = AscendantInteroperabilityCapability.timelineManagement.rawValue
     public static let workspaceAttachment = AscendantInteroperabilityCapability.workspaceAttachment.rawValue
     public static let workspaceToolInvocation = AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue
+    public static let diagnostics = AscendantInteroperabilityCapability.diagnostics.rawValue
 
     public static let stable: Set<String> = [
         textTurnInput,
@@ -136,6 +137,7 @@ public enum GnosticCapability {
         timelineManagement,
         workspaceAttachment,
         workspaceToolInvocation,
+        diagnostics,
     ]
 
     /// Experimental names are intentionally namespaced.  Generic clients

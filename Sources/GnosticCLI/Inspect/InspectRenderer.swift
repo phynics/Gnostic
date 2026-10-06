@@ -118,12 +118,155 @@ public enum InspectRenderer {
         }
     }
 
+    /// Renders payload-free node diagnostics as deterministic human text.
+    ///
+    /// - Parameter snapshot: The node diagnostics snapshot.
+    /// - Returns: Newline-terminated text.
+    public static func nodeText(_ snapshot: NodeDiagnostics) -> String {
+        var lines: [String] = [
+            "node  \(snapshot.nodeID?.uuidString.lowercased() ?? "<unassigned>")  protocolMajor=\(snapshot.protocolMajor)",
+            "turns  inFlight=\(snapshot.turns.inFlight) completed=\(snapshot.turns.completed) observationPending=\(snapshot.turns.observationPending) observationClosed=\(snapshot.turns.observationClosed)",
+            "observer  live=\(snapshot.observer.liveObservations) cleanupFailures=\(snapshot.observer.cleanupFailures) retainedInFlight=\(snapshot.observer.retainedInFlight) retainedCompleted=\(snapshot.observer.retainedCompleted) retainedTombstones=\(snapshot.observer.retainedTombstones)",
+            "ascendants  \(snapshot.ascendents.count)",
+        ]
+        for ascendant in snapshot.ascendents {
+            lines.append("  \(ascendantSummaryLine(ascendant))")
+        }
+        lines.append("timelines  \(snapshot.timelines.count)")
+        for timeline in snapshot.timelines {
+            lines.append("  \(timelineSummaryLine(timeline))")
+        }
+        lines.append("workspaces  \(snapshot.workspaces.count)")
+        for workspace in snapshot.workspaces {
+            lines.append("  \(workspaceSummaryLine(workspace))")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Renders payload-free Ascendant diagnostics as deterministic human text.
+    ///
+    /// - Parameter snapshot: The Ascendant diagnostics snapshot.
+    /// - Returns: Newline-terminated text.
+    public static func ascendantText(_ snapshot: AscendantDiagnostics) -> String {
+        var lines: [String] = [
+            "ascendant  \(snapshot.ascendant.id.uuidString.lowercased())  \(snapshot.ascendant.name)",
+            "health=\(snapshot.ascendant.health.rawValue) quarantined=\(snapshot.ascendant.quarantined)",
+            "backend=\(snapshot.backendKind ?? "-") version=\(snapshot.backendVersion ?? "-")",
+            "privateTimeline=\(snapshot.privateTimelineID.uuidString.lowercased()) primaryWorkspace=\(snapshot.primaryWorkspaceID?.uuidString.lowercased() ?? "-")",
+            "capabilities=[\(snapshot.capabilities.joined(separator: ","))]",
+            "timelines  \(snapshot.timelines.count)",
+        ]
+        for timeline in snapshot.timelines {
+            lines.append("  \(timelineSummaryLine(timeline))")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Renders payload-free Timeline diagnostics as deterministic human text.
+    ///
+    /// - Parameter snapshot: The Timeline diagnostics snapshot.
+    /// - Returns: Newline-terminated text.
+    public static func timelineText(_ snapshot: TimelineDiagnostics) -> String {
+        var lines: [String] = [
+            "timeline  \(snapshot.timeline.id.uuidString.lowercased())  \(snapshot.timeline.title)",
+            "operator=\(snapshot.timeline.operatingAscendantID?.uuidString.lowercased() ?? "-")",
+            "workspaces  \(snapshot.workspaces.count)",
+        ]
+        for workspace in snapshot.workspaces {
+            lines.append("  \(workspaceSummaryLine(workspace))")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Renders the observed wire-event envelopes as deterministic human text.
+    ///
+    /// No payload is ever rendered; only the payload byte count appears.
+    ///
+    /// - Parameter events: The event envelopes, in arrival order.
+    /// - Returns: Newline-terminated text.
+    public static func eventsText(_ events: [GnosticRawWireEvent]) -> String {
+        let lines = events.map { event in
+            let target = event.targetObjectId.map { id in
+                "\(event.objectType ?? "object"):\(id.uuidString.lowercased())"
+            } ?? "-"
+            return [
+                event.kind.rawValue,
+                "source=\(event.sourceId ?? "-")",
+                "object=\(target)",
+                "correlation=\(event.correlationId ?? "-")",
+                "channel=\(event.channelId ?? "-")",
+                "payloadBytes=\(event.payload.utf8.count)",
+            ].joined(separator: "  ")
+        }
+        return (lines.isEmpty ? "(no wire events observed)" : lines.joined(separator: "\n")) + "\n"
+    }
+
+    /// Encodes one diagnostics snapshot as deterministic JSON.
+    ///
+    /// - Parameter value: The diagnostics snapshot.
+    /// - Returns: Pretty-printed JSON text with a trailing newline.
+    /// - Throws: An encoding error.
+    public static func diagnosticsJSON<T: Encodable>(_ value: T) throws -> String {
+        try JSONOutput.encode(value) + "\n"
+    }
+
+    /// Encodes the observed wire-event envelopes as deterministic JSON.
+    ///
+    /// The projection never carries a payload; it carries only the payload
+    /// byte count, so secrets and Turn bodies cannot leak into output.
+    ///
+    /// - Parameter events: The event envelopes, in arrival order.
+    /// - Returns: Pretty-printed JSON text with a trailing newline.
+    /// - Throws: An encoding error.
+    public static func eventsJSON(_ events: [GnosticRawWireEvent]) throws -> String {
+        try JSONOutput.encode(events.map(RenderedWireEvent.init)) + "\n"
+    }
+
+    private static func ascendantSummaryLine(_ ascendant: DiagnosticsAscendantSummary) -> String {
+        "\(ascendant.id.uuidString.lowercased())  \(ascendant.name)  health=\(ascendant.health.rawValue) quarantined=\(ascendant.quarantined)"
+    }
+
+    private static func timelineSummaryLine(_ timeline: DiagnosticsTimelineSummary) -> String {
+        "\(timeline.id.uuidString.lowercased())  \(timeline.title)  operator=\(timeline.operatingAscendantID?.uuidString.lowercased() ?? "-")"
+    }
+
+    private static func workspaceSummaryLine(_ workspace: DiagnosticsWorkspaceSummary) -> String {
+        "\(workspace.id.uuidString.lowercased())  \(workspace.status.rawValue)  uri=\(workspace.uri)"
+    }
+
     private static func extraFields(for entry: NetworkCatalogEntry) -> String {
         guard entry.objectType == GnosticObjectType.workspace else { return "" }
         let status = entry.effectiveStatus?.rawValue ?? GnosticWorkspaceEffectiveStatus.unsupported.rawValue
         guard let workspace = entry.workspace else { return status }
         let toolIDs = workspace.tools.map(\.id).sorted().joined(separator: ",")
         return "\(status) uri=\(workspace.uri) tools=[\(toolIDs)]"
+    }
+}
+
+/// A payload-free projection of a raw wire event for CLI output.
+///
+/// The projection carries the envelope and the payload byte count, never the
+/// payload itself, so a rendered stream cannot leak a secret or a Turn body.
+public struct RenderedWireEvent: Codable, Sendable, Equatable {
+    public let kind: String
+    public let sourceId: String?
+    public let correlationId: String?
+    public let objectType: String?
+    public let targetObjectId: UUID?
+    public let channelId: String?
+    public let payloadBytes: Int
+
+    /// Projects one observed raw wire event.
+    ///
+    /// - Parameter event: The observed event.
+    public init(_ event: GnosticRawWireEvent) {
+        kind = event.kind.rawValue
+        sourceId = event.sourceId
+        correlationId = event.correlationId
+        objectType = event.objectType
+        targetObjectId = event.targetObjectId
+        channelId = event.channelId
+        payloadBytes = event.payload.utf8.count
     }
 }
 

@@ -491,6 +491,9 @@ public final class CommunicationManager {
             TimelineManagementProvider.createOperation,
             TimelineManagementProvider.listOperation,
             TimelineManagementProvider.updateOperation,
+            DiagnosticsProvider.nodeOperation,
+            DiagnosticsProvider.ascendantOperation,
+            DiagnosticsProvider.timelineOperation,
         ]
         for operation in callOperations {
             try builder.respond(to: .call(operation: operation), maximumConcurrentInvocations: 16) { invocation in

@@ -10,7 +10,7 @@ struct InspectCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "inspect",
         abstract: "Inspect advertised Gnostic objects on the broker.",
-        subcommands: [List.self, Object.self]
+        subcommands: [List.self, Object.self, Node.self, Ascendant.self, Timeline.self, Events.self]
     )
 
     /// Common broker connection options, overridable per invocation.
@@ -115,6 +115,133 @@ struct InspectCommand: AsyncParsableCommand {
                 let providers = matching.map(\.providerID).joined(separator: ", ")
                 FileHandle.standardError.write(Data("Object '\(uuid)' is advertised by multiple providers: \(providers).\n".utf8))
                 throw ExitCode(2)
+            }
+        }
+    }
+
+    /// `gnostic inspect node` — payload-free live Node diagnostics.
+    struct Node: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "node",
+            abstract: "Show live, payload-free diagnostics for a running Node."
+        )
+
+        @OptionGroup var connection: ConnectionOptions
+
+        @Option(name: .long, help: "Expected provider identity that serves diagnostics.")
+        var provider: String?
+
+        @OptionGroup var formatOptions: OutputFormatOptions
+
+        @MainActor
+        func run() async throws {
+            let format = try formatOptions.resolved()
+            let snapshot = try await InspectDiagnosticsSession(values: connection.values())
+                .node(providerID: provider)
+            switch format {
+            case .human:
+                print(InspectRenderer.nodeText(snapshot), terminator: "")
+            case .json:
+                print(try InspectRenderer.diagnosticsJSON(snapshot), terminator: "")
+            }
+        }
+    }
+
+    /// `gnostic inspect ascendant <uuid>` — payload-free live Ascendant diagnostics.
+    struct Ascendant: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "ascendant",
+            abstract: "Show live, payload-free diagnostics for one Ascendant."
+        )
+
+        @OptionGroup var connection: ConnectionOptions
+
+        @Argument(help: "The Ascendant UUID to inspect.")
+        var uuid: String
+
+        @Option(name: .long, help: "Expected provider identity that owns the Ascendant.")
+        var provider: String?
+
+        @OptionGroup var formatOptions: OutputFormatOptions
+
+        @MainActor
+        func run() async throws {
+            let format = try formatOptions.resolved()
+            guard let id = UUID(uuidString: uuid) else {
+                throw InspectError.malformedUUID(uuid)
+            }
+            let snapshot = try await InspectDiagnosticsSession(values: connection.values())
+                .ascendant(id, providerID: provider)
+            switch format {
+            case .human:
+                print(InspectRenderer.ascendantText(snapshot), terminator: "")
+            case .json:
+                print(try InspectRenderer.diagnosticsJSON(snapshot), terminator: "")
+            }
+        }
+    }
+
+    /// `gnostic inspect timeline <uuid>` — payload-free live Timeline diagnostics.
+    struct Timeline: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "timeline",
+            abstract: "Show live, payload-free diagnostics for one Timeline."
+        )
+
+        @OptionGroup var connection: ConnectionOptions
+
+        @Argument(help: "The Timeline UUID to inspect.")
+        var uuid: String
+
+        @Option(name: .long, help: "Expected provider identity that owns the Timeline.")
+        var provider: String?
+
+        @OptionGroup var formatOptions: OutputFormatOptions
+
+        @MainActor
+        func run() async throws {
+            let format = try formatOptions.resolved()
+            guard let id = UUID(uuidString: uuid) else {
+                throw InspectError.malformedUUID(uuid)
+            }
+            let snapshot = try await InspectDiagnosticsSession(values: connection.values())
+                .timeline(id, providerID: provider)
+            switch format {
+            case .human:
+                print(InspectRenderer.timelineText(snapshot), terminator: "")
+            case .json:
+                print(try InspectRenderer.diagnosticsJSON(snapshot), terminator: "")
+            }
+        }
+    }
+
+    /// `gnostic inspect events` — bounded raw wire-event envelopes, no payloads.
+    struct Events: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "events",
+            abstract: "Render the bounded raw wire-event stream without payloads."
+        )
+
+        @OptionGroup var connection: ConnectionOptions
+
+        @Flag(name: .long, help: "Keep observing past the observe window until the count or cancellation.")
+        var follow = false
+
+        @Option(name: .long, help: "Stop after this many events.")
+        var count: Int?
+
+        @OptionGroup var formatOptions: OutputFormatOptions
+
+        @MainActor
+        func run() async throws {
+            let format = try formatOptions.resolved()
+            let events = try await InspectDiagnosticsSession(values: connection.values())
+                .events(follow: follow, count: count)
+            switch format {
+            case .human:
+                print(InspectRenderer.eventsText(events), terminator: "")
+            case .json:
+                print(try InspectRenderer.eventsJSON(events), terminator: "")
             }
         }
     }

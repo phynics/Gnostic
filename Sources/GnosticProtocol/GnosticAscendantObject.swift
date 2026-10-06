@@ -78,10 +78,12 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable { //
         identity: AscendantBackendIdentity,
         backendHealth: AscendantBackendHealth = .unknown,
         nodeID: UUID? = nil,
+        nodeCapabilities: Set<String> = [],
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
         capabilities = identity.capabilities.interoperability
+            .union(nodeCapabilities)
             .filter { GnosticCapability.stable.contains($0) || GnosticCapability.isNamespacedExperimental($0) }
             .sorted()
         self.backendHealth = backendHealth

@@ -18,6 +18,7 @@ protocol GnosticClientCallFailure: Error {
 extension GnosticTurnClientError: GnosticClientCallFailure {}
 extension GnosticWorkspaceClientError: GnosticClientCallFailure {}
 extension GnosticTimelineClientError: GnosticClientCallFailure {}
+extension GnosticDiagnosticsClientError: GnosticClientCallFailure {}
 
 /// One provider-addressed unary Call/Return exchange for the public consumer
 /// clients.
@@ -177,6 +178,25 @@ struct GnosticCatalogLookup {
                 && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
                 && entry.advertisedCapabilities.contains(capability)
         }
+    }
+
+    /// Returns the distinct provider identities whose Ascendant advertisements
+    /// declare a capability. Matching is case-insensitive; the first
+    /// encountered spelling of each provider is returned.
+    static func providers(
+        advertising capability: String,
+        in entries: [NetworkCatalogEntry]
+    ) -> [String] {
+        var providers: [String] = []
+        var seen: Set<String> = []
+        for entry in entries
+            where entry.objectType == GnosticObjectType.ascendant
+                && entry.advertisedCapabilities.contains(capability) {
+            let key = entry.providerID.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            providers.append(entry.providerID)
+        }
+        return providers
     }
 }
 

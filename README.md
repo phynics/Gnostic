@@ -1,11 +1,13 @@
 # Gnostic
 
-Gnostic 0.4.2 hosts Ascendant backends and exposes them over Axoloty. The
+Gnostic 0.4.3 hosts Ascendant backends and exposes them over Axoloty. The
 bundled Ascendant backend is `positronic`. The bundled local Workspace backend
 is `echo`.
 
-The [0.4.2 compatibility declaration](Documentation/Compatibility/0.4.2.md)
-records the load-time cancellation-shield fix this release carries. The
+The [0.4.3 compatibility declaration](Documentation/Compatibility/0.4.3.md)
+records the capability-gated live diagnostics this release adds. The
+[0.4.2 compatibility declaration](Documentation/Compatibility/0.4.2.md)
+records the load-time cancellation-shield fix. The
 [0.4.1 declaration](Documentation/Compatibility/0.4.1.md) records the
 deployment-target fix. The
 [0.4.0 declaration](Documentation/Compatibility/0.4.0.md) lists the public
@@ -70,6 +72,25 @@ gnostic inspect object 00000000-0000-0000-0000-000000000000
 The object inspection command requires an advertised object UUID. Workspace
 tool calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` operation.
 Gnostic does not expose direct file APIs for remote Workspaces.
+
+Read payload-free live runtime state from a running Node. These commands use
+the `me.atkn.gnostic.diagnostics.node`, `me.atkn.gnostic.diagnostics.ascendant`,
+and `me.atkn.gnostic.diagnostics.timeline` operations, gated on the
+`me.atkn.gnostic.capability.diagnostics` capability:
+
+```sh
+gnostic inspect node
+gnostic inspect ascendant 00000000-0000-0000-0000-000000000000
+gnostic inspect timeline 00000000-0000-0000-0000-000000000000
+gnostic inspect events
+```
+
+`gnostic inspect node`, `gnostic inspect ascendant`, and `gnostic inspect
+timeline` report backend health and quarantine, in-flight and completed Turn
+counts, Workspace effective status, and observer drain statistics. They never
+print a Turn body or a secret value. `gnostic inspect events` renders the
+bounded raw wire-event stream as envelopes with a payload byte count; it never
+prints the payload. Every command supports `--format json`.
 
 ## Inspect the platform configuration
 
