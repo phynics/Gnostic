@@ -214,6 +214,7 @@ let package = Package(
                 .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
+                .product(name: "PKTestSupport", package: "PositronicKit"),
             ]
         ),
         .testTarget(

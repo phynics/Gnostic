@@ -34,6 +34,7 @@ not Gnostic identity, manifest, backend, or network projection types.
 
 The retained `PKContracts` imports are limited to the explicit adapter and
 transport seams in `Adapters/AxolotyWorkspace.swift`,
+`Adapters/FileTimelineRuntimeRepository.swift`,
 `Adapters/PositronicAscendantAdapter.swift`,
 `Adapters/PositronicContribution.swift`,
 `Adapters/WorkspaceProvider.swift`,
@@ -63,6 +64,7 @@ Every remaining `PositronicKit` import in `GnosticCore` has one of these roles:
 | Files | Role | Boundary rule |
 | --- | --- | --- |
 | `Adapters/PositronicAscendantAdapter.swift` | Positronic Backend implementation | Owns native Agent/TimelineRecord construction, persistence, tools, events, and shutdown. Native values do not cross `AscendantBackend`. |
+| `Adapters/FileTimelineRuntimeRepository.swift` | Durable Timeline runtime store | Composes the in-memory reference repository with Gnostic's append-only event log to persist Timeline history and Turn transitions across restarts. The `BackendTimelineStoreCapability` it defines carries only the backend-neutral `TimelineRuntimeRepository`/`WorkspaceBindingRepository` existentials. |
 | `Adapters/PositronicContribution.swift` | Positronic contribution seam | Generic, statically selected extension of one Positronic Ascendant: additional tools and one bounded `TurnContextSource`. Native tool/context values stay inside the bundled backend boundary; the seam carries no experiment type. |
 | `Adapters/AxolotyWorkspace.swift`, `Runtime/WorkspaceService.swift`, `Runtime/BackendWorkspaceService.swift` | Explicit Workspace host bridge | Converts Gnostic-owned references and backend capability values to native Workspace values only at the local execution seam. |
 | `Services/WorkspaceReferenceProjection.swift` | Explicit projection adapter | Performs the only generic Workspace-reference conversion in both directions. |
