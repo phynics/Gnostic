@@ -100,6 +100,15 @@ Atlas is a Module.
 A Run is one execution of a scenario under one Regime. It produces a trace and
 a result record that name the Regime and the Module versions used.
 
+## Turn event log
+
+A Turn event log is the append-only, crash-safe record of one identified
+Turn's bounded updates. Gnostic owns one shared log primitive in the kernel;
+a restarted store replays the valid prefix and truncates a torn tail.
+Durability is opt-in, so a serve without a configured state directory keeps its
+in-memory ledger. The log stores bounded update payloads and a prompt digest,
+never prompt text.
+
 ## Bounded legacy Agent terminology
 
 `Agent` is retained only when naming an external protocol boundary, an
