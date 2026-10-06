@@ -128,7 +128,8 @@ struct NodeAssembly {
         permissionCoordinator: AscendantPermissionCoordinator,
         lifetime: NodeRuntimeLifetime,
         projectionRelay: NodeProjectionRelay,
-        retirementSupervisor: BackendRetirementSupervisor
+        retirementSupervisor: BackendRetirementSupervisor,
+        runtimeTimelineDirectory: URL? = nil
     ) async throws -> BackendProducts {
         var operatedTimelines: [AscendantRuntimeTimeline] = []
         var identities: [AscendantBackendIdentity] = []
@@ -143,6 +144,7 @@ struct NodeAssembly {
         var instances: [UUID: any AscendantBackend] = [:]
         var health: [UUID: AscendantBackendHealth] = [:]
         var attachmentCapabilities: [(ascendantID: UUID, lease: UUID, capability: BackendWorkspaceAttachmentCapability)] = []
+        var timelineStoreCapabilities: [UUID: BackendTimelineStoreCapability] = [:]
 
         do {
             for ascendant in plan.ascendants {
@@ -155,10 +157,20 @@ struct NodeAssembly {
                 specs[ascendant.id] = .init(ascendant: ascendant, configuration: backend)
                 leases[ascendant.id] = lease
                 attachmentCapabilities.append((ascendant.id, lease, attachmentCapability))
+                var optionalCapabilities: [any AscendantBackendOptionalCapability] = [workspaceCapability, attachmentCapability]
+                if let runtimeTimelineDirectory {
+                    let store = try await FileTimelineRuntimeRepository(
+                        fileURL: runtimeTimelineDirectory
+                            .appendingPathComponent("\(ascendant.id.uuidString.lowercased()).jsonl")
+                    )
+                    let capability = BackendTimelineStoreCapability(store: store)
+                    timelineStoreCapabilities[ascendant.id] = capability
+                    optionalCapabilities.append(capability)
+                }
                 let services = AscendantBackendServices(
                     workspace: infrastructure.backendWorkspaceService,
                     permission: permissionCoordinator,
-                    optionalCapabilities: [workspaceCapability, attachmentCapability]
+                    optionalCapabilities: optionalCapabilities
                 )
                 let instance = try await adapters.ascendants.makeBackend(
                     for: ascendant,
@@ -183,6 +195,7 @@ struct NodeAssembly {
                 permissionCoordinator: permissionCoordinator,
                 projectionRelay: projectionRelay,
                 backendWorkspaceCapability: workspaceCapability,
+                backendTimelineCapabilities: timelineStoreCapabilities,
                 ascendantAdapters: instances,
                 backendIdentities: identities,
                 backendSpecs: specs,

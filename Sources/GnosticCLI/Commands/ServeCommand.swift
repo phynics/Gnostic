@@ -41,18 +41,38 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .customLong("turn-log"), help: "Path to the durable Turn event log (overrides GNOSTIC_STATE_HOME).")
     var turnLogPath: String?
 
-    /// Resolves the durable Turn event log location. The log is opt-in: an
-    /// explicit `--turn-log` wins, otherwise `GNOSTIC_STATE_HOME` opts in, and
-    /// an unset state directory keeps the default in-memory behavior.
-    private func resolveTurnLogURL(
+    /// Resolves the durable state directory used for derived state. An explicit
+    /// `--turn-log` names a file; its parent directory is the state home.
+    /// Otherwise `GNOSTIC_STATE_HOME` opts in, and an unset state directory
+    /// keeps the default in-memory behavior.
+    private func resolveStateHome(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        if let turnLogPath, !turnLogPath.isEmpty {
+            return URL(fileURLWithPath: turnLogPath).deletingLastPathComponent()
+        }
+        guard let stateHome = environment["GNOSTIC_STATE_HOME"], !stateHome.isEmpty else { return nil }
+        return URL(fileURLWithPath: stateHome, isDirectory: true)
+    }
+
+    /// Resolves the durable Turn event log location. An explicit `--turn-log`
+    /// is used verbatim; otherwise the log is derived under the state home.
+    func resolveTurnLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
         if let turnLogPath, !turnLogPath.isEmpty {
             return URL(fileURLWithPath: turnLogPath)
         }
-        guard let stateHome = environment["GNOSTIC_STATE_HOME"], !stateHome.isEmpty else { return nil }
-        return URL(fileURLWithPath: stateHome, isDirectory: true)
-            .appendingPathComponent("turn-events-v1.jsonl")
+        return resolveStateHome(environment: environment)?.appendingPathComponent("turn-events-v1.jsonl")
+    }
+
+    /// Resolves the per-Ascendant Timeline transcript directory under the
+    /// state home. Timeline durability is opt-in for the same reason the Turn
+    /// log is: an unset state directory keeps the process-scoped default.
+    func resolveTimelineStoreDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        resolveStateHome(environment: environment)?.appendingPathComponent("timelines", isDirectory: true)
     }
 
     /// Runs the serve process until interrupted.
@@ -81,7 +101,8 @@ struct ServeCommand: AsyncParsableCommand {
             let runtime = try await NodeRuntime(
                 plan: plan,
                 adapters: adapters,
-                turnLogURL: resolveTurnLogURL()
+                turnLogURL: resolveTurnLogURL(),
+                timelineStoreDirectory: resolveTimelineStoreDirectory()
             )
             do {
                 guard try await start(runtime: runtime, until: terminationMonitor) else { return }

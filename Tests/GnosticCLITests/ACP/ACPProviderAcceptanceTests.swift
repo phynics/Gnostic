@@ -752,6 +752,128 @@ struct ACPProviderAcceptanceTests {
         #expect(record.closedAt != nil)
         #expect(record.cwd == cwd)
     }
+
+    /// ADR 0015: with a durable state home, a runtime Timeline survives an
+    /// unclean serve restart, so an ACP session resumes instead of orphaning.
+    @Test("a serve restart resumes an ACP session from durable Timeline state", .timeLimit(.minutes(2)))
+    @MainActor
+    func serveRestartResumesRuntimeTimelineSessions() async throws {
+        let environmentSource = ProcessInfo.processInfo.environment
+        guard let binary = environmentSource["GNOSTIC_SERVE_BINARY"]
+                ?? environmentSource["GNOSTIC_CLI_BINARY"]
+                ?? environmentSource["GNOSTIC_ACP_BINARY"] else { return }
+
+        let namespace = "acp-resume-\(UUID().uuidString.lowercased())"
+        let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000232"))
+        let folder = try TemporaryFolder()
+        let configURL = folder.url.appendingPathComponent("manifest.json")
+        let manifest = try acceptanceManifest(
+            namespace: namespace,
+            nodeID: "A21D0000-0000-4000-8000-000000000231",
+            ascendantID: ascendantID,
+            timelineID: "A21D0000-0000-4000-8000-000000000233",
+            name: "Resume ACP Ascendant"
+        )
+        try JSONEncoder().encode(manifest).write(to: configURL, options: .atomic)
+        let stateHome = folder.url.appendingPathComponent("state", isDirectory: true)
+        var environment = environmentSource
+        environment["GNOSTIC_CONFIG"] = configURL.path
+        environment["GNOSTIC_STATE_HOME"] = stateHome.path
+
+        let cwd = "/tmp/acp-resume-acceptance"
+        let firstServe = try launchServe(
+            binary: binary,
+            configURL: configURL,
+            namespace: namespace,
+            environment: environment
+        )
+        defer { firstServe.kill() }
+        try await firstServe.waitUntilOnline()
+
+        let creator = try launchACP(
+            binary: binary,
+            ascendantID: ascendantID,
+            providerID: nil,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
+        )
+        defer { if creator.process.isRunning { creator.process.terminate() } }
+        var creatorOutput = creator.lines.stream.makeAsyncIterator()
+        try creator.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("resume-acceptance"), "version": .string("1")]),
+        ])))
+        #expect(try await readResponse(from: &creatorOutput).error == nil)
+
+        try creator.send(JSONRPCRequest(id: .number(2), method: "session/new", params: .dictionary([
+            "cwd": .string(cwd),
+            "mcpServers": .array([]),
+        ])))
+        let created = try await readResponse(from: &creatorOutput)
+        #expect(created.error == nil)
+        guard case let .dictionary(createdValues) = created.result,
+              case let .string(sessionID) = createdValues["sessionId"] else {
+            Issue.record("session/new returned no sessionId")
+            return
+        }
+
+        try creator.send(JSONRPCRequest(id: .number(3), method: "shutdown"))
+        #expect(try await readResponse(from: &creatorOutput).error == nil)
+        creator.input.fileHandleForWriting.closeFile()
+        creator.process.waitUntilExit()
+
+        firstServe.kill()
+        let secondServe = try launchServe(
+            binary: binary,
+            configURL: configURL,
+            namespace: namespace,
+            environment: environment
+        )
+        defer { secondServe.kill() }
+        try await secondServe.waitUntilOnline()
+
+        let resumer = try launchACP(
+            binary: binary,
+            ascendantID: ascendantID,
+            providerID: nil,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
+        )
+        defer { if resumer.process.isRunning { resumer.process.terminate() } }
+        var resumerOutput = resumer.lines.stream.makeAsyncIterator()
+        try resumer.send(JSONRPCRequest(id: .number(4), method: "initialize", params: .dictionary([
+            "protocolVersion": .number(1),
+            "clientInfo": .dictionary(["name": .string("resume-acceptance"), "version": .string("1")]),
+        ])))
+        #expect(try await readResponse(from: &resumerOutput).error == nil)
+
+        try resumer.send(JSONRPCRequest(id: .number(5), method: "session/resume", params: .dictionary([
+            "sessionId": .string(sessionID),
+            "cwd": .string(cwd),
+            "mcpServers": .array([]),
+        ])))
+        let resumed = try await readResponse(from: &resumerOutput)
+        #expect(resumed.error == nil)
+
+        try resumer.send(JSONRPCRequest(id: .number(6), method: "session/list", params: .dictionary([
+            "cwd": .string(cwd),
+        ])))
+        #expect(listedSessionIDs(in: try await readResponse(from: &resumerOutput)).contains(sessionID))
+
+        try resumer.send(JSONRPCRequest(id: .number(7), method: "shutdown"))
+        #expect(try await readResponse(from: &resumerOutput).error == nil)
+        resumer.input.fileHandleForWriting.closeFile()
+        resumer.process.waitUntilExit()
+
+        // Resume must not have marked the surviving record ended.
+        let registry = ACPSessionRegistry(url: stateHome.appendingPathComponent("acp-sessions-v1.json"))
+        let record = try #require(await registry.record(id: sessionID))
+        #expect(record.closedAt == nil)
+    }
 }
 
 /// A `gnostic serve` subprocess whose lifetime the test controls.
@@ -791,13 +913,24 @@ private struct ServeProcess {
     }
 }
 
-private func launchServe(binary: String, configURL: URL, namespace: String) throws -> ServeProcess {
+private func launchServe(
+    binary: String,
+    configURL: URL,
+    namespace: String,
+    environment: [String: String]? = nil
+) throws -> ServeProcess {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
         "serve", "--config", configURL.path,
         "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
     ]
+    // A caller that opts into a durable state home must pass the same
+    // environment the ACP child sees; without one, serve keeps its inherited
+    // environment and the in-memory default.
+    if let environment {
+        process.environment = environment
+    }
     let logURL = configURL.deletingLastPathComponent()
         .appendingPathComponent("serve-\(UUID().uuidString).log")
     guard FileManager.default.createFile(atPath: logURL.path, contents: nil) else {

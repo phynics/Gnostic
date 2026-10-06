@@ -113,6 +113,7 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
         let expectedImports: Set<String> = [
             "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
+            "Sources/GnosticCore/Adapters/FileTimelineRuntimeRepository.swift",
             "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
             "Sources/GnosticCore/Adapters/PositronicContribution.swift",
             "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
@@ -154,6 +155,7 @@ struct BackendArchitectureFitnessTests {
 
         let expectedContractImports: Set<String> = [
             "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
+            "Sources/GnosticCore/Adapters/FileTimelineRuntimeRepository.swift",
             "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
             "Sources/GnosticCore/Adapters/PositronicContribution.swift",
             "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",

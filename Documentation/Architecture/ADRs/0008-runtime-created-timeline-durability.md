@@ -7,6 +7,13 @@ Accepted. Requirement decision: runtime-created Timelines remain
 deferred to a future feature with its own owning issue, because it needs a
 durable backend transcript store in addition to a Gnostic identity store.
 
+> **Superseded in part by
+> [ADR 0015](0015-file-backed-timeline-runtime-repository.md).** When a durable
+> state home is configured, a runtime-created Timeline and its backend
+> transcript survive a `serve` restart, so `session/resume` succeeds. The
+> process-scoped requirement and the interim orphaned-session behavior below
+> remain the default when no state home is configured.
+
 The interim ACP behavior for sessions whose Timeline no longer exists is
 specified below. Delivering that behavior depends on
 [#247](https://github.com/phynics/Gnostic/issues/247) removing the per-process
