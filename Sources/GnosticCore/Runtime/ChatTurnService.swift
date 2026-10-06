@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// Serializes turns independently of the node's transport/lifecycle shell.
 @MainActor

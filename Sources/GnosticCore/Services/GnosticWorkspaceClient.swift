@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// The Gnostic-owned result of a remote Workspace tool invocation.
 ///

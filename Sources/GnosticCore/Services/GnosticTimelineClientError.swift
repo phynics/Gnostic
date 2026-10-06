@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// Failures produced by the public Timeline client.
 public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedError {

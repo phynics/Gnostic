@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 public extension UUID {
     var isVersion4: Bool { withUnsafeBytes(of: uuid) { $0[6] >> 4 == 4 } }

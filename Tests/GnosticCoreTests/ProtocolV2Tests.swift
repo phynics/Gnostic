@@ -36,15 +36,13 @@ struct ProtocolV2Tests {
 
     @Test("stable capabilities do not advertise an unsupported cancellation seam")
     func stableCapabilitiesOnlyAdvertiseImplementedSeams() {
-        #expect(GnosticCapability.stable.contains(GnosticCapability.textTurnInput))
-        #expect(!GnosticCapability.stable.contains(GnosticCapability.turnCancellation))
-        #expect(AscendantInteroperabilityCapability.textTurn.rawValue == GnosticCapability.textTurnInput)
-        #expect(AscendantInteroperabilityCapability.streamedUpdates.rawValue == GnosticCapability.streamedTurnUpdates)
-        #expect(AscendantInteroperabilityCapability.replay.rawValue == GnosticCapability.turnReplay)
-        #expect(AscendantInteroperabilityCapability.permissionMediation.rawValue == GnosticCapability.permissionMediation)
-        #expect(AscendantInteroperabilityCapability.timelineManagement.rawValue == GnosticCapability.timelineManagement)
-        #expect(AscendantInteroperabilityCapability.workspaceAttachment.rawValue == GnosticCapability.workspaceAttachment)
-        #expect(AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue == GnosticCapability.workspaceToolInvocation)
+        // Every interoperability capability is stable except the cancellation
+        // seam, which this build does not advertise. A new capability therefore
+        // lands in `stable` only after an explicit review of this expectation.
+        let supported = Set(AscendantInteroperabilityCapability.allCases.map(\.rawValue))
+            .subtracting([AscendantInteroperabilityCapability.cancellation.rawValue])
+        #expect(GnosticCapability.stable == supported)
+        #expect(GnosticCapability.turnCancellation == AscendantInteroperabilityCapability.cancellation.rawValue)
     }
 
     @Test("Turn requests, results, replay updates, and errors carry the protocol major")

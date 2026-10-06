@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// Owns bounded Axoloty advertisement subscriptions for Gnostic object types.
 @MainActor

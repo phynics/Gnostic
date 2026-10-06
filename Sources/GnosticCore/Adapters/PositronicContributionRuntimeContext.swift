@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// The model tier a Positronic contribution may request from its dedicated
 /// runtime model service.

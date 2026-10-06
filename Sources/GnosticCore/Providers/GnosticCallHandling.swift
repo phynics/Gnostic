@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 extension CallHandlerResult {
     /// A bounded protocol failure whose Call code and body status agree.

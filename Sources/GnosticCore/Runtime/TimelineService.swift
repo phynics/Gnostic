@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticProtocol
 
 @MainActor
 public final class TimelineService {

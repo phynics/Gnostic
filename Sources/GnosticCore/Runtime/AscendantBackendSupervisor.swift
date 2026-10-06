@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// The immutable capability used by domain services when they need to call an
 /// Ascendant. A session identifies both the backend instance and the lease

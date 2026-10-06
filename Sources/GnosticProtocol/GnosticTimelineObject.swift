@@ -43,7 +43,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
 
     /// Creates a network projection without exposing a provider's Timeline type.
     public init(
-        timeline: AscendantRuntimeTimeline,
+        timeline: AscendantBackendTimeline,
         nodeID: UUID? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {

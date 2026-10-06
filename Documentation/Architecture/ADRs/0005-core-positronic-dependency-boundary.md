@@ -144,6 +144,69 @@ A later backend shipping on its own is not sufficient by itself; the review
 must identify a concrete dependency, build, or ownership benefit and update
 this decision before extracting.
 
+## GNO-PLAT-P7 wire contract extraction
+
+Epic [#460](https://github.com/phynics/Gnostic/issues/460) splits the
+backend-neutral wire and projection contracts out of `GnosticCore` into a new
+`GnosticProtocol` library target. The first increment delivers that target and
+records the boundary:
+
+- `GnosticProtocol` holds the Axoloty wire contract (`GnosticProtocol`,
+  `GnosticWirePayload`), the backend-neutral Ascendant contract
+  (`AscendantInteroperabilityCapability`, `AscendantBackendHealth`,
+  `AscendantBackendCapabilities`, `AscendantBackendIdentity`,
+  `AscendantBackendTimeline`), the object projections
+  (`GnosticAscendantObject`, `GnosticTimelineObject`,
+  `GnosticWorkspaceObject`, `GnosticWorkspaceToolObject`,
+  `GnosticWorkspaceTypes`), the network catalog value types
+  (`NetworkCatalogStructures`), `AscendantTurnError`, `ManifestJSONValue`, and
+  the Axoloty 0.7 compatibility object-model base (`CoreType`, `CoatyUUID`,
+  `CoatyObject`) that those projections inherit.
+- The target depends only on `Axoloty` and `AxolotyWire`. It does not import or
+  depend on `GnosticCore`, `GnosticHost`, `GnosticKit`, `PositronicKit`,
+  `PKContracts`, `PKPrompt`, or `ACP`.
+- `GnosticCore` depends on `GnosticProtocol` and re-exports it with
+  `@_exported import GnosticProtocol`, so an existing `import GnosticCore`
+  consumer keeps the same source surface and needs no source change.
+
+### Invariant
+
+Backend-neutral contracts and projections live in `GnosticProtocol`; kernel
+runtime, transport manager, and PositronicKit bridge code stay in
+`GnosticCore`. PositronicKit remains a `GnosticCore` dependency and does not
+reach `GnosticProtocol`.
+
+### Rejected alternative
+
+Moving the consumer clients (`GnosticTurnClient`, `GnosticWorkspaceClient`,
+`GnosticSubscription`, `NetworkCatalog`) into a `GnosticClient` target in the
+same increment is rejected. Those types use the internal runtime effect types
+(`RuntimeEffectScope`, `RuntimeEffectHandle`), so extraction first needs a
+decision about where the shared subscription and effect machinery lives. That
+decision is deferred to a later increment rather than forcing a new shared
+service layer in this one.
+
+### Dependency impact
+
+`Package.swift` adds a `GnosticProtocol` library product and target, and
+`GnosticCore` gains a `GnosticProtocol` dependency. No third-party dependency
+changes. `GNO-EXC-0001` in `Documentation/Architecture/exceptions.json` now
+names both the object-model base file in `GnosticProtocol` and the transport
+shim in `GnosticCore`.
+
+### Fitness check
+
+`BackendArchitectureFitnessTests.protocolTargetHasNoKernelDependencies` scans
+`Sources/GnosticProtocol` for kernel and host imports, checks the
+`GnosticProtocol` target block in `Package.swift`, and checks that
+`GnosticCore` declares the `GnosticProtocol` dependency. `make verify` runs it.
+
+### Reconsideration condition
+
+Reconsider the `GnosticClient` split when the shared catalog and subscription
+machinery has an accepted owner that does not require making the runtime effect
+types public or duplicating them.
+
 ## Rejected alternatives
 
 - Removing PositronicKit from Core would remove the bundled Positronic Backend,

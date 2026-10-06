@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 public enum NodeManifestError: Error, Sendable, Equatable, LocalizedError {
     case unsupportedSchemaVersion(Int), invalidBroker, passwordWithoutUsername, invalidNodeSettings, invalidUUID(UUID), invalidKind(kind: String, objectID: UUID), invalidBackend(UUID), invalidAttachment(UUID), duplicateID(UUID), duplicateAttachment(UUID, UUID), missingReference(from: UUID, to: UUID), invalidDefaultTimeline(UUID, UUID), immutableIdentity(UUID)

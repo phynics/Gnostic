@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 
 /// The bounded failure details that a terminal Turn may expose to an observer.
 /// Backend-specific detail and result text remain outside this contract.

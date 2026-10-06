@@ -80,9 +80,9 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourcePaths = [
-            "Sources/GnosticCore/Objects/GnosticWorkspaceObject.swift",
-            "Sources/GnosticCore/Objects/GnosticWorkspaceTypes.swift",
-            "Sources/GnosticCore/Services/NetworkCatalogStructures.swift",
+            "Sources/GnosticProtocol/GnosticWorkspaceObject.swift",
+            "Sources/GnosticProtocol/GnosticWorkspaceTypes.swift",
+            "Sources/GnosticProtocol/NetworkCatalogStructures.swift",
         ]
         for relativePath in sourcePaths {
             let source = try String(
@@ -225,7 +225,7 @@ struct BackendArchitectureFitnessTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourcePaths = [
-            "Sources/GnosticCore/Objects/GnosticAscendantObject.swift",
+            "Sources/GnosticProtocol/GnosticAscendantObject.swift",
             "Sources/GnosticCore/Runtime/AscendantBackend.swift",
             "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
             "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
@@ -437,6 +437,60 @@ struct BackendArchitectureFitnessTests {
         #expect(frontendTarget.contains("\"GnosticCore\""))
         #expect(package.contains("name: \"GnosticCLI\""))
         #expect(package.contains("\"GnosticACPFrontend\",\n                \"GnosticCore\""))
+    }
+
+    @Test("the GnosticProtocol target is dependency-free of kernel and host layers")
+    func protocolTargetHasNoKernelDependencies() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let protocolRoot = rootURL.appendingPathComponent("Sources/GnosticProtocol")
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: protocolRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: protocolRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for module in [
+                "GnosticCore",
+                "GnosticHost",
+                "GnosticKit",
+                "PositronicKit",
+                "PKContracts",
+                "PKPrompt",
+                "ACP",
+            ] {
+                #expect(
+                    !Self.imports(module, in: source),
+                    "The wire boundary must not import '\(module)' in GnosticProtocol/\(relativePath)."
+                )
+            }
+        }
+
+        let package = try String(
+            contentsOf: rootURL.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        let protocolTarget = try #require(Self.targetBlock(named: "GnosticProtocol", in: package))
+        #expect(protocolTarget.contains("Axoloty"))
+        #expect(!protocolTarget.contains("GnosticCore"))
+        #expect(!protocolTarget.contains("PositronicKit"))
+        let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
+        #expect(coreTarget.contains("\"GnosticProtocol\""))
+    }
+
+    /// Returns `true` when `source` imports the given module, ignoring an
+    /// optional declaration kind (`import struct Foo.Bar`). Comments and
+    /// strings that merely name an import do not match.
+    private static func imports(_ module: String, in source: String) -> Bool {
+        let kinds = "typealias|struct|class|enum|protocol|let|var|func"
+        let pattern = #"^[ \t]*import[ \t]+(?:(?:"# + kinds + #")[ \t]+)?"# + NSRegularExpression.escapedPattern(for: module) + #"\b"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) else {
+            return false
+        }
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        return expression.firstMatch(in: source, range: range) != nil
     }
 
     private static func targetBlock(named name: String, in package: String) -> String? {
