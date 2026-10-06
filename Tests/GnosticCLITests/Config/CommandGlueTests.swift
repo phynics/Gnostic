@@ -20,7 +20,13 @@ struct CommandGlueTests {
     func turnCommandIsRemoved() {
         let help = GnosticCLI.helpMessage().lowercased()
         #expect(help.contains("acp"))
-        #expect(!help.contains("turn"))
+        // `turn-log` is a distinct command; only the removed bare `turn`
+        // command must stay unlisted. A subcommand line starts with the name,
+        // so `turn-log` (hyphen) does not match the bare-`turn` pattern.
+        #expect(help.contains("turn-log"))
+        let range = NSRange(help.startIndex..<help.endIndex, in: help)
+        let bareTurn = try? NSRegularExpression(pattern: #"(?m)^\s*turn\s"#)
+        #expect(bareTurn?.firstMatch(in: help, range: range) == nil)
         #expect(throws: (any Error).self) {
             _ = try GnosticCLI.parseAsRoot(["turn"])
         }

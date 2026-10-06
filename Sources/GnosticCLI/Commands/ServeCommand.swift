@@ -47,18 +47,10 @@ struct ServeCommand: AsyncParsableCommand {
     )
     var turnLogMaxBytes: Int?
 
-    /// Resolves the durable state directory used for derived state. An explicit
-    /// `--turn-log` names a file; its parent directory is the state home.
-    /// Otherwise `GNOSTIC_STATE_HOME` opts in, and an unset state directory
-    /// keeps the default in-memory behavior.
-    private func resolveStateHome(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> URL? {
-        if let turnLogPath, !turnLogPath.isEmpty {
-            return URL(fileURLWithPath: turnLogPath).deletingLastPathComponent()
-        }
-        guard let stateHome = environment["GNOSTIC_STATE_HOME"], !stateHome.isEmpty else { return nil }
-        return URL(fileURLWithPath: stateHome, isDirectory: true)
+    /// The shared durable-state resolver. `gnostic turn-log` uses the same type
+    /// so the viewer and the writer resolve identical paths.
+    private var turnLogLocation: TurnLogLocation {
+        TurnLogLocation(turnLogPath: turnLogPath)
     }
 
     /// Resolves the durable Turn event log location. An explicit `--turn-log`
@@ -66,10 +58,7 @@ struct ServeCommand: AsyncParsableCommand {
     func resolveTurnLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        if let turnLogPath, !turnLogPath.isEmpty {
-            return URL(fileURLWithPath: turnLogPath)
-        }
-        return resolveStateHome(environment: environment)?.appendingPathComponent("turn-events-v1.jsonl")
+        turnLogLocation.turnLogURL(environment: environment)
     }
 
     /// Resolves the compaction bound for the durable Turn event log. The store
@@ -85,7 +74,7 @@ struct ServeCommand: AsyncParsableCommand {
     func resolveTimelineStoreDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        resolveStateHome(environment: environment)?.appendingPathComponent("timelines", isDirectory: true)
+        turnLogLocation.timelineStoreDirectory(environment: environment)
     }
 
     /// Runs the serve process until interrupted.

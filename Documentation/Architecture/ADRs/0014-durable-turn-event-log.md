@@ -57,6 +57,13 @@ the format is append-only and self-framing, a crash can only tear the final
 record: recovery returns every valid record before the first unreadable one and
 truncates the file to the valid prefix.
 
+`scan` shares `recover`'s decode walk and returns the valid records plus an
+optional `EventLogTail` that classifies the first unreadable record as `torn`
+(an unterminated or final record) or `corrupt` (damage before the end). It
+never truncates or creates the file. `recover` is `scan` plus a truncation of
+the reported valid prefix, so the writer-owned recovery and a read-only reader
+cannot diverge.
+
 The primitive owns no Gnostic type. Any layer that can define a `Codable`,
 `Sendable`, `Equatable` payload persists through it.
 
@@ -91,6 +98,16 @@ The default `gnostic serve` path is unchanged. Durability turns on only when a
 log location is configured: `--turn-log <path>`, else a state directory in
 `GNOSTIC_STATE_HOME` (`turn-events-v1.jsonl`). With neither, the store stays
 in-memory, exactly as ADR 0008 describes.
+
+### Operator inspection
+
+`gnostic turn-log` is a read-only operator view of the configured log
+([#534](https://github.com/phynics/Gnostic/issues/534)). It resolves the same
+location as `serve` through one shared `TurnLogLocation`, lists the journaled
+turns grouped by Timeline and client turn id, verifies record checksums
+through `scan`, and reports a torn or corrupt tail. It exits 2 when a tail is
+present and never writes to the log; the writer-owned `recover` keeps the
+truncation responsibility.
 
 ### Kit adopter: the Run tape
 
@@ -174,6 +191,8 @@ quarantine, summaries, and cascade delete.
 - A crashed experiment Run resumes its tape from the last durable event.
 - A partial or torn final record costs at most that record; recovery truncates
   it and keeps the valid prefix.
+- Operators can inspect the journal with `gnostic turn-log`, which reports a
+  torn or corrupt tail and leaves it for the writer-owned recovery to truncate.
 - The kernel gains one dependency-free file under `Persistence/`.
 - The default in-memory serve path and the wire contract do not change.
 - The durable Turn log is bounded by `maxJournalBytes` (default 4 MiB); it no
@@ -204,7 +223,8 @@ middle record, and atomically replaces its contents; the store replays a
 restarted ledger with compaction and digest intact, skips a start beyond its
 live retention bound, and keeps its journal within `maxJournalBytes` while
 recovering the same ledger. `ServeStateHomeTests` pins the compaction-bound
-resolution. The module adoption adds recovery suites in
+resolution. The CLI suites pin that `gnostic turn-log` resolves the same path as
+`serve`, groups turns, and exits 2 on a tail. The module adoption adds recovery suites in
 `GnosticPositronicAtlasTests` and `GnosticPositronicContextTests`. The default
 serve path adds no file and no write.
 
