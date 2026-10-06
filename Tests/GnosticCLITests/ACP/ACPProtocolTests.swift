@@ -328,12 +328,8 @@ struct ACPProtocolTests {
             )
         }
 
-        var request: JSONRPCRequest?
-        for _ in 0..<100 where request == nil {
-            request = try? output.requests().first
-            if request == nil { await Task.yield() }
-        }
-        let emitted = try #require(request)
+        await waitForRequestCount(1, output: output)
+        let emitted = try #require(try output.requests().first)
         #expect(emitted.method == "session/request_permission")
         #expect(emitted.id != nil)
 
@@ -356,9 +352,7 @@ struct ACPProtocolTests {
             )
         }
 
-        for _ in 0..<100 where (try? output.requests().isEmpty) != false {
-            await Task.yield()
-        }
+        await waitForRequestCount(1, output: output)
         #expect(try output.requests().count == 1)
         pending.cancel()
         await #expect(throws: CancellationError.self) { try await pending.value }
@@ -481,19 +475,78 @@ private extension AnyCodable {
     }
 }
 
+private func waitForRequestCount(_ expected: Int, output: OutputCapture) async {
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask { await output.waitForRequestCount(expected) }
+        group.addTask {
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {
+                return
+            }
+            Issue.record("timed out after 30 seconds waiting for \(expected) JSON-RPC requests")
+        }
+        await group.next()
+        group.cancelAll()
+        await group.waitForAll()
+    }
+}
+
 private final class OutputCapture: @unchecked Sendable {
+    private struct Waiter {
+        let expected: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     private let lock = NSLock()
     private var data = Data()
+    private var waiters: [UUID: Waiter] = [:]
 
     func append(_ bytes: Data) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         data.append(bytes)
+        let count = frameCount
+        let ready = waiters.filter { count >= $0.value.expected }
+        ready.keys.forEach { waiters[$0] = nil }
+        lock.unlock()
+        ready.values.forEach { $0.continuation.resume() }
     }
 
     func requests() throws -> [JSONRPCRequest] {
         lock.lock(); defer { lock.unlock() }
         return try data.split(separator: 0x0A).map {
             try JSONDecoder().decode(JSONRPCRequest.self, from: Data($0))
+        }
+    }
+
+    func waitForRequestCount(_ expected: Int) async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if frameCount >= expected || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiters[id] = Waiter(expected: expected, continuation: continuation)
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            cancelWaiter(id)
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        lock.lock()
+        let waiter = waiters.removeValue(forKey: id)
+        lock.unlock()
+        waiter?.continuation.resume()
+    }
+
+    private var frameCount: Int {
+        data.reduce(into: 0) { count, byte in
+            if byte == 0x0A { count += 1 }
         }
     }
 }

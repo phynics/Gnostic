@@ -476,9 +476,9 @@ struct AtlasOptInE2ETests {
 
         #expect(result.text == "fixture-reply")
         #expect(!result.replayed)
-        let records = await inbox.records
-        #expect(records.count == 1)
-        #expect(records.first?.outcome == .succeeded)
+        let record = try #require(await inbox.next())
+        #expect(record.outcome == .succeeded)
+        #expect(await inbox.records.count == 1)
 
         let prompt = await model.capturedPromptText()
         #expect(!prompt.contains("<<<atlas-brief>>>"))
