@@ -4,6 +4,7 @@ import Foundation
 import PKContracts
 import Testing
 
+@testable import GnosticACPFrontend
 @testable import GnosticCLI
 
 @Suite("ACP JSON-RPC protocol")

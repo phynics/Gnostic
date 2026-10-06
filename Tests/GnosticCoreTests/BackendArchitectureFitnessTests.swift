@@ -230,7 +230,7 @@ struct BackendArchitectureFitnessTests {
             "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
             "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
             "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
-            "Sources/GnosticCLI/ACP/RemoteTurnClient.swift",
+            "Sources/GnosticACPFrontend/RemoteTurnClient.swift",
         ]
         let forbidden = [
             "GnosticObjectType.agent",
@@ -278,7 +278,7 @@ struct BackendArchitectureFitnessTests {
         }
 
         let acpTransport = try String(
-            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCLI/ACP/RemoteTurnClient.swift"),
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticACPFrontend/RemoteTurnClient.swift"),
             encoding: .utf8
         )
         for removedMethod in [
@@ -401,6 +401,42 @@ struct BackendArchitectureFitnessTests {
                 #expect(!source.contains(forbidden), "GnosticCore must not use ACP/process API '\(forbidden)' in \(relativePath).")
             }
         }
+    }
+
+    @Test("the ACP server front end is a separate target, not part of GnosticCLI")
+    func acpFrontendIsNotInCLI() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        let legacyACPDirectory = rootURL.appendingPathComponent("Sources/GnosticCLI/ACP")
+        #expect(
+            !FileManager.default.fileExists(atPath: legacyACPDirectory.path),
+            "The ACP server front end must not live in GnosticCLI."
+        )
+        let frontendRoot = rootURL.appendingPathComponent("Sources/GnosticACPFrontend")
+        for required in [
+            "ACPServer.swift",
+            "ACPDispatcher.swift",
+            "RemoteTurnClient.swift",
+            "ACPSessionRegistry.swift",
+        ] {
+            #expect(
+                FileManager.default.fileExists(atPath: frontendRoot.appendingPathComponent(required).path),
+                "The ACP front end target is missing '\(required)'."
+            )
+        }
+
+        let package = try String(
+            contentsOf: rootURL.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        #expect(package.contains(".library(name: \"GnosticACPFrontend\", targets: [\"GnosticACPFrontend\"])"))
+        let frontendTarget = try #require(Self.targetBlock(named: "GnosticACPFrontend", in: package))
+        #expect(frontendTarget.contains("\"GnosticCore\""))
+        #expect(package.contains("name: \"GnosticCLI\""))
+        #expect(package.contains("\"GnosticACPFrontend\",\n                \"GnosticCore\""))
     }
 
     private static func targetBlock(named name: String, in package: String) -> String? {

@@ -7,6 +7,7 @@ import PKContracts
 import PositronicKit
 import Testing
 
+@testable import GnosticACPFrontend
 @testable import GnosticCLI
 
 @Suite("ACP subprocess", .serialized)

@@ -16,8 +16,8 @@ provider pin.
 
 `gnostic acp` `session/new` creates a Timeline at runtime through
 `ACPDispatcher.newSession`
-(`Sources/GnosticCLI/ACP/ACPDispatcher.swift:104`), `RemoteTurnClient.createTimeline`
-(`Sources/GnosticCLI/ACP/RemoteTurnClient.swift:230`), and `TimelineService.create`
+(`Sources/GnosticACPFrontend/ACPDispatcher.swift:104`), `RemoteTurnClient.createTimeline`
+(`Sources/GnosticACPFrontend/RemoteTurnClient.swift:230`), and `TimelineService.create`
 (`Sources/GnosticCore/Runtime/TimelineService.swift:66`). The Positronic adapter
 records the new Timeline in two in-memory places:
 
@@ -33,7 +33,7 @@ the manifest launch plan on every process start
 `NodeRegistry.backendReconstructionState` only re-derives Timelines inside a
 running process (`Sources/GnosticCore/Runtime/NodeRegistry.swift:379`). The ACP
 session registry, by contrast, is durable metadata
-(`Sources/GnosticCLI/ACP/ACPSessionRegistry.swift:5`). A restarted serve can
+(`Sources/GnosticACPFrontend/ACPSessionRegistry.swift:5`). A restarted serve can
 therefore list ACP sessions it can no longer serve, which is the gap found in
 [#239](https://github.com/phynics/Gnostic/issues/239).
 
@@ -77,7 +77,7 @@ Until durability lands, and after #247 removes the per-process provider pin:
    provider error.
 2. `session/list` omits records whose Timeline cannot be resolved. That is the
    current `timelineStatus` probe behavior
-   (`Sources/GnosticCLI/ACP/ACPDispatcher.swift:149`); it becomes an explicit
+   (`Sources/GnosticACPFrontend/ACPDispatcher.swift:149`); it becomes an explicit
    registry invariant with a regression test.
 3. The registry keeps the on-disk record for diagnostics but marks it ended
    once the remote Timeline is confirmed absent, so a restarted ACP child does

@@ -62,18 +62,32 @@ struct ACPCloseParameters: Codable, Sendable {
     }
 }
 
-struct ACPProfile: Codable, Sendable {
-    let id: String
-    let name: String
-    let command: String
-    let args: [String]
-    let env: [String: String]
+public struct ACPProfile: Codable, Sendable {
+    public let id: String
+    public let name: String
+    public let command: String
+    public let args: [String]
+    public let env: [String: String]
+
+    public init(id: String, name: String, command: String, args: [String], env: [String: String]) {
+        self.id = id
+        self.name = name
+        self.command = command
+        self.args = args
+        self.env = env
+    }
 }
 
-struct ACPProfileBundle: Codable, Sendable {
-    let version: Int
-    let defaultProfile: String?
-    let profiles: [ACPProfile]
+public struct ACPProfileBundle: Codable, Sendable {
+    public let version: Int
+    public let defaultProfile: String?
+    public let profiles: [ACPProfile]
+
+    public init(version: Int, defaultProfile: String?, profiles: [ACPProfile]) {
+        self.version = version
+        self.defaultProfile = defaultProfile
+        self.profiles = profiles
+    }
 }
 
 /// Durable ACP session identity.

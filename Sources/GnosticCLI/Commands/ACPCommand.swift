@@ -2,6 +2,7 @@
 
 import ArgumentParser
 import Foundation
+import GnosticACPFrontend
 import GnosticCore
 
 /// `gnostic acp` — an ACP v1 Ascendant projection of one Gnostic Ascendant.
