@@ -99,6 +99,50 @@ struct AppendOnlyEventLogTests {
         ])
     }
 
+    @Test("byte count tracks the file and is zero when it is missing")
+    func byteCountTracksFile() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        #expect(try log.byteCount() == 0)
+        try log.append(Record(id: 1, message: "one"))
+        #expect(try log.byteCount() == fileSize(url))
+        #expect(try log.byteCount() > 0)
+    }
+
+    @Test("replaceAll rewrites the log and drops the previous records")
+    func replaceAllRewritesLog() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        try log.append(Record(id: 1, message: "one"))
+        try log.append(Record(id: 2, message: "two"))
+
+        try log.replaceAll(with: [Record(id: 9, message: "checkpoint")])
+
+        #expect(try log.recover().map(\.payload) == [Record(id: 9, message: "checkpoint")])
+        #expect(try log.byteCount() == fileSize(url))
+    }
+
+    @Test("replaceAll creates the log when it is missing")
+    func replaceAllCreatesLog() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        try log.replaceAll(with: [Record(id: 1, message: "one")])
+        #expect(try log.recover().map(\.payload) == [Record(id: 1, message: "one")])
+    }
+
+    @Test("appending after replaceAll resumes after the replacement")
+    func appendAfterReplaceAll() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        try log.append(Record(id: 1, message: "one"))
+        try log.replaceAll(with: [Record(id: 9, message: "checkpoint")])
+        try log.append(Record(id: 10, message: "ten"))
+        #expect(try log.recover().map(\.payload) == [
+            Record(id: 9, message: "checkpoint"),
+            Record(id: 10, message: "ten"),
+        ])
+    }
+
     private func fileSize(_ url: URL) throws -> UInt64 {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
