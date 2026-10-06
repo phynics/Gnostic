@@ -99,6 +99,76 @@ struct AppendOnlyEventLogTests {
         ])
     }
 
+    @Test("a read-only scan reports a torn tail without truncating")
+    func scanReportsTornTailWithoutTruncating() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        try log.append(Record(id: 1, message: "one"))
+        let completeSize = try fileSize(url)
+        // Simulate a crash mid-write: no trailing newline and a bad checksum.
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("deadbeef 1700000000000 {\"id\":2,\"message\":\"two\"}".utf8))
+        try handle.close()
+        let tornSize = try fileSize(url)
+
+        let scan = try log.scan()
+        #expect(scan.records.map(\.payload) == [Record(id: 1, message: "one")])
+        #expect(scan.tail?.kind == .torn)
+        #expect(scan.tail?.validByteCount == Int(completeSize))
+        #expect(scan.tail?.totalByteCount == Int(tornSize))
+        // The scan leaves the file byte-for-byte unchanged.
+        #expect(try fileSize(url) == tornSize)
+
+        // A later writer-owned recovery still truncates the tail.
+        _ = try log.recover()
+        #expect(try fileSize(url) == completeSize)
+    }
+
+    @Test("a read-only scan classifies damage before the end as corrupt")
+    func scanReportsCorruptRecord() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        try log.append(Record(id: 1, message: "one"))
+        let validSize = try fileSize(url)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("0000000000000000 1700000000000 {\"id\":2,\"message\":\"two\"}\n".utf8))
+        try handle.close()
+        // A valid record after the corrupt one makes the damage non-final.
+        try log.append(Record(id: 3, message: "three"))
+        let scannedSize = try fileSize(url)
+
+        let scan = try log.scan()
+        #expect(scan.records.map(\.payload) == [Record(id: 1, message: "one")])
+        #expect(scan.tail?.kind == .corrupt)
+        #expect(scan.tail?.validByteCount == Int(validSize))
+        #expect(try fileSize(url) == scannedSize)
+    }
+
+    @Test("a scan of a missing file reports nothing and creates nothing")
+    func scanMissingFile() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        let scan = try log.scan()
+        #expect(scan.records.isEmpty)
+        #expect(scan.tail == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test("scan and recover agree on a healthy log")
+    func scanMatchesRecover() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        for index in 0..<3 {
+            try log.append(Record(id: index, message: "message-\(index)"))
+        }
+        let scanned = try log.scan()
+        let recovered = try log.recover()
+        #expect(scanned.records == recovered)
+        #expect(scanned.tail == nil)
+    }
+
     private func fileSize(_ url: URL) throws -> UInt64 {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
