@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticClient
 import GnosticCore
 
 /// Bounded broker observation through the public consumer facade: connect,

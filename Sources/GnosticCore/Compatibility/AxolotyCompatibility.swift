@@ -963,6 +963,16 @@ public struct ObjectFilterProperty: Sendable {
 public enum FilterExpression: Sendable { case equals(FilterOperand) }
 public struct FilterOperand: Sendable { public let value: String; public init(_ value: String) { self.value = value } }
 
+extension ObjectFilter {
+    /// A call context that addresses one provider identity.
+    public static func provider(_ providerID: String) -> ObjectFilter {
+        ObjectFilter(condition: ObjectFilterCondition(
+            property: ObjectFilterProperty("objectId"),
+            expression: .equals(FilterOperand(providerID.lowercased()))
+        ))
+    }
+}
+
 private func filterObject(_ context: ObjectFilter) throws -> [String: Any] {
     let expression: [Any]
     switch context.condition.expression {

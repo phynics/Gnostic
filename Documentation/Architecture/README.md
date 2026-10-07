@@ -87,6 +87,14 @@ depends only on Axoloty and `AxolotyWire`, carries no PositronicKit or kernel
 dependency, and `GnosticCore` re-exports it for source compatibility. ADR 0005
 records the boundary and its fitness checks.
 
+`GnosticClient` is the consumer SDK above `GnosticCore`. It holds the consumer
+session and the typed Turn, Timeline, Workspace, and Diagnostics clients. It
+depends on `GnosticProtocol` and `GnosticCore`, declares no PositronicKit,
+`PKContracts`, or backend dependency, and imports no backend value. The kernel
+keeps the shared transport, subscription, and runtime-effect machinery and
+never depends on the client. ADR 0005 records the boundary and its fitness
+checks.
+
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.
 

@@ -2,6 +2,7 @@
 
 import ArgumentParser
 import Foundation
+import GnosticClient
 import GnosticCore
 
 /// Drives scripted Turns against a running `gnostic serve` for the soak target

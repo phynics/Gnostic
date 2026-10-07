@@ -205,9 +205,75 @@ shim in `GnosticCore`.
 
 ### Reconsideration condition
 
-Reconsider the `GnosticClient` split when the shared catalog and subscription
-machinery has an accepted owner that does not require making the runtime effect
-types public or duplicating them.
+Satisfied by the consumer SDK extraction below: the kernel is the accepted
+owner of the shared catalog and subscription machinery, and it keeps the
+runtime effect types internal.
+
+## GNO-PLAT-P7 consumer SDK extraction
+
+Epic [#460](https://github.com/phynics/Gnostic/issues/460) moves the
+consumer-facing session and typed clients out of `GnosticCore` into a new
+`GnosticClient` library target. The increment resolves the P7-002 blocker: the
+kernel is the accepted owner of the shared catalog and subscription machinery,
+so the effect types stay internal and the SDK uses only public kernel API.
+
+- `GnosticClient` holds `GnosticConsumerSession`, the typed
+  `GnosticTurnClient`, `GnosticTimelineClient`, `GnosticWorkspaceClient`, and
+  `GnosticDiagnosticsClient`, their public errors, and the internal
+  call-channel and provider-resolution support they share.
+- The target depends on `GnosticProtocol` and `GnosticCore`, plus Axoloty. It
+  declares no PositronicKit, `PKContracts`, backend, `GnosticHost`,
+  `GnosticKit`, `GnosticCLI`, Atlas, or module dependency, and its sources
+  import no Positronic backend.
+- `GnosticCore` keeps `CommunicationManager`, `GnosticSubscription`,
+  `NetworkCatalog`, `GnosticRawWireEvent`, `RuntimeEffectScope`, and
+  `RuntimeEffectHandle`. The kernel runtime, `WorkspaceDiscovery`, and
+  `GnosticWorkspaceProvider` continue to use the shared machinery, so it
+  cannot move above the kernel.
+
+### Invariant
+
+The consumer SDK sits above the kernel and the kernel never reaches back into
+it. `GnosticCore` must not depend on or import `GnosticClient`. The SDK's
+declared dependencies and sources carry no PositronicKit, `PKContracts`, or
+backend value.
+
+### Rejected alternative
+
+Moving `GnosticSubscription` and `NetworkCatalog` into `GnosticClient`, or
+introducing a new shared transport target below the kernel, is rejected in this
+increment. The kernel runtime (`NodeAssembly`, `WorkspaceDiscovery`,
+`GnosticWorkspaceProvider`) consumes both types, so moving them up would force
+`GnosticCore` to depend on `GnosticClient` and invert the boundary. A new lower
+target would move `CommunicationManager` and the Axoloty provider-registration
+shim out of the kernel, which is a P7-004-scale change with no measured benefit
+in this increment.
+
+### Dependency impact
+
+`Package.swift` adds a `GnosticClient` library product and target, and adds the
+target to the consumers that already used the facade (`GnosticACPFrontend`,
+`GnosticCLI`, `GnosticSoakDriver`, and the core test target). No third-party
+dependency changes. Consumers that reached the facade through
+`import GnosticCore` now add `import GnosticClient`;
+`Documentation/Compatibility/0.4.3.md` records the migration.
+
+### Fitness check
+
+`GnosticClientTests.ClientArchitectureFitnessTests` pins the move: the consumer
+files live in `Sources/GnosticClient` and not in `Sources/GnosticCore/Services`,
+the `GnosticClient` target declares no backend dependency and its sources
+import no PositronicKit or `PKContracts`, and `GnosticCore` neither depends on
+nor imports `GnosticClient`.
+`GnosticCLITests.CompositionArchitectureFitnessTests.layerDependencies` adds
+the same kernel-direction check. `make verify` runs them.
+
+### Reconsideration condition
+
+Reconsider when P7-004 removes PositronicKit from `GnosticCore`; at that point
+the SDK no longer links PositronicKit transitively through the kernel, and a
+future increment can decide whether a dedicated lower transport target is
+warranted.
 
 ## Rejected alternatives
 

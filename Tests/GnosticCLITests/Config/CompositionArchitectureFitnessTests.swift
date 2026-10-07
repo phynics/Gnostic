@@ -132,6 +132,12 @@ struct CompositionArchitectureFitnessTests {
             !coreTarget.contains("GnosticKit"),
             "GnosticCore must not depend on GnosticKit."
         )
+        // ADR 0013 / epic #460: the consumer SDK sits above the kernel, so the
+        // kernel never reaches back up into it.
+        #expect(
+            !coreTarget.contains("GnosticClient"),
+            "GnosticCore must not depend on GnosticClient."
+        )
 
         let hostTarget = try #require(
             Self.targetBlock(named: "GnosticHost", in: package),
@@ -153,6 +159,10 @@ struct CompositionArchitectureFitnessTests {
         let coreImportsKit = try Self.sources(in: "Sources/GnosticCore")
             .contains { $0.text.contains("import GnosticKit") }
         #expect(!coreImportsKit, "GnosticCore sources must not import GnosticKit.")
+
+        let coreImportsClient = try Self.sources(in: "Sources/GnosticCore")
+            .contains { $0.text.contains("import GnosticClient") }
+        #expect(!coreImportsClient, "GnosticCore sources must not import GnosticClient.")
 
         let hostImportsCLI = try Self.sources(in: "Sources/GnosticHost")
             .contains { $0.text.contains("import GnosticCLI") }
