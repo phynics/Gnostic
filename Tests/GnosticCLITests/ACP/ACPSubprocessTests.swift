@@ -6,6 +6,7 @@ import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticACPFrontend
 @testable import GnosticCLI
@@ -625,15 +626,20 @@ private func discoverProviderID(namespace: String, ascendantID: UUID) async thro
     throw ACPSubprocessError.timeout
 }
 
-private struct PermissionedEchoWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
-    let reference: WorkspaceReference
+private struct PermissionedEchoWorkspace: LocalWorkspace, LocalWorkspaceFileAccess, LocalWorkspaceHealth {
+    let reference: BackendWorkspaceReference
     var id: UUID { reference.id }
 
-    func listTools() async throws -> [ToolReference] { reference.tools }
+    init(reference: WorkspaceReference) {
+        self.reference = PositronicWorkspaceProjection.backendReference(from: reference)
+    }
 
-    func executeTool(id: String, parameters: [String: AnyCodable]) async throws -> ToolResult {
+    func listTools() async throws -> [BackendWorkspaceTool] { reference.tools }
+
+    func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
         guard id == EchoWorkspace.toolID else { throw WorkspaceError.toolExecutionNotSupported }
-        return .success(parameters["value"]?.value as? String ?? "")
+        guard case let .string(value)? = parameters["value"] else { throw WorkspaceError.toolExecutionNotSupported }
+        return .success(value)
     }
 
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }

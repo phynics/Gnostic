@@ -4,6 +4,7 @@ import Foundation
 import PKTestSupport
 import PositronicKit
 import Testing
+@testable import GnosticPositronicBackend
 
 @testable import GnosticCore
 

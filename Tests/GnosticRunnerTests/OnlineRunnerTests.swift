@@ -4,6 +4,7 @@ import Axoloty
 import Foundation
 import GnosticCore
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticRunner
 

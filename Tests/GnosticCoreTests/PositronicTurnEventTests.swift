@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+@testable import GnosticPositronicBackend
 @testable import GnosticCore
 import PKContracts
 import PositronicKit

@@ -7,6 +7,7 @@ import JSONSchema
 import PKContracts
 import PositronicKit
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticACPFrontend
 @testable import GnosticCLI
@@ -241,7 +242,7 @@ struct MixedAscendantConfigurationTests {
         let result = try await node.runtime.executeWorkspaceTool(
             workspaceID: node.workspaceID,
             toolID: EchoWorkspace.toolID,
-            arguments: ["value": AnyCodable("mixed")]
+            arguments: ["value": .string("mixed")]
         )
         #expect(result.output == "mixed")
 
@@ -403,7 +404,7 @@ struct MixedAscendantConfigurationTests {
             : [:]
         let models: [UUID: MixedScriptedModel] = [plainID: plainModel, extendedID: extendedModel]
 
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(
             kind: AscendantAdapterRegistry.positronicKind,
             settings: PositronicAscendantAdapter.settingsSchema

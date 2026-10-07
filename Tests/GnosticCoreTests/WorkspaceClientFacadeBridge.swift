@@ -4,6 +4,7 @@ import Axoloty
 import Foundation
 import GnosticCore
 import PKContracts
+@testable import GnosticPositronicBackend
 
 /// Test-only serve-side scaffolding for the public workspace client tests.
 ///
@@ -315,7 +316,8 @@ enum WorkspaceClientFacadeBridge {
             ) { toolID, arguments in
                 guard toolID == "workspace_echo" else { return .failure("unknown fixture tool") }
                 if outcome == .toolFailure { return .failure("boom") }
-                return .success(arguments["value"]?.value as? String ?? "")
+                guard case let .string(value)? = arguments["value"] else { return .success("") }
+                return .success(value)
             }
             return [try await workspace.register(on: manager)]
         case .protocolFailure:

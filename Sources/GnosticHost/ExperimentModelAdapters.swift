@@ -5,6 +5,7 @@ import GnosticCore
 import GnosticKit
 import PKContracts
 import PositronicKit
+import GnosticPositronicBackend
 
 /// Bridges a kit model service to the Positronic contribution model seam.
 ///

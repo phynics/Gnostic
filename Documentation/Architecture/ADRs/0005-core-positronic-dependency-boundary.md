@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted investigation result. This decision is delivered with follow-up issue
-[#167](https://github.com/phynics/Gnostic/issues/167).
+Superseded for the Core dependency boundary by the GNO-PLAT-P7 Positronic
+backend extraction below. The historical investigation and the ACP
+re-evaluation remain for context; the current invariant is that `GnosticCore`
+carries no Positronic dependency and every native conversion lives in
+`GnosticPositronicBackend`.
 
 ## Context
 
@@ -87,6 +90,10 @@ Architecture fitness tests fail if native Workspace values or `AnyCodable`
 re-enter the Core-owned Workspace projection types.
 
 ## Re-evaluation after ACP backend delivery
+
+This section records the pre-extraction re-evaluation. The GNO-PLAT-P7
+extraction below supersedes its outcome; the Core PositronicKit inventory it
+describes no longer exists.
 
 The trigger to re-evaluate this decision has occurred: `GnosticACPAscendant`
 ships the supported `acp-client` backend kind outside `GnosticCore`. The current
@@ -274,6 +281,77 @@ Reconsider when P7-004 removes PositronicKit from `GnosticCore`; at that point
 the SDK no longer links PositronicKit transitively through the kernel, and a
 future increment can decide whether a dedicated lower transport target is
 warranted.
+
+## GNO-PLAT-P7 Positronic backend extraction
+
+Epic [#460](https://github.com/phynics/Gnostic/issues/460) extracts the bundled
+Positronic backend out of `GnosticCore` into a new
+`GnosticPositronicBackend` library target. The kernel keeps a neutral backend
+contract and no PositronicKit dependency.
+
+- `GnosticPositronicBackend` holds the bundled
+  `PositronicAscendantAdapter`, `PositronicContribution` and its runtime
+  context, `AxolotyWorkspace`, `FileTimelineRuntimeRepository`,
+  `DiscoveredWorkspaceAttachmentService`, `NetworkManagementTools`,
+  `AscendantToolApprovalPolicy`, the deterministic `EchoWorkspace`, the
+  `PositronicBackend.register(into:)` composition seam, and
+  `PositronicWorkspaceProjection`. Every PositronicKit and `PKContracts`
+  conversion lives there.
+- The target depends on `GnosticCore`, `GnosticProtocol`, Axoloty,
+  `PositronicKit`, and `PKContracts`. `GnosticHost`, `GnosticPositronicAtlas`,
+  `GnosticPositronicContext`, the runner, and the CLI test targets depend on it.
+- `GnosticCore` depends only on `GnosticProtocol`, Axoloty, `AxolotyMQTT`, and
+  `Logging`. It imports no PositronicKit, `PKContracts`, or `PKPrompt`, and its
+  target block names none of them.
+- The kernel keeps the neutral contracts: `AscendantBackend`, the
+  `BackendWorkspace*` values, `LocalWorkspace`, `LocalWorkspaceFileAccess`,
+  `LocalWorkspaceHealth`, `NetworkWorkspaceInvoking`, `WorkspaceDiscovery`,
+  `MultiplexedWorkspaceProvider`, `WorkspaceService`,
+  `BackendWorkspaceService`, and `WorkspaceReferenceProjection`. A composition
+  root installs the bundled backend with `PositronicBackend.register(into:)`
+  and `registerPositronicBackend(languageModel:)`.
+
+### Invariant
+
+`GnosticCore` is Positronic-free: it declares no PositronicKit, `PKContracts`,
+or `PKPrompt` dependency and no source under `Sources/GnosticCore` imports one.
+All provider conversion sits behind the `GnosticPositronicBackend` target. The
+kernel reaches the bundled implementation only through neutral protocols and
+adapter registries.
+
+### Rejected alternative
+
+Keeping the adapter in `GnosticCore` with the previous import inventory is
+rejected. The measured outcome of the split is a kernel target that builds
+without linking PositronicKit and a backend target that owns every native
+value, so a new import in Core now fails the fitness check instead of requiring
+an inventory review.
+
+### Dependency impact
+
+`Package.swift` adds a `GnosticPositronicBackend` library product and target,
+removes `PositronicKit` and `PKContracts` from `GnosticCore`, and adds the new
+target to `GnosticHost`, `GnosticPositronicAtlas`, `GnosticPositronicContext`,
+the runner executables, and the affected test targets. No third-party
+dependency version changes. `Documentation/Compatibility/0.4.3.md` records the
+source migration for consumers that imported a moved type from `GnosticCore`.
+
+### Fitness check
+
+`BackendArchitectureFitnessTests.corePositronicDependencyBoundaryIsExplicit`
+asserts that no `Sources/GnosticCore` file imports PositronicKit,
+`PKContracts`, or `PKPrompt`, that the `GnosticCore` target block names none of
+them, and that the `GnosticPositronicBackend` target declares `GnosticCore`,
+PositronicKit, and `PKContracts`. `make verify` runs it. The earlier Core
+PositronicKit-import inventory is superseded; this ADR remains the boundary
+record and no longer lists Core Positronic seams.
+
+### Reconsideration condition
+
+Reconsider when a second backend needs the same native conversion, or when the
+backend target must release independently of the kernel. A new PositronicKit
+import in `GnosticCore` requires a new decision and an architecture exception
+before the fitness check may pass again.
 
 ## Rejected alternatives
 

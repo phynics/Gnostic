@@ -8,6 +8,7 @@ import GnosticKit
 import GnosticRLM
 import PKContracts
 import PositronicKit
+import GnosticPositronicBackend
 
 /// `gnostic experiment` — opt-in evidence runs that are not part of a Node.
 ///

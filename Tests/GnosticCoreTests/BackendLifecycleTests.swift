@@ -16,7 +16,7 @@ struct BackendLifecycleTests {
         let firstTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000303")!
         let secondTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000304")!
         let probe = LifecycleBackendProbe()
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
             let number = await probe.recordFactory(timelines: timelines)
             if number == 2 { throw InjectedLifecycleFailure() }
@@ -45,7 +45,7 @@ struct BackendLifecycleTests {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000343")!
         let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000344")!
         let probe = LifecycleBackendProbe()
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "timeline-projection-failure") { ascendant, _, _, timelines in
             _ = await probe.recordFactory(timelines: timelines)
             return LifecycleFixtureBackend(
@@ -912,7 +912,7 @@ struct BackendLifecycleTests {
     }
 
     private func makeAdapters(probe: LifecycleBackendProbe, outcomes: [UUID: [LifecycleFixtureBackend.Outcome]]) -> NodeRuntimeAdapters {
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
             let number = await probe.recordFactory(timelines: timelines)
             if probe.shouldFailSecondFactory && number == 2 {

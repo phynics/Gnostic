@@ -3,7 +3,9 @@
 import Foundation
 import GnosticCore
 import PKContracts
+import PositronicKit
 import Testing
+@testable import GnosticPositronicBackend
 
 @Suite("Backend settings schema and registry enumeration")
 struct BackendSettingsSchemaTests {
@@ -11,29 +13,37 @@ struct BackendSettingsSchemaTests {
     @MainActor
     func registryEnumeratesKinds() {
         var registry = AscendantAdapterRegistry()
-        #expect(registry.registeredKinds == [AscendantAdapterRegistry.positronicKind])
+        #expect(registry.registeredKinds.isEmpty)
 
         registry.registerBackend(kind: "fixture") { _, _, _, _ in
             fatalError("not constructed in this test")
         }
+        #expect(registry.registeredKinds == ["fixture"])
+
+        registry.registerPositronicBackend { _, _ in UnconfiguredLLMService() }
         #expect(registry.registeredKinds == [AscendantAdapterRegistry.positronicKind, "fixture"])
     }
 
     @Test("a Workspace registry enumerates the kinds it can build")
     func workspaceRegistryEnumeratesKinds() {
         var registry = WorkspaceAdapterRegistry()
-        #expect(registry.registeredKinds == ["echo"])
+        #expect(registry.registeredKinds.isEmpty)
 
         registry.registerProduct(kind: "ledger") { _ in
             fatalError("not constructed in this test")
         }
-        #expect(registry.registeredKinds == ["echo", "ledger"])
+        #expect(registry.registeredKinds == ["ledger"])
+
+        var adapters = NodeRuntimeAdapters(workspaces: registry)
+        PositronicBackend.register(into: &adapters)
+        #expect(adapters.workspaces.registeredKinds == ["echo", "ledger"])
     }
 
     @Test("the bundled Positronic backend advertises its setting and secret keys")
     @MainActor
     func positronicAdvertisesItsKeys() throws {
-        let registry = AscendantAdapterRegistry()
+        var registry = AscendantAdapterRegistry()
+        registry.registerPositronicBackend { _, _ in UnconfiguredLLMService() }
         let schema = try #require(registry.settingsSchema(for: AscendantAdapterRegistry.positronicKind))
 
         #expect(schema.settingNames == ["provider", "endpoint", "model", "utilityModel", "fastModel", "extensions"])

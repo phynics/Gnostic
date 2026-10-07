@@ -4,6 +4,7 @@ import Foundation
 import GnosticCore
 import GnosticPositronicAtlas
 import PositronicKit
+import GnosticPositronicBackend
 
 /// The compiled-in Atlas continuity module.
 ///

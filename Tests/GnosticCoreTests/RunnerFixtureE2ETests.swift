@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+@testable import GnosticPositronicBackend
 @testable import GnosticCore
 import PKContracts
 import PositronicKit
@@ -40,7 +41,9 @@ struct RunnerFixtureE2ETests {
             switch toolID {
             case "list_files": return .success("README.md")
             case "read_file": return .success("fixture contents")
-            case "workspace_echo": return .success(arguments["value"]?.value as? String ?? "")
+            case "workspace_echo":
+                guard case let .string(value)? = arguments["value"] else { return .success("") }
+                return .success(value)
             default: return .failure("unknown fixture tool")
             }
         }
@@ -48,7 +51,7 @@ struct RunnerFixtureE2ETests {
         defer { registration.cancel() }
         let lifecycle = try #require(providerContainer.controller(named: "ObjectLifecycleController") as ObjectLifecycleController?)
         lifecycle.advertiseDiscoverableObject(object: GnosticWorkspaceObject(
-            workspace: WorkspaceReferenceProjection.networkReference(from: fixtureReference(id: workspaceID))
+            workspace: fixtureReference(id: workspaceID)
         ))
         try await waitForWorkspace(catalog, id: workspaceID)
         let store = InMemoryWorkspacePersistence()

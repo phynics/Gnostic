@@ -6,6 +6,7 @@ import PKContracts
 import PositronicKit
 import Synchronization
 import Testing
+import GnosticPositronicBackend
 @testable import GnosticCLI
 @testable import GnosticHost
 

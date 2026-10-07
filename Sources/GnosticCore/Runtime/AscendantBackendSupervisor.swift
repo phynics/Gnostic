@@ -129,12 +129,12 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private let adapters: NodeRuntimeAdapters
     private let registry: NodeRegistry
     private let lifetime: NodeRuntimeLifetime
-    private let backendWorkspaceService: GnosticWorkspaceBackendService
+    private let backendWorkspaceService: any AscendantBackendWorkspaceService
     private let backendRetirementSupervisor: BackendRetirementSupervisor
     private let permissionCoordinator: AscendantPermissionCoordinator
     private let projectionRelay: NodeProjectionRelay
     private let backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?
-    private let backendTimelineCapabilities: [UUID: BackendTimelineStoreCapability]
+    private let backendTimelineCapabilities: [UUID: any AscendantBackendOptionalCapability]
     private var backendWorkspaceAttachment: ((UUID, UUID, UUID, UUID) async throws -> Void)?
 
     private var ascendantAdapters: [UUID: any AscendantBackend]
@@ -152,12 +152,12 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         adapters: NodeRuntimeAdapters,
         registry: NodeRegistry,
         lifetime: NodeRuntimeLifetime,
-        backendWorkspaceService: GnosticWorkspaceBackendService,
+        backendWorkspaceService: any AscendantBackendWorkspaceService,
         backendRetirementSupervisor: BackendRetirementSupervisor,
         permissionCoordinator: AscendantPermissionCoordinator,
         projectionRelay: NodeProjectionRelay,
         backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?,
-        backendTimelineCapabilities: [UUID: BackendTimelineStoreCapability] = [:],
+        backendTimelineCapabilities: [UUID: any AscendantBackendOptionalCapability] = [:],
         ascendantAdapters: [UUID: any AscendantBackend],
         backendIdentities: [AscendantBackendIdentity],
         backendSpecs: [UUID: BackendSpec],

@@ -4,6 +4,7 @@ import Foundation
 import GnosticProtocol
 import PKContracts
 import PositronicKit
+import GnosticCore
 
 /// Gnostic-owned identity for one admitted Positronic Turn.
 ///

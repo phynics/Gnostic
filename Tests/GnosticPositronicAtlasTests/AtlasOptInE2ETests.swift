@@ -6,6 +6,7 @@ import GnosticPositronicAtlas
 import PKContracts
 import PositronicKit
 import Testing
+import GnosticPositronicBackend
 
 @Suite("Opt-in Atlas integration end to end", .timeLimit(.minutes(2)))
 @MainActor

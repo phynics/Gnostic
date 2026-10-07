@@ -5,6 +5,7 @@ import GnosticCore
 import GnosticPositronicAtlas
 import PositronicKit
 import Testing
+import GnosticPositronicBackend
 
 @Suite("Atlas Turn correlation", .timeLimit(.minutes(2)))
 struct AtlasTurnCorrelationTests {

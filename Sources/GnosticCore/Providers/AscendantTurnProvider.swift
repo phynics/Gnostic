@@ -3,7 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
 
 /// The wire payload for a remote Ascendant Turn.
 public struct AscendantTurnRequest: Codable, Sendable {

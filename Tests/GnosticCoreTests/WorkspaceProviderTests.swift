@@ -2,6 +2,7 @@
 
 import Foundation
 import Axoloty
+@testable import GnosticPositronicBackend
 @testable import GnosticCore
 import JSONSchema
 import PKContracts
@@ -152,13 +153,13 @@ struct WorkspaceProviderTests {
         )
         let provider = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
             #expect(toolID == "search_notes")
-            #expect(arguments["query"] == AnyCodable("wave 2"))
+            #expect(arguments["query"] == .string("wave 2"))
             return .success("found")
         }
 
         #expect(await provider.listTools() == [GnosticWorkspaceTool(definition: definition)])
         let result = try await provider.invoke(
-            WorkspaceInvocation(workspaceID: workspaceID, toolID: "search_notes", arguments: ["query": AnyCodable("wave 2")])
+            WorkspaceInvocation(workspaceID: workspaceID, toolID: "search_notes", arguments: ["query": .string("wave 2")])
         )
         #expect(result.isSuccess)
         #expect(result.output == "found")
@@ -515,8 +516,19 @@ private func listTools(workspaceID: UUID, using consumer: CommunicationManager) 
 }
 
 /// A Workspace that exposes no tool capability.
-private struct PlainWorkspace: WorkspaceProvider {
-    let reference: WorkspaceReference
+@MainActor
+private struct PlainWorkspace: LocalWorkspace, LocalWorkspaceHealth {
+    let reference: BackendWorkspaceReference
+    var id: UUID { reference.id }
+
+    init(reference: WorkspaceReference) {
+        self.reference = PositronicWorkspaceProjection.backendReference(from: reference)
+    }
+
+    func listTools() async throws -> [BackendWorkspaceTool] { [] }
+    func executeTool(id _: String, parameters _: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+        throw WorkspaceError.toolExecutionNotSupported
+    }
     var isHealthy: Bool { true }
 }
 

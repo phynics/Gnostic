@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticProtocol
+import GnosticCore
 
 /// The model tier a Positronic contribution may request from its dedicated
 /// runtime model service.

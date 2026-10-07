@@ -2,6 +2,7 @@
 
 import GnosticCore
 import GnosticKit
+import GnosticPositronicBackend
 
 /// One external prerequisite a module needs before it can run.
 ///

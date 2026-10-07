@@ -3,7 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
 
 /// The wire payload for a workspace attach/detach request.
 public struct WorkspaceOpsRequest: Codable, Sendable {

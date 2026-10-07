@@ -8,6 +8,7 @@ import GnosticRLMChibi
 import GnosticRLMProcessWorker
 import PKContracts
 import PositronicKit
+import GnosticPositronicBackend
 
 struct PositronicContributionModelAdapter: PositronicContributionModelService {
     let client: any LLMStreamClient

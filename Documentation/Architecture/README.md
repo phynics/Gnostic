@@ -13,7 +13,7 @@ whether its decision is delivered or remains a target.
 2. [ADR 0002 — Gnostic identity versus backend state](ADRs/0002-gnostic-identity-vs-backend-state.md)
 3. [ADR 0003 — Pre-1.0 manifest and protocol reset](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md)
 4. [ADR 0004 — Atlas supersedes Narrative](ADRs/0004-atlas-supersedes-narrative.md)
-5. [ADR 0005 — Core PositronicKit dependency boundary](ADRs/0005-core-positronic-dependency-boundary.md) — re-evaluated after ACP delivery; Positronic remains bundled pending a measured build or independent ownership/release benefit.
+5. [ADR 0005 — Core PositronicKit dependency boundary](ADRs/0005-core-positronic-dependency-boundary.md) — the bundled Positronic backend is extracted to `GnosticPositronicBackend`; `GnosticCore` carries no Positronic dependency.
 6. [ADR 0012 — RLM dual executors with a measured default](ADRs/0012-rlm-runtime-selection.md)
 7. [ADR 0006 — Runtime effect ownership and terminal observation](ADRs/0006-runtime-effect-ownership-and-terminal-observation.md)
 8. [ADR 0008 — Runtime-created Timeline durability across serve restarts](ADRs/0008-runtime-created-timeline-durability.md) — process-scoped default; superseded in part by ADR 0015 when a durable state home is configured.
@@ -94,6 +94,17 @@ depends on `GnosticProtocol` and `GnosticCore`, declares no PositronicKit,
 keeps the shared transport, subscription, and runtime-effect machinery and
 never depends on the client. ADR 0005 records the boundary and its fitness
 checks.
+
+`GnosticPositronicBackend` is the bundled Positronic backend above
+`GnosticCore`. It holds `PositronicAscendantAdapter`, the contribution seam,
+`AxolotyWorkspace`, `FileTimelineRuntimeRepository`,
+`DiscoveredWorkspaceAttachmentService`, `NetworkManagementTools`, the
+permission adapter, `EchoWorkspace`, and the Positronic projection. It depends
+on `GnosticCore`, `GnosticProtocol`, Axoloty, PositronicKit, and `PKContracts`.
+`GnosticCore` declares no PositronicKit, `PKContracts`, or `PKPrompt`
+dependency and imports none. A composition root installs the backend with
+`PositronicBackend.register(into:)`. ADR 0005 records the boundary and its
+fitness checks.
 
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.

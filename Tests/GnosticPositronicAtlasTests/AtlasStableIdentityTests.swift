@@ -2,6 +2,7 @@
 
 import Foundation
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticPositronicAtlas
 

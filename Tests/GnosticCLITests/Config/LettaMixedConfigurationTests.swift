@@ -5,6 +5,7 @@ import GnosticCore
 import GnosticLettaBackend
 import GnosticLettaTestSupport
 import Testing
+import GnosticPositronicBackend
 
 /// Proves a Letta Ascendant coexists with a non-Positronic fixture Ascendant on
 /// one Node, and that a Letta Turn executes an attached Workspace tool on the
@@ -117,7 +118,7 @@ struct LettaMixedConfigurationTests {
             workspaces: [.init(id: workspaceID, name: "Echo", uri: "echo://letta-mixed")]
         )
 
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(
             kind: "letta",
             settings: LettaAscendantBackend.settingsSchema

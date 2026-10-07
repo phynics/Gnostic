@@ -5,6 +5,7 @@ import GnosticClient
 import GnosticCore
 import PKContracts
 import Testing
+@testable import GnosticPositronicBackend
 
 // Pins the Gnostic-owned workspace invocation result to the released
 // PositronicKit `ToolResult` wire shape. This test-only use of PKContracts is

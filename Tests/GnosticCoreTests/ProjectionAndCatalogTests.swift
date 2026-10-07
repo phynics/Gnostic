@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+@testable import GnosticPositronicBackend
 @testable import GnosticCore
 import PKContracts
 import PositronicKit
@@ -53,7 +54,7 @@ struct ProjectionAndCatalogTests {
 
         let agentObject = GnosticAscendantObject(identity: ascendant)
         let timelineObject = GnosticTimelineObject(timeline: timeline)
-        let workspaceObject = GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: workspace))
+        let workspaceObject = GnosticWorkspaceObject(workspace: workspace)
 
         #expect(agentObject.objectType == "me.atkn.gnostic.Ascendant")
         #expect(timelineObject.objectType == "me.atkn.gnostic.Timeline")
@@ -148,7 +149,7 @@ struct ProjectionAndCatalogTests {
         #expect(decoded.status == .missing)
         #expect(decoded.tools.first?.id == definition.id)
 
-        let runtimeReference = try WorkspaceReferenceProjection.reference(from: NetworkWorkspaceDescriptor(
+        let runtimeReference = try PositronicWorkspaceProjection.reference(from: NetworkWorkspaceDescriptor(
             id: workspaceID,
             uri: decoded.uri,
             isAvailable: decoded.isAvailable,
@@ -157,7 +158,7 @@ struct ProjectionAndCatalogTests {
             tools: decoded.tools,
             createdAt: decoded.createdAt
         ))
-        let projected = WorkspaceReferenceProjection.networkReference(from: runtimeReference)
+        let projected = PositronicWorkspaceProjection.networkReference(from: runtimeReference)
         // PositronicKit 6.1.0 removed WorkspaceReference.trustLevel because the
         // runtime never read it. The adapter therefore projects the Gnostic
         // default (``.full``); the Gnostic wire value above still round-trips

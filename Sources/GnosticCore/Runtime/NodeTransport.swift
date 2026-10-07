@@ -3,11 +3,9 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
-import PositronicKit
 
 /// Broker-facing forwarding boundary. It is intentionally unable to access a
-/// registry, adapter, or PositronicKit object directly.
+/// registry, adapter, or provider-native object directly.
 @MainActor
 public final class NodeTransport {
     /// Internal fault-injection points keep rollback tests at the transport
@@ -89,7 +87,7 @@ public final class NodeTransport {
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
-        localWorkspaces: [UUID: any WorkspaceProvider] = [:],
+        localWorkspaces: [UUID: any LocalWorkspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         turn: @escaping Turn,
         cancelTurn: @escaping TurnCancellation = { _ in false },

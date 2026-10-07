@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "GnosticProtocol", targets: ["GnosticProtocol"]),
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
+        .library(name: "GnosticPositronicBackend", targets: ["GnosticPositronicBackend"]),
         .library(name: "GnosticClient", targets: ["GnosticClient"]),
         .library(name: "GnosticHost", targets: ["GnosticHost"]),
         .library(name: "GnosticKit", targets: ["GnosticKit"]),
@@ -50,6 +51,16 @@ let package = Package(
                 "GnosticProtocol",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyMQTT", package: "Axoloty"),
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+        .target(
+            name: "GnosticPositronicBackend",
+            dependencies: [
+                "GnosticCore",
+                "GnosticProtocol",
+                .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "AxolotyMQTT", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "Logging", package: "swift-log"),
@@ -67,6 +78,7 @@ let package = Package(
             name: "GnosticHost",
             dependencies: [
                 "GnosticCore",
+                "GnosticPositronicBackend",
                 "GnosticKit",
                 "GnosticPositronicAtlas",
                 "GnosticLettaBackend",
@@ -87,6 +99,7 @@ let package = Package(
             name: "GnosticPositronicAtlas",
             dependencies: [
                 "GnosticCore",
+                "GnosticPositronicBackend",
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
             ]
@@ -101,6 +114,7 @@ let package = Package(
             name: "GnosticPositronicContext",
             dependencies: [
                 "GnosticCore",
+                "GnosticPositronicBackend",
                 "GnosticKit",
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
@@ -221,6 +235,7 @@ let package = Package(
                 "GnosticAscendantConformance",
                 "GnosticClient",
                 "GnosticCore",
+                "GnosticPositronicBackend",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
@@ -252,6 +267,7 @@ let package = Package(
             name: "GnosticPositronicContextTests",
             dependencies: [
                 "GnosticCore",
+                "GnosticPositronicBackend",
                 "GnosticPositronicContext",
                 "GnosticKit",
                 .product(name: "PKContracts", package: "PositronicKit"),
@@ -294,19 +310,21 @@ let package = Package(
             dependencies: [
                 "GnosticCore",
                 "GnosticHost",
+                "GnosticPositronicBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
             ]
         ),
         .executableTarget(
             name: "GnosticACPLiveSmoke",
-            dependencies: ["GnosticACPAscendant", "GnosticCore"]
+            dependencies: ["GnosticACPAscendant", "GnosticCore", "GnosticPositronicBackend"]
         ),
         .executableTarget(
             name: "GnosticSoakDriver",
             dependencies: [
                 "GnosticClient",
                 "GnosticCore",
+                "GnosticPositronicBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -318,6 +336,7 @@ let package = Package(
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticLettaBackend",
+                "GnosticPositronicBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "PKContracts", package: "PositronicKit"),
@@ -331,6 +350,7 @@ let package = Package(
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticKit",
+                "GnosticPositronicBackend",
                 "GnosticPositronicContext",
                 "GnosticRLM",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -351,6 +371,7 @@ let package = Package(
                 "GnosticLettaBackend",
                 "GnosticLettaTestSupport",
                 "GnosticPositronicAtlas",
+                "GnosticPositronicBackend",
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
                 "GnosticRLMProcessWorker",

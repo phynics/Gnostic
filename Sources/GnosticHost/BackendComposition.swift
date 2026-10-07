@@ -6,6 +6,7 @@ import GnosticCore
 import GnosticKit
 import GnosticLettaBackend
 import PositronicKit
+import GnosticPositronicBackend
 
 /// The single CLI composition source for Ascendant backend kinds and modules.
 ///
@@ -28,10 +29,12 @@ public struct BackendComposition: Sendable {
     private var registry: AscendantAdapterRegistry
     private var modules: [String: GnosticModule]
 
-    /// Creates a composition with only the registrations Core provides.
+    /// Creates a composition with the bundled Positronic backend registration
+    /// and no modules.
     public init() {
         registry = AscendantAdapterRegistry()
         modules = [:]
+        installPositronicBackend()
     }
 
     /// The CLI's production composition.
@@ -46,6 +49,7 @@ public struct BackendComposition: Sendable {
         composition.registerModule(RLMModule.value)
         composition.registerLettaBackend()
         composition.registerACPBackend()
+        composition.installPositronicBackend()
         return composition
     }
 
@@ -172,10 +176,12 @@ public struct BackendComposition: Sendable {
     public func makeAdapters(for ascendants: [NodeManifest.Ascendant]) -> NodeRuntimeAdapters {
         var copy = self
         copy.installPositronicBackend()
-        return NodeRuntimeAdapters(
+        var adapters = NodeRuntimeAdapters(
             ascendants: copy.registry,
             terminalTurnObservers: copy.terminalTurnObservers(for: ascendants)
         )
+        PositronicBackend.register(into: &adapters)
+        return adapters
     }
 
     /// Installs the optional Letta backend over this composition.
