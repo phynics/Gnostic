@@ -5,6 +5,7 @@ import GnosticProtocol
 import PKContracts
 import PositronicKit
 import struct PositronicKit.TimelineRecord
+import GnosticCore
 
 /// The built-in adapter owns PositronicKit construction, tool wiring, event
 /// translation, timeline persistence, and provider shutdown. PositronicKit

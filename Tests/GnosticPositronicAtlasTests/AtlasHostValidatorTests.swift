@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 import GnosticPositronicAtlas
+import GnosticPositronicBackend
 
 @Suite("Atlas host validation")
 struct AtlasHostValidatorTests {

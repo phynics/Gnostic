@@ -6,6 +6,7 @@ import JSONSchema
 import JSONSchemaBuilder
 import PKContracts
 import PositronicKit
+import GnosticCore
 
 /// The `list_network_objects` PositronicKit tool.
 public struct ListNetworkObjectsTool: PKTool, Sendable {

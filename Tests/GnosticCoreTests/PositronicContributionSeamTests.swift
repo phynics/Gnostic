@@ -4,6 +4,7 @@ import Foundation
 import JSONSchema
 import PKContracts
 import PositronicKit
+@testable import GnosticPositronicBackend
 @testable import GnosticCore
 import Testing
 
@@ -395,7 +396,7 @@ struct PositronicContributionSeamTests {
     }
 
     private func makeAdapters(contributions: [any PositronicContribution]) -> NodeRuntimeAdapters {
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(
             kind: AscendantAdapterRegistry.positronicKind,
             settings: PositronicAscendantAdapter.settingsSchema

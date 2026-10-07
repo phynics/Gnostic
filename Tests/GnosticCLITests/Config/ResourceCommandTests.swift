@@ -3,6 +3,7 @@
 import ArgumentParser
 import Foundation
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticCLI
 

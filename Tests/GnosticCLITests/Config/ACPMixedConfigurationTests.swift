@@ -4,6 +4,7 @@ import Foundation
 import GnosticCore
 import GnosticHost
 import Testing
+import GnosticPositronicBackend
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)

@@ -7,6 +7,7 @@ import JSONSchema
 import JSONSchemaBuilder
 import PKContracts
 import PositronicKit
+import GnosticPositronicBackend
 
 private struct PositronicWorkspaceCorpusSource: RLMCorpusSource {
     let workspaceID: UUID

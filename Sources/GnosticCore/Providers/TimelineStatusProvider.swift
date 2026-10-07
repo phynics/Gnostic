@@ -3,7 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
 
 /// The wire payload requesting timeline state.
 public struct TimelineStatusRequest: Codable, Sendable {

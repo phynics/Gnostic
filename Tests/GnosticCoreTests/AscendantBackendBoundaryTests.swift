@@ -3,6 +3,7 @@
 import Foundation
 import GnosticCore
 import Testing
+@testable import GnosticPositronicBackend
 
 @Suite("Ascendant backend boundary")
 struct AscendantBackendBoundaryTests {

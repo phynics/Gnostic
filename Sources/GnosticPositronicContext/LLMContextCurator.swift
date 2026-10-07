@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticCore
+import GnosticPositronicBackend
 
 /// A structured curator backed by a model service.
 ///

@@ -2,6 +2,7 @@
 
 import Foundation
 import Testing
+@testable import GnosticPositronicBackend
 
 @Suite("Backend architecture fitness")
 struct BackendArchitectureFitnessTests {
@@ -32,8 +33,7 @@ struct BackendArchitectureFitnessTests {
         }
 
         let wiringSources = [
-            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
-            "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
+            "Sources/GnosticPositronicBackend/PositronicAscendantAdapter.swift",
         ]
         for relativePath in wiringSources {
             let wiring = try String(
@@ -44,6 +44,15 @@ struct BackendArchitectureFitnessTests {
                 #expect(!wiring.contains(forbidden), "Backend wiring leaks forbidden host type '\(forbidden)' in \(relativePath).")
             }
         }
+
+        // The neutral composition registry names Core's transport types to build
+        // the backend-owned network invoker, but it must not carry an Axoloty or
+        // PositronicKit object-model base.
+        let compositionRegistry = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift"),
+            encoding: .utf8
+        )
+        #expect(!compositionRegistry.contains("CoatyObject"))
 
         let nodeRuntime = try String(
             contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntime.swift"),
@@ -105,88 +114,67 @@ struct BackendArchitectureFitnessTests {
         }
     }
 
-    @Test("Core PositronicKit imports stay in explicit backend and host bridges")
+    @Test("Core carries no Positronic dependency and the backend owns every import")
     func corePositronicDependencyBoundaryIsExplicit() throws {
         let rootURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let expectedImports: Set<String> = [
-            "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
-            "Sources/GnosticCore/Adapters/FileTimelineRuntimeRepository.swift",
-            "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
-            "Sources/GnosticCore/Adapters/PositronicContribution.swift",
-            "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
-            "Sources/GnosticCore/Runtime/BackendWorkspaceService.swift",
-            "Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift",
-            "Sources/GnosticCore/Runtime/NodeAssembly.swift",
-            "Sources/GnosticCore/Runtime/NodeRuntime.swift",
-            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
-            "Sources/GnosticCore/Runtime/NodeRuntimeHost.swift",
-            "Sources/GnosticCore/Runtime/NodeTransport.swift",
-            "Sources/GnosticCore/Runtime/WorkspaceService.swift",
-            "Sources/GnosticCore/Services/DiscoveredWorkspaceAttachmentService.swift",
-            "Sources/GnosticCore/Services/NetworkManagementTools.swift",
-            "Sources/GnosticCore/Services/WorkspaceReferenceProjection.swift",
-        ]
-        let sourceRoot = rootURL.appendingPathComponent("Sources/GnosticCore")
-        let actualImports = Set(try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
-            .filter { $0.hasSuffix(".swift") }
-            .compactMap { relativePath -> String? in
-                let source = try? String(
-                    contentsOf: sourceRoot.appendingPathComponent(relativePath),
-                    encoding: .utf8
-                )
-                guard source?.contains("import PositronicKit") == true else { return nil }
-                return "Sources/GnosticCore/\(relativePath)"
-            })
-        #expect(actualImports == expectedImports)
+
+        let coreRoot = rootURL.appendingPathComponent("Sources/GnosticCore")
+        var coreImports: [String] = []
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: coreRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: coreRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            if source.contains("import PositronicKit")
+                || source.contains("import PKContracts")
+                || source.contains("import PKPrompt") {
+                coreImports.append("Sources/GnosticCore/\(relativePath)")
+            }
+        }
+        #expect(
+            coreImports.isEmpty,
+            "GnosticCore must import no Positronic dependency; found: \(coreImports)."
+        )
+
+        let backendRoot = rootURL.appendingPathComponent("Sources/GnosticPositronicBackend")
+        var backendImports: [String] = []
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: backendRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: backendRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            if source.contains("import PositronicKit") || source.contains("import PKContracts") {
+                backendImports.append(relativePath)
+            }
+        }
+        #expect(
+            !backendImports.isEmpty,
+            "The bundled backend target must own the PositronicKit and PKContracts imports."
+        )
 
         let package = try String(contentsOf: rootURL.appendingPathComponent("Package.swift"), encoding: .utf8)
         let coreTarget = try #require(Self.targetBlock(named: "GnosticCore", in: package))
-        #expect(!coreTarget.contains("PKPrompt"))
+        for forbidden in ["PositronicKit", "PKContracts", "PKPrompt"] {
+            #expect(
+                !coreTarget.contains(forbidden),
+                "The GnosticCore target must not depend on \(forbidden)."
+            )
+        }
+        let backendTarget = try #require(Self.targetBlock(named: "GnosticPositronicBackend", in: package))
+        #expect(backendTarget.contains("\"GnosticCore\""))
+        #expect(backendTarget.contains("PositronicKit"))
+        #expect(backendTarget.contains("PKContracts"))
+
         let boundaryADR = try String(
             contentsOf: rootURL.appendingPathComponent("Documentation/Architecture/ADRs/0005-core-positronic-dependency-boundary.md"),
             encoding: .utf8
         )
-        for relativePath in expectedImports {
-            #expect(boundaryADR.contains(relativePath.replacingOccurrences(of: "Sources/GnosticCore/", with: "")))
-        }
-
-        let expectedContractImports: Set<String> = [
-            "Sources/GnosticCore/Adapters/AxolotyWorkspace.swift",
-            "Sources/GnosticCore/Adapters/FileTimelineRuntimeRepository.swift",
-            "Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift",
-            "Sources/GnosticCore/Adapters/PositronicContribution.swift",
-            "Sources/GnosticCore/Adapters/WorkspaceProvider.swift",
-            "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
-            "Sources/GnosticCore/Providers/TimelineManagementProvider.swift",
-            "Sources/GnosticCore/Providers/TimelineStatusProvider.swift",
-            "Sources/GnosticCore/Providers/WorkspaceOpsProvider.swift",
-            "Sources/GnosticCore/Runtime/AscendantPermissionCoordinator.swift",
-            "Sources/GnosticCore/Runtime/BackendWorkspaceService.swift",
-            "Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift",
-            "Sources/GnosticCore/Runtime/NodeAssembly.swift",
-            "Sources/GnosticCore/Runtime/NodeRuntime.swift",
-            "Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift",
-            "Sources/GnosticCore/Runtime/NodeRuntimeHost.swift",
-            "Sources/GnosticCore/Runtime/NodeTransport.swift",
-            "Sources/GnosticCore/Runtime/WorkspaceService.swift",
-            "Sources/GnosticCore/Services/DiscoveredWorkspaceAttachmentService.swift",
-            "Sources/GnosticCore/Services/NetworkManagementTools.swift",
-            "Sources/GnosticCore/Services/WorkspaceReferenceProjection.swift",
-        ]
-        let actualContractImports = Set(try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
-            .filter { $0.hasSuffix(".swift") }
-            .compactMap { relativePath -> String? in
-                let source = try? String(
-                    contentsOf: sourceRoot.appendingPathComponent(relativePath),
-                    encoding: .utf8
-                )
-                guard source?.contains("import PKContracts") == true else { return nil }
-                return "Sources/GnosticCore/\(relativePath)"
-            })
-        #expect(actualContractImports == expectedContractImports)
+        #expect(boundaryADR.contains("GnosticPositronicBackend"))
     }
 
     @Test("terminal Turn observation remains a backend-neutral Core seam")
@@ -305,7 +293,7 @@ struct BackendArchitectureFitnessTests {
 
         let sourceRoot = rootURL.appendingPathComponent("Sources")
         for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
-            where relativePath.hasSuffix(".swift") && relativePath != "GnosticCore/Adapters/PositronicAscendantAdapter.swift" {
+            where relativePath.hasSuffix(".swift") && relativePath != "GnosticPositronicBackend/PositronicAscendantAdapter.swift" {
             let source = try String(contentsOf: sourceRoot.appendingPathComponent(relativePath), encoding: .utf8)
             #expect(!source.contains("attachedAgentInstanceID"), "Provider-native AgentInstance linkage escaped its PositronicKit boundary: (relativePath).")
         }

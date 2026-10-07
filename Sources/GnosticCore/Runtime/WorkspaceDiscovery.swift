@@ -7,21 +7,46 @@ import GnosticProtocol
 /// The narrow network-discovery capability consumed by Workspace domain logic.
 /// Tests can supply a stub without constructing Axoloty or a broker connection.
 @MainActor
-protocol WorkspaceDiscovery: Sendable {
+public protocol WorkspaceDiscovery: Sendable {
+    /// Runs a network discovery sweep for the given timeout.
+    ///
+    /// - Parameter timeout: The maximum time to wait for replies.
     func discover(timeout: Duration) async
+    /// Returns every currently catalogued network object.
+    ///
+    /// - Returns: The catalog entries.
     func objects() async -> [NetworkCatalogEntry]
+    /// Returns the attachment status of one Workspace.
+    ///
+    /// - Parameter id: The Workspace identifier.
+    /// - Returns: The effective attachment status.
     func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus
+    /// Queries the tool catalog of one advertised Workspace.
+    ///
+    /// - Parameters:
+    ///   - workspaceID: The Workspace identifier.
+    ///   - timeout: The maximum time to wait for replies.
     func queryTools(workspaceID: UUID, timeout: Duration) async
+    /// Returns the descriptor of one uniquely advertised Workspace.
+    ///
+    /// - Parameters:
+    ///   - workspaceID: The Workspace identifier.
+    ///   - providerID: The advertising peer.
+    /// - Returns: The descriptor, or `nil` when it is not advertised.
     func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor?
 }
 
 /// Gnostic-owned optional host capability for backends that expose network
 /// Workspace tools. It keeps catalog and broker implementations in the host
 /// composition layer while allowing a backend to opt into discovery.
-final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapability, Sendable {
-    let discovery: any WorkspaceDiscovery
+public final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapability, Sendable {
+    /// The discovery seam this capability exposes.
+    public let discovery: any WorkspaceDiscovery
 
-    init(discovery: any WorkspaceDiscovery) {
+    /// Creates a discovery capability over one discovery seam.
+    ///
+    /// - Parameter discovery: The discovery seam to expose.
+    public init(discovery: any WorkspaceDiscovery) {
         self.discovery = discovery
     }
 }
@@ -31,20 +56,33 @@ final class BackendWorkspaceDiscoveryCapability: AscendantBackendOptionalCapabil
 /// backend receives only this narrow capability and never the registry or
 /// transport objects behind it.
 @MainActor
-final class BackendWorkspaceAttachmentCapability: AscendantBackendOptionalCapability, @unchecked Sendable { // SAFETY: @MainActor class; the bound handler is actor-isolated.
-    typealias Handler = @MainActor @Sendable (UUID, UUID) async throws -> Void
+public final class BackendWorkspaceAttachmentCapability: AscendantBackendOptionalCapability, @unchecked Sendable { // SAFETY: @MainActor class; the bound handler is actor-isolated.
+    /// The handler NodeRuntime binds for one Ascendant lease.
+    public typealias Handler = @MainActor @Sendable (UUID, UUID) async throws -> Void
 
     private var handler: Handler?
 
-    init(handler: Handler? = nil) {
+    /// Creates an unbound attachment capability.
+    ///
+    /// - Parameter handler: An optional pre-bound handler.
+    public init(handler: Handler? = nil) {
         self.handler = handler
     }
 
-    func bind(_ handler: @escaping Handler) {
+    /// Binds the handler NodeRuntime owns for one Ascendant lease.
+    ///
+    /// - Parameter handler: The handler to invoke on attach.
+    public func bind(_ handler: @escaping Handler) {
         self.handler = handler
     }
 
-    func attach(workspaceID: UUID, timelineID: UUID) async throws {
+    /// Attaches one Workspace to one Timeline through the bound handler.
+    ///
+    /// - Parameters:
+    ///   - workspaceID: The Workspace identifier.
+    ///   - timelineID: The Timeline identifier.
+    /// - Throws: When the capability is unbound or the handler rejects the attach.
+    public func attach(workspaceID: UUID, timelineID: UUID) async throws {
         guard let handler else { throw NodeRuntimeError.notRunning }
         try await handler(workspaceID, timelineID)
     }

@@ -1,22 +1,11 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import GnosticProtocol
 import PKContracts
 import PositronicKit
 import struct PositronicKit.TimelineRecord
-
-/// Failures that prevent a discovered workspace from being imported or attached.
-public enum DiscoveredWorkspaceAttachmentError: Error, Sendable, Equatable {
-    /// Attachment is a user-approved operation and approval was not supplied.
-    case approvalRequired
-    /// The catalog entry is not available, well-formed, and uniquely advertised.
-    case unavailable(WorkspaceAttachmentStatus)
-    /// The advertised URI cannot form a PositronicKit workspace reference.
-    case invalidURI
-    /// The requested timeline belongs to another configured runtime.
-    case timelineNotOwned(UUID)
-}
 
 /// Imports safe discovered workspace references and routes attachment authority
 /// through Gnostic when a backend host capability is available.
@@ -100,7 +89,7 @@ final class DiscoveredWorkspaceAttachmentService {
         await discovery.queryTools(workspaceID: workspaceID, timeout: .seconds(5))
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID),
               descriptor.uri == uri,
-              let reference = try? WorkspaceReferenceProjection.reference(from: descriptor) else {
+              let reference = try? PositronicWorkspaceProjection.reference(from: descriptor) else {
             throw DiscoveredWorkspaceAttachmentError.invalidURI
         }
         if let hostAttachment {

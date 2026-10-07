@@ -3,8 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
-import PositronicKit
 
 /// Owns the concrete host resources and lifecycle side effects for a node.
 /// NodeRuntime remains a public facade over the canonical registry and domain
@@ -17,7 +15,7 @@ final class NodeRuntimeHost {
         let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
         let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
-        let localWorkspaces: [UUID: any WorkspaceProvider]
+        let localWorkspaces: [UUID: any LocalWorkspace]
         let isAvailable: @MainActor () -> Bool
         let turn: NodeTransport.Turn
         let cancelTurn: NodeTransport.TurnCancellation

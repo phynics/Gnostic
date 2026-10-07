@@ -5,6 +5,7 @@ import GnosticCore
 import GnosticHost
 import GnosticLettaBackend
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticCLI
 

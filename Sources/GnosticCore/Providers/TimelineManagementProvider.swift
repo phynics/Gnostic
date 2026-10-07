@@ -3,7 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
 
 /// The wire payload to create a new timeline.
 public struct TimelineCreateRequest: Codable, Sendable {

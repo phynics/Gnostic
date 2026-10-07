@@ -5,6 +5,7 @@ import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
+@testable import GnosticPositronicBackend
 
 @Suite("Positronic backend semantic validation")
 struct PositronicBackendValidationTests {
@@ -120,7 +121,7 @@ struct PositronicBackendValidationTests {
         manifest.ascendants[0].backend = makeBackend(provider: "unknown")
 
         do {
-            _ = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+            _ = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
             Issue.record("NodeRuntime published an invalid Positronic backend.")
         } catch let error as AscendantBackendError {
             #expect(error.reasonCode == "invalidConfiguration")
@@ -139,7 +140,7 @@ struct PositronicBackendValidationTests {
             ascendants: [.init(id: ascendantID, name: "Validated", defaultTimelineID: timelineID, kind: "validation-fixture")],
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "validation-fixture") { ascendant, _, _, timelines in
             let factoryNumber = await probe.nextFactory()
             return ReconstructionValidationBackend(

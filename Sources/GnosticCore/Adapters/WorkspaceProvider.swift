@@ -3,47 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
-import PositronicKit
-
-/// Constructs and reads the standard Axoloty object-filter form used by the
-/// query-only Workspace tool catalog.
-enum GnosticWorkspaceToolQuery {
-    static func filter(workspaceID: UUID, page: Int) -> [String: Any] {
-        [
-            "conditions": [
-                "and": [
-                    ["workspaceID", [7, workspaceID.uuidString.lowercased()]],
-                    ["page", [7, page]],
-                ],
-            ],
-        ]
-    }
-
-    static func value<T>(_ type: T.Type, key: String, in raw: String?) -> T? {
-        guard let raw, let data = raw.data(using: .utf8), let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        return find(type, key: key, in: root)
-    }
-
-    private static func find<T>(_ type: T.Type, key: String, in value: Any) -> T? {
-        if let condition = value as? [Any], condition.count == 2,
-           let property = condition[0] as? String, property == key,
-           let expression = condition[1] as? [Any], expression.count == 2,
-           let equals = expression[0] as? Int, equals == 7 {
-            return expression[1] as? T
-        }
-        if let object = value as? [String: Any] {
-            for child in object.values {
-                if let result: T = find(type, key: key, in: child) { return result }
-            }
-        } else if let array = value as? [Any] {
-            for child in array {
-                if let result: T = find(type, key: key, in: child) { return result }
-            }
-        }
-        return nil
-    }
-}
 
 /// The wire payload for Gnostic's generic remote workspace invocation.
 public struct WorkspaceInvocation: Codable, Sendable {
@@ -58,10 +17,10 @@ public struct WorkspaceInvocation: Codable, Sendable {
     public let toolID: String
 
     /// The tool arguments supplied by the caller.
-    public let arguments: [String: AnyCodable]
+    public let arguments: [String: ManifestJSONValue]
 
     /// Creates an invocation payload.
-    public init(workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: AnyCodable], protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: ManifestJSONValue] = [:], protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.workspaceID = workspaceID
         self.providerID = providerID
@@ -77,18 +36,18 @@ public struct WorkspaceInvocation: Codable, Sendable {
         workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
         providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
         toolID = try container.decode(String.self, forKey: .toolID)
-        arguments = try container.decode([String: AnyCodable].self, forKey: .arguments)
+        arguments = try container.decode([String: ManifestJSONValue].self, forKey: .arguments)
     }
 }
 
 /// Hosts arbitrary custom workspace tools over Gnostic's unary Call/Return operation.
 public actor GnosticWorkspaceProvider {
     /// The single operation used for all workspace tool invocations.
-    public static let invocationOperation = "me.atkn.gnostic.workspace.invoke"
+    public static let invocationOperation = GnosticWorkspaceProtocol.invocationOperation
     public static let toolObjectType = GnosticObjectType.workspaceTool
 
     /// Executes one advertised tool.
-    public typealias ToolExecutor = @Sendable (_ toolID: String, _ arguments: [String: AnyCodable]) async throws -> ToolResult
+    public typealias ToolExecutor = @Sendable (_ toolID: String, _ arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
 
     private let workspaceID: UUID
     private let definitions: [String: GnosticWorkspaceToolDefinition]
@@ -122,9 +81,9 @@ public actor GnosticWorkspaceProvider {
     }
 
     /// Dispatches a decoded invocation only when it addresses this workspace and an advertised tool.
-    public func invoke(_ invocation: WorkspaceInvocation) async throws -> ToolResult {
-        guard invocation.workspaceID == workspaceID else { throw WorkspaceError.workspaceNotFound }
-        guard definitions[invocation.toolID] != nil else { throw WorkspaceError.toolExecutionNotSupported }
+    public func invoke(_ invocation: WorkspaceInvocation) async throws -> BackendWorkspaceResult {
+        guard invocation.workspaceID == workspaceID else { throw WorkspaceServiceError.workspaceNotFound }
+        guard definitions[invocation.toolID] != nil else { throw WorkspaceServiceError.toolExecutionNotSupported }
         return try await executor(invocation.toolID, invocation.arguments)
     }
 
@@ -132,7 +91,7 @@ public actor GnosticWorkspaceProvider {
     public func handle(parameters: String?) async throws -> CallHandlerResult {
         do {
             try GnosticProtocol.validatePayload(parameters)
-            guard let parameters else { throw WorkspaceError.toolExecutionNotSupported }
+            guard let parameters else { throw WorkspaceServiceError.toolExecutionNotSupported }
             let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
             let result = try await invoke(invocation)
             return .success(result: try Self.encodeResult(result))
@@ -158,10 +117,18 @@ public actor GnosticWorkspaceProvider {
     }
 
     /// Encodes a tool result with the protocol major within the event budget.
-    static func encodeResult(_ result: ToolResult) throws -> String {
-        let data = try GnosticWirePayload.encode(result, context: "workspace.invoke result")
-        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CocoaError(.coderInvalidValue)
+    ///
+    /// The wire shape mirrors the released PositronicKit `ToolResult` payload,
+    /// including its `isSuccess`, `output`, and `error` keys, so a released
+    /// consumer decodes it unchanged. The kernel builds it from its neutral
+    /// ``BackendWorkspaceResult``.
+    static func encodeResult(_ result: BackendWorkspaceResult) throws -> String {
+        var object: [String: Any] = [
+            "isSuccess": result.isSuccess,
+            "output": result.isSuccess ? result.output : "",
+        ]
+        if !result.isSuccess {
+            object["error"] = result.message ?? ""
         }
         object["protocolMajor"] = GnosticProtocol.currentMajor
         let encoded = try JSONSerialization.data(withJSONObject: object)

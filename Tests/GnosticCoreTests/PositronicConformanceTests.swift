@@ -6,6 +6,7 @@ import GnosticCore
 import PKContracts
 import PositronicKit
 import Testing
+@testable import GnosticPositronicBackend
 
 /// Runs the shared AscendantBackend conformance suite against the bundled
 /// Positronic adapter with a scripted language model (GNO-PLAT-060, #452).

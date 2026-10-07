@@ -5,6 +5,7 @@ import GnosticCore
 import GnosticRLM
 import PKContracts
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticCLI
 @testable import GnosticHost

@@ -3,8 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
-import PositronicKit
 
 /// Materializes a validated node manifest into one transport connection,
 /// per-Ascendant runtime adapters, and complete canonical advertisements.
@@ -22,8 +20,8 @@ public final class NodeRuntime {
     private let registry: NodeRegistry
 
     private let adapters: NodeRuntimeAdapters
-    private let initialWorkspaceReferences: [UUID: WorkspaceReference]
-    private let localWorkspaces: [UUID: any WorkspaceProvider]
+    private let initialWorkspaceReferences: [UUID: BackendWorkspaceReference]
+    private let localWorkspaces: [UUID: any LocalWorkspace]
     private let backendSupervisor: AscendantBackendSupervisor
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
@@ -104,7 +102,7 @@ public final class NodeRuntime {
         let products = try await NodeAssembly.materializeWorkspaces(plan, adapters: adapters)
         initialWorkspaceReferences = products.references
         localWorkspaces = products.workspaces
-        let infrastructure = try NodeAssembly.resolveInfrastructure(for: plan, products: products)
+        let infrastructure = try NodeAssembly.resolveInfrastructure(for: plan, products: products, adapters: adapters)
         let runtimeHost = NodeRuntimeHost(
             lifecycleCoordinator: coordinator,
             resources: infrastructure,
@@ -436,7 +434,7 @@ public final class NodeRuntime {
         return WorkspaceReferenceProjection.networkReference(from: reference, effectiveStatus: status)
     }
 
-    public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: AnyCodable]) async throws -> ToolResult {
+    public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
         try await workspaceService.executeLocalTool(workspaceID: workspaceID, toolID: toolID, arguments: arguments)
     }
 

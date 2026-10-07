@@ -4,6 +4,7 @@ import Foundation
 import PKContracts
 import PositronicKit
 import Testing
+@testable import GnosticPositronicBackend
 @testable import GnosticCore
 
 @Suite("Node transport boundary")
@@ -229,11 +230,12 @@ struct NodeTransportTests {
         let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000010")!
         let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000011")!
         let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000012")!
-        let reference = WorkspaceReference(
+        let reference = BackendWorkspaceReference(
             id: workspaceID,
-            uri: WorkspaceURI(parsing: "echo://local")!,
-            location: .runtime,
-            tools: EchoWorkspace.toolDefinitions
+            uri: "echo://local",
+            status: .available,
+            tools: EchoWorkspace.toolDefinitions,
+            location: .runtime
         )
         let plan = try NodeManifest(
             broker: .init(host: "unused", port: 1883, namespace: "workspace-status-unit"),
@@ -395,11 +397,12 @@ struct NodeTransportTests {
         let ascendantID = UUID(uuidString: "13100000-0000-4000-8000-000000000025")!
         let timelineID = UUID(uuidString: "13100000-0000-4000-8000-000000000026")!
         let workspaceID = UUID(uuidString: "13100000-0000-4000-8000-000000000027")!
-        let reference = WorkspaceReference(
+        let reference = BackendWorkspaceReference(
             id: workspaceID,
-            uri: WorkspaceURI(parsing: "echo://missing-projection")!,
-            location: .runtime,
-            tools: EchoWorkspace.toolDefinitions
+            uri: "echo://missing-projection",
+            status: .available,
+            tools: EchoWorkspace.toolDefinitions,
+            location: .runtime
         )
         let backend = MutationProbeBackend(
             ascendantID: ascendantID,
@@ -418,8 +421,8 @@ struct NodeTransportTests {
             plan: plan,
             registry: registry,
             discovery: ServiceStubWorkspaceDiscovery(
-                entry: .init(objectID: workspaceID, objectType: GnosticObjectType.workspace, providerID: "stub", name: "Local", knownProperties: [:], dynamicProperties: [:], workspace: .init(id: workspaceID, uri: reference.uri.description, isAvailable: true, tools: [])),
-                status: .available(providerID: "stub", uri: reference.uri.description)
+                entry: .init(objectID: workspaceID, objectType: GnosticObjectType.workspace, providerID: "stub", name: "Local", knownProperties: [:], dynamicProperties: [:], workspace: .init(id: workspaceID, uri: reference.uri, isAvailable: true, tools: [])),
+                status: .available(providerID: "stub", uri: reference.uri)
             ),
             localWorkspaces: [workspaceID: EchoWorkspace(reference: reference)],
             references: [workspaceID: reference],

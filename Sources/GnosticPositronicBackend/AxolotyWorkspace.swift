@@ -5,6 +5,7 @@ import Foundation
 import GnosticProtocol
 import PKContracts
 import PositronicKit
+import GnosticCore
 
 /// A PositronicKit workspace proxy backed by a catalogued Gnostic advertisement.
 public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
@@ -60,7 +61,7 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
             throw WorkspaceError.toolExecutionNotSupported
         }
         do {
-            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters))
+            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters.mapValues(PositronicWorkspaceProjection.manifestValue)))
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -90,7 +91,7 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
         guard case let .available(providerID, _) = await catalog.workspaceAttachmentStatus(id: id),
               let descriptor = await catalog.object(id: id, providerID: providerID)?.workspace
         else { return nil }
-        return try? WorkspaceReferenceProjection.reference(from: descriptor)
+        return try? PositronicWorkspaceProjection.reference(from: descriptor)
     }
 }
 
@@ -105,7 +106,7 @@ private func invokeWorkspace(
     }
     let data = try GnosticWirePayload.encode(invocation, context: "workspace.invoke request")
     let response = try await communication.call(
-        operation: GnosticWorkspaceProvider.invocationOperation,
+        operation: GnosticWorkspaceProtocol.invocationOperation,
         parameters: String(decoding: data, as: UTF8.self),
         context: .provider(providerID),
         timeout: timeout

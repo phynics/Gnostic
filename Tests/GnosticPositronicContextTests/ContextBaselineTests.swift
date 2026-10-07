@@ -3,6 +3,7 @@
 import Foundation
 import GnosticKit
 import Testing
+import GnosticPositronicBackend
 
 @testable import GnosticPositronicContext
 

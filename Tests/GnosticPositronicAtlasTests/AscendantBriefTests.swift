@@ -5,6 +5,7 @@ import GnosticCore
 import GnosticPositronicAtlas
 import PositronicKit
 import Testing
+import GnosticPositronicBackend
 
 @Suite("Ascendant Brief projection", .timeLimit(.minutes(2)))
 struct AscendantBriefTests {

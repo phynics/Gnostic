@@ -2,6 +2,7 @@
 
 import Foundation
 import Testing
+import GnosticPositronicBackend
 
 @Suite("Backend composition architecture fitness")
 struct CompositionArchitectureFitnessTests {
@@ -163,6 +164,36 @@ struct CompositionArchitectureFitnessTests {
         let coreImportsClient = try Self.sources(in: "Sources/GnosticCore")
             .contains { $0.text.contains("import GnosticClient") }
         #expect(!coreImportsClient, "GnosticCore sources must not import GnosticClient.")
+
+        // ADR 0005 / epic #460: the bundled Positronic backend sits above the
+        // kernel, so the kernel never reaches back up into it. The backend
+        // declares the kernel dependency and may not import a higher layer.
+        #expect(
+            !coreTarget.contains("GnosticPositronicBackend"),
+            "GnosticCore must not depend on GnosticPositronicBackend."
+        )
+        let backendTarget = try #require(
+            Self.targetBlock(named: "GnosticPositronicBackend", in: package),
+            "Package.swift must declare a GnosticPositronicBackend target."
+        )
+        #expect(
+            backendTarget.contains("\"GnosticCore\""),
+            "GnosticPositronicBackend must build on GnosticCore."
+        )
+        for forbidden in ["GnosticHost", "GnosticCLI", "GnosticKit", "GnosticClient"] {
+            #expect(
+                !backendTarget.contains(forbidden),
+                "GnosticPositronicBackend must not depend on \(forbidden)."
+            )
+        }
+        let backendSources = try Self.sources(in: "Sources/GnosticPositronicBackend")
+        #expect(!backendSources.isEmpty, "GnosticPositronicBackend must have sources.")
+        for forbidden in ["import GnosticHost", "import GnosticCLI", "import GnosticKit", "import GnosticClient"] {
+            #expect(
+                !backendSources.contains { $0.text.contains(forbidden) },
+                "GnosticPositronicBackend sources must not use '\(forbidden)'."
+            )
+        }
 
         let hostImportsCLI = try Self.sources(in: "Sources/GnosticHost")
             .contains { $0.text.contains("import GnosticCLI") }

@@ -3,8 +3,6 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
-import PositronicKit
 
 /// Builds the immutable host resources needed by a NodeRuntime. The runtime
 /// facade consumes these products and owns only public delegation and service
@@ -12,8 +10,8 @@ import PositronicKit
 @MainActor
 struct NodeAssembly {
     struct WorkspaceProducts {
-        let references: [UUID: WorkspaceReference]
-        let workspaces: [UUID: any WorkspaceProvider]
+        let references: [UUID: BackendWorkspaceReference]
+        let workspaces: [UUID: any LocalWorkspace]
     }
 
     struct Infrastructure {
@@ -49,16 +47,13 @@ struct NodeAssembly {
         _ plan: NodeLaunchPlan,
         adapters: NodeRuntimeAdapters
     ) async throws -> WorkspaceProducts {
-        var references: [UUID: WorkspaceReference] = [:]
-        var workspaces: [UUID: any WorkspaceProvider] = [:]
+        var references: [UUID: BackendWorkspaceReference] = [:]
+        var workspaces: [UUID: any LocalWorkspace] = [:]
         for configuration in plan.workspaces {
-            guard let uri = WorkspaceURI(parsing: configuration.uri) else {
-                throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
-            }
             let workspace = try adapters.workspaces.makeWorkspace(for: configuration)
             let reference = workspace.reference
             guard reference.id == configuration.id,
-                  reference.uri.description == uri.description else {
+                  reference.uri == configuration.uri else {
                 throw NodeRuntimeError.invalidWorkspaceURI(configuration.id)
             }
             references[configuration.id] = reference
@@ -66,14 +61,14 @@ struct NodeAssembly {
         }
         for timeline in plan.timelines {
             for attachment in timeline.attachments where attachment.scope == .network {
-                guard let uriString = attachment.uri, let uri = WorkspaceURI(parsing: uriString) else {
+                guard let uriString = attachment.uri, !uriString.isEmpty else {
                     throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
                 }
-                references[attachment.workspaceID] = WorkspaceReference(
+                references[attachment.workspaceID] = BackendWorkspaceReference(
                     id: attachment.workspaceID,
-                    uri: uri,
-                    location: .attached,
-                    tools: []
+                    uri: uriString,
+                    status: .unavailable,
+                    location: .attached
                 )
             }
         }
@@ -82,7 +77,8 @@ struct NodeAssembly {
 
     static func resolveInfrastructure(
         for plan: NodeLaunchPlan,
-        products: WorkspaceProducts
+        products: WorkspaceProducts,
+        adapters: NodeRuntimeAdapters
     ) throws -> Infrastructure {
         let resolvedContainer = try Container.resolve(
             components: Components(
@@ -106,6 +102,9 @@ struct NodeAssembly {
         }
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: communication)
+        let networkWorkspaceInvoker = adapters.networkWorkspaceInvoker.flatMap { makeInvoker in
+            makeInvoker(catalog, communication)
+        }
         return Infrastructure(
             container: resolvedContainer,
             communication: communication,
@@ -116,7 +115,7 @@ struct NodeAssembly {
                 localWorkspaces: products.workspaces,
                 references: products.references,
                 catalog: catalog,
-                communication: communication
+                networkWorkspaceInvoker: networkWorkspaceInvoker
             )
         )
     }
@@ -144,7 +143,7 @@ struct NodeAssembly {
         var instances: [UUID: any AscendantBackend] = [:]
         var health: [UUID: AscendantBackendHealth] = [:]
         var attachmentCapabilities: [(ascendantID: UUID, lease: UUID, capability: BackendWorkspaceAttachmentCapability)] = []
-        var timelineStoreCapabilities: [UUID: BackendTimelineStoreCapability] = [:]
+        var timelineStoreCapabilities: [UUID: any AscendantBackendOptionalCapability] = [:]
 
         do {
             for ascendant in plan.ascendants {
@@ -158,12 +157,8 @@ struct NodeAssembly {
                 leases[ascendant.id] = lease
                 attachmentCapabilities.append((ascendant.id, lease, attachmentCapability))
                 var optionalCapabilities: [any AscendantBackendOptionalCapability] = [workspaceCapability, attachmentCapability]
-                if let runtimeTimelineDirectory {
-                    let store = try await FileTimelineRuntimeRepository(
-                        fileURL: runtimeTimelineDirectory
-                            .appendingPathComponent("\(ascendant.id.uuidString.lowercased()).jsonl")
-                    )
-                    let capability = BackendTimelineStoreCapability(store: store)
+                if let runtimeTimelineDirectory, let makeTimelineStore = adapters.timelineStore {
+                    let capability = try await makeTimelineStore(ascendant.id, runtimeTimelineDirectory)
                     timelineStoreCapabilities[ascendant.id] = capability
                     optionalCapabilities.append(capability)
                 }

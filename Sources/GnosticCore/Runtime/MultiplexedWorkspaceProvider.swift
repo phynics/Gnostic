@@ -3,21 +3,21 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
-import PKContracts
-import PositronicKit
 
 /// One unary Axoloty handler serving every local Workspace by workspace ID.
 ///
 /// This is transport infrastructure: its registration and cancellation belong
-/// to ``NodeTransport`` rather than the node composition root.
+/// to ``NodeTransport`` rather than the node composition root. Workspaces are
+/// opaque ``LocalWorkspace`` capabilities, so the handler never sees a
+/// provider-native value.
 public actor MultiplexedWorkspaceProvider {
-    public static let invocationOperation = GnosticWorkspaceProvider.invocationOperation
+    public static let invocationOperation = GnosticWorkspaceProtocol.invocationOperation
 
-    private let workspaces: [UUID: any WorkspaceProvider]
+    private let workspaces: [UUID: any LocalWorkspace]
     private let isAvailable: @Sendable () async -> Bool
 
     public init(
-        workspaces: [UUID: any WorkspaceProvider],
+        workspaces: [UUID: any LocalWorkspace],
         isAvailable: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.workspaces = workspaces
@@ -28,17 +28,14 @@ public actor MultiplexedWorkspaceProvider {
         do {
             guard await isAvailable() else { throw NodeRuntimeError.notRunning }
             try GnosticProtocol.validatePayload(parameters)
-            guard let parameters else { throw WorkspaceError.toolExecutionNotSupported }
+            guard let parameters else { throw WorkspaceServiceError.toolExecutionNotSupported }
             let invocation = try JSONDecoder().decode(WorkspaceInvocation.self, from: Data(parameters.utf8))
             if let expectedProviderID, let providerID = invocation.providerID,
                providerID.lowercased() != expectedProviderID.lowercased() {
-                throw WorkspaceError.connectionFailed
+                throw WorkspaceServiceError.connectionFailed
             }
             guard let workspace = workspaces[invocation.workspaceID] else {
-                throw WorkspaceError.workspaceNotFound
-            }
-            guard let workspace = workspace as? any WorkspaceToolProvider else {
-                throw WorkspaceError.toolExecutionNotSupported
+                throw WorkspaceServiceError.workspaceNotFound
             }
             let result = try await workspace.executeTool(id: invocation.toolID, parameters: invocation.arguments)
             return .success(result: try GnosticWorkspaceProvider.encodeResult(result))
@@ -62,12 +59,10 @@ public actor MultiplexedWorkspaceProvider {
               filter.lowercased().contains(workspaceID.uuidString.lowercased()),
               let page: Int = GnosticWorkspaceToolQuery.value(Int.self, key: "page", in: request.snapshot.objectFilter),
               page >= 0,
-              let owned = workspaces[workspaceID] else { return }
-        guard let workspace = owned as? any WorkspaceToolProvider else { return try request.retrieve(objects: []) }
-        let definitions = (try await workspace.listTools()).compactMap { reference -> WorkspaceToolDefinition? in
-            guard case let .custom(definition) = reference else { return nil }
-            return definition
-        }.sorted { $0.id < $1.id }
+              let workspace = workspaces[workspaceID] else { return }
+        let definitions = try await workspace.listTools()
+            .map(Self.definition(from:))
+            .sorted { $0.id < $1.id }
         guard let definition = definitions.dropFirst(page).first else { return try request.retrieve(objects: []) }
         try request.retrieve(object: GnosticWorkspaceToolObject(workspaceID: workspaceID, definition: definition, page: page))
     }
@@ -85,5 +80,21 @@ public actor MultiplexedWorkspaceProvider {
         await communication.registerQueryResponder { [self] request in
             try await self.handleQuery(request)
         }
+    }
+
+    private static func definition(from tool: BackendWorkspaceTool) -> GnosticWorkspaceToolDefinition {
+        let parameters: [String: ManifestJSONValue]
+        if case let .object(values)? = tool.parametersSchema {
+            parameters = values
+        } else {
+            parameters = [:]
+        }
+        return GnosticWorkspaceToolDefinition(
+            id: tool.id,
+            name: tool.name,
+            description: tool.description,
+            parametersSchema: parameters,
+            requiresPermission: tool.requiresPermission
+        )
     }
 }

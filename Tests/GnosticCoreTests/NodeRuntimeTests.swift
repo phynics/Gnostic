@@ -5,6 +5,7 @@ import Foundation
 import PKContracts
 import PositronicKit
 import Testing
+@testable import GnosticPositronicBackend
 
 @testable import GnosticCore
 
@@ -21,7 +22,7 @@ struct NodeRuntimeTests {
             ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
             timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
             FixtureAscendantBackend(ascendant: ascendant, timelines: timelines)
         }
@@ -48,7 +49,7 @@ struct NodeRuntimeTests {
             ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
             timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
             FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, cancellationProbe: probe)
         }
@@ -82,7 +83,7 @@ struct NodeRuntimeTests {
             ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
             FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, creationProbe: probe)
         }
@@ -108,7 +109,7 @@ struct NodeRuntimeTests {
         )
 
         await #expect(throws: NodeRuntimeError.unsupportedAscendantKind("unregistered")) {
-            try await NodeRuntime(plan: manifest.compileLaunchPlan())
+            try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         }
     }
 
@@ -129,6 +130,7 @@ struct NodeRuntimeTests {
     }
 
     @Test("multiplexed Workspace provider rejects a mismatched provider identity")
+    @MainActor
     func multiplexedWorkspaceProviderRejectsMismatchedProvider() async throws {
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000140")!
         let reference = WorkspaceReference(
@@ -152,6 +154,7 @@ struct NodeRuntimeTests {
     }
 
     @Test("multiplexed Workspace provider hides unexpected executor details")
+    @MainActor
     func multiplexedWorkspaceProviderDoesNotLeakDetails() async throws {
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000142")!
         let reference = WorkspaceReference(
@@ -177,6 +180,7 @@ struct NodeRuntimeTests {
     }
 
     @Test("multiplexed Workspace provider preserves cancellation from a workspace")
+    @MainActor
     func multiplexedWorkspaceProviderPreservesCancellation() async throws {
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000141")!
         let reference = WorkspaceReference(
@@ -214,7 +218,7 @@ struct NodeRuntimeTests {
             workspaces: [.init(id: workspaceID, name: "Echo", uri: "echo://atlas")]
         )
 
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         let snapshot = await runtime.snapshot()
 
         #expect(snapshot.ascendantIDs == [ascendantID])
@@ -229,7 +233,7 @@ struct NodeRuntimeTests {
         let manifest = NodeManifest.empty(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-empty")
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         let snapshot = await runtime.snapshot()
 
         #expect(snapshot.ascendantIDs.isEmpty)
@@ -257,7 +261,7 @@ struct NodeRuntimeTests {
                 .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000136")!, title: "Unoperated"),
             ]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
 
         #expect(await runtime.ascendantID(forTimeline: firstTimeline) == first)
         #expect(await runtime.ascendantID(forTimeline: secondTimeline) == second)
@@ -281,8 +285,8 @@ struct NodeRuntimeTests {
             ascendants: [.init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000166")!, name: "Second", defaultTimelineID: secondTimeline)],
             timelines: [.init(id: secondTimeline, title: "Second Node Timeline", operatingAscendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000166")!)]
         )
-        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan())
-        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan())
+        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan(), adapters: .bundled)
+        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan(), adapters: .bundled)
         try await first.start()
         try await second.start()
         defer {
@@ -326,7 +330,7 @@ struct NodeRuntimeTests {
         let secondTimeline = UUID(uuidString: "A21D0000-0000-4000-8000-000000000172")!
         let firstModel = ProviderIsolationLanguageModel(response: "first-model-response")
         let secondModel = ProviderIsolationLanguageModel(response: "second-model-response")
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerPositronicBackend { _, backend in
             switch backend.settings["model"]?.stringValue {
             case "first-model": return firstModel
@@ -429,8 +433,8 @@ struct NodeRuntimeTests {
             timelines: [.init(id: secondTimelineID, title: "Second timeline", operatingAscendantID: secondAscendantID)],
             workspaces: [.init(id: secondWorkspaceID, name: "Second workspace", uri: "echo://second")]
         )
-        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan())
-        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan())
+        let first = try await NodeRuntime(plan: firstManifest.compileLaunchPlan(), adapters: .bundled)
+        let second = try await NodeRuntime(plan: secondManifest.compileLaunchPlan(), adapters: .bundled)
         try await first.start()
         try await second.start()
         defer {
@@ -553,19 +557,19 @@ struct NodeRuntimeTests {
                 "A21D0000-0000-4000-8000-000000000115",
             ]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
 
         let first = try await runtime.executeWorkspaceTool(
             workspaceID: try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000114")),
             toolID: "workspace_echo",
-            arguments: ["value": AnyCodable("first")]
+            arguments: ["value": .string("first")]
         )
         let second = try await runtime.executeWorkspaceTool(
             workspaceID: try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000115")),
             toolID: "workspace_echo",
-            arguments: ["value": AnyCodable("second")]
+            arguments: ["value": .string("second")]
         )
 
         #expect(first.output == "first")
@@ -590,7 +594,7 @@ struct NodeRuntimeTests {
                 .init(id: unoperatedID, title: "Unoperated"),
             ]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
 
         await #expect(throws: NodeRuntimeError.noOperatingAscendant(unoperatedID)) {
             _ = try await runtime.turn(AscendantTurnRequest(message: "hello", timelineID: unoperatedID))
@@ -615,7 +619,7 @@ struct NodeRuntimeTests {
                 .init(id: secondTimeline, title: "Second default", operatingAscendantID: second),
             ]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
 
         let created = try await runtime.createTimeline(title: "Scratch", ascendantID: second)
 
@@ -632,7 +636,7 @@ struct NodeRuntimeTests {
             timelineID: "A21D0000-0000-4000-8000-000000000126",
             workspaceIDs: []
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         await runtime.shutdown()
 
         await #expect(throws: NodeRuntimeError.notRunning) {
@@ -648,7 +652,7 @@ struct NodeRuntimeTests {
         let manifest = NodeManifest.empty(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-startup-rollback")
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.lifecycle = .init(afterRegistration: { throw InjectedStartupFailure() })
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
 
@@ -669,7 +673,7 @@ struct NodeRuntimeTests {
         let manifest = NodeManifest.empty(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-host-effects")
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
 
         try await runtime.start()
         let active = await runtime.effectSnapshots()
@@ -692,7 +696,7 @@ struct NodeRuntimeTests {
     @MainActor
     func shutdownImmediatelyAfterRunningPublicationDisposesHostEffects() async throws {
         let gate = LifecycleGate()
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.lifecycle.afterAdvertisement = { await gate.hold() }
         let runtime = try await NodeRuntime(
             plan: NodeManifest.empty(
@@ -726,7 +730,7 @@ struct NodeRuntimeTests {
             ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
             timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
             FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, shutdownProbe: shutdownProbe)
         }
@@ -819,7 +823,7 @@ struct NodeRuntimeTests {
             timelineID: "A21D0000-0000-4000-8000-000000000151",
             workspaceIDs: [workspaceID.uuidString]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.lifecycle.afterAdvertisement = { await gate.hold() }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         let consumer = makeNodeRuntimeBrokerManager("advertisement-lifecycle-consumer", namespace: namespace)
@@ -832,7 +836,7 @@ struct NodeRuntimeTests {
         let payload = try JSONEncoder().encode(WorkspaceInvocation(
             workspaceID: workspaceID,
             toolID: EchoWorkspace.toolID,
-            arguments: ["value": AnyCodable("during-advertisement")]
+            arguments: ["value": .string("during-advertisement")]
         ))
         let response = try? await consumer.call(
             operation: GnosticWorkspaceProvider.invocationOperation,
@@ -857,7 +861,7 @@ struct NodeRuntimeTests {
             timelineID: "A21D0000-0000-4000-8000-000000000153",
             workspaceIDs: ["A21D0000-0000-4000-8000-000000000154"]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.lifecycle.beforeDiscoverResponder = { await gate.hold() }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
 
@@ -897,7 +901,7 @@ struct NodeRuntimeTests {
             timelineID: "A21D0000-0000-4000-8000-000000000156",
             workspaceIDs: ["A21D0000-0000-4000-8000-000000000157"]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.lifecycle.afterDiscoverResponder = { await gate.hold() }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         let consumer = makeNodeRuntimeBrokerManager("discover-startup-consumer", namespace: namespace)
@@ -929,7 +933,7 @@ struct NodeRuntimeTests {
             workspaceIDs: []
         )
         let languageModel = NodeToolCaptureLanguageModel()
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.ascendants.registerPositronicBackend { _, _ in languageModel }
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         defer { Task { @MainActor in await runtime.shutdown() } }
@@ -974,7 +978,7 @@ struct NodeRuntimeTests {
         }
         try await startNodeRuntimeBrokerManager(consumer)
 
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         try await runtime.start()
         try await Task.sleep(for: .seconds(1))
         await runtime.shutdown()
@@ -997,7 +1001,7 @@ struct NodeRuntimeTests {
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID)],
             workspaces: [.init(id: workspaceID, name: "Permissioned", uri: "echo://permissioned", kind: "permissioned-echo")]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.workspaces.registerProduct(kind: "permissioned-echo") { configuration in
             ProjectedToolWorkspace(configuration: configuration)
         }
@@ -1033,7 +1037,7 @@ struct NodeRuntimeTests {
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: UUID(uuidString: "A21D0000-0000-4000-8000-000000000202")!)],
             workspaces: [.init(id: workspaceID, name: "Product", uri: "echo://product", kind: "product-workspace")]
         )
-        var adapters = NodeRuntimeAdapters.default
+        var adapters = NodeRuntimeAdapters.bundled
         adapters.workspaces.registerProduct(kind: "product-workspace") { configuration in
             ProjectedToolWorkspace(configuration: configuration, location: .attached)
         }
@@ -1053,7 +1057,7 @@ struct NodeRuntimeTests {
             timelineID: "A21D0000-0000-4000-8000-000000000123",
             workspaceIDs: ["A21D0000-0000-4000-8000-000000000124"]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         defer { Task { @MainActor in await runtime.shutdown() } }
 
         try await runtime.start()
@@ -1117,7 +1121,7 @@ struct NodeRuntimeTests {
                 .init(id: firstTimelineID, title: "First timeline", operatingAscendantID: firstAscendantID),
                 .init(id: secondTimelineID, title: "Second timeline", operatingAscendantID: secondAscendantID),
             ]
-        ).compileLaunchPlan())
+        ).compileLaunchPlan(), adapters: .bundled)
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
 
@@ -1153,7 +1157,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: "existing_echo", name: "Existing echo", description: "Already online."))]
         )
-        let object = GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: reference))
+        let object = GnosticWorkspaceObject(workspace: reference)
         let remote = try CommunicationManager(
             identity: Identity(name: "existing-workspace-provider"),
             communicationOptions: .init(
@@ -1174,7 +1178,7 @@ struct NodeRuntimeTests {
             ascendants: [.init(id: ascendantID, name: "Atlas", defaultTimelineID: timelineID)],
             timelines: [.init(id: timelineID, title: "Default", operatingAscendantID: ascendantID, attachments: [.network(workspaceID, uri: "workspace://existing")])]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
 
@@ -1201,7 +1205,7 @@ struct NodeRuntimeTests {
                 attachments: [.network(workspaceID, uri: "workspace://remote-late")]
             )]
         )
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: .bundled)
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
         let unresolvedReference = try #require(await runtime.workspaceReference(id: workspaceID))
@@ -1218,7 +1222,7 @@ struct NodeRuntimeTests {
         defer { subscription.stopInTeardown() }
 
         let remoteNodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000149")!
-        var remoteAdapters = NodeRuntimeAdapters.default
+        var remoteAdapters = NodeRuntimeAdapters.bundled
         remoteAdapters.workspaces.registerProduct(kind: "remote-echo") { configuration in
             let reference = WorkspaceReference(
                 id: configuration.id,
@@ -1290,7 +1294,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: "dynamic_echo", name: "Dynamic echo", description: "Echoes dynamically."))]
         )
-        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: WorkspaceReferenceProjection.networkReference(from: advertised))))
+        remote.publishAdvertise(try AdvertiseEvent.with(object: GnosticWorkspaceObject(workspace: advertised)))
 
         let resolved = try await runtime.resolveNetworkWorkspace(workspaceID: workspaceID, timeout: .seconds(2))
 
@@ -1547,26 +1551,32 @@ private final class NodeToolCaptureLanguageModel: LLMStreamClient, @unchecked Se
     }
 }
 
-private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
-    let reference: WorkspaceReference
+@MainActor
+private struct ProjectedToolWorkspace: LocalWorkspace, LocalWorkspaceFileAccess, LocalWorkspaceHealth {
+    let reference: BackendWorkspaceReference
     var id: UUID { reference.id }
 
-    init(configuration: NodeManifest.Workspace, location: WorkspaceReference.WorkspaceLocation = .runtime) {
-        reference = WorkspaceReference(
+    init(configuration: NodeManifest.Workspace, location: GnosticWorkspaceLocation = .runtime) {
+        reference = BackendWorkspaceReference(
             id: configuration.id,
-            uri: WorkspaceURI(parsing: configuration.uri)!,
-            location: location,
-            tools: [.custom(.init(
+            uri: configuration.uri,
+            status: .available,
+            tools: [BackendWorkspaceTool(
                 id: "permissioned_echo",
                 name: "Permissioned echo",
                 description: "Echoes after approval.",
                 requiresPermission: true
-            ))]
+            )],
+            location: location
         )
     }
 
-    func listTools() async throws -> [ToolReference] { reference.tools }
-    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult { .success("ok") }
+    init(reference: WorkspaceReference) {
+        self.reference = PositronicWorkspaceProjection.backendReference(from: reference)
+    }
+
+    func listTools() async throws -> [BackendWorkspaceTool] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult { .success("ok") }
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }
     func writeFile(path _: String, content _: String) async throws { throw WorkspaceError.toolExecutionNotSupported }
     func listFiles(path _: String) async throws -> [String] { throw WorkspaceError.toolExecutionNotSupported }
@@ -1574,12 +1584,17 @@ private struct ProjectedToolWorkspace: WorkspaceToolProvider, WorkspaceFileProvi
     var isHealthy: Bool { true }
 }
 
-private struct SentinelWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
-    let reference: WorkspaceReference
+@MainActor
+private struct SentinelWorkspace: LocalWorkspace, LocalWorkspaceFileAccess, LocalWorkspaceHealth {
+    let reference: BackendWorkspaceReference
     var id: UUID { reference.id }
 
-    func listTools() async throws -> [ToolReference] { reference.tools }
-    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+    init(reference: WorkspaceReference) {
+        self.reference = PositronicWorkspaceProjection.backendReference(from: reference)
+    }
+
+    func listTools() async throws -> [BackendWorkspaceTool] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
         struct SentinelFailure: Error { let detail = "sentinel-secret-multiplexed" }
         throw SentinelFailure()
     }
@@ -1590,12 +1605,17 @@ private struct SentinelWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, 
     var isHealthy: Bool { true }
 }
 
-private struct CancellationWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
-    let reference: WorkspaceReference
+@MainActor
+private struct CancellationWorkspace: LocalWorkspace, LocalWorkspaceFileAccess, LocalWorkspaceHealth {
+    let reference: BackendWorkspaceReference
     var id: UUID { reference.id }
 
-    func listTools() async throws -> [ToolReference] { reference.tools }
-    func executeTool(id _: String, parameters _: [String: AnyCodable]) async throws -> ToolResult {
+    init(reference: WorkspaceReference) {
+        self.reference = PositronicWorkspaceProjection.backendReference(from: reference)
+    }
+
+    func listTools() async throws -> [BackendWorkspaceTool] { reference.tools }
+    func executeTool(id _: String, parameters _: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
         throw CancellationError()
     }
     func readFile(path _: String) async throws -> String { throw WorkspaceError.toolExecutionNotSupported }

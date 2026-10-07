@@ -3,6 +3,7 @@
 import Foundation
 import PKContracts
 import PositronicKit
+import GnosticCore
 
 /// A backend-neutral opt-in capability that hands a durable Timeline runtime
 /// store to the bundled Positronic adapter.

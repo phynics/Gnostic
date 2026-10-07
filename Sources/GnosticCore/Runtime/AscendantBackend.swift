@@ -72,6 +72,9 @@ public struct BackendWorkspaceTool: Sendable, Equatable {
     /// Whether invoking the tool requires client approval.
     public let requiresPermission: Bool
 
+    /// The tool identifier used to invoke it.
+    public var toolID: String { id }
+
     /// Creates a backend-neutral tool description.
     public init(
         id: String,
@@ -109,13 +112,26 @@ public struct BackendWorkspaceReference: Sendable, Equatable {
     public let status: BackendWorkspaceStatus
     /// The tools the Workspace advertises.
     public let tools: [BackendWorkspaceTool]
+    /// The Workspace placement relative to its runtime.
+    public let location: GnosticWorkspaceLocation
+    /// The Workspace creation timestamp.
+    public let createdAt: Date
 
     /// Creates a backend's view of one Workspace.
-    public init(id: UUID, uri: String, status: BackendWorkspaceStatus, tools: [BackendWorkspaceTool] = []) {
+    public init(
+        id: UUID,
+        uri: String,
+        status: BackendWorkspaceStatus,
+        tools: [BackendWorkspaceTool] = [],
+        location: GnosticWorkspaceLocation = .runtime,
+        createdAt: Date = Date()
+    ) {
         self.id = id
         self.uri = uri
         self.status = status
         self.tools = tools
+        self.location = location
+        self.createdAt = createdAt
     }
 }
 
@@ -142,11 +158,43 @@ public struct BackendWorkspaceResult: Sendable, Equatable {
     public let value: ManifestJSONValue?
     /// A human-readable result or failure description.
     public let message: String?
+    /// Whether the tool reported success.
+    public let isSuccess: Bool
 
     /// Creates a Workspace tool result.
-    public init(value: ManifestJSONValue? = nil, message: String? = nil) {
+    ///
+    /// - Parameters:
+    ///   - value: The structured result, when the tool returned one.
+    ///   - message: A human-readable result or failure description.
+    ///   - isSuccess: Whether the tool reported success.
+    public init(value: ManifestJSONValue? = nil, message: String? = nil, isSuccess: Bool = true) {
         self.value = value
         self.message = message
+        self.isSuccess = isSuccess
+    }
+
+    /// Creates a successful result from a message.
+    ///
+    /// - Parameter message: The human-readable result.
+    /// - Returns: A successful result.
+    public static func success(_ message: String = "") -> BackendWorkspaceResult {
+        BackendWorkspaceResult(message: message)
+    }
+
+    /// Creates a failed result from a message.
+    ///
+    /// - Parameter message: The human-readable failure description.
+    /// - Returns: A failed result.
+    public static func failure(_ message: String) -> BackendWorkspaceResult {
+        BackendWorkspaceResult(message: message, isSuccess: false)
+    }
+
+    /// The textual output of a successful result.
+    public var output: String { value.flatMap(Self.describe) ?? message ?? "" }
+
+    private static func describe(_ value: ManifestJSONValue) -> String? {
+        guard case let .string(text) = value else { return nil }
+        return text
     }
 }
 
