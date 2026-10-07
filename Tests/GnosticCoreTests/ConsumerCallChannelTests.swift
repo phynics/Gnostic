@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+@testable import GnosticClient
 @testable import GnosticCore
 import Testing
 

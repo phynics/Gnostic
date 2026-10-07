@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "GnosticProtocol", targets: ["GnosticProtocol"]),
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
+        .library(name: "GnosticClient", targets: ["GnosticClient"]),
         .library(name: "GnosticHost", targets: ["GnosticHost"]),
         .library(name: "GnosticKit", targets: ["GnosticKit"]),
         .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
@@ -52,6 +53,14 @@ let package = Package(
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+        .target(
+            name: "GnosticClient",
+            dependencies: [
+                "GnosticProtocol",
+                "GnosticCore",
+                .product(name: "Axoloty", package: "Axoloty"),
             ]
         ),
         .target(
@@ -110,6 +119,7 @@ let package = Package(
         .target(
             name: "GnosticACPFrontend",
             dependencies: [
+                "GnosticClient",
                 "GnosticCore",
                 .product(name: "PKContracts", package: "PositronicKit"),
             ]
@@ -209,12 +219,21 @@ let package = Package(
             name: "GnosticCoreTests",
             dependencies: [
                 "GnosticAscendantConformance",
+                "GnosticClient",
                 "GnosticCore",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "PKTestSupport", package: "PositronicKit"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticClientTests",
+            dependencies: [
+                "GnosticClient",
+                "GnosticCore",
+                .product(name: "Axoloty", package: "Axoloty"),
             ]
         ),
         .testTarget(
@@ -286,6 +305,7 @@ let package = Package(
         .executableTarget(
             name: "GnosticSoakDriver",
             dependencies: [
+                "GnosticClient",
                 "GnosticCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
@@ -307,6 +327,7 @@ let package = Package(
             name: "GnosticCLI",
             dependencies: [
                 "GnosticACPFrontend",
+                "GnosticClient",
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticKit",

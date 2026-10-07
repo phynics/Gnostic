@@ -456,7 +456,10 @@ struct BackendArchitectureFitnessTests {
         let frontendTarget = try #require(Self.targetBlock(named: "GnosticACPFrontend", in: package))
         #expect(frontendTarget.contains("\"GnosticCore\""))
         #expect(package.contains("name: \"GnosticCLI\""))
-        #expect(package.contains("\"GnosticACPFrontend\",\n                \"GnosticCore\""))
+        let cliRange = try #require(package.range(of: "name: \"GnosticCLI\""))
+        let cliTail = package[cliRange.lowerBound...]
+        #expect(cliTail.contains("\"GnosticACPFrontend\""))
+        #expect(cliTail.contains("\"GnosticCore\""))
     }
 
     @Test("the GnosticProtocol target is dependency-free of kernel and host layers")

@@ -3,7 +3,8 @@
 import Foundation
 import GnosticProtocol
 
-/// The raw Axoloty wire family observed by ``GnosticConsumerSession/rawEvents()``.
+/// The raw Axoloty wire family observed by the consumer session's raw event
+/// stream.
 ///
 /// This is diagnostic vocabulary, not a stable automation contract. The cases
 /// name the Axoloty families a consumer session can observe on its own
@@ -28,7 +29,7 @@ public enum GnosticRawWireEventKind: String, Codable, Sendable, Equatable, CaseI
 /// read-only and best-effort: the session projects events from its existing
 /// bounded runtime streams, drops the oldest event when an observer falls
 /// behind, and never persists or replays them. Do not build automation on
-/// ``GnosticConsumerSession/rawEvents()``; use the typed clients instead.
+/// the consumer session's raw event stream; use the typed clients instead.
 public struct GnosticRawWireEvent: Codable, Sendable, Equatable {
     /// The maximum UTF-8 byte length retained in ``payload``.
     ///

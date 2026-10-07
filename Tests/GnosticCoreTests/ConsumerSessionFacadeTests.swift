@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticClient
 import GnosticCore
 import Testing
 
@@ -118,7 +119,7 @@ struct ConsumerSessionFacadeTests {
         let needle = "import " + "GnosticCLI"
 
         let facade = try String(
-            contentsOf: root.appendingPathComponent("Sources/GnosticCore/Services/GnosticConsumerSession.swift"),
+            contentsOf: root.appendingPathComponent("Sources/GnosticClient/GnosticConsumerSession.swift"),
             encoding: .utf8
         )
         #expect(!facade.contains(needle))

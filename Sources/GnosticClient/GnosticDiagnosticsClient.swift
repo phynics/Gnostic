@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticCore
 import GnosticProtocol
 
 /// A public client that reads payload-free live diagnostics from a discovered Node.

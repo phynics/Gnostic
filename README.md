@@ -158,12 +158,12 @@ the tail in place; the writer-owned recovery truncates it on the next `serve`.
 ## Use the consumer session facade
 
 External clients that connect, discover, and read the catalog programmatically
-use `GnosticConsumerSession` from the `GnosticCore` library. The facade owns
+use `GnosticConsumerSession` from the `GnosticClient` library. The facade owns
 the broker connection and a `NetworkCatalog`, so a consumer never imports the
 CLI executable and never builds the generic Axoloty host objects.
 
 ```swift
-import GnosticCore
+import GnosticClient
 
 let session = try GnosticConsumerSession(
     broker: GnosticBrokerSettings(

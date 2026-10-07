@@ -2,6 +2,7 @@
 
 import Axoloty
 import Foundation
+import GnosticCore
 import GnosticProtocol
 
 /// The failure vocabulary every public consumer client error shares.
@@ -215,15 +216,5 @@ extension NetworkCatalogEntry {
     var attachedAscendantID: UUID? {
         guard case let .string(raw) = knownProperties["attachedAscendantID"] else { return nil }
         return UUID(uuidString: raw)
-    }
-}
-
-extension ObjectFilter {
-    /// A call context that addresses one provider identity.
-    static func provider(_ providerID: String) -> ObjectFilter {
-        ObjectFilter(condition: ObjectFilterCondition(
-            property: ObjectFilterProperty("objectId"),
-            expression: .equals(FilterOperand(providerID.lowercased()))
-        ))
     }
 }
