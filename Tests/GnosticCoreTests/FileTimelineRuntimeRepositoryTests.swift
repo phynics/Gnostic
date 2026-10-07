@@ -186,6 +186,56 @@ struct FileTimelineRuntimeRepositoryTests {
         #expect(second.isDurable)
     }
 
+    @Test("exact Turn membership survives a restart")
+    func turnMembershipRestart() async throws {
+        let url = makeURL()
+        let fixture = makeTurnFixture()
+        let intermediate = TimelineMessage(
+            id: UUID(),
+            timelineID: fixture.timelineID,
+            role: .assistant,
+            content: "tool call",
+            timestamp: date(1)
+        )
+        let unrelated = TimelineMessage(
+            id: UUID(),
+            timelineID: fixture.timelineID,
+            role: .user,
+            content: "unrelated",
+            timestamp: date(1)
+        )
+
+        let first = try await FileTimelineRuntimeRepository(fileURL: url)
+        try await first.saveTimeline(TimelineRecord(id: fixture.timelineID))
+        _ = try await first.admitTurn(
+            timelineID: fixture.timelineID,
+            requestID: fixture.requestID,
+            callerIntentFingerprint: "message:hello",
+            inputMessage: fixture.input,
+            executionKind: .direct,
+            capturedAgentID: nil,
+            turnID: fixture.turnID,
+            now: date(0)
+        )
+        try await first.recordTurnMessage(intermediate, turnID: fixture.turnID)
+        try await first.saveMessage(unrelated)
+        _ = try await first.completeTurn(
+            turnID: fixture.turnID,
+            outcome: .completed,
+            finalMessage: fixture.final,
+            terminalHandle: nil,
+            now: date(4)
+        )
+        let expected = [fixture.input.id, intermediate.id, fixture.final.id]
+        #expect(try await first.fetchTurnMessages(turnID: fixture.turnID)?.map(\.id) == expected)
+
+        let second = try await FileTimelineRuntimeRepository(fileURL: url)
+        #expect(try await second.fetchTurnMessages(turnID: fixture.turnID)?.map(\.id) == expected)
+        #expect(try await second.fetchTurn(id: fixture.turnID)?.memberMessageIDs == expected)
+        let messages = try await second.fetchMessages(for: fixture.timelineID).map(\.id)
+        #expect(messages.contains(unrelated.id))
+    }
+
     @Test("a torn tail costs at most the final mutation")
     func tornTail() async throws {
         let url = makeURL()

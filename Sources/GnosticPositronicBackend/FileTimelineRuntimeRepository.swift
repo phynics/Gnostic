@@ -87,6 +87,7 @@ enum JournaledOperation: Codable, Sendable, Equatable {
     case saveTimeline(TimelineRecord)
     case deleteTimeline(UUID)
     case saveMessage(TimelineMessage)
+    case recordTurnMessage(TimelineMessage, turnID: UUID)
     case admitTurn(AdmitTurn)
     case admitRetry(AdmitRetry)
     case appendNotice(turnID: UUID, notice: TurnNotice)
@@ -305,6 +306,16 @@ public actor FileTimelineRuntimeRepository: TimelineRuntimeRepository, Workspace
 
     public func fetchTurn(id: UUID) async throws -> TurnRecord? {
         try await delegate.fetchTurn(id: id)
+    }
+
+    /// Appends a Turn-owned intermediate message and records its membership.
+    ///
+    /// Admission, tool-result, and terminal transitions record their own
+    /// membership inside the reference repository, so replaying those journal
+    /// records rebuilds it. Only this operation needs its own record.
+    public func recordTurnMessage(_ message: TimelineMessage, turnID: UUID) async throws {
+        try await delegate.recordTurnMessage(message, turnID: turnID)
+        try log.append(.recordTurnMessage(message, turnID: turnID))
     }
 
     public func fetchActiveTurn(for timelineID: UUID) async throws -> TurnRecord? {
@@ -537,6 +548,8 @@ public actor FileTimelineRuntimeRepository: TimelineRuntimeRepository, Workspace
             try await delegate.deleteTimeline(id: id)
         case let .saveMessage(message):
             try await delegate.saveMessage(message)
+        case let .recordTurnMessage(message, turnID):
+            try await delegate.recordTurnMessage(message, turnID: turnID)
         case let .admitTurn(entry):
             _ = try await delegate.admitTurn(
                 timelineID: entry.timelineID,
