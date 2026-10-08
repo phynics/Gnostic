@@ -123,8 +123,9 @@ Do not use XCTest. Use ErrorKit-compatible structured errors at public
 boundaries.
 
 Keep Gnostic Axoloty-native. Keep Axoloty free of Gnostic, Workspace,
-filesystem, and tool types. Keep native PositronicKit values inside the
-adapters and bridges allowed by ADR 0005. Keep Gnostic-owned contracts free of
+filesystem, and tool types. Keep `GnosticCore`, `GnosticProtocol`,
+and `GnosticClient` free of PositronicKit; the bundled backend lives in
+`GnosticPositronicBackend` (ADR 0005, ADR 0013). Keep Gnostic-owned contracts free of
 native PositronicKit values. Do not add Gnostic-specific APIs to PositronicKit.
 
 Update the owning issue and architecture record when an accepted decision or

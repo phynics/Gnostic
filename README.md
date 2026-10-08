@@ -1,19 +1,23 @@
 # Gnostic
 
-Gnostic 0.4.3 hosts Ascendant backends and exposes them over Axoloty. The
-bundled Ascendant backend is `positronic`. The bundled local Workspace backend
-is `echo`.
+Gnostic hosts Ascendant backends and exposes them over Axoloty. The bundled
+Ascendant backend is `positronic`. The bundled local Workspace backend is
+`echo`. The latest release is 0.4.2. The next release, 0.5.0, is the first
+supported line and is in development
+([#551](https://github.com/phynics/Gnostic/issues/551)).
 
-The [0.4.3 compatibility declaration](Documentation/Compatibility/0.4.3.md)
-records the capability-gated live diagnostics this release adds. The
+The [0.5.0 compatibility declaration](Documentation/Compatibility/0.5.0.md)
+records what changes from 0.4.2. It is a source-breaking minor for Swift
+consumers: public types moved into new library products. It is
+wire-compatible with 0.4.2. The
 [0.4.2 compatibility declaration](Documentation/Compatibility/0.4.2.md)
 records the load-time cancellation-shield fix. The
 [0.4.1 declaration](Documentation/Compatibility/0.4.1.md) records the
 deployment-target fix. The
 [0.4.0 declaration](Documentation/Compatibility/0.4.0.md) lists the public
-consumer clients and the dependency exception. The [0.3.0 declaration](Documentation/Compatibility/0.3.0.md) remains
-authoritative for the protocol, manifest, and intentional 0.2 breaks. The
-pre-reset configuration migrations were retired after 0.4 (ADR 0003
+consumer clients. The [0.3.0 declaration](Documentation/Compatibility/0.3.0.md)
+remains authoritative for the protocol, manifest, and intentional 0.2 breaks.
+The pre-reset configuration migrations were retired after 0.4 (ADR 0003
 amendment): migrate an older file with Gnostic 0.4 first.
 
 ## Start a Node
@@ -334,11 +338,16 @@ does not receive Gnostic Workspace tools. Use the explicit, opt-in
 target for one real Turn. It is not part of `make verify` or CI.
 
 An ACP session resumes after the ACP child restarts while the same
-`gnostic serve` process stays online. A serve restart orphans Timelines created
-at runtime, so a later resume or prompt fails with `timelineUnavailable` and
-`session/list` omits the session; ADR 0008 records the decision and the
-deferred durability work. The session record stays on disk for diagnostics,
-marked ended.
+`gnostic serve` process stays online. By default, a serve restart orphans
+Timelines created at runtime, so a later resume or prompt fails with
+`timelineUnavailable` and `session/list` omits the session (ADR 0008). The
+session record stays on disk for diagnostics, marked ended.
+
+To keep runtime-created Timelines and their backend transcripts across a
+restart, run `gnostic serve` with `GNOSTIC_STATE_HOME` set. Serve then uses a
+file-backed Timeline store and a durable Turn event log under that directory
+(ADR 0014, ADR 0015). This durable mode is opt-in, and its on-disk formats may
+change before 0.5.0 ([#550](https://github.com/phynics/Gnostic/issues/550)).
 
 To create profiles for the generic
 [`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running
