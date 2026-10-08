@@ -86,10 +86,28 @@ independent review for each exception.
 
 ## Review and finish
 
-Request risk-based independent review before merge. Review the issue,
-constitutional documents, exception policy, production diff, tests, and
-evidence. Fix every verified Critical or Important finding, or record an
-explicit acceptance rationale in the issue.
+Review is risk-based. A pull request is **review-required** when it changes
+any of these:
+
+- a public contract: a public symbol of a stable product, the wire protocol,
+  a capability, or the manifest schema;
+- a persistence format or durable-state behavior;
+- a dependency or its pin;
+- an architecture decision or exception.
+
+Before a review-required pull request merges:
+
+1. An independent reviewer with fresh context, such as a separate agent run,
+   reviews the issue, constitutional documents, exception policy, production
+   diff, tests, and evidence. It reports each finding as Critical, Important,
+   or Minor, with a failure scenario.
+2. Fix every verified Critical or Important finding, or record an explicit
+   acceptance rationale.
+3. Record the findings and dispositions in the owning issue.
+4. The owner approves the merge.
+
+Any other pull request merges on green required checks. Don't skip review by
+splitting a review-required change into smaller pull requests.
 
 Use `Backlog -> Ready -> In progress -> In review -> Done`. Move the issue to
 `In review` when its pull request opens. Keep its checklist, dependencies, and
