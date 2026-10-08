@@ -22,6 +22,7 @@ whether its decision is delivered or remains a target.
 11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md)
 12. [ADR 0014 — Durable Turn event log](ADRs/0014-durable-turn-event-log.md)
 13. [ADR 0015 — File-backed Timeline runtime repository](ADRs/0015-file-backed-timeline-runtime-repository.md) — durable backend transcripts, opt-in under the state home.
+14. [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — layering, dependency rule, and Module lifecycle; delivered by [Epic #438](https://github.com/phynics/Gnostic/issues/438) (P0–P8).
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
@@ -29,10 +30,6 @@ document is historical and is not an accepted architecture decision. [ADR 0007
 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
 records the `ARCHIVE` outcome. The accepted ADR 0006 is the runtime effect and
 terminal observation decision listed above.
-
-## Proposed decisions
-
-- [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — target layering, dependency rule, and Module lifecycle. Owning issue [#440](https://github.com/phynics/Gnostic/issues/440); delivery tracked by [Epic #438](https://github.com/phynics/Gnostic/issues/438).
 
 ## Historical and disposition records
 
@@ -42,7 +39,7 @@ ADR 0010 records the Letta backend as an optional, experimental prototype. The
 `GnosticLettaBackend` target stays outside `GnosticCore` and is registered
 through the composition source; it is not production support.
 
-The current compatibility declaration is [0.4.3](../Compatibility/0.4.3.md); it is additive over [0.4.2](../Compatibility/0.4.2.md), [0.4.1](../Compatibility/0.4.1.md), [0.4.0](../Compatibility/0.4.0.md) and the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
+The compatibility declaration in development is [0.5.0](../Compatibility/0.5.0.md), a source-breaking minor over [0.4.2](../Compatibility/0.4.2.md). The released declarations are [0.4.2](../Compatibility/0.4.2.md), [0.4.1](../Compatibility/0.4.1.md), [0.4.0](../Compatibility/0.4.0.md) and the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
 
 ## Extension guides
 

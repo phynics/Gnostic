@@ -86,10 +86,29 @@ independent review for each exception.
 
 ## Review and finish
 
-Request risk-based independent review before merge. Review the issue,
-constitutional documents, exception policy, production diff, tests, and
-evidence. Fix every verified Critical or Important finding, or record an
-explicit acceptance rationale in the issue.
+Review is risk-based. A pull request is **review-required** when it changes
+any of these:
+
+- a public contract: a public symbol of a library product, a `gnostic`
+  command or option, the wire protocol, a capability, or the manifest schema.
+  Once #551 declares the stable products, only their public symbols count;
+- a persistence format or durable-state behavior;
+- a dependency or its pin;
+- an architecture decision or exception.
+
+Before a review-required pull request merges:
+
+1. An independent reviewer with fresh context, such as a separate agent run,
+   reviews the issue, constitutional documents, exception policy, production
+   diff, tests, and evidence. It reports each finding as Critical, Important,
+   or Minor, with a failure scenario.
+2. Fix every verified Critical or Important finding, or record an explicit
+   acceptance rationale.
+3. Record the findings and dispositions in the owning issue.
+4. The owner approves the merge.
+
+Any other pull request merges on green required checks. Don't skip review by
+splitting a review-required change into smaller pull requests.
 
 Use `Backlog -> Ready -> In progress -> In review -> Done`. Move the issue to
 `In review` when its pull request opens. Keep its checklist, dependencies, and
@@ -97,8 +116,9 @@ Roadmap item aligned.
 
 After required checks pass and the pull request merges:
 
-1. Record the delivery summary, merge commit, command outcomes, reviewer
-   context, and finding dispositions.
+1. Record the delivery summary, merge commit, and command outcomes. For a
+   review-required pull request, also record the reviewer context and the
+   finding dispositions.
 2. Update the parent epic checklist, dependencies, and blockers.
 3. Move the issue to `Done` and close it.
 4. Remove the worktree.
@@ -123,9 +143,10 @@ Do not use XCTest. Use ErrorKit-compatible structured errors at public
 boundaries.
 
 Keep Gnostic Axoloty-native. Keep Axoloty free of Gnostic, Workspace,
-filesystem, and tool types. Keep native PositronicKit values inside the
-adapters and bridges allowed by ADR 0005. Keep Gnostic-owned contracts free of
-native PositronicKit values. Do not add Gnostic-specific APIs to PositronicKit.
+filesystem, and tool types. Keep `GnosticCore`, `GnosticProtocol`,
+and `GnosticClient` free of PositronicKit; the bundled backend lives in
+`GnosticPositronicBackend` (ADR 0005, ADR 0013). Keep Gnostic-owned contracts
+free of native PositronicKit values. Do not add Gnostic-specific APIs to PositronicKit.
 
 Update the owning issue and architecture record when an accepted decision or
 exception changes.

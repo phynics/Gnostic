@@ -6,7 +6,7 @@
       "name": "Atlas continuity and context",
       "targets": ["GnosticPositronicAtlas"],
       "status": "incubating",
-      "owningIssue": "https://github.com/phynics/Gnostic/issues/438",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/553",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/382"],
       "runnable": true,
       "reviewBy": "2027-01-02"
@@ -16,7 +16,7 @@
       "name": "RLM bounded analysis",
       "targets": ["GnosticRLM", "GnosticRLMGuile", "GnosticRLMChibi"],
       "status": "incubating",
-      "owningIssue": "https://github.com/phynics/Gnostic/issues/438",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/175",
       "gateIssues": [
         "https://github.com/phynics/Gnostic/issues/175",
         "https://github.com/phynics/Gnostic/issues/354",
@@ -42,7 +42,10 @@
       "targets": ["GnosticPositronicContext"],
       "status": "incubating",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/426",
-      "gateIssues": ["https://github.com/phynics/Gnostic/issues/457"],
+      "gateIssues": [
+        "https://github.com/phynics/Gnostic/issues/431",
+        "https://github.com/phynics/Gnostic/issues/436"
+      ],
       "runnable": false,
       "reviewBy": "2027-01-02"
     }

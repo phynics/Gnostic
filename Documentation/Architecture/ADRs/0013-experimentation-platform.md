@@ -2,16 +2,15 @@
 
 ## Status
 
-Proposed target architecture. Owning issue:
-[GNO-PLAT-001 #440](https://github.com/phynics/Gnostic/issues/440). Delivery is
-tracked by the umbrella
-[Epic #438](https://github.com/phynics/Gnostic/issues/438) and its child epics
-P0–P8. Each child epic states whether its part of this decision is delivered.
+Accepted and delivered. Owning issue:
+[GNO-PLAT-001 #440](https://github.com/phynics/Gnostic/issues/440). The
+umbrella [Epic #438](https://github.com/phynics/Gnostic/issues/438) and its
+child epics P0–P8 delivered the layering by 2026-10-07. Each module's lifecycle
+is owned by the issue named in its `experiments.json` entry.
 
-This record names the target layering and the rules that keep it. It does not
-move code. Current deviations are listed under
-[Transitional state](#transitional-state), each with the epic that owns its
-removal.
+This record names the layering and the rules that keep it.
+[Transitional state](#transitional-state) lists the deviations that existed
+when it was proposed and how they were removed.
 
 ## Context
 
@@ -120,15 +119,17 @@ a Run must compare several regimes.
 
 ## Transitional state
 
-| Deviation | Owner |
-| --- | --- |
-| The bundled Positronic Backend lives in `GnosticCore`, and its contribution hook is a Core type. | P7 [#460](https://github.com/phynics/Gnostic/issues/460); reopens ADR 0005 with platform neutrality as the benefit. |
-| The consumer client SDK lives in `GnosticCore`, which links PositronicKit. | P7 [#460](https://github.com/phynics/Gnostic/issues/460) |
-| The ACP front end lives in `GnosticCLI`. | P7 [#460](https://github.com/phynics/Gnostic/issues/460); delivered as the `GnosticACPFrontend` library target. |
+No deviations remain. The three recorded at proposal time were removed by P7
+([#460](https://github.com/phynics/Gnostic/issues/460)):
 
-These are tracked deviations from a target, not architecture exceptions; they
-do not enter `exceptions.json`. A new deviation that is not on this list is an
-exception and follows the exception policy.
+| Former deviation | Resolution |
+| --- | --- |
+| The bundled Positronic Backend lived in `GnosticCore`, and its contribution hook was a Core type. | Extracted to `GnosticPositronicBackend`; ADR 0005 is superseded for the Core boundary. |
+| The consumer client SDK lived in `GnosticCore`, which linked PositronicKit. | Extracted to `GnosticClient`; `GnosticCore` links no PositronicKit. |
+| The ACP front end lived in `GnosticCLI`. | Extracted to the `GnosticACPFrontend` library target. |
+
+A new deviation from this layering is an architecture exception and follows
+the exception policy.
 
 ## Consequences
 

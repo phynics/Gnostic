@@ -263,7 +263,7 @@ target to the consumers that already used the facade (`GnosticACPFrontend`,
 `GnosticCLI`, `GnosticSoakDriver`, and the core test target). No third-party
 dependency changes. Consumers that reached the facade through
 `import GnosticCore` now add `import GnosticClient`;
-`Documentation/Compatibility/0.4.3.md` records the migration.
+`Documentation/Compatibility/0.5.0.md` records the migration.
 
 ### Fitness check
 
@@ -333,7 +333,7 @@ an inventory review.
 removes `PositronicKit` and `PKContracts` from `GnosticCore`, and adds the new
 target to `GnosticHost`, `GnosticPositronicAtlas`, `GnosticPositronicContext`,
 the runner executables, and the affected test targets. No third-party
-dependency version changes. `Documentation/Compatibility/0.4.3.md` records the
+dependency version changes. `Documentation/Compatibility/0.5.0.md` records the
 source migration for consumers that imported a moved type from `GnosticCore`.
 
 ### Fitness check
