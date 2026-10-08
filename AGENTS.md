@@ -89,8 +89,9 @@ independent review for each exception.
 Review is risk-based. A pull request is **review-required** when it changes
 any of these:
 
-- a public contract: a public symbol of a stable product, the wire protocol,
-  a capability, or the manifest schema;
+- a public contract: a public symbol of a library product, a `gnostic`
+  command or option, the wire protocol, a capability, or the manifest schema.
+  Once #551 declares the stable products, only their public symbols count;
 - a persistence format or durable-state behavior;
 - a dependency or its pin;
 - an architecture decision or exception.
@@ -115,8 +116,9 @@ Roadmap item aligned.
 
 After required checks pass and the pull request merges:
 
-1. Record the delivery summary, merge commit, command outcomes, reviewer
-   context, and finding dispositions.
+1. Record the delivery summary, merge commit, and command outcomes. For a
+   review-required pull request, also record the reviewer context and the
+   finding dispositions.
 2. Update the parent epic checklist, dependencies, and blockers.
 3. Move the issue to `Done` and close it.
 4. Remove the worktree.
@@ -143,8 +145,8 @@ boundaries.
 Keep Gnostic Axoloty-native. Keep Axoloty free of Gnostic, Workspace,
 filesystem, and tool types. Keep `GnosticCore`, `GnosticProtocol`,
 and `GnosticClient` free of PositronicKit; the bundled backend lives in
-`GnosticPositronicBackend` (ADR 0005, ADR 0013). Keep Gnostic-owned contracts free of
-native PositronicKit values. Do not add Gnostic-specific APIs to PositronicKit.
+`GnosticPositronicBackend` (ADR 0005, ADR 0013). Keep Gnostic-owned contracts
+free of native PositronicKit values. Do not add Gnostic-specific APIs to PositronicKit.
 
 Update the owning issue and architecture record when an accepted decision or
 exception changes.

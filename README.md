@@ -343,11 +343,14 @@ Timelines created at runtime, so a later resume or prompt fails with
 `timelineUnavailable` and `session/list` omits the session (ADR 0008). The
 session record stays on disk for diagnostics, marked ended.
 
-To keep runtime-created Timelines and their backend transcripts across a
-restart, run `gnostic serve` with `GNOSTIC_STATE_HOME` set. Serve then uses a
-file-backed Timeline store and a durable Turn event log under that directory
-(ADR 0014, ADR 0015). This durable mode is opt-in, and its on-disk formats may
-change before 0.5.0 ([#550](https://github.com/phynics/Gnostic/issues/550)).
+For Ascendants on the bundled `positronic` backend, runtime-created Timelines
+and their backend transcripts can survive a restart. Run `gnostic serve` with
+`GNOSTIC_STATE_HOME` set, or with `--turn-log PATH`, whose parent directory
+then serves as the state home. Serve keeps a durable Turn event log and a
+file-backed Timeline store under `<state home>/timelines` (ADR 0014,
+ADR 0015). External `acp-client` Ascendants keep the default behavior above.
+This durable mode is opt-in, and its on-disk formats will change before 0.5.0
+([#550](https://github.com/phynics/Gnostic/issues/550)).
 
 To create profiles for the generic
 [`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running
