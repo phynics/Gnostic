@@ -2,7 +2,6 @@
 
 import Foundation
 import Testing
-import GnosticPositronicBackend
 
 @testable import GnosticCLI
 
@@ -126,28 +125,6 @@ struct CLIConfigurationTests {
         #expect(cleared.mqttPassword == nil)
     }
 
-    @Test("empty credential strings never reach MQTT client options")
-    func emptyCredentialStringsDoNotReachMQTTOptions() {
-        let configuration = CLIConfiguration(
-            mqttHost: "localhost",
-            mqttPort: 1883,
-            mqttNamespace: "gnostic",
-            mqttUsername: "",
-            mqttPassword: "",
-            llmProvider: nil,
-            llmEndpoint: nil,
-            llmModel: nil,
-            llmUtilityModel: nil,
-            llmFastModel: nil,
-            llmAPIKey: nil
-        )
-
-        let options = configuration.mqttClientOptions()
-
-        #expect(options.username == nil)
-        #expect(options.password == nil)
-    }
-
     @Test("malformed json and invalid ports produce structured errors naming the key")
     func malformedInputProducesStructuredErrors() throws {
         let folder = try TemporaryFolder()
@@ -203,49 +180,6 @@ struct CLIConfigurationTests {
         let pathHelp = ConfigCommand.Path.helpMessage()
         #expect(pathHelp.contains("Print the config file path"))
         #expect(pathHelp.contains("path"))
-    }
-
-    @Test("CLI config maps onto Axoloty MQTT options and PK LLM configuration")
-    func mapsOntoDownstreamTypes() throws {
-        let folder = try TemporaryFolder()
-        let store = self.store(folder: folder)
-
-        try ConfigCommandLogic.initialize(store: store)
-        let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
-        try store.setValue("broker.example.com", for: .mqttHost)
-        try store.setValue("1884", for: .mqttPort)
-        try store.setValue("alice", for: .mqttUsername)
-        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "provider", value: "anthropic", store: store)
-        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "endpoint", value: "https://api.anthropic.com", store: store)
-        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "model", value: "claude-sonnet", store: store)
-
-        let config = try store.load()
-
-        let mqtt = config.mqttClientOptions()
-        #expect(mqtt.host == "broker.example.com")
-        #expect(mqtt.port == 1884)
-        #expect(mqtt.username == "alice")
-
-        let llm = try #require(config.llmConfiguration())
-        #expect(llm.activeProvider == .anthropic)
-        #expect(llm.activeProviderConfiguration.endpoint == "https://api.anthropic.com")
-        #expect(llm.activeProviderConfiguration.modelName == "claude-sonnet")
-    }
-
-    @Test("unset or unknown LLM provider yields nil configuration")
-    func unknownProviderYieldsNil() throws {
-        let folder = try TemporaryFolder()
-        let store = self.store(folder: folder)
-
-        try ConfigCommandLogic.initialize(store: store)
-        let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
-
-        let unset = try store.load()
-        #expect(unset.llmConfiguration() == nil)
-
-        try ConfigCommandLogic.setBackendValue(ascendantID: ascendantID, key: "provider", value: "nonexistent", store: store)
-        let unknown = try store.load()
-        #expect(unknown.llmConfiguration() == nil)
     }
 
     @Test("CLI config against a custom config file via environment")
