@@ -25,7 +25,7 @@ struct RunnerFixtureE2ETests {
         defer { subscription.stopInTeardown() }
 
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
-        let fixture = GnosticWorkspaceProvider(
+        let fixture = makeWorkspaceInvocationProvider(
             workspaceID: workspaceID,
             tools: [
                 .init(id: "list_files", name: "List files", description: "Lists fixture files."),
@@ -58,7 +58,7 @@ struct RunnerFixtureE2ETests {
         let runtimeRepository = InMemoryTimelineRuntimeRepository()
         let factory = RemoteWorkspaceFactory(catalog: catalog) { invocation in
             let encoded = try JSONEncoder().encode(invocation)
-            let response = try await consumer.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
+            let response = try await consumer.call(operation: GnosticWorkspaceProtocol.invocationOperation, parameters: String(decoding: encoded, as: UTF8.self), timeout: .seconds(3))
             return try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         }
         let kit = PKRuntime(configuration: .init(

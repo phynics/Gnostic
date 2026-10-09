@@ -50,10 +50,8 @@ struct FailureEnvelopeStatusTests {
 
     @Test("workspace invocation reports an undecodable invocation as 400 in its body")
     func workspaceInvocationInvalidPayload() async throws {
-        let single = GnosticWorkspaceProvider(workspaceID: UUID(), tools: []) { _, _ in .success("unused") }
-        let multiplexed = MultiplexedWorkspaceProvider(workspaces: [:])
+        let multiplexed = MultiplexedWorkspaceProvider(workspaces: [:], workspaceStatus: { _ in nil })
 
-        try expectAgreeing(await single.handle(parameters: validMajorOnly), code: 400)
         try expectAgreeing(await multiplexed.handle(parameters: validMajorOnly), code: 400)
     }
 

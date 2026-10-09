@@ -304,7 +304,7 @@ enum WorkspaceClientFacadeBridge {
     ) async throws -> [CallHandlerRegistration] {
         switch outcome {
         case .echo, .toolFailure:
-            let workspace = GnosticWorkspaceProvider(
+            let workspace = makeWorkspaceInvocationProvider(
                 workspaceID: workspaceID,
                 tools: [
                     GnosticWorkspaceToolDefinition(
@@ -322,7 +322,7 @@ enum WorkspaceClientFacadeBridge {
             return [try await workspace.register(on: manager)]
         case .protocolFailure:
             return [try await manager.registerCallHandler(
-                operation: GnosticWorkspaceProvider.invocationOperation
+                operation: GnosticWorkspaceProtocol.invocationOperation
             ) { _ in
                 .failure(
                     code: 500,
@@ -335,7 +335,7 @@ enum WorkspaceClientFacadeBridge {
             }]
         case .malformedResult:
             return [try await manager.registerCallHandler(
-                operation: GnosticWorkspaceProvider.invocationOperation
+                operation: GnosticWorkspaceProtocol.invocationOperation
             ) { _ in
                 // The pre-6.1 PositronicKit `success` key: a valid Call result
                 // that the pinned `isSuccess` decoder must reject.

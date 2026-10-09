@@ -480,7 +480,7 @@ public final class CommunicationManager {
         )
         var builder = try RuntimeBuilder(identity: runtimeIdentity, namespace: namespace, capacities: capacities)
         let callOperations = [
-            GnosticWorkspaceProvider.invocationOperation,
+            GnosticWorkspaceProtocol.invocationOperation,
             AscendantTurnProvider.turnOperation,
             AscendantTurnProvider.replayOperation,
             AscendantPermissionProvider.responseOperation,
