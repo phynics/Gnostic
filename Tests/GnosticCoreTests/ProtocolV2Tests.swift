@@ -80,9 +80,10 @@ struct ProtocolV2Tests {
     }
 
     @Test("workspace direct calls report missing protocol majors structurally")
+    @MainActor
     func workspaceDirectCallReportsMissingProtocolMajor() async throws {
         let id = UUID()
-        let provider = GnosticWorkspaceProvider(workspaceID: id, tools: []) { _, _ in .success("unused") }
+        let provider = makeWorkspaceInvocationProvider(workspaceID: id, tools: []) { _, _ in .success("unused") }
         let response = try await provider.handle(parameters: "{}")
         guard case let .failure(code, message, _) = response else {
             Issue.record("missing protocol major unexpectedly succeeded")

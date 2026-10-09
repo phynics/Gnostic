@@ -216,8 +216,8 @@ public final class GnosticWorkspaceClient {
         let target = try await resolvedWorkspaceProvider(providerID, for: workspaceID)
         try await requireInvocationCapability(providerID: target)
         return try await channel.call(
-            GnosticWorkspaceProvider.invocationOperation,
-            request: WorkspaceInvocationPayload(
+            GnosticWorkspaceProtocol.invocationOperation,
+            request: WorkspaceInvocation(
                 workspaceID: workspaceID,
                 providerID: target,
                 toolID: toolID,
@@ -314,26 +314,5 @@ public final class GnosticWorkspaceClient {
         case .unavailable: .unavailable
         case .malformed, .ambiguous, .unsupported: .unsupported
         }
-    }
-}
-
-/// The wire payload for Gnostic's generic remote workspace invocation.
-///
-/// Reuses the released `WorkspaceInvocation` field names so an advertised
-/// provider decodes it unchanged, while keeping the Core seam free of
-/// PositronicKit argument values.
-private struct WorkspaceInvocationPayload: Encodable {
-    let protocolMajor: Int
-    let workspaceID: UUID
-    let providerID: String?
-    let toolID: String
-    let arguments: [String: ManifestJSONValue]
-
-    init(workspaceID: UUID, providerID: String?, toolID: String, arguments: [String: ManifestJSONValue]) {
-        protocolMajor = GnosticProtocol.currentMajor
-        self.workspaceID = workspaceID
-        self.providerID = providerID
-        self.toolID = toolID
-        self.arguments = arguments
     }
 }

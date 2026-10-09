@@ -139,7 +139,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
         )
-        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: EchoWorkspace(reference: reference)])
+        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: EchoWorkspace(reference: reference)], workspaceStatus: { _ in .available })
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, providerID: "other-node", toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
@@ -163,7 +163,7 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
         )
-        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: SentinelWorkspace(reference: reference)])
+        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: SentinelWorkspace(reference: reference)], workspaceStatus: { _ in .available })
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
@@ -190,7 +190,8 @@ struct NodeRuntimeTests {
             tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
         )
         let provider = MultiplexedWorkspaceProvider(
-            workspaces: [workspaceID: CancellationWorkspace(reference: reference)]
+            workspaces: [workspaceID: CancellationWorkspace(reference: reference)],
+            workspaceStatus: { _ in .available }
         )
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
@@ -839,7 +840,7 @@ struct NodeRuntimeTests {
             arguments: ["value": .string("during-advertisement")]
         ))
         let response = try? await consumer.call(
-            operation: GnosticWorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProtocol.invocationOperation,
             parameters: String(decoding: payload, as: UTF8.self),
             timeout: Duration.seconds(1)
         )

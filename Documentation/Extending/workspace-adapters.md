@@ -53,5 +53,14 @@ approval and routes through Gnostic's authoritative Workspace service.
 
 Attached Workspaces expose only their advertised custom tool definitions.
 
+`MultiplexedWorkspaceProvider` is the production invoke and query handler.
+`NodeTransport` supplies its required `workspaceStatus` lookup from
+`NodeRegistry.effectiveWorkspaceStatus(id:)`. A missing or unavailable status
+blocks remote execution. The handler also checks `LocalWorkspace.listTools()`
+before dispatch and refuses an unadvertised tool with
+`403 / workspaceToolNotAdvertised`. Availability failures retain
+`409 / workspaceUnavailable`. These checks enforce the Workspace's availability
+and tool catalog; the existing approval policy still owns user approval.
+
 See also
 [ADR 0001 — Axoloty-native multi-backend host](../Architecture/ADRs/0001-axoloty-native-multi-backend-host.md).

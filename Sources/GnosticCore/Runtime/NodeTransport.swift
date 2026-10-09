@@ -111,9 +111,11 @@ public final class NodeTransport {
         self.ascendantIdentities = ascendantIdentities
         self.ascendantHealth = ascendantHealth
         self.workspaceReferences = workspaceReferences
-        workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(workspaces: localWorkspaces) {
-            await isAvailable()
-        }
+        workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(
+            workspaces: localWorkspaces,
+            workspaceStatus: { id in await registry?.effectiveWorkspaceStatus(id: id) },
+            isAvailable: { await isAvailable() }
+        )
         self.isAvailable = isAvailable
         turnOperation = turn
         turnCancellationOperation = cancelTurn

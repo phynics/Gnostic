@@ -143,6 +143,7 @@ struct WorkspaceProviderTests {
     }
 
     @Test("provider preserves advertised custom definitions and dispatches the addressed tool")
+    @MainActor
     func providerDispatchesAdvertisedTool() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000001")!
         let definition = GnosticWorkspaceToolDefinition(
@@ -151,25 +152,31 @@ struct WorkspaceProviderTests {
             description: "Searches remote notes.",
             parametersSchema: ["query": .string("string")]
         )
-        let provider = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
+        let provider = makeWorkspaceInvocationProvider(workspaceID: workspaceID, tools: [definition]) { toolID, arguments in
             #expect(toolID == "search_notes")
             #expect(arguments["query"] == .string("wave 2"))
             return .success("found")
         }
 
-        #expect(await provider.listTools() == [GnosticWorkspaceTool(definition: definition)])
-        let result = try await provider.invoke(
+        let payload = try JSONEncoder().encode(
             WorkspaceInvocation(workspaceID: workspaceID, toolID: "search_notes", arguments: ["query": .string("wave 2")])
         )
+        let response = try await provider.handle(parameters: String(decoding: payload, as: UTF8.self))
+        guard case let .success(encoded, _) = response else {
+            Issue.record("expected the advertised tool to execute")
+            return
+        }
+        let result = try JSONDecoder().decode(ToolResult.self, from: Data(encoded.utf8))
         #expect(result.isSuccess)
         #expect(result.output == "found")
     }
 
     @Test("provider wraps malformed and executor failures in protocol envelopes")
+    @MainActor
     func providerHandleFailuresCarryProtocolMajor() async throws {
         struct InjectedFailure: Error { let detail = "sentinel-secret-workspace-provider" }
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000006")!
-        let provider = GnosticWorkspaceProvider(
+        let provider = makeWorkspaceInvocationProvider(
             workspaceID: workspaceID,
             tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
         ) { _, _ in
@@ -192,9 +199,10 @@ struct WorkspaceProviderTests {
     }
 
     @Test("provider preserves cancellation from an executor")
+    @MainActor
     func providerHandlePreservesCancellation() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000007")!
-        let provider = GnosticWorkspaceProvider(
+        let provider = makeWorkspaceInvocationProvider(
             workspaceID: workspaceID,
             tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]
         ) { _, _ in
@@ -301,14 +309,14 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(caller)
         try await startBrokerManager(remote)
         let id = UUID()
-        let provider = GnosticWorkspaceProvider(workspaceID: id, tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
+        let provider = makeWorkspaceInvocationProvider(workspaceID: id, tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")]) { toolID, _ in
             #expect(toolID == "custom")
             return .success("broker-result")
         }
         let registration = try await provider.register(on: remote)
         defer { registration.cancel() }
         let payload = try JSONEncoder().encode(WorkspaceInvocation(workspaceID: id, toolID: "custom", arguments: [:]))
-        let response = try await caller.call(operation: GnosticWorkspaceProvider.invocationOperation, parameters: String(decoding: payload, as: UTF8.self), timeout: .seconds(3))
+        let response = try await caller.call(operation: GnosticWorkspaceProtocol.invocationOperation, parameters: String(decoding: payload, as: UTF8.self), timeout: .seconds(3))
         let result = try JSONDecoder().decode(ToolResult.self, from: Data(response.result.utf8))
         #expect(result.isSuccess)
         #expect(result.output == "broker-result")
@@ -324,7 +332,7 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(remote)
         let workspaceID = UUID()
         let tools = (0..<toolCount).map { GnosticWorkspaceToolDefinition(id: "tool-\($0)", name: "Tool \($0)", description: "Listed") }
-        let provider = GnosticWorkspaceProvider(workspaceID: workspaceID, tools: tools) { _, _ in .success("unused") }
+        let provider = makeWorkspaceInvocationProvider(workspaceID: workspaceID, tools: tools) { _, _ in .success("unused") }
         let registration = await provider.registerQuery(on: remote)
         defer { registration.cancel() }
 
@@ -346,7 +354,7 @@ struct WorkspaceProviderTests {
         let plainID = UUID()
         let echo = EchoWorkspace(reference: WorkspaceReference(id: echoID, uri: WorkspaceURI(parsing: "echo://listing")!, location: .runtime))
         let plain = PlainWorkspace(reference: WorkspaceReference(id: plainID, uri: WorkspaceURI(parsing: "workspace://plain")!, location: .runtime))
-        let provider = MultiplexedWorkspaceProvider(workspaces: [echoID: echo, plainID: plain])
+        let provider = MultiplexedWorkspaceProvider(workspaces: [echoID: echo, plainID: plain], workspaceStatus: { _ in .available })
         let registration = await provider.registerQuery(on: remote)
         defer { registration.cancel() }
 
@@ -368,7 +376,7 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(consumer)
         try await startBrokerManager(remote)
         let workspaceID = UUID()
-        let provider = GnosticWorkspaceProvider(
+        let provider = makeWorkspaceInvocationProvider(
             workspaceID: workspaceID,
             tools: [GnosticWorkspaceToolDefinition(id: "owned", name: "Owned", description: "Listed")]
         ) { _, _ in .success("unused") }
@@ -401,7 +409,7 @@ struct WorkspaceProviderTests {
         try await startBrokerManager(competing)
 
         let targetRegistration = try await target.registerCallHandler(
-            operation: GnosticWorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProtocol.invocationOperation,
             context: target.identity
         ) { _ in
             try await Task.sleep(for: .milliseconds(100))
@@ -409,7 +417,7 @@ struct WorkspaceProviderTests {
         }
         defer { targetRegistration.cancel() }
         let competingRegistration = try await competing.registerCallHandler(
-            operation: GnosticWorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProtocol.invocationOperation,
             context: competing.identity
         ) { _ in
             .failure(code: 499, message: "non-target provider")
@@ -425,7 +433,7 @@ struct WorkspaceProviderTests {
 
         targetRegistration.cancel()
         let forgedRegistration = try await competing.registerCallHandler(
-            operation: GnosticWorkspaceProvider.invocationOperation,
+            operation: GnosticWorkspaceProtocol.invocationOperation,
             context: target.identity
         ) { _ in
             return .success(result: try encodeProtocolToolResult("forged"))
