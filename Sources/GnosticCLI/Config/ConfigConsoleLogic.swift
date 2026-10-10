@@ -356,52 +356,30 @@ public enum ConfigConsoleLogic {
 
     /// Builds the resolved Regime for one Ascendant.
     ///
-    /// The module list comes from ``BackendComposition/selectedModuleNames(for:)``,
-    /// which is the same resolution `serve` performs, so the shown Regime cannot
-    /// drift from the composed one. Secret values are never part of the value.
+    /// The resolution lives in ``RegimeResolver`` (GnosticHost), which every
+    /// experiment command also uses, so the shown Regime cannot drift from the
+    /// one a run records. Secret values are never part of the value.
     ///
     /// - Parameters:
     ///   - ascendantID: The Ascendant UUID.
     ///   - store: The manifest store.
     ///   - composition: The compiled composition source.
-    ///   - registry: The registry, used to label module versions.
     /// - Returns: The Regime value the run/export surface consumes.
     /// - Throws: A configuration error when the Ascendant is absent.
     public static func regime(
         ascendantID: String,
         store: CLIConfigurationStore,
-        composition: BackendComposition = .default,
-        registry: ModuleRegistry? = nil
+        composition: BackendComposition = .default
     ) throws -> ExperimentRegime {
         let manifest = try store.loadManifest()
         guard let id = UUID(uuidString: ascendantID) else {
             throw CLIConfigurationError.invalidArgument("Invalid ascendant UUID '\(ascendantID)'.")
         }
-        guard let ascendant = manifest.ascendants.first(where: { $0.id == id }) else {
-            throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
+        do {
+            return try RegimeResolver.resolve(ascendantID: id, manifest: manifest, composition: composition)
+        } catch let RegimeResolutionError.ascendantNotFound(missing) {
+            throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: missing)
         }
-        let modules = try composition.selectedModuleNames(for: ascendant)
-        let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
-        var modelTiers: [String: String] = [:]
-        if let model = configuration.model { modelTiers["primary"] = model }
-        if let utility = configuration.utilityModel { modelTiers["utility"] = utility }
-        if let fast = configuration.fastModel { modelTiers["fast"] = fast }
-        var versionByModule: [String: String] = [:]
-        for module in modules {
-            versionByModule[module] = composition.moduleDescriptor(named: module)?.registryID ?? module
-        }
-        return ExperimentRegime(
-            backendKind: ascendant.backend.kind,
-            modules: modules,
-            moduleVersions: versionByModule,
-            modelTiers: modelTiers,
-            provider: configuration.provider ?? "",
-            endpoint: configuration.endpoint ?? "",
-            policies: [
-                "approvalMode": manifest.node.approvalMode,
-                "logLevel": manifest.node.logLevel,
-            ]
-        )
     }
 
     // MARK: Validation

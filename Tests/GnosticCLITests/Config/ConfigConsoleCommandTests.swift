@@ -94,7 +94,7 @@ struct ConfigConsoleCommandTests {
         #expect(entries.first?.keys.map(\.name) == ["rlm.worker"])
     }
 
-    @Test("regime show resolves the same modules serve composes")
+    @Test("the Regime resolver names the modules serve composes and the configured provider")
     func regimeMatchesComposition() throws {
         let (_, store, id) = try seeded()
         _ = try ConfigConsoleLogic.enableModule(ascendantID: id.uuidString, module: "rlm", store: store)
@@ -105,8 +105,9 @@ struct ConfigConsoleCommandTests {
             ascendantID: id.uuidString, key: "model", value: "gpt-5", store: store
         )
 
-        let regime = try ConfigConsoleLogic.regime(ascendantID: id.uuidString, store: store)
-        let ascendant = try #require(store.loadManifest().ascendants.first)
+        let manifest = try store.loadManifest()
+        let ascendant = try #require(manifest.ascendants.first)
+        let regime = try RegimeResolver.resolve(ascendantID: id, manifest: manifest)
         #expect(regime.modules == (try BackendComposition.default.selectedModuleNames(for: ascendant)))
         #expect(regime.modules == ["rlm"])
         #expect(regime.backendKind == "positronic")

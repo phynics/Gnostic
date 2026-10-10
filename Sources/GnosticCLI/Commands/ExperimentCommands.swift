@@ -260,9 +260,7 @@ struct RLMScenarioPreparation: Sendable {
             )
         }
 
-        let client = try loadClient(ascendant: command.ascendant, configPath: command.configPath)
-        let configuration = await client.configuration
-        let provider = configuration.activeProviderConfiguration
+        let (client, regime) = try loadClient(ascendant: command.ascendant, configPath: command.configPath)
         let source = RLMScenarioRepositorySource(root: root.path, prefixes: RLMScenarioQuestionSet.corpusPrefixes)
         let policy = RLMCorpusPolicy(allowedPathPrefixes: RLMScenarioQuestionSet.corpusPrefixes)
         let corpus = try await RLMCorpusSnapshotter(policy: policy).capture(
@@ -276,18 +274,7 @@ struct RLMScenarioPreparation: Sendable {
             manifestID: "rlm-scenario-manifest-v1",
             manifestVersion: "v7",
             segment: stage.rawValue,
-            regime: ExperimentRegime(
-                backendKind: AscendantAdapterRegistry.positronicKind,
-                modules: ["rlm"],
-                modelTiers: [
-                    "primary": provider.modelName,
-                    "utility": provider.utilityModel,
-                    "fast": provider.fastModel,
-                ],
-                provider: configuration.activeProvider.rawValue,
-                endpoint: provider.endpoint,
-                policies: ["scenario": "rlm-scenario"]
-            ),
+            regime: regime,
             gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"] ?? git.head(),
             workingTreeClean: git.isClean(),
             imageDigest: imageDigest,
@@ -369,7 +356,8 @@ struct RLMScenarioPreparation: Sendable {
         )
     }
 
-    private static func loadClient(ascendant: String, configPath: String?) throws -> any LLMStreamClient {
+    /// Loads the live client and the Regime the run records for one Ascendant.
+    private static func loadClient(ascendant: String, configPath: String?) throws -> (client: any LLMStreamClient, regime: ExperimentRegime) {
         guard let id = UUID(uuidString: ascendant) else {
             throw RLMScenarioError.invalidArguments("--ascendant must be a UUID")
         }
@@ -389,7 +377,8 @@ struct RLMScenarioPreparation: Sendable {
         guard !(client is UnconfiguredLLMService) else {
             throw RLMScenarioError.configuration("Ascendant \(ascendant)'s provider configuration is incomplete (check the API key)")
         }
-        return client
+        let regime = try RegimeResolver.resolve(ascendantID: id, manifest: manifest)
+        return (client, regime)
     }
 
     /// Starts and stops each worker with no model attached, so a missing

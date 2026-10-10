@@ -200,8 +200,7 @@ struct ConfigRegimeCommand: AsyncParsableCommand {
             let format = try formatOptions.resolved()
             let regime = try ConfigConsoleLogic.regime(
                 ascendantID: ascendantID,
-                store: ConfigCommandLogic.store(for: configPath),
-                registry: try experiments.registry()
+                store: ConfigCommandLogic.store(for: configPath)
             )
             switch format {
             case .human:

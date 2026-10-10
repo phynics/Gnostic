@@ -19,7 +19,7 @@ enum ReplaySelfCheck {
 
     static let turnID = "replay-self-check"
     static let runID = "kit-replay-self-check"
-    static let regime = "kit"
+    static let regime = ExperimentRegime.selfCheck.backendKind
     static let startedAtUTC = "2026-10-05T00:00:00Z"
     static let outcome = "completed"
     static let steps: [Step] = [
@@ -106,7 +106,7 @@ extension ExperimentCommand {
                 throw ExperimentCommandError.invalidArguments("no trace at \(trace)")
             }
             let report = await ExperimentReplay.replay(loaded, using: ReplaySelfCheck.harness)
-            print("Replay \(report.runID): \(report.modelCalls) model call(s), recorded outcome \(report.recordedOutcome), replayed outcome \(report.replayedOutcome).")
+            print("Replay \(report.runID) under regime \(loaded.regime ?? "<unrecorded>"): \(report.modelCalls) model call(s), recorded outcome \(report.recordedOutcome), replayed outcome \(report.replayedOutcome).")
             guard report.matches else {
                 for divergence in report.divergences {
                     print("Divergence: \(divergence)")

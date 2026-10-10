@@ -172,7 +172,7 @@ extension ExperimentCommand {
                 manifestID: "\(module)-\(scenario)-manifest-v1",
                 manifestVersion: "v1",
                 segment: "run",
-                regime: Self.regime(module: module, scenario: scenario),
+                regime: try Self.resolveRegime(argument: regime, configPath: configPath),
                 gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"] ?? RLMScenarioGit(root: root).head(),
                 workingTreeClean: RLMScenarioGit(root: root).isClean(),
                 imageDigest: imageDigest,
@@ -236,13 +236,36 @@ extension ExperimentCommand {
             }
         }
 
-        private static func regime(module: String, scenario: String) -> ExperimentRegime {
-            ExperimentRegime(
-                backendKind: "kit",
-                modules: [module],
-                modelTiers: [:],
-                policies: ["scenario": scenario]
-            )
+        /// Resolves the Regime a run records through the shared host resolver.
+        ///
+        /// An explicit `--regime` names the Ascendant. Without it the manifest's
+        /// default operating Ascendant is used, and a manifest with no Ascendant
+        /// records ``ExperimentRegime/selfCheck``.
+        ///
+        /// - Parameters:
+        ///   - argument: The `--regime` UUID, if given.
+        ///   - configPath: The `--config` manifest path, if given.
+        /// - Returns: The Regime the run records.
+        static func resolveRegime(argument: String?, configPath: String?) throws -> ExperimentRegime {
+            let store = CLIConfigurationStore(configPath: configPath.map { URL(fileURLWithPath: $0) })
+            let manifest = try store.loadManifestOrEmpty()
+            let ascendantID: UUID
+            if let argument {
+                guard let id = UUID(uuidString: argument) else {
+                    throw ExperimentCommandError.invalidArguments("--regime must be an Ascendant UUID")
+                }
+                ascendantID = id
+            } else {
+                guard let id = RegimeResolver.defaultOperatingAscendantID(in: manifest) else {
+                    return .selfCheck
+                }
+                ascendantID = id
+            }
+            do {
+                return try RegimeResolver.resolve(ascendantID: ascendantID, manifest: manifest)
+            } catch let RegimeResolutionError.ascendantNotFound(missing) {
+                throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: missing)
+            }
         }
     }
 }
