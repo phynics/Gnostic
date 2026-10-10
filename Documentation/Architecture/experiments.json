@@ -37,6 +37,26 @@
       "reviewBy": "2026-12-01"
     },
     {
+      "id": "GNO-MOD-OUROBOROS",
+      "name": "Ouroboros self-governing executable context",
+      "targets": [],
+      "status": "incubating",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/464",
+      "gateIssues": ["https://github.com/phynics/Gnostic/issues/465"],
+      "runnable": false,
+      "reviewBy": "2027-01-02"
+    },
+    {
+      "id": "GNO-MOD-AKASHA",
+      "name": "Akasha self-governed executable working set",
+      "targets": [],
+      "status": "incubating",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/478",
+      "gateIssues": ["https://github.com/phynics/Gnostic/issues/465"],
+      "runnable": false,
+      "reviewBy": "2027-01-02"
+    },
+    {
       "id": "GNO-MOD-CONTEXT",
       "name": "Positronic semantic context compiler",
       "targets": ["GnosticPositronicContext"],
