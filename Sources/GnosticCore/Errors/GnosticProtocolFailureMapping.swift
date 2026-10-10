@@ -70,6 +70,8 @@ extension GnosticProtocol {
             "The Ascendant turn was cancelled."
         case .lifecycleUnusable:
             "The Ascendant backend lifecycle is unavailable."
+        case .capabilityUnavailable:
+            "The Ascendant backend does not provide the requested optional capability."
         }
     }
 }

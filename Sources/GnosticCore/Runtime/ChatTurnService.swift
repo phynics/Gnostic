@@ -78,7 +78,7 @@ public final class TurnService {
             ascendantID: ascendantID,
             cancel: {
                 guard let session = await self.backendProvider.session(for: ascendantID),
-                      let cancellable = session.backend as? any AscendantBackendTurnCancellation else { return }
+                      let cancellable = session.backend.optionalCapability(.turnCancellation, as: (any AscendantBackendTurnCancellation).self) else { return }
                 await cancellable.cancelTurn(
                     timelineID: turnRequest.timelineID,
                     clientTurnID: turnRequest.clientTurnID ?? ""

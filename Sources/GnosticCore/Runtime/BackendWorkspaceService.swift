@@ -85,6 +85,25 @@ public protocol AscendantBackendWorkspaceFileService: Sendable {
 /// delegated to the host-installed ``NetworkWorkspaceInvoking`` seam. The
 /// ``AscendantBackendWorkspaceService`` contract remains Foundation-only.
 @MainActor
+extension AscendantBackendWorkspaceService {
+    /// Direct file access, when the host Workspace service offers it.
+    nonisolated public var optionalFileService: (any AscendantBackendWorkspaceFileService)? {
+        self as? any AscendantBackendWorkspaceFileService
+    }
+
+    /// Direct file access, required. Throws the one absent-capability outcome
+    /// when the host Workspace service does not offer it.
+    ///
+    /// - Returns: The file service.
+    /// - Throws: ``AscendantBackendError/capabilityUnavailable(_:)``.
+    nonisolated public func requireFileService() throws -> any AscendantBackendWorkspaceFileService {
+        guard let files = optionalFileService else {
+            throw AscendantBackendError.capabilityUnavailable(.workspaceFiles)
+        }
+        return files
+    }
+}
+
 final class GnosticWorkspaceBackendService: WorkspaceReferenceUpdating, AscendantBackendWorkspaceFileService, @unchecked Sendable { // SAFETY: @MainActor class; all mutable state is actor-isolated.
     private let localWorkspaces: [UUID: any LocalWorkspace]
     private var references: [UUID: BackendWorkspaceReference]

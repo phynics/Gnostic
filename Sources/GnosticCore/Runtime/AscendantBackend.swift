@@ -395,6 +395,10 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
     case cancelled
     /// The backend can no longer serve its Ascendant.
     case lifecycleUnusable(AscendantBackendLifecycleFailure)
+    /// A Core operation required an optional surface the backend does not
+    /// declare, or declares but does not implement. This is the single
+    /// absent-capability outcome.
+    case capabilityUnavailable(AscendantBackendCapabilities)
 
     /// A client-safe description of the failure.
     public var errorDescription: String? {
@@ -404,6 +408,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case let .terminal(failure): failure.message
         case .cancelled: "The backend turn was cancelled."
         case let .lifecycleUnusable(failure): failure.message
+        case .capabilityUnavailable: "The backend does not provide the requested optional capability."
         }
     }
 
@@ -415,6 +420,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case .terminal(let failure): return failure.code
         case .cancelled: return "cancelled"
         case .lifecycleUnusable(let failure): return failure.code
+        case .capabilityUnavailable: return "capabilityUnavailable"
         }
     }
 
@@ -426,6 +432,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case .terminal: return 500
         case .cancelled: return 499
         case .lifecycleUnusable: return 503
+        case .capabilityUnavailable: return 501
         }
     }
 }
@@ -549,6 +556,35 @@ public struct AscendantBackendSettingsSchema: Sendable, Equatable {
     }
 }
 
+/// The optional surfaces one backend implements.
+///
+/// Each backend declares this once, on ``AscendantBackend/capabilities``.
+/// Core consults the declaration before it narrows a backend to an optional
+/// protocol, so an undeclared surface is refused the same way at every site.
+/// The mandatory contract never depends on these members (ADR 0009).
+public struct AscendantBackendCapabilities: OptionSet, Sendable, Hashable {
+    /// The raw bit set.
+    public let rawValue: Int
+
+    /// Creates a capability set from raw bits.
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    /// Implements ``AscendantBackendWorkspaceCapability``: Workspace attachment,
+    /// detachment, and enabled tool listing.
+    public static let workspace = Self(rawValue: 1 << 0)
+    /// Implements ``AscendantBackendTurnCancellation``: scoped cancellation of
+    /// one identified Turn.
+    public static let turnCancellation = Self(rawValue: 1 << 1)
+    /// Reads and writes Workspace files through the host's
+    /// ``AscendantBackendWorkspaceFileService``.
+    public static let workspaceFiles = Self(rawValue: 1 << 2)
+    /// Consumes the type-erased Timeline store carrier from
+    /// ``AscendantBackendServices/optionalCapabilities``. Core never narrows it.
+    public static let timelineStore = Self(rawValue: 1 << 3)
+}
+
 /// Structural validation common to every backend envelope. Semantic settings
 /// remain owned by the selected backend implementation.
 public enum AscendantBackendConfigurationValidator {
@@ -570,6 +606,9 @@ public enum AscendantBackendConfigurationValidator {
 public protocol AscendantBackend: AnyObject, Sendable {
     /// The Gnostic-owned identity this backend serves.
     var identity: AscendantBackendIdentity { get }
+    /// The optional surfaces this backend implements. Declared once, here;
+    /// ``requireCapability(_:as:)`` and ``optionalCapability(_:as:)`` read it.
+    var capabilities: AscendantBackendCapabilities { get }
 
     /// Validates backend-owned semantics after Gnostic has checked the
     /// bounded envelope shape and before the backend is published.
@@ -628,6 +667,42 @@ public protocol AscendantBackend: AnyObject, Sendable {
 public protocol AscendantBackendTurnCancellation: AnyObject, Sendable {
     /// Requests cancellation of the identified Turn on this Timeline.
     func cancelTurn(timelineID: UUID, clientTurnID: String) async
+}
+
+extension AscendantBackend {
+    /// Narrows the backend to one optional surface it declares.
+    ///
+    /// Use this where the operation requires the surface. An undeclared surface,
+    /// or a declared one the type does not implement, throws the same
+    /// ``AscendantBackendError/capabilityUnavailable(_:)``.
+    ///
+    /// - Parameters:
+    ///   - capability: The declared surface to require.
+    ///   - type: The protocol the surface is implemented through.
+    /// - Returns: The backend viewed through `type`.
+    /// - Throws: ``AscendantBackendError/capabilityUnavailable(_:)``.
+    @MainActor
+    public func requireCapability<C>(_ capability: AscendantBackendCapabilities, as _: C.Type = C.self) throws -> C {
+        guard capabilities.contains(capability), let narrowed = self as? C else {
+            throw AscendantBackendError.capabilityUnavailable(capability)
+        }
+        return narrowed
+    }
+
+    /// Looks up an optional surface where absence is a deliberate no-op.
+    ///
+    /// Use this only where a backend without the surface is expected and the
+    /// caller's result does not depend on it, such as best-effort cancellation.
+    ///
+    /// - Parameters:
+    ///   - capability: The declared surface to look for.
+    ///   - type: The protocol the surface is implemented through.
+    /// - Returns: The backend viewed through `type`, or `nil` when undeclared.
+    @MainActor
+    public func optionalCapability<C>(_ capability: AscendantBackendCapabilities, as _: C.Type = C.self) -> C? {
+        guard capabilities.contains(capability) else { return nil }
+        return self as? C
+    }
 }
 
 private struct EmptyBackendPermissionService: AscendantBackendPermissionService {

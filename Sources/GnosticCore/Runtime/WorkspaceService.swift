@@ -121,9 +121,7 @@ public final class WorkspaceService {
 
     func attach(_ request: WorkspaceOpsRequest) async throws -> Bool {
         let (ascendantID, session) = try await operatingAdapter(for: request.timelineID)
-        guard let runtime = session.backend as? any AscendantBackendWorkspaceCapability else {
-            throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
-        }
+        let runtime = try Self.requireWorkspaceRuntime(session.backend, timelineID: request.timelineID)
         let reference: BackendWorkspaceReference
         if localWorkspaces[request.workspaceID] != nil, let local = references[request.workspaceID] {
             let status = await registry.effectiveWorkspaceStatus(id: request.workspaceID)
@@ -160,9 +158,7 @@ public final class WorkspaceService {
             throw NodeRuntimeError.notRunning
         }
         let reference = try await resolveNetworkWorkspace(workspaceID: workspaceID)
-        guard let runtime = session.backend as? any AscendantBackendWorkspaceCapability else {
-            throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
-        }
+        let runtime = try Self.requireWorkspaceRuntime(session.backend, timelineID: timelineID)
         try await attach(
             reference: reference,
             workspaceID: workspaceID,
@@ -171,6 +167,19 @@ public final class WorkspaceService {
             session: session,
             runtime: runtime
         )
+    }
+
+    /// Narrows an operating backend to Workspace operations, mapping the
+    /// absent-capability outcome to the Timeline-scoped runtime error.
+    private static func requireWorkspaceRuntime(
+        _ backend: any AscendantBackend,
+        timelineID: UUID
+    ) throws -> any AscendantBackendWorkspaceCapability {
+        do {
+            return try backend.requireCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self)
+        } catch {
+            throw NodeRuntimeError.workspaceCapabilityUnavailable(timelineID)
+        }
     }
 
     private func attach(
@@ -212,9 +221,7 @@ public final class WorkspaceService {
 
     func detach(_ request: WorkspaceOpsRequest) async throws -> Bool {
         let (ascendantID, session) = try await operatingAdapter(for: request.timelineID)
-        guard let runtime = session.backend as? any AscendantBackendWorkspaceCapability else {
-            throw NodeRuntimeError.workspaceCapabilityUnavailable(request.timelineID)
-        }
+        let runtime = try Self.requireWorkspaceRuntime(session.backend, timelineID: request.timelineID)
         let prior = references[request.workspaceID]
         try await runBackendOperation(session) {
             try await runtime.detachWorkspace(request.workspaceID, from: request.timelineID)
@@ -362,7 +369,7 @@ public final class WorkspaceService {
         do {
             for target in await registry.attachmentTargets(for: workspaceID) {
                 guard let session = backendProvider.session(for: target.ascendantID),
-                      let runtime = session.backend as? any AscendantBackendWorkspaceCapability else { continue }
+                      let runtime = session.backend.optionalCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self) else { continue }
                 guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
                 operationContext = session
                 try await runBackendOperation(session) {

@@ -12,6 +12,7 @@ import GnosticCore
 /// native values do not cross the AscendantBackend contract.
 @MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
+    public let capabilities: AscendantBackendCapabilities
     private let configuration: AscendantBackendConfiguration
     private let kit: PKRuntime
     private let threadStore: any TimelineRuntimeRepository
@@ -55,6 +56,10 @@ import GnosticCore
             privateTimelineID: ascendant.defaultTimelineID,
             metadata: ascendant.metadata.mapValues { AnyCodable($0) }
         )
+        var declared: AscendantBackendCapabilities = [.workspace]
+        if services.workspace?.optionalFileService != nil { declared.insert(.workspaceFiles) }
+        if services.capability(BackendTimelineStoreCapability.self) != nil { declared.insert(.timelineStore) }
+        capabilities = declared
         identity = .init(
             id: agent.id,
             name: agent.name,
@@ -624,25 +629,25 @@ private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileP
 
     func readFile(path: String) async throws -> String {
         guard let service else { throw WorkspaceError.toolExecutionNotSupported }
-        guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let files = service.optionalFileService else { throw WorkspaceError.toolExecutionNotSupported }
         return try await files.readFile(workspaceID: reference.id, path: path)
     }
 
     func writeFile(path: String, content: String) async throws {
         guard let service else { throw WorkspaceError.toolExecutionNotSupported }
-        guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let files = service.optionalFileService else { throw WorkspaceError.toolExecutionNotSupported }
         try await files.writeFile(workspaceID: reference.id, path: path, content: content)
     }
 
     func listFiles(path: String) async throws -> [String] {
         guard let service else { throw WorkspaceError.toolExecutionNotSupported }
-        guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let files = service.optionalFileService else { throw WorkspaceError.toolExecutionNotSupported }
         return try await files.listFiles(workspaceID: reference.id, path: path)
     }
 
     func deleteFile(path: String) async throws {
         guard let service else { throw WorkspaceError.toolExecutionNotSupported }
-        guard let files = service as? any AscendantBackendWorkspaceFileService else { throw WorkspaceError.toolExecutionNotSupported }
+        guard let files = service.optionalFileService else { throw WorkspaceError.toolExecutionNotSupported }
         try await files.deleteFile(workspaceID: reference.id, path: path)
     }
 

@@ -218,6 +218,7 @@ private actor ReconstructionValidationProbe {
 
 @MainActor
 private final class ReconstructionValidationBackend: AscendantBackend {
+    var capabilities: AscendantBackendCapabilities { [] }
     let identity: AscendantBackendIdentity
     private let timeline: AscendantBackendTimeline
     private let failsValidation: Bool
