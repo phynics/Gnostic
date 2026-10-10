@@ -111,6 +111,22 @@ never prompt text. The durable log is bounded by size: once it exceeds
 `maxJournalBytes`, the store replaces it with one checkpoint per retained Turn,
 which preserves the recovered ledger.
 
+## Image
+
+An Image is a persistent executable context file: plain model-readable
+context that a Module (Ouroboros) runs as its process image. Its source is
+the model's context, not code. Gnostic-owned types use the term Image. The
+`.agent` file suffix and the `run-agent`, `spawn-agent`, and `exec-agent`
+host-call names remain model-facing surface until a separate decision renames
+them.
+
+## Image invocation
+
+An Image invocation is one run of a pinned Image revision with an ephemeral
+input. It starts from a fresh context and does not carry a backend transcript
+from an earlier invocation. Invocation input is not persisted unless the Image
+itself writes it.
+
 ## Bounded legacy Agent terminology
 
 `Agent` is retained only when naming an external protocol boundary, an

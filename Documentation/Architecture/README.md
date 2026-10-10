@@ -31,6 +31,10 @@ document is historical and is not an accepted architecture decision. [ADR 0007
 records the `ARCHIVE` outcome. The accepted ADR 0006 is the runtime effect and
 terminal observation decision listed above.
 
+## Proposed decisions
+
+- [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — Proposed; records the placement spike for [GNO-OURO-001 #465](https://github.com/phynics/Gnostic/issues/465). Awaits owner acceptance.
+
 ## Historical and disposition records
 
 - [ADR 0007 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
