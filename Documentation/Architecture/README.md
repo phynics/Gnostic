@@ -23,6 +23,7 @@ whether its decision is delivered or remains a target.
 12. [ADR 0014 — Durable Turn event log](ADRs/0014-durable-turn-event-log.md)
 13. [ADR 0015 — File-backed Timeline runtime repository](ADRs/0015-file-backed-timeline-runtime-repository.md) — durable backend transcripts, opt-in under the state home.
 14. [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — layering, dependency rule, and Module lifecycle; delivered by [Epic #438](https://github.com/phynics/Gnostic/issues/438) (P0–P8).
+15. [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — both experiments are Modules; ACP is excluded; no backend kind is promoted. Placement only: no implementation has started.
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
@@ -30,10 +31,6 @@ document is historical and is not an accepted architecture decision. [ADR 0007
 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
 records the `ARCHIVE` outcome. The accepted ADR 0006 is the runtime effect and
 terminal observation decision listed above.
-
-## Proposed decisions
-
-- [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — Proposed; records the placement spike for [GNO-OURO-001 #465](https://github.com/phynics/Gnostic/issues/465). Awaits owner acceptance.
 
 ## Historical and disposition records
 

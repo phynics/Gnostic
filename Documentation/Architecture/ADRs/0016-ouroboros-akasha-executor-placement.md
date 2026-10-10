@@ -2,16 +2,19 @@
 
 ## Status
 
-Proposed. Owning issue:
+Accepted (2026-10-11). Owning issue:
 [GNO-OURO-001 #465](https://github.com/phynics/Gnostic/issues/465), with
 [Epic #464](https://github.com/phynics/Gnostic/issues/464) (Ouroboros) and
 [Epic #478](https://github.com/phynics/Gnostic/issues/478) (Akasha) as the
 experiments this record places.
 
-This record is a placement decision with evidence. It is not Accepted. The
-owner decides acceptance and the open decisions listed under
-[Owner decisions needed](#owner-decisions-needed). No production code, backend
-target, or registry runnable flag changes with this record.
+This record is a placement decision with evidence. The owner accepted it on
+2026-10-11 and decided the points listed under
+[Owner decisions](#owner-decisions). The evidence is read from source only:
+no Turn was run, and the items under [Unverified](#unverified) are
+reconsideration triggers, not accepted facts. No production code, backend
+target, or registry runnable flag changes with this record, and no
+implementation of either experiment has started.
 
 ## Context
 
@@ -172,7 +175,7 @@ falsified for Ouroboros.
 
 ## Decision
 
-The decision is proposed, not accepted, and separates the two experiments.
+The owner accepted this decision. It separates the two experiments.
 
 1. **Ouroboros** is a **Module** (ADR 0013) named `GNO-MOD-OUROBOROS`. It runs
    its own Image invocation loop. It reaches the Positronic backend only through
@@ -239,20 +242,23 @@ and is to be added with the first target that lands
 existing ADR 0009 rule already forbids an experiment-target dependency from
 Core, so this check adds a name to the rule rather than a new boundary.
 
-## Owner decisions needed
+## Owner decisions
 
-1. Accept or reject the Module placement for each experiment, and the Module
-   names `GNO-MOD-OUROBOROS` and `GNO-MOD-AKASHA`.
-2. Choose the Ouroboros hook to test first: the detached direct-turn path, or an
-   extended model-invocation seam. The Turn interception hook is rejected for the
-   tool list.
-3. Choose the Akasha background-activation owner: a host-owned Module dispatcher,
-   or a backend kind if that dispatcher cannot meet the invariant.
-4. Decide when PositronicKit 7.0 (`phynics/PositronicKit#257`) is required, since
-   `TimelineFork` and `GenerationTransport.requestResponse` bear on the transcript
-   requirement.
-5. Confirm the ACP exclusion. Accepting it means no ACP benchmark arm for
-   either experiment.
+Decided by the owner on 2026-10-11.
+
+1. **Placement accepted.** Both experiments are Modules. The names
+   `GNO-MOD-OUROBOROS` and `GNO-MOD-AKASHA` are accepted.
+2. **First Ouroboros hook to test: the detached direct-turn path.** The Turn
+   interception hook is rejected for the tool list. Testing the path is a spike
+   and does not commit to building Ouroboros.
+3. **Akasha background activations: a host-owned Module dispatcher above the
+   backend.** A backend kind is the fallback only if that dispatcher cannot meet
+   the background-activation invariant.
+4. **PositronicKit 7.0 timing is not decided here.** It is tracked by
+   [#550](https://github.com/phynics/Gnostic/issues/550). Re-check this record
+   when 7.0 lands, because `TimelineFork` and
+   `GenerationTransport.requestResponse` bear on the transcript requirement.
+5. **ACP is excluded.** There is no ACP benchmark arm for either experiment.
 
 ## Unverified
 
