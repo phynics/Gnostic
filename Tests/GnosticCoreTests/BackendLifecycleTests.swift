@@ -1383,6 +1383,7 @@ private actor LifecycleBackendProbe {
 
 @MainActor
 private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { .workspace }
     enum Outcome: Sendable, Equatable { case success, lifecycle, ordinary }
 
     let identity: AscendantBackendIdentity

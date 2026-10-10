@@ -209,7 +209,8 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
               let backend = ascendantAdapters[ascendantID] else {
             throw NodeRuntimeError.noOperatingAscendant(timelineID)
         }
-        guard let adapter = backend as? any AscendantBackendWorkspaceCapability else { return [] }
+        // Discovery is deliberately empty for a backend without Workspace operations.
+        guard let adapter = backend.optionalCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self) else { return [] }
         let enabled = await adapter.enabledToolIDs(for: timelineID)
         let intents = await registry.attachmentIntent(for: timelineID)
         guard !intents.isEmpty else { return enabled }

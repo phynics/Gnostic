@@ -14,6 +14,7 @@ import Glibc
 /// This target owns the ACP client process, sessions, and private Timeline map.
 @MainActor
 public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation {
+    public nonisolated var capabilities: AscendantBackendOptionalSurfaces { .turnCancellation }
     // Expected page counts are single-digit; this abusive-cursor guard truncates sessions beyond 100 pages.
     private static let maximumSessionListPages = 100
 

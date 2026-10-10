@@ -18,6 +18,12 @@ struct PositronicConformanceTests {
         try await positronicConformanceFixture().suite().checkIdentityAndConfiguration()
     }
 
+    @Test("capability declaration agrees with conformance, fixture surfaces, and advertisement")
+    @MainActor
+    func capabilityDeclarationAgrees() async throws {
+        try await positronicConformanceFixture().suite().checkCapabilityDeclarationAgrees()
+    }
+
     @Test("Timeline lifecycle")
     @MainActor
     func timelineLifecycle() async throws {

@@ -81,16 +81,12 @@ private struct BackendWorkspaceFileReader: PositronicContributionWorkspaceReader
     }
 
     func readFile(workspaceID: UUID, path: String) async throws -> String {
-        guard let fileService = service as? any AscendantBackendWorkspaceFileService else {
-            throw AscendantBackendError.invalidConfiguration("Workspace does not expose read-only file access.")
-        }
+        let fileService = try service.requireFileService()
         return try await fileService.readFile(workspaceID: workspaceID, path: path)
     }
 
     func listFiles(workspaceID: UUID, path: String) async throws -> [String] {
-        guard let fileService = service as? any AscendantBackendWorkspaceFileService else {
-            throw AscendantBackendError.invalidConfiguration("Workspace does not expose read-only file access.")
-        }
+        let fileService = try service.requireFileService()
         return try await fileService.listFiles(workspaceID: workspaceID, path: path)
     }
 }

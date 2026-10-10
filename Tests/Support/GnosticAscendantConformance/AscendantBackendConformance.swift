@@ -228,8 +228,8 @@ public struct AscendantBackendConformanceSuite: Sendable {
         var checks = AscendantConformanceChecks(kind: fixture.kind)
         let (setup, backend) = try await makeSetup()
 
-        guard let cancellable = backend as? any AscendantBackendTurnCancellation else {
-            checks.require(false, "the kind declares scoped cancellation but does not conform to AscendantBackendTurnCancellation")
+        guard let cancellable = backend.optionalCapability(.turnCancellation, as: (any AscendantBackendTurnCancellation).self) else {
+            checks.require(false, "the kind declares scoped cancellation but does not provide AscendantBackendTurnCancellation through its declaration")
             try checks.finish()
             return
         }
@@ -267,6 +267,57 @@ public struct AscendantBackendConformanceSuite: Sendable {
         try checks.finish()
     }
 
+    /// Asserts that a backend's capability declaration, its conformances, its
+    /// fixture surfaces, and its advertised interoperability agree.
+    ///
+    /// A declared surface must be implemented and an implemented surface must
+    /// be declared. A declared Workspace must also be advertised. The reverse
+    /// advertisement direction is not asserted here: a kind that advertises a
+    /// capability it does not declare is recorded as an exception in the
+    /// kind's conformance tests, not silently accepted.
+    public func checkCapabilityDeclarationAgrees() async throws {
+        var checks = AscendantConformanceChecks(kind: fixture.kind)
+        let (_, backend) = try await makeSetup()
+        let declared = backend.capabilities
+
+        let workspaceConforms = (backend as? any AscendantBackendWorkspaceCapability) != nil
+        checks.require(
+            declared.contains(.workspace) == workspaceConforms,
+            "declaration .workspace is \(declared.contains(.workspace)) but the backend conformance is \(workspaceConforms)"
+        )
+        checks.require(
+            declared.contains(.workspace) == fixture.surfaces.contains(.workspaceAttachment),
+            "declaration .workspace is \(declared.contains(.workspace)) but the fixture surfaces are \(fixture.surfaces)"
+        )
+
+        let cancellationConforms = (backend as? any AscendantBackendTurnCancellation) != nil
+        checks.require(
+            declared.contains(.turnCancellation) == cancellationConforms,
+            "declaration .turnCancellation is \(declared.contains(.turnCancellation)) but the backend conformance is \(cancellationConforms)"
+        )
+        checks.require(
+            declared.contains(.turnCancellation) == fixture.surfaces.contains(.scopedCancellation),
+            "declaration .turnCancellation is \(declared.contains(.turnCancellation)) but the fixture surfaces are \(fixture.surfaces)"
+        )
+
+        let filesAvailable = fixture.workspaceService?.optionalFileService != nil
+        checks.require(
+            declared.contains(.workspaceFiles) == filesAvailable,
+            "declaration .workspaceFiles is \(declared.contains(.workspaceFiles)) but the host Workspace service offers files: \(filesAvailable)"
+        )
+
+        if declared.contains(.workspace) {
+            let advertised = backend.identity.capabilities.interoperability
+            checks.require(
+                advertised.contains(AscendantInteroperabilityCapability.workspaceAttachment.rawValue),
+                "declares .workspace but does not advertise workspaceAttachment"
+            )
+        }
+
+        await backend.shutdown()
+        try checks.finish()
+    }
+
     /// Asserts a Workspace attachment is projected onto the Timeline.
     ///
     /// Runs only for a kind that declares ``AscendantConformanceSurfaces/workspaceAttachment``.
@@ -275,8 +326,8 @@ public struct AscendantBackendConformanceSuite: Sendable {
         var checks = AscendantConformanceChecks(kind: fixture.kind)
         let (setup, backend) = try await makeSetup()
 
-        guard let capability = backend as? any AscendantBackendWorkspaceCapability else {
-            checks.require(false, "the kind declares Workspace attachment but does not conform to AscendantBackendWorkspaceCapability")
+        guard let capability = backend.optionalCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self) else {
+            checks.require(false, "the kind declares Workspace attachment but does not provide AscendantBackendWorkspaceCapability through its declaration")
             try checks.finish()
             return
         }

@@ -17,6 +17,12 @@ struct LettaConformanceTests {
         try await lettaConformanceFixture().suite().checkIdentityAndConfiguration()
     }
 
+    @Test("capability declaration agrees with conformance, fixture surfaces, and advertisement")
+    @MainActor
+    func capabilityDeclarationAgrees() async throws {
+        try await lettaConformanceFixture().suite().checkCapabilityDeclarationAgrees()
+    }
+
     @Test("Timeline lifecycle")
     @MainActor
     func timelineLifecycle() async throws {

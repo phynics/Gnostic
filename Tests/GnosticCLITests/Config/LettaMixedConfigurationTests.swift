@@ -165,6 +165,7 @@ private struct MixedLettaNode {
 /// A minimal non-Positronic backend so the Node hosts mixed kinds.
 @MainActor
 private final class FixtureAscendantBackend: AscendantBackend {
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var storedTimelines: [AscendantBackendTimeline]
 

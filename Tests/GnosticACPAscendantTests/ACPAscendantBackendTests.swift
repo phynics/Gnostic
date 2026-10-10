@@ -1239,6 +1239,15 @@ struct ACPAscendantBackendTests {
         try await fixture.suite().checkIdentityAndConfiguration()
     }
 
+    @Test("conformance: capability declaration agrees with conformance and fixture surfaces")
+    @MainActor
+    func conformanceCapabilityDeclarationAgrees() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkCapabilityDeclarationAgrees()
+    }
+
     @Test("conformance: Timeline lifecycle")
     @MainActor
     func conformanceTimelineLifecycle() async throws {

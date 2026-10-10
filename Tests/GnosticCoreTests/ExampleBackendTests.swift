@@ -16,6 +16,7 @@ import Testing
 /// consumption, no permission mediation, no optional capabilities.
 @MainActor
 final class EchoAscendantBackend: AscendantBackend {
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var timelines: [AscendantBackendTimeline]
     private var cancelled = false

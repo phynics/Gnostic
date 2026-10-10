@@ -14,6 +14,7 @@ import GnosticPositronicBackend
 /// else.
 @MainActor
 private final class FixtureCompositionBackend: AscendantBackend {
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var timelines: [AscendantBackendTimeline]
 
