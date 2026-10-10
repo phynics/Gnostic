@@ -524,7 +524,7 @@ private final class MutableServiceStubWorkspaceDiscovery: WorkspaceDiscovery {
 
 @MainActor
 private final class MutationProbeBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
-    var capabilities: AscendantBackendCapabilities { .workspace }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { .workspace }
     let identity: AscendantBackendIdentity
     private var storedTimelines: [AscendantBackendTimeline]
     private let failingAttachTimelineID: UUID?
@@ -576,7 +576,7 @@ private final class MutationProbeBackend: AscendantBackend, AscendantBackendWork
 
 @MainActor
 private final class ServiceStubAscendantBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
-    var capabilities: AscendantBackendCapabilities { .workspace }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { .workspace }
     let identity: AscendantBackendIdentity
     private var storedTimelines: [AscendantBackendTimeline]
 

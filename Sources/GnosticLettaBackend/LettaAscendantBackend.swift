@@ -23,7 +23,7 @@ import GnosticCore
 /// used for Gnostic Workspaces, so permission mediation is not bypassed.
 @MainActor
 public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
-    public var capabilities: AscendantBackendCapabilities { .workspace }
+    public nonisolated var capabilities: AscendantBackendOptionalSurfaces { .workspace }
     /// The configuration keys the Letta backend understands.
     public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
         .init(name: "serverURL", summary: "Base URL of the Letta server, for example https://api.letta.com or http://127.0.0.1:8283."),

@@ -1354,7 +1354,7 @@ struct NodeRuntimeTests {
 
 @MainActor
 private final class FixtureAscendantBackend: AscendantBackend {
-    var capabilities: AscendantBackendCapabilities { [] }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var storedTimelines: [AscendantBackendTimeline]
     private let cancellationProbe: AdapterCancellationProbe?

@@ -12,7 +12,7 @@ import GnosticCore
 /// native values do not cross the AscendantBackend contract.
 @MainActor public final class PositronicAscendantAdapter: AscendantBackend, AscendantBackendWorkspaceCapability {
     public let identity: AscendantBackendIdentity
-    public let capabilities: AscendantBackendCapabilities
+    public nonisolated let capabilities: AscendantBackendOptionalSurfaces
     private let configuration: AscendantBackendConfiguration
     private let kit: PKRuntime
     private let threadStore: any TimelineRuntimeRepository
@@ -56,7 +56,7 @@ import GnosticCore
             privateTimelineID: ascendant.defaultTimelineID,
             metadata: ascendant.metadata.mapValues { AnyCodable($0) }
         )
-        var declared: AscendantBackendCapabilities = [.workspace]
+        var declared: AscendantBackendOptionalSurfaces = [.workspace]
         if services.workspace?.optionalFileService != nil { declared.insert(.workspaceFiles) }
         if services.capability(BackendTimelineStoreCapability.self) != nil { declared.insert(.timelineStore) }
         capabilities = declared

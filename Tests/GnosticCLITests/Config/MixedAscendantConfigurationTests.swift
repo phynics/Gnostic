@@ -577,7 +577,7 @@ private actor MixedContributionProbe {
 // MARK: - Non-Positronic fixture backend
 
 private final class MixedFixtureBackend: AscendantBackend {
-    var capabilities: AscendantBackendCapabilities { [] }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var storedTimelines: [AscendantBackendTimeline]
     private let probe: MixedFixtureProbe

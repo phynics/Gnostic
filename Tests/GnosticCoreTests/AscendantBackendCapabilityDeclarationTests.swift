@@ -54,7 +54,7 @@ struct AscendantBackendCapabilityDeclarationTests {
 
     @Test("the declaration is a set, so several surfaces can be declared together")
     func declarationIsASet() {
-        let declared: AscendantBackendCapabilities = [.workspace, .turnCancellation]
+        let declared: AscendantBackendOptionalSurfaces = [.workspace, .turnCancellation]
 
         #expect(declared.contains(.workspace))
         #expect(declared.contains(.turnCancellation))
@@ -68,9 +68,9 @@ struct AscendantBackendCapabilityDeclarationTests {
 @MainActor
 private final class CapabilityDeclarationFixtureBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
     let identity: AscendantBackendIdentity
-    let capabilities: AscendantBackendCapabilities
+    nonisolated let capabilities: AscendantBackendOptionalSurfaces
 
-    init(declared: AscendantBackendCapabilities) {
+    init(declared: AscendantBackendOptionalSurfaces) {
         capabilities = declared
         let now = Date()
         identity = .init(

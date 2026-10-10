@@ -16,7 +16,7 @@ import Testing
 /// consumption, no permission mediation, no optional capabilities.
 @MainActor
 final class EchoAscendantBackend: AscendantBackend {
-    var capabilities: AscendantBackendCapabilities { [] }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var timelines: [AscendantBackendTimeline]
     private var cancelled = false
@@ -33,7 +33,7 @@ final class EchoAscendantBackend: AscendantBackend {
             createdAt: now,
             updatedAt: now,
             // Advertise only what this backend genuinely supports.
-            capabilities: AscendantBackendCapabilities(
+            capabilities: AscendantBackendOptionalSurfaces(
                 interoperability: [AscendantInteroperabilityCapability.textTurn.rawValue],
                 backendKind: "example-echo"
             )

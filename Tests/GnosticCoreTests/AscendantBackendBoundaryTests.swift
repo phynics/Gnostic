@@ -75,7 +75,7 @@ struct AscendantBackendBoundaryTests {
 
 @MainActor
 private final class FixtureBackend: AscendantBackend {
-    var capabilities: AscendantBackendCapabilities { [] }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var timeline: AscendantBackendTimeline
     private var isShutdown = false

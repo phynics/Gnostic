@@ -398,7 +398,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
     /// A Core operation required an optional surface the backend does not
     /// declare, or declares but does not implement. This is the single
     /// absent-capability outcome.
-    case capabilityUnavailable(AscendantBackendCapabilities)
+    case capabilityUnavailable(AscendantBackendOptionalSurfaces)
 
     /// A client-safe description of the failure.
     public var errorDescription: String? {
@@ -562,7 +562,7 @@ public struct AscendantBackendSettingsSchema: Sendable, Equatable {
 /// Core consults the declaration before it narrows a backend to an optional
 /// protocol, so an undeclared surface is refused the same way at every site.
 /// The mandatory contract never depends on these members (ADR 0009).
-public struct AscendantBackendCapabilities: OptionSet, Sendable, Hashable {
+public struct AscendantBackendOptionalSurfaces: OptionSet, Sendable, Hashable {
     /// The raw bit set.
     public let rawValue: Int
 
@@ -608,7 +608,7 @@ public protocol AscendantBackend: AnyObject, Sendable {
     var identity: AscendantBackendIdentity { get }
     /// The optional surfaces this backend implements. Declared once, here;
     /// ``requireCapability(_:as:)`` and ``optionalCapability(_:as:)`` read it.
-    var capabilities: AscendantBackendCapabilities { get }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { get }
 
     /// Validates backend-owned semantics after Gnostic has checked the
     /// bounded envelope shape and before the backend is published.
@@ -681,8 +681,7 @@ extension AscendantBackend {
     ///   - type: The protocol the surface is implemented through.
     /// - Returns: The backend viewed through `type`.
     /// - Throws: ``AscendantBackendError/capabilityUnavailable(_:)``.
-    @MainActor
-    public func requireCapability<C>(_ capability: AscendantBackendCapabilities, as _: C.Type = C.self) throws -> C {
+    nonisolated public func requireCapability<C>(_ capability: AscendantBackendOptionalSurfaces, as _: C.Type = C.self) throws -> C {
         guard capabilities.contains(capability), let narrowed = self as? C else {
             throw AscendantBackendError.capabilityUnavailable(capability)
         }
@@ -698,8 +697,7 @@ extension AscendantBackend {
     ///   - capability: The declared surface to look for.
     ///   - type: The protocol the surface is implemented through.
     /// - Returns: The backend viewed through `type`, or `nil` when undeclared.
-    @MainActor
-    public func optionalCapability<C>(_ capability: AscendantBackendCapabilities, as _: C.Type = C.self) -> C? {
+    nonisolated public func optionalCapability<C>(_ capability: AscendantBackendOptionalSurfaces, as _: C.Type = C.self) -> C? {
         guard capabilities.contains(capability) else { return nil }
         return self as? C
     }

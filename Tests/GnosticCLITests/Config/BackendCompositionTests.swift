@@ -14,7 +14,7 @@ import GnosticPositronicBackend
 /// else.
 @MainActor
 private final class FixtureCompositionBackend: AscendantBackend {
-    var capabilities: AscendantBackendCapabilities { [] }
+    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
     private var timelines: [AscendantBackendTimeline]
 
@@ -29,7 +29,7 @@ private final class FixtureCompositionBackend: AscendantBackend {
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: AscendantBackendCapabilities(
+            capabilities: AscendantBackendOptionalSurfaces(
                 interoperability: [AscendantInteroperabilityCapability.textTurn.rawValue],
                 backendKind: ascendant.backend.kind
             )
