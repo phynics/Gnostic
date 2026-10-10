@@ -6,6 +6,10 @@ import GnosticProtocol
 /// Serializes and deduplicates stateful Ascendant Timeline turns for one serve
 /// lifetime. A caller may disappear after admission; the coordinator-owned task
 /// remains the single owner of the model/tool loop and its terminal outcome.
+///
+/// Admission identity, the message digest, and terminal outcomes live in the
+/// Turn ledger (``AscendantTurnUpdateStore``). The coordinator keeps only
+/// scheduling: lanes, in-flight tasks, and observers.
 public actor AscendantTurnCoordinator {
     public typealias TurnOperation = @Sendable () async throws -> String
 
@@ -20,39 +24,20 @@ public actor AscendantTurnCoordinator {
         let cancel: @Sendable () async -> Void
     }
 
-    private struct AdmittedIdentity: Sendable {
-        let messageDigest: UInt64
-        let operationID: String
-    }
-
-    private struct Completed: Sendable {
-        let messageDigest: UInt64
-        let outcome: CachedOutcome
-    }
-
     private struct Lane: Sendable {
         let id: UUID
         let task: Task<String, Error>
         let tail: Task<Void, Never>
     }
 
-    private enum CachedOutcome: Sendable {
-        case succeeded(AscendantTurnResult)
-        case failed(AscendantTurnError)
-    }
-
-    private let completedCapacity: Int
-    private let identityCapacity: Int
+    private let ledger: AscendantTurnUpdateStore
     private let observers: [any TerminalTurnObserving]
     private let observationDrainTimeout: Duration
     private let observationScope: RuntimeEffectScope
-    /// Every admitted identified turn remains in this ledger until serve
-    /// shutdown. A missing key therefore means that admission never occurred.
-    private var identities: [Key: AdmittedIdentity] = [:]
     private var inFlight: [Key: InFlight] = [:]
-    private var completed: [Key: Completed] = [:]
-    private var tombstones: [Key: UInt64] = [:]
-    private var completionOrder: [Key] = []
+    /// Keys whose ledger admission is in progress. A duplicate waits here so it
+    /// always observes the task the admitted request registered.
+    private var admissions: [Key: [CheckedContinuation<Void, Never>]] = [:]
     private var timelineTails: [UUID: Lane] = [:]
     private var acceptingTurns = true
     /// Set when the bounded shutdown fence closes. Terminal outcomes committed
@@ -63,19 +48,20 @@ public actor AscendantTurnCoordinator {
     private var observationWaiters: [CheckedContinuation<Void, Never>] = []
     private var settlementWaiters: [CheckedContinuation<Void, Never>] = []
 
+    /// The ledger's identity, outcome, and tombstone counts.
     internal var retainedStateCounts: (identities: Int, completed: Int, tombstones: Int, completedBytes: Int) {
-        (
-            identities.count,
-            completed.count,
-            tombstones.count,
-            completed.values.reduce(0) { $0 + Self.retainedPayloadBytes($1.outcome) }
-        )
+        get async {
+            let counts = await ledger.retainedIdentityCounts
+            return (counts.identities, counts.outcomes, counts.retired, counts.outcomeBytes)
+        }
     }
 
-    internal var retainedIdentityCount: Int { identities.count }
+    internal var retainedIdentityCount: Int {
+        get async { await ledger.retainedIdentityCounts.identities }
+    }
 
     internal var retainedCapacity: (identities: Int, completed: Int) {
-        (identityCapacity, completedCapacity)
+        get async { await ledger.admissionCapacities }
     }
 
     internal var retainedTimelineCount: Int { timelineTails.count }
@@ -91,7 +77,8 @@ public actor AscendantTurnCoordinator {
     }
 
     /// - Parameters:
-    ///   - completedCapacity: Maximum number of terminal outcomes kept for replay.
+    ///   - completedCapacity: Maximum number of terminal outcomes kept for replay
+    ///     when the coordinator owns its ledger.
     ///   - identityCapacity: Maximum number of identified turns admitted during
     ///     this serve lifetime. Admitted identities are never evicted.
     ///   - observers: Ordered observers, each receiving one terminal record.
@@ -99,14 +86,21 @@ public actor AscendantTurnCoordinator {
     ///     deliveries during shutdown. Conforming observers are non-blocking,
     ///     so the drain normally completes immediately; a stuck delivery is
     ///     cut off at this bound when the scope disposes.
+    ///   - ledger: The Turn ledger that owns admission. A node passes the same
+    ///     ledger it recovers from the durable log. When omitted, the coordinator
+    ///     owns an in-memory ledger sized by the two capacities above.
     public init(
         completedCapacity: Int = 256,
         identityCapacity: Int = 1_024,
         observers: [any TerminalTurnObserving] = [],
-        observationDrainTimeout: Duration = .seconds(1)
+        observationDrainTimeout: Duration = .seconds(1),
+        ledger: AscendantTurnUpdateStore? = nil
     ) {
-        self.completedCapacity = max(1, completedCapacity)
-        self.identityCapacity = max(1, identityCapacity)
+        self.ledger = ledger ?? AscendantTurnUpdateStore(
+            maxEntries: max(1, identityCapacity),
+            completedCapacity: completedCapacity,
+            identityCapacity: identityCapacity
+        )
         self.observers = observers
         self.observationDrainTimeout = observationDrainTimeout
         // This static label is validated by RuntimeEffectScope at construction.
@@ -137,8 +131,8 @@ public actor AscendantTurnCoordinator {
             await awaitSettlement(turns: turns, tails: tails, timeout: observationDrainTimeout)
         }
         // Close observer admission only after that window. A turn that settles
-        // later still commits its replay/tombstone state, but its observer
-        // delivery is intentionally suppressed by the bounded shutdown policy.
+        // later still commits its replay state, but its observer delivery is
+        // intentionally suppressed by the bounded shutdown policy.
         // Draining before disposal guarantees dispose never cancels a delivery
         // that was admitted before the fence without waiting for its declared
         // boundary.
@@ -275,6 +269,8 @@ public actor AscendantTurnCoordinator {
                 throw error
             }
         }
+        // The wire edge canonicalizes the client turn ID once; the ledger
+        // receives the same canonical value.
         let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
         let canonicalRequest = AscendantTurnRequest(
             message: request.message,
@@ -282,53 +278,36 @@ public actor AscendantTurnCoordinator {
             clientTurnID: clientTurnID,
             protocolMajor: request.protocolMajor
         )
-
         let key = Key(timelineID: request.timelineID, clientTurnID: clientTurnID)
-        let messageDigest = Self.messageDigest(request.message)
-        let admittedIdentity: AdmittedIdentity
-        if let existing = identities[key] {
-            guard existing.messageDigest == messageDigest else {
-                throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            admittedIdentity = existing
-        } else {
-            guard identities.count < identityCapacity else {
-                throw AscendantTurnError.capacityExceeded(
+
+        let admission = try await admit(key: key, request: canonicalRequest)
+        switch admission {
+        case .new:
+            break
+        case .inFlight:
+            guard let existing = inFlight[key] else {
+                // Admitted but unregistered without a coordinator task: fail
+                // closed rather than rerun the identity.
+                releaseAdmission(key)
+                throw AscendantTurnError.replayUnavailable(
                     timelineID: request.timelineID,
                     clientTurnID: clientTurnID
                 )
             }
-            // Record identity before creating the operation. This admission is
-            // permanent for the serve lifetime, even if its result is evicted.
-            let identity = AdmittedIdentity(messageDigest: messageDigest, operationID: operationID)
-            identities[key] = identity
-            admittedIdentity = identity
-        }
-
-        if let existing = inFlight[key] {
+            releaseAdmission(key)
             return try await replay(existing.task, request: canonicalRequest)
-        }
-
-        if let cached = completed[key] {
-            guard cached.messageDigest == messageDigest else {
-                throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            switch cached.outcome {
-            case let .succeeded(result):
-                return AscendantTurnResult(clientTurnID: result.clientTurnID, text: result.text, replayed: true)
-            case let .failed(error):
-                throw error
-            }
-        }
-
-        if let tombstone = tombstones[key] {
-            guard tombstone == messageDigest else {
-                throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            throw AscendantTurnError.replayUnavailable(
-                timelineID: request.timelineID,
-                clientTurnID: clientTurnID
-            )
+        case let .replay(.succeeded(text)):
+            releaseAdmission(key)
+            return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: true)
+        case let .replay(.failed(error)):
+            releaseAdmission(key)
+            throw error
+        case .conflict:
+            releaseAdmission(key)
+            throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
+        case .unavailable:
+            releaseAdmission(key)
+            throw AscendantTurnError.replayUnavailable(timelineID: request.timelineID, clientTurnID: clientTurnID)
         }
 
         let lane = enqueue(
@@ -388,7 +367,7 @@ public actor AscendantTurnCoordinator {
                     key: key,
                     request: canonicalRequest,
                     ascendantID: ascendantID,
-                    operationID: admittedIdentity.operationID,
+                    operationID: operationID,
                     result: result
                 )
             }
@@ -396,10 +375,13 @@ public actor AscendantTurnCoordinator {
 
         let task = lane.task
         inFlight[key] = InFlight(
-            operationID: admittedIdentity.operationID,
+            operationID: operationID,
             task: task,
             cancel: cancel
         )
+        // The task is registered before the key is released, so a waiting
+        // duplicate always finds it.
+        releaseAdmission(key)
 
         do {
             let text = try await task.value
@@ -409,6 +391,39 @@ public actor AscendantTurnCoordinator {
             removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
             throw error
         }
+    }
+
+    /// Asks the ledger for admission while holding the key, so duplicates of
+    /// one identity are classified one at a time. On success the caller owns
+    /// the key and must release it after registering or classifying the request.
+    private func admit(key: Key, request: AscendantTurnRequest) async throws -> TurnLedgerAdmission {
+        while admissions[key] != nil {
+            await withCheckedContinuation { continuation in
+                admissions[key, default: []].append(continuation)
+            }
+        }
+        admissions[key] = []
+        do {
+            return try await ledger.admit(
+                timelineID: request.timelineID,
+                clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID(rawValue: key.clientTurnID),
+                message: request.message
+            )
+        } catch AscendantTurnUpdateStore.Error.capacityExceeded {
+            releaseAdmission(key)
+            throw AscendantTurnError.capacityExceeded(
+                timelineID: request.timelineID,
+                clientTurnID: key.clientTurnID
+            )
+        } catch {
+            releaseAdmission(key)
+            throw error
+        }
+    }
+
+    private func releaseAdmission(_ key: Key) {
+        let waiters = admissions.removeValue(forKey: key) ?? []
+        waiters.forEach { $0.resume() }
     }
 
     private func replay(
@@ -432,20 +447,15 @@ public actor AscendantTurnCoordinator {
     ) async {
         var committedOperationID = operationID
         if let key {
-            guard let admitted = inFlight.removeValue(forKey: key) else { return }
-            committedOperationID = admitted.operationID
+            guard let active = inFlight[key] else { return }
+            committedOperationID = active.operationID
         }
-        let digest = Self.messageDigest(request.message)
 
-        let outcome: CachedOutcome
+        let outcome: TurnTerminalOutcome
         let terminalOutcome: TerminalTurnOutcome
         switch result {
         case let .success(text):
-            outcome = .succeeded(AscendantTurnResult(
-                clientTurnID: request.clientTurnID,
-                text: text,
-                replayed: false
-            ))
+            outcome = .succeeded(text: text)
             terminalOutcome = .succeeded
         case let .failure(error):
             let terminal: AscendantTurnError
@@ -468,16 +478,15 @@ public actor AscendantTurnCoordinator {
         }
 
         if let key {
-            completed[key] = Completed(messageDigest: digest, outcome: outcome)
-            completionOrder.removeAll { $0 == key }
-            completionOrder.append(key)
-            while completionOrder.count > completedCapacity {
-                let oldest = completionOrder.removeFirst()
-                guard let evicted = completed.removeValue(forKey: oldest) else { continue }
-                // The identity ledger prevents rerun. Retain only the digest for an
-                // evicted result so retries can still conflict or report 410.
-                tombstones[oldest] = evicted.messageDigest
-            }
+            // The outcome commits to the ledger before the in-flight slot
+            // clears, so a duplicate admitted after the slot clears always
+            // finds a terminal outcome instead of an unregistered identity.
+            await ledger.recordOutcome(
+                timelineID: key.timelineID,
+                clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID(rawValue: key.clientTurnID),
+                outcome: outcome
+            )
+            inFlight.removeValue(forKey: key)
         }
 
         await scheduleObservation(TerminalTurnRecord(
@@ -544,8 +553,6 @@ public actor AscendantTurnCoordinator {
         UUID().uuidString.lowercased()
     }
 
-    private static let retainedPayloadByteLimit = GnosticWirePayload.maximumEmbeddedValueBytes
-
     private static func bounded(_ error: AscendantTurnError) -> AscendantTurnError {
         switch error {
         case let .capacityExceeded(timelineID, clientTurnID):
@@ -572,28 +579,6 @@ public actor AscendantTurnCoordinator {
         case let .replayUnavailable(timelineID, clientTurnID):
             return .replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
         }
-    }
-
-    private static func retainedPayloadBytes(_ outcome: CachedOutcome) -> Int {
-        switch outcome {
-        case let .succeeded(result):
-            return (try? JSONEncoder().encode(result).count) ?? retainedPayloadByteLimit
-        case let .failed(error):
-            // The fields are bounded above, and this mirrors the wire fields
-            // retained for conflict/status replay without retaining source text.
-            return error.reasonCode.utf8.count + error.localizedDescription.utf8.count + 64
-        }
-    }
-
-    /// A stable, process-local FNV-1a fingerprint keeps the coordinator's
-    /// conflict record bounded without retaining the full user message.
-    private static func messageDigest(_ message: String) -> UInt64 {
-        var digest: UInt64 = 14_695_981_039_346_656_037
-        for byte in message.utf8 {
-            digest ^= UInt64(byte)
-            digest &*= 1_099_511_628_211
-        }
-        return digest
     }
 
     private func enqueue(

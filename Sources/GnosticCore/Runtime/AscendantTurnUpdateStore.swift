@@ -3,6 +3,38 @@
 import Foundation
 import GnosticProtocol
 
+/// The ledger's classification of one identified Turn admission.
+///
+/// Only ``new`` may run backend work. Every other case answers the request
+/// from the ledger without starting the backend.
+internal enum TurnLedgerAdmission: Sendable, Equatable {
+    /// The identity was journaled as started. The caller owns the Turn.
+    case new
+    /// The identity is admitted and has no outcome yet.
+    case inFlight
+    /// The Turn has a terminal outcome to replay.
+    case replay(TurnTerminalOutcome)
+    /// The identity was admitted with a different message.
+    case conflict
+    /// The identity was admitted but its outcome cannot be replayed. This covers
+    /// a Turn with no terminal record, a failed recovered Turn, a truncated
+    /// outcome, and an identity whose outcome was evicted.
+    case unavailable
+}
+
+/// A terminal outcome of one identified Turn, as committed in this process.
+internal enum TurnTerminalOutcome: Sendable, Equatable {
+    case succeeded(text: String)
+    case failed(AscendantTurnError)
+}
+
+/// The outcome retained for one entry. Live outcomes keep the full result for
+/// this process; recovered outcomes keep only what the journal stored.
+fileprivate enum RetainedOutcome: Sendable, Equatable {
+    case live(TurnTerminalOutcome)
+    case recovered(TurnJournalOutcome)
+}
+
 /// Keeps bounded identified-turn updates for one serve lifetime. It never
 /// stores prompt text or tool arguments beyond the bounded update payload.
 /// Live events use a bounded best-effort buffer; replay is authoritative recovery.
@@ -68,6 +100,9 @@ public actor AscendantTurnUpdateStore {
         var finished: Bool
         var compacted: Bool
         var messageDigest: UInt64?
+        /// True when the entry was rebuilt from the journal rather than admitted here.
+        var recovered: Bool = false
+        var outcome: RetainedOutcome? = nil
     }
 
     private let maxEvents: Int
@@ -80,9 +115,34 @@ public actor AscendantTurnUpdateStore {
     private var entries: [Key: Entry] = [:]
     private var entryOrder: [Key] = []
     private var journal: AppendOnlyEventLog<TurnEventRecord>?
+    private let completedCapacity: Int
+    private let identityCapacity: Int
+    /// Admitted identities and their message digests. Bounded by
+    /// ``identityCapacity`` and never evicted, so an identity whose entry was
+    /// evicted or never recovered can never rerun.
+    private var identityDigests: [Key: UInt64] = [:]
 
     internal var retainedStateCounts: (entries: Int, bytes: Int) {
         (entries.count, entries.values.reduce(0) { $0 + $1.bytes })
+    }
+
+    /// Identity and outcome counts for the Turn ledger. `retired` counts
+    /// admitted identities whose entry was evicted.
+    internal var retainedIdentityCounts: (identities: Int, outcomes: Int, retired: Int, outcomeBytes: Int) {
+        var outcomes = 0
+        var bytes = 0
+        for entry in entries.values {
+            guard let outcome = entry.outcome else { continue }
+            outcomes += 1
+            bytes += Self.outcomeBytes(outcome)
+        }
+        let retired = identityDigests.keys.reduce(0) { $0 + (entries[$1] == nil ? 1 : 0) }
+        return (identityDigests.count, outcomes, retired, bytes)
+    }
+
+    /// The configured bounds for admitted identities and retained outcomes.
+    internal var admissionCapacities: (identities: Int, completed: Int) {
+        (identityCapacity, completedCapacity)
     }
     private let eventStream: AsyncStream<Event>
     private let eventContinuation: AsyncStream<Event>.Continuation
@@ -92,7 +152,9 @@ public actor AscendantTurnUpdateStore {
         maxBytes: Int = 1_048_576,
         maxEntries: Int = 256,
         eventBufferCapacity: Int = 256,
-        maxJournalBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes
+        maxJournalBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
+        completedCapacity: Int = 256,
+        identityCapacity: Int = AscendantTurnUpdateStore.defaultIdentityCapacity
     ) {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
@@ -101,6 +163,8 @@ public actor AscendantTurnUpdateStore {
         self.maxEntries = max(1, maxEntries)
         self.eventBufferCapacity = max(1, eventBufferCapacity)
         self.maxJournalBytes = max(0, maxJournalBytes)
+        self.completedCapacity = max(1, completedCapacity)
+        self.identityCapacity = max(1, identityCapacity)
         (eventStream, eventContinuation) = AsyncStream<Event>.makeStream(
             bufferingPolicy: .bufferingNewest(self.eventBufferCapacity)
         )
@@ -108,6 +172,13 @@ public actor AscendantTurnUpdateStore {
 
     /// The default on-disk bound for the durable Turn event log.
     public static let defaultMaxJournalBytes = 4 * 1_048_576
+
+    /// The default bound on admitted identified Turns for one serve lifetime.
+    public static let defaultIdentityCapacity = 1_024
+
+    /// The most assistant text a journaled outcome keeps. It matches the
+    /// bounded update payload, so a longer outcome replays as unavailable.
+    private static let maxJournaledTextBytes = 800
 
     func events() -> AsyncStream<Event> { eventStream }
 
@@ -131,14 +202,19 @@ public actor AscendantTurnUpdateStore {
 
     private func applyJournalRecord(_ record: TurnEventRecord) {
         let clientTurnID = ValidatedClientTurnID(rawValue: record.clientTurnID)
+        let key = Key(timelineID: record.timelineID, clientTurnID: record.clientTurnID)
         do {
             switch record.event {
             case .started(let messageDigest):
-                try start(timelineID: record.timelineID, clientTurnID: clientTurnID, messageDigest: messageDigest)
+                recoverIdentity(key, messageDigest: messageDigest)
+                guard entries[key] == nil else { return }
+                try insert(key: key, timelineID: record.timelineID, messageDigest: messageDigest, recovered: true)
             case .update(let update):
                 try applyRecoveredUpdate(timelineID: record.timelineID, clientTurnID: clientTurnID, update: update)
             case .finished:
                 finish(timelineID: record.timelineID, clientTurnID: clientTurnID)
+            case .outcome(let outcome):
+                applyRecoveredOutcome(key, outcome)
             case .checkpoint(let snapshot):
                 try applyCheckpoint(snapshot, timelineID: record.timelineID, clientTurnID: clientTurnID)
             }
@@ -147,6 +223,23 @@ public actor AscendantTurnUpdateStore {
         } catch {
             // Recovery never fails a serve start on one unreadable record.
         }
+    }
+
+    /// Restores an admitted identity's digest. Recovery records identities even
+    /// when their entries are skipped, so a skipped Turn still never reruns.
+    private func recoverIdentity(_ key: Key, messageDigest: UInt64?) {
+        guard let messageDigest, identityDigests[key] == nil, identityDigests.count < identityCapacity else {
+            return
+        }
+        identityDigests[key] = messageDigest
+    }
+
+    private func applyRecoveredOutcome(_ key: Key, _ outcome: TurnJournalOutcome) {
+        guard var entry = entries[key] else { return }
+        entry.outcome = .recovered(outcome)
+        entry.terminal = true
+        entry.finished = true
+        entries[key] = entry
     }
 
     private func journalRecord(_ record: TurnEventRecord) throws {
@@ -175,9 +268,24 @@ public actor AscendantTurnUpdateStore {
         try? journal.replaceAll(with: records)
     }
 
-    /// One checkpoint per retained Turn, in retention order.
+    /// One checkpoint per retained Turn, in retention order, preceded by a
+    /// started/finished pair for each retired identity. The pair keeps the
+    /// identity's digest across compaction without retaining any state for it.
     private func checkpointRecords() -> [TurnEventRecord] {
-        entryOrder.compactMap { key in
+        var records: [TurnEventRecord] = []
+        for (key, digest) in identityDigests where entries[key] == nil {
+            records.append(TurnEventRecord(
+                timelineID: key.timelineID,
+                clientTurnID: key.clientTurnID,
+                event: .started(messageDigest: digest)
+            ))
+            records.append(TurnEventRecord(
+                timelineID: key.timelineID,
+                clientTurnID: key.clientTurnID,
+                event: .finished
+            ))
+        }
+        records += entryOrder.compactMap { key in
             guard let entry = entries[key] else { return nil }
             return TurnEventRecord(
                 timelineID: key.timelineID,
@@ -188,10 +296,12 @@ public actor AscendantTurnUpdateStore {
                     updates: entry.updates,
                     compacted: entry.compacted,
                     terminal: entry.terminal,
-                    finished: entry.finished
+                    finished: entry.finished,
+                    outcome: Self.journaledOutcome(entry.outcome)
                 ))
             )
         }
+        return records
     }
 
     /// Replaces one retained Turn's state with a compaction checkpoint.
@@ -201,6 +311,7 @@ public actor AscendantTurnUpdateStore {
         clientTurnID: ValidatedClientTurnID
     ) throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        recoverIdentity(key, messageDigest: snapshot.messageDigest)
         if entries[key] == nil {
             evictFinishedEntriesIfNeeded(for: key)
             guard entries.count < maxEntries else { throw Error.capacityExceeded }
@@ -212,7 +323,9 @@ public actor AscendantTurnUpdateStore {
             terminal: snapshot.terminal,
             finished: snapshot.finished,
             compacted: snapshot.compacted,
-            messageDigest: snapshot.messageDigest
+            messageDigest: snapshot.messageDigest,
+            recovered: true,
+            outcome: snapshot.outcome.map { RetainedOutcome.recovered($0) }
         )
         touch(key)
         evictIfNeeded()
@@ -234,19 +347,133 @@ public actor AscendantTurnUpdateStore {
     internal func start(timelineID: UUID, clientTurnID: ValidatedClientTurnID, messageDigest: UInt64?) throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard entries[key] == nil else { return }
+        // A retired identity never reopens with a digest: its outcome was evicted.
+        if messageDigest != nil, identityDigests[key] != nil { return }
+        try insert(key: key, timelineID: timelineID, messageDigest: messageDigest, recovered: false)
+    }
+
+    /// Admits one identified Turn, or classifies a retry against the ledger.
+    ///
+    /// ``TurnLedgerAdmission/new`` means the identity was journaled as started and the
+    /// caller may run the backend. Every other case answers the request without
+    /// running the backend, so an admitted identity never reruns.
+    internal func admit(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String) throws -> TurnLedgerAdmission {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        let digest = Self.messageDigest(message)
+        if let admitted = identityDigests[key] {
+            guard admitted == digest else { return .conflict }
+            guard let entry = entries[key] else { return .unavailable }
+            return Self.admission(for: entry)
+        }
+        // An entry without an admitted identity came from a non-admitted path.
+        // Admission never adopts it, so it fails closed.
+        guard entries[key] == nil else { return .unavailable }
+        try insert(key: key, timelineID: timelineID, messageDigest: digest, recovered: false)
+        return .new
+    }
+
+    /// Records the terminal outcome of one admitted Turn. The outcome is the
+    /// replay record: a restarted node answers the same identity from it.
+    internal func recordOutcome(timelineID: UUID, clientTurnID: ValidatedClientTurnID, outcome: TurnTerminalOutcome) {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        guard var entry = entries[key], entry.outcome == nil else { return }
+        entry.outcome = .live(outcome)
+        entry.terminal = true
+        entry.finished = true
+        entries[key] = entry
+        touch(key)
+        enforceCompletedCapacity()
+        evictIfNeeded()
+        // A dropped outcome record leaves the identity without an outcome.
+        // Recovery then reports it unavailable rather than rerunning it.
+        try? journalRecord(TurnEventRecord(
+            timelineID: timelineID,
+            clientTurnID: key.clientTurnID,
+            event: .outcome(Self.journalOutcome(outcome))
+        ))
+    }
+
+    /// Opens an entry for a new admission or a recovered start. The identity is
+    /// recorded first, and only when it has room. The entry may still be refused
+    /// by the entry bound, which leaves the identity in place.
+    private func insert(key: Key, timelineID: UUID, messageDigest: UInt64?, recovered: Bool) throws {
+        if messageDigest != nil, identityDigests[key] == nil {
+            guard identityDigests.count < identityCapacity else { throw Error.capacityExceeded }
+        }
         evictFinishedEntriesIfNeeded(for: key)
         guard entries.count < maxEntries else { throw Error.capacityExceeded }
+        if let messageDigest, identityDigests[key] == nil {
+            identityDigests[key] = messageDigest
+        }
         entries[key] = Entry(
             updates: [], nextSequence: 1, bytes: 0, terminal: false, finished: false, compacted: false,
-            messageDigest: messageDigest
+            messageDigest: messageDigest, recovered: recovered
         )
         touch(key)
         evictIfNeeded()
         try journalRecord(TurnEventRecord(
             timelineID: timelineID,
-            clientTurnID: clientTurnID.rawValue,
+            clientTurnID: key.clientTurnID,
             event: .started(messageDigest: messageDigest)
         ))
+    }
+
+    /// Keeps at most ``completedCapacity`` retained outcomes. An evicted entry
+    /// keeps its identity, so it replays as unavailable and never reruns.
+    private func enforceCompletedCapacity() {
+        var completed = entries.values.reduce(0) { $0 + ($1.outcome == nil ? 0 : 1) }
+        while completed > completedCapacity,
+              let oldest = entryOrder.first(where: { entries[$0]?.outcome != nil }) {
+            entryOrder.removeAll { $0 == oldest }
+            entries.removeValue(forKey: oldest)
+            completed -= 1
+        }
+    }
+
+    private static func admission(for entry: Entry) -> TurnLedgerAdmission {
+        switch entry.outcome {
+        case nil:
+            return entry.recovered ? .unavailable : .inFlight
+        case let .live(outcome)?:
+            return .replay(outcome)
+        case let .recovered(journaled)?:
+            guard journaled.succeeded, !journaled.truncated, let text = journaled.text else {
+                return .unavailable
+            }
+            return .replay(.succeeded(text: text))
+        }
+    }
+
+    private static func journalOutcome(_ outcome: TurnTerminalOutcome) -> TurnJournalOutcome {
+        switch outcome {
+        case let .succeeded(text):
+            let bounded = GnosticWirePayload.prefix(text, maximumBytes: maxJournaledTextBytes)
+            return TurnJournalOutcome(succeeded: true, text: bounded, truncated: bounded != text)
+        case .failed:
+            return TurnJournalOutcome(succeeded: false, text: nil, truncated: false)
+        }
+    }
+
+    private static func journaledOutcome(_ outcome: RetainedOutcome?) -> TurnJournalOutcome? {
+        switch outcome {
+        case nil:
+            return nil
+        case let .live(live)?:
+            return journalOutcome(live)
+        case let .recovered(journaled)?:
+            return journaled
+        }
+    }
+
+    private static func outcomeBytes(_ outcome: RetainedOutcome) -> Int {
+        switch outcome {
+        case let .live(.succeeded(text)):
+            return text.utf8.count + 96
+        case let .live(.failed(error)):
+            return error.reasonCode.utf8.count + error.localizedDescription.utf8.count + 64
+        case let .recovered(journaled):
+            return (journaled.text?.utf8.count ?? 0) + 96
+        }
     }
 
     public func finish(timelineID: UUID, clientTurnID: String) throws {
@@ -401,7 +628,7 @@ public actor AscendantTurnUpdateStore {
         }
         var entry = entries[key] ?? Entry(
             updates: [], nextSequence: 1, bytes: 0, terminal: false, finished: false, compacted: false,
-            messageDigest: nil
+            messageDigest: nil, recovered: true
         )
         apply(update, into: &entry)
         entries[key] = entry
@@ -586,7 +813,9 @@ public actor AscendantTurnUpdateStore {
         }
     }
 
-    private static func messageDigest(_ message: String) -> UInt64 {
+    /// The one FNV-1a fingerprint of an identified Turn's message. It is
+    /// process-stable and never stores the message itself.
+    static func messageDigest(_ message: String) -> UInt64 {
         var digest: UInt64 = 14_695_981_039_346_656_037
         for byte in message.utf8 {
             digest ^= UInt64(byte)

@@ -73,6 +73,8 @@ struct TurnLogReport: Codable, Equatable {
                 accumulator.terminal = update.terminal
             case .finished:
                 accumulator.finished = true
+            case .outcome:
+                accumulator.terminal = true
             case .checkpoint(let checkpoint):
                 accumulator.compacted = true
                 if let digest = checkpoint.messageDigest {
