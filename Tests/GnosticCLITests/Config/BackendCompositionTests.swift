@@ -29,7 +29,7 @@ private final class FixtureCompositionBackend: AscendantBackend {
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: AscendantBackendOptionalSurfaces(
+            capabilities: AscendantBackendCapabilities(
                 interoperability: [AscendantInteroperabilityCapability.textTurn.rawValue],
                 backendKind: ascendant.backend.kind
             )

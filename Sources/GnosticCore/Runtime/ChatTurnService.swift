@@ -133,7 +133,7 @@ public final class TurnService {
     /// Best-effort scoped cancellation. A backend without the surface has
     /// nothing to cancel, so absence is a deliberate no-op.
     private func cancelScopedTurn(ascendantID: UUID, timelineID: UUID, clientTurnID: String) async {
-        guard let session = await backendProvider.session(for: ascendantID),
+        guard let session = backendProvider.session(for: ascendantID),
               let cancellable = session.backend.optionalCapability(.turnCancellation, as: (any AscendantBackendTurnCancellation).self) else { return }
         await cancellable.cancelTurn(timelineID: timelineID, clientTurnID: clientTurnID)
     }

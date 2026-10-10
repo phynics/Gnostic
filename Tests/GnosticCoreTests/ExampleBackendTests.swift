@@ -33,7 +33,7 @@ final class EchoAscendantBackend: AscendantBackend {
             createdAt: now,
             updatedAt: now,
             // Advertise only what this backend genuinely supports.
-            capabilities: AscendantBackendOptionalSurfaces(
+            capabilities: AscendantBackendCapabilities(
                 interoperability: [AscendantInteroperabilityCapability.textTurn.rawValue],
                 backendKind: "example-echo"
             )
