@@ -27,6 +27,12 @@ public struct ExperimentRegime: Codable, Sendable, Equatable {
     /// Free-form policy fields that affect a run.
     public let policies: [String: String]
 
+    /// The Regime of an offline scenario that names no Ascendant.
+    ///
+    /// It is the only place the kit's own backend kind is spelled. A run with
+    /// no configured Ascendant records this value.
+    public static let selfCheck = ExperimentRegime(backendKind: "kit")
+
     /// Creates a regime record.
     public init(
         backendKind: String,
