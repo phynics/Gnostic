@@ -13,6 +13,28 @@ public enum TurnEventKind: Codable, Sendable, Equatable {
     case finished
     /// A bounded snapshot of one retained Turn, written by journal compaction.
     case checkpoint(TurnJournalCheckpoint)
+    /// The Turn's terminal outcome, journaled when the coordinator commits it.
+    /// Recovery replays a successful outcome and never reruns the Turn.
+    case outcome(TurnJournalOutcome)
+}
+
+/// The durable terminal outcome of one identified Turn.
+///
+/// `text` is the bounded assistant text of a successful Turn, so a restarted
+/// serve can replay it. `truncated` records that the full text exceeded that
+/// bound, and a unary replay then reports `replayUnavailable` instead of
+/// returning a partial answer. A failed Turn stores no detail; recovery
+/// reports it as unavailable rather than widening the journal.
+public struct TurnJournalOutcome: Codable, Sendable, Equatable {
+    public let succeeded: Bool
+    public let text: String?
+    public let truncated: Bool
+
+    public init(succeeded: Bool, text: String?, truncated: Bool) {
+        self.succeeded = succeeded
+        self.text = text
+        self.truncated = truncated
+    }
 }
 
 /// The bounded state of one retained Turn at the moment of journal compaction.
@@ -27,6 +49,8 @@ public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
     public let compacted: Bool
     public let terminal: Bool
     public let finished: Bool
+    /// The journaled terminal outcome, when one was committed before compaction.
+    public let outcome: TurnJournalOutcome?
 
     public init(
         messageDigest: UInt64?,
@@ -34,7 +58,8 @@ public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
         updates: [AscendantTurnUpdate],
         compacted: Bool,
         terminal: Bool,
-        finished: Bool
+        finished: Bool,
+        outcome: TurnJournalOutcome? = nil
     ) {
         self.messageDigest = messageDigest
         self.nextSequence = nextSequence
@@ -42,6 +67,7 @@ public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
         self.compacted = compacted
         self.terminal = terminal
         self.finished = finished
+        self.outcome = outcome
     }
 }
 
