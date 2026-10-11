@@ -187,7 +187,17 @@ quarantine, summaries, and cascade delete.
 ## Consequences
 
 - A restarted serve replays journaled identified Turns, including their
-  compaction and message digest.
+  compaction and message digest. The Turn ledger (`AscendantTurnUpdateStore`)
+  is the one admission authority: the coordinator asks it to admit a
+  `clientTurnID` before any backend work is enqueued. A recovered successful
+  Turn replays with `replayed: true`; the same message replays and a different
+  message conflicts. A recovered Turn with no terminal record, a failed Turn,
+  or a successful Turn whose bounded outcome text was truncated answers
+  `replayUnavailable`. An admitted identity never reruns, including after its
+  retained outcome is evicted or the journal is compacted.
+- The journal records a terminal `outcome` for each identified Turn. The
+  record is additive, so a binary without it treats the record as a corrupt
+  tail, as with checkpoints. A failed Turn stores no failure detail.
 - A crashed experiment Run resumes its tape from the last durable event.
 - A partial or torn final record costs at most that record; recovery truncates
   it and keeps the valid prefix.

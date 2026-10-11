@@ -172,6 +172,101 @@ struct AscendantTurnUpdateStoreJournalTests {
         #expect(try await reader.replay(timelineID: timelines[2], clientTurnID: "turn-2").updates.isEmpty)
     }
 
+    @Test("a recovered success replays through admission and rejects a different message")
+    func recoveredSuccessReplaysThroughAdmission() async throws {
+        let url = makeURL()
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore()
+        try await writer.enableDurability(at: url)
+        let writerID = try await writer.validatedClientTurnID("admit-1")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
+        await writer.recordOutcome(timelineID: timelineID, clientTurnID: writerID, outcome: .succeeded(text: "done"))
+
+        let reader = AscendantTurnUpdateStore()
+        try await reader.enableDurability(at: url)
+        let readerID = try await reader.validatedClientTurnID("admit-1")
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .replay(.succeeded(text: "done")))
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "different") == .conflict)
+    }
+
+    @Test("a recovered Turn without a terminal record is unavailable and never reruns")
+    func recoveredTurnWithoutOutcomeIsUnavailable() async throws {
+        let url = makeURL()
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore()
+        try await writer.enableDurability(at: url)
+        let writerID = try await writer.validatedClientTurnID("admit-2")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
+        _ = try await writer.append(timelineID: timelineID, clientTurnID: "admit-2", kind: "assistant_text", text: "partial")
+
+        let reader = AscendantTurnUpdateStore()
+        try await reader.enableDurability(at: url)
+        let readerID = try await reader.validatedClientTurnID("admit-2")
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .unavailable)
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .unavailable)
+    }
+
+    @Test("a recovered failed Turn is unavailable rather than rerun")
+    func recoveredFailureIsUnavailable() async throws {
+        let url = makeURL()
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore()
+        try await writer.enableDurability(at: url)
+        let writerID = try await writer.validatedClientTurnID("admit-3")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
+        await writer.recordOutcome(
+            timelineID: timelineID,
+            clientTurnID: writerID,
+            outcome: .failed(.failed(timelineID: timelineID, clientTurnID: "admit-3", detail: "boom"))
+        )
+
+        let reader = AscendantTurnUpdateStore()
+        try await reader.enableDurability(at: url)
+        let readerID = try await reader.validatedClientTurnID("admit-3")
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .unavailable)
+    }
+
+    @Test("a truncated recovered outcome is unavailable for unary replay")
+    func truncatedRecoveredOutcomeIsUnavailable() async throws {
+        let url = makeURL()
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore()
+        try await writer.enableDurability(at: url)
+        let writerID = try await writer.validatedClientTurnID("admit-4")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
+        await writer.recordOutcome(
+            timelineID: timelineID,
+            clientTurnID: writerID,
+            outcome: .succeeded(text: String(repeating: "a", count: 2_000))
+        )
+
+        let reader = AscendantTurnUpdateStore()
+        try await reader.enableDurability(at: url)
+        let readerID = try await reader.validatedClientTurnID("admit-4")
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .unavailable)
+    }
+
+    @Test("an evicted identity stays admitted and never reruns, in process or after recovery")
+    func evictedIdentityIsNeverReadmitted() async throws {
+        let url = makeURL()
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore(maxEntries: 1, completedCapacity: 1)
+        try await writer.enableDurability(at: url)
+        let firstID = try await writer.validatedClientTurnID("evict-a")
+        let secondID = try await writer.validatedClientTurnID("evict-b")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: firstID, message: "a") == .new)
+        await writer.recordOutcome(timelineID: timelineID, clientTurnID: firstID, outcome: .succeeded(text: "a-done"))
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: secondID, message: "b") == .new)
+        await writer.recordOutcome(timelineID: timelineID, clientTurnID: secondID, outcome: .succeeded(text: "b-done"))
+
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: firstID, message: "a") == .unavailable)
+
+        let reader = AscendantTurnUpdateStore(maxEntries: 1, completedCapacity: 1)
+        try await reader.enableDurability(at: url)
+        let readerFirstID = try await reader.validatedClientTurnID("evict-a")
+        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerFirstID, message: "a") == .unavailable)
+    }
+
     @Test("turn event records round trip through JSON")
     func recordRoundTrip() throws {
         let timelineID = UUID()

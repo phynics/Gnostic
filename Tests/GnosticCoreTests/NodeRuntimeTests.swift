@@ -71,6 +71,52 @@ struct NodeRuntimeTests {
         }
     }
 
+    @Test("a restarted node replays an identified turn from the durable log instead of rerunning the backend", arguments: ["fixture", "positronic", "acp-client"])
+    @MainActor
+    func restartReplaysIdentifiedTurnWithoutRerun(kind: String) async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000301")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000302")!
+        let runCounter = TurnRunCounter()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-restart-replay-\(kind)"),
+            node: .init(id: UUID(uuidString: "A21D0000-0000-4000-8000-000000000303")!),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: kind)],
+            timelines: [.init(id: timelineID, title: "Fixture timeline", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.bundled
+        adapters.ascendants.registerBackend(kind: kind) { ascendant, _, _, timelines in
+            FixtureAscendantBackend(ascendant: ascendant, timelines: timelines, runCounter: runCounter)
+        }
+        let logURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("node-runtime-restart-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("turn-events.jsonl")
+
+        let first = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters, turnLogURL: logURL)
+        try await first.start()
+        let original = try await first.turn(.init(message: "hello", timelineID: timelineID, clientTurnID: "restart-1"))
+        #expect(original.text == "fixture: hello")
+        #expect(!original.replayed)
+        await first.shutdown()
+
+        let second = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters, turnLogURL: logURL)
+        try await second.start()
+        defer { Task { @MainActor in await second.shutdown() } }
+        let resent = try await second.turn(.init(message: "hello", timelineID: timelineID, clientTurnID: "restart-1"))
+
+        #expect(resent.text == "fixture: hello")
+        #expect(resent.replayed)
+        #expect(await runCounter.count == 1)
+
+        // A different message under the same identity conflicts without running the backend.
+        do {
+            _ = try await second.turn(.init(message: "different", timelineID: timelineID, clientTurnID: "restart-1"))
+            Issue.record("A conflicting message replayed after restart.")
+        } catch {
+            #expect(error as? AscendantTurnError == .conflict(timelineID: timelineID, clientTurnID: "restart-1"))
+        }
+        #expect(await runCounter.count == 1)
+    }
+
     @Test("a rejected adapter-created Timeline is removed from adapter and registry")
     @MainActor
     func runtimeTimelineCreationCompensatesAdapterFailure() async throws {
@@ -1360,9 +1406,11 @@ private final class FixtureAscendantBackend: AscendantBackend {
     private let cancellationProbe: AdapterCancellationProbe?
     private let creationProbe: AdapterCreationProbe?
     private let shutdownProbe: BackendShutdownProbe?
+    private let runCounter: TurnRunCounter?
 
-    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil, shutdownProbe: BackendShutdownProbe? = nil) {
+    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil, shutdownProbe: BackendShutdownProbe? = nil, runCounter: TurnRunCounter? = nil) {
         let now = Date()
+        self.runCounter = runCounter
         self.cancellationProbe = cancellationProbe
         self.creationProbe = creationProbe
         self.shutdownProbe = shutdownProbe
@@ -1394,6 +1442,7 @@ private final class FixtureAscendantBackend: AscendantBackend {
     func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {}
     func enabledToolIDs(for timelineID: UUID) async -> [String] { [] }
     func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
+        await runCounter?.record()
         if let cancellationProbe { return try await cancellationProbe.run() }
         return "fixture: \(request.message)"
     }
@@ -1403,6 +1452,12 @@ private final class FixtureAscendantBackend: AscendantBackend {
         await shutdownProbe.begin()
         await shutdownProbe.finish()
     }
+}
+
+private actor TurnRunCounter {
+    private(set) var count = 0
+
+    func record() { count += 1 }
 }
 
 private actor AdapterCancellationProbe {

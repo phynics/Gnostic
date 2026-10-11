@@ -97,7 +97,7 @@ public final class NodeRuntime {
         }
         turnUpdates = updates
         permissionCoordinator = AscendantPermissionCoordinator(updates: updates)
-        turnCoordinator = AscendantTurnCoordinator(observers: adapters.terminalTurnObservers)
+        turnCoordinator = AscendantTurnCoordinator(observers: adapters.terminalTurnObservers, ledger: updates)
 
         let products = try await NodeAssembly.materializeWorkspaces(plan, adapters: adapters)
         initialWorkspaceReferences = products.references

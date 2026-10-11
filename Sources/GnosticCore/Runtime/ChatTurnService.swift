@@ -84,20 +84,8 @@ public final class TurnService {
                 )
             }
         ) {
-            if let validatedClientTurnID {
-                do {
-                    try await self.updates.start(
-                        timelineID: turnRequest.timelineID,
-                        clientTurnID: validatedClientTurnID,
-                        message: turnRequest.message
-                    )
-                } catch AscendantTurnUpdateStore.Error.capacityExceeded {
-                    throw AscendantTurnError.capacityExceeded(
-                        timelineID: turnRequest.timelineID,
-                        clientTurnID: turnRequest.clientTurnID ?? ""
-                    )
-                }
-            }
+            // Identified Turns were admitted to the Turn ledger before this
+            // operation was enqueued, so the backend runs at most once per identity.
             let session: AscendantBackendSession
             do {
                 session = try await self.backendProvider.sessionForTurn(ascendantID)
