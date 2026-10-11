@@ -94,7 +94,9 @@ timeline` report backend health and quarantine, in-flight and completed Turn
 counts, Workspace effective status, and observer drain statistics. They never
 print a Turn body or a secret value. `gnostic inspect events` renders the
 bounded raw wire-event stream as envelopes with a payload byte count; it never
-prints the payload. Every command supports `--format json`.
+prints the payload. Every command supports `--format json`. Every `inspect`
+command also accepts `--config PATH`, which resolves the broker from the same
+manifest that `gnostic serve --config PATH` reads.
 
 ## Inspect the platform configuration
 

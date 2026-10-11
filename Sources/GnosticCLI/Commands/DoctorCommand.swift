@@ -25,8 +25,7 @@ struct DoctorCommand: AsyncParsableCommand {
         """
     )
 
-    @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-    var configPath: String?
+    @OptionGroup var configOptions: ConfigPathOptions
     @Flag(name: .customLong("online"), help: "Run the opt-in network checks (broker reachability, protocol major).")
     var online = false
     @Flag(name: .customLong("check-provider"), help: "Probe configured provider endpoints. Implies --online and may cost money.")
@@ -37,7 +36,7 @@ struct DoctorCommand: AsyncParsableCommand {
     func run() async throws {
         let format = try formatOptions.resolved()
         let report = DoctorLogic.run(
-            store: ConfigCommandLogic.store(for: configPath),
+            store: configOptions.store(),
             registry: try experiments.registry(),
             options: DoctorOptions(online: online, checkProvider: checkProvider)
         )

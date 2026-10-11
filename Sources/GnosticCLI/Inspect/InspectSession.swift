@@ -22,6 +22,31 @@ final class InspectSession {
         }
     }
 
+    /// The manifest store that `--config` selects, or the default store.
+    ///
+    /// - Parameter values: The parsed connection values.
+    /// - Returns: The store `inspect` and `serve --config` both read.
+    static func store(for values: InspectConnectionValues) -> CLIConfigurationStore {
+        CLIConfigurationStore(configPath: values.configPath)
+    }
+
+    /// The broker settings for one invocation: explicit flags win, then the
+    /// effective configuration of the selected manifest.
+    ///
+    /// - Parameter values: The parsed connection values.
+    /// - Returns: The broker settings `inspect` connects with.
+    /// - Throws: The store's load error when the manifest cannot be read.
+    static func brokerSettings(values: InspectConnectionValues) throws -> GnosticBrokerSettings {
+        let stored = try store(for: values).load()
+        return GnosticBrokerSettings(
+            host: values.host ?? stored.mqttHost,
+            port: values.port ?? stored.mqttPort,
+            namespace: values.namespace ?? stored.mqttNamespace,
+            username: stored.mqttUsername,
+            password: stored.mqttPassword
+        )
+    }
+
     /// Runs one body against a started consumer session and always stops it.
     ///
     /// Session and cancellation failures map to ``InspectError``; every other
@@ -38,16 +63,9 @@ final class InspectSession {
         values: InspectConnectionValues,
         _ body: (GnosticConsumerSession) async throws -> T
     ) async throws -> T {
-        let stored = try CLIConfigurationStore().load()
         let window = Duration.seconds(values.observeSeconds)
         let session = try GnosticConsumerSession(
-            broker: GnosticBrokerSettings(
-                host: values.host ?? stored.mqttHost,
-                port: values.port ?? stored.mqttPort,
-                namespace: values.namespace ?? stored.mqttNamespace,
-                username: stored.mqttUsername,
-                password: stored.mqttPassword
-            ),
+            broker: try brokerSettings(values: values),
             identityName: "gnostic-inspect",
             connectTimeout: window,
             discoverTimeout: window

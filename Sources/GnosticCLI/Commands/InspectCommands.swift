@@ -27,13 +27,17 @@ struct InspectCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Discovery collection window in seconds.")
         var observeSeconds: Double = 1.0
 
+        /// The same manifest selection `serve --config` uses.
+        @OptionGroup var configOptions: ConfigPathOptions
+
         /// The plain connection values used by the session.
         func values() -> InspectConnectionValues {
             InspectConnectionValues(
                 host: host,
                 port: port,
                 namespace: namespace,
-                observeSeconds: observeSeconds
+                observeSeconds: observeSeconds,
+                configPath: configOptions.configPath.map { URL(fileURLWithPath: $0) }
             )
         }
     }

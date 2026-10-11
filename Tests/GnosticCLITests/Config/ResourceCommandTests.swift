@@ -7,6 +7,10 @@ import GnosticPositronicBackend
 
 @testable import GnosticCLI
 
+/// Why a binary-backed test is skipped when GNOSTIC_CLI_BINARY is unset. The
+/// trait reports a skip, so the test never passes without running.
+private let binarySkipReason: Comment = "GNOSTIC_CLI_BINARY is unset, so this binary test is skipped. make verify sets it."
+
 @Suite("Resource-oriented configuration commands")
 struct ResourceCommandTests {
     @Test("config exposes every resource command and no profile abstraction")
@@ -257,9 +261,12 @@ struct ResourceCommandTests {
 
 @Suite("Resource configuration subprocess", .serialized)
 struct ResourceConfigurationSubprocessTests {
-    @Test("init and stdin secret commands are credential-free")
+    @Test(
+        "init and stdin secret commands are credential-free",
+        .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] != nil, binarySkipReason)
+    )
     func initAndSecretInputUseStdin() throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"])
         let folder = try TemporaryFolder()
         let path = folder.url.appendingPathComponent("node.json")
 
@@ -292,9 +299,12 @@ struct ResourceConfigurationSubprocessTests {
         #expect(try CLIConfigurationStore(configPath: path, environment: [:]).loadManifest().ascendants[0].backend.secrets["apiKey"] == .string(apiSecret))
     }
 
-    @Test("public CLI performs CRUD and rejects invalid direct JSON without rewriting it")
+    @Test(
+        "public CLI performs CRUD and rejects invalid direct JSON without rewriting it",
+        .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] != nil, binarySkipReason)
+    )
     func publicCRUDAndDirectJSONValidation() throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"])
         let folder = try TemporaryFolder()
         let path = folder.url.appendingPathComponent("node.json")
         #expect(try run(binary: binary, arguments: ["config", "init", "--config", path.path]).status == 0)
