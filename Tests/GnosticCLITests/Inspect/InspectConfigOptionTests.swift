@@ -6,6 +6,7 @@ import Testing
 @testable import GnosticCLI
 
 @Suite("Shared --config option")
+@MainActor
 struct InspectConfigOptionTests {
     @Test("inspect and serve resolve --config to the same manifest path")
     func inspectAndServeShareOneStore() throws {
