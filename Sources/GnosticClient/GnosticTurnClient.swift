@@ -42,7 +42,7 @@ import GnosticProtocol
 @MainActor
 public final class GnosticTurnClient {
     private let manager: CommunicationManager
-    private let lookup: GnosticCatalogLookup
+    private let resolver: CatalogTargetResolver
     private let channel: GnosticCallChannel<GnosticTurnClientError>
     private let timeout: Duration
     private let promptTimeout: Duration
@@ -55,7 +55,12 @@ public final class GnosticTurnClient {
         promptTimeout: Duration
     ) {
         self.manager = manager
-        lookup = GnosticCatalogLookup(manager: manager, catalog: catalog, subscription: subscription, timeout: timeout)
+        resolver = CatalogTargetResolver(lookup: GnosticCatalogLookup(
+            manager: manager,
+            catalog: catalog,
+            subscription: subscription,
+            timeout: timeout
+        ))
         channel = GnosticCallChannel(manager: manager)
         self.timeout = timeout
         self.promptTimeout = promptTimeout
@@ -235,34 +240,24 @@ public final class GnosticTurnClient {
     }
 
     private func resolvedTurnTarget(_ explicitProviderID: String?, forTimeline timelineID: UUID) async throws -> String {
-        let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
-        let providerID: String
-        switch GnosticCatalogLookup.provider(
-            of: GnosticObjectType.timeline,
+        switch await resolver.resolve(
+            .timeline,
             id: timelineID,
-            in: entries,
-            expected: explicitProviderID
+            expectedProviderID: explicitProviderID,
+            requiredCapability: GnosticCapability.textTurnInput
         ) {
-        case let .provider(resolved): providerID = resolved
-        case .unavailable: throw GnosticTurnClientError.timelineUnavailable(timelineID)
-        case .ambiguous: throw GnosticTurnClientError.timelineAmbiguous(timelineID)
-        case .mismatch: throw GnosticTurnClientError.providerMismatch
+        case let .success(target): return target.providerID
+        case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
         }
-        guard let ascendantID = GnosticCatalogLookup.operatingAscendantID(
-            ofTimeline: timelineID,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticTurnClientError.timelineUnavailable(timelineID)
+    }
+
+    /// The one mapping from catalog target failures to Turn client errors.
+    static func error(for failure: CatalogTargetFailure, timeline timelineID: UUID) -> GnosticTurnClientError {
+        switch failure {
+        case .unavailable: .timelineUnavailable(timelineID)
+        case .ambiguous: .timelineAmbiguous(timelineID)
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
-        guard GnosticCatalogLookup.ascendantAdvertises(
-            GnosticCapability.textTurnInput,
-            ascendantID: ascendantID,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticTurnClientError.missingCapability(GnosticCapability.textTurnInput)
-        }
-        return providerID
     }
 }

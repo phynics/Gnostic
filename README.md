@@ -282,11 +282,12 @@ let result = try await workspaces.invoke(
 try await workspaces.detach(workspaceID: workspaceID, from: timelineID)
 ```
 
-`attach` refuses `approved: false` locally without a wire call, and requires the
-Timeline's Ascendant to advertise `workspaceAttachment`; `invoke` requires the
-Workspace provider to advertise `workspaceToolInvocation`. Attach and detach
-address the Timeline's serving provider, while invocation addresses the
-Workspace's advertising provider. `attachmentStatus(workspaceID:)` reports the
+`attach` refuses `approved: false` locally without a wire call. `attach` and
+`detach` both require the Timeline's operating Ascendant to advertise
+`workspaceAttachment`, so a Timeline whose Ascendant lacks it is refused locally
+for either call. `invoke` requires the Workspace provider to advertise
+`workspaceToolInvocation`. Attach and detach address the Timeline's serving
+provider, while invocation addresses the Workspace's advertising provider. `attachmentStatus(workspaceID:)` reports the
 Node's durable attachment intent; `effectiveStatus(workspaceID:)` reports
 whether that intent is usable now.
 
@@ -316,9 +317,44 @@ let renamed = try await timelines.update(
 
 Every call resolves the serving provider from the catalog and requires the
 Ascendant to advertise `timelineManagement`; discovery is refreshed only when
-the target is absent. The client reuses the session transport, so a consumer
+the target is absent. Pass `providerID` to `create` to pin the Ascendant's
+provider. The client reuses the session transport, so a consumer
 never opens a second connection for the same broker identity. Timeline deletion
 is not exposed because no delete operation exists in the Gnostic wire contract.
+
+## Catalog target failures
+
+Every typed client resolves its target through one policy. The catalog is
+refreshed at most once per call, and only when the target is absent (for a
+node-wide diagnostics call, when no provider advertises diagnostics). After
+that refresh the call fails with the error below. Capability checks read the
+catalog as it stands and never refresh it. A pinned `providerID` that does not
+own the target is `providerMismatch` for every client.
+
+| Client | Failure | Public error |
+| --- | --- | --- |
+| Turn | Timeline absent, or no single operating Ascendant | `timelineUnavailable` |
+| Turn | Timeline advertised by two providers | `timelineAmbiguous` |
+| Turn | Pinned provider does not own the Timeline | `providerMismatch` |
+| Turn | Operating Ascendant lacks `textTurnInput` | `missingCapability` |
+| Workspace attach, detach | Timeline absent, or no single operating Ascendant | `timelineUnavailable` |
+| Workspace attach, detach | Timeline advertised by two providers | `timelineAmbiguous` |
+| Workspace attach, detach | Pinned provider does not own the Timeline | `providerMismatch` |
+| Workspace attach, detach | Operating Ascendant lacks `workspaceAttachment` | `missingCapability` |
+| Workspace invoke | Provider advertises no `workspaceToolInvocation` | `missingCapability` |
+| Timeline create | Ascendant absent or ambiguous | `ascendantUnavailable`, `ascendantAmbiguous` |
+| Timeline create | Pinned provider does not own the Ascendant | `providerMismatch` |
+| Timeline update | Timeline absent, or no single operating Ascendant | `timelineUnavailable` |
+| Timeline update | Timeline advertised by two providers | `timelineAmbiguous` |
+| Timeline update | Operating Ascendant lacks `timelineManagement` | `missingCapability` |
+| Timeline status | Timeline absent, or advertised by two providers | `timelineUnavailable`, `timelineAmbiguous` |
+| Diagnostics node | No provider advertises diagnostics | `missingCapability` |
+| Diagnostics node | Pinned provider does not advertise diagnostics | `nodeUnavailable` |
+| Diagnostics node | More than one provider advertises diagnostics | `nodeAmbiguous` |
+| Diagnostics ascendant | Ascendant absent, ambiguous, or pinned to another provider | `ascendantUnavailable`, `ascendantAmbiguous`, `providerMismatch` |
+| Diagnostics ascendant | Ascendant lacks `diagnostics` | `missingCapability` |
+| Diagnostics timeline | Timeline absent, ambiguous, or pinned to another provider | `timelineUnavailable`, `timelineAmbiguous`, `providerMismatch` |
+| Diagnostics timeline | Operating Ascendant lacks `diagnostics`, or none names one | `missingCapability`, `timelineUnavailable` |
 
 ## Use ACP
 
