@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticKit
 import GnosticRLM
 import GnosticRLMChibi
 import GnosticRLMGuile
 import GnosticRLMProcessWorker
+import GnosticRLMWorkerSupport
 
 #if os(Linux)
 import Glibc
@@ -43,14 +45,8 @@ struct ScenarioQuestion: Sendable {
 /// Reads the question and reference-answer text from the frozen file, so
 /// Stage 0 measures the approved wording verbatim (manifest §1 and §7).
 enum ScenarioQuestions {
-    static let relativePath = "Documentation/Experiments/rlm-scenario-questions.md"
-    /// The SHA-256 of the approved question set.
-    static let pinnedSHA256 = "5d57d96fd84a2afe7c9f303325cc6c8dd53138a8717a195b1a25ecaa2cc89475"
-    static let corpusPrefixes = [
-        "Sources/GnosticCore/Runtime",
-        "Sources/GnosticRLM",
-        "Documentation/Architecture",
-    ]
+    static let relativePath = RLMScenarioQuestionSetPin.relativePath
+    static let corpusPrefixes = RLMScenarioQuestionSetPin.corpusPrefixes
 
     /// Stage 0's own input: one single-token lexical query per question that
     /// resolves in the corpus scope. The frozen file does not define these.
@@ -69,46 +65,29 @@ enum ScenarioQuestions {
         "Q12": "BackendRetirementSupervisor",
     ]
 
+    /// Loads the frozen cases through the kit's case-set parser, which refuses a
+    /// file whose digest is not the pinned one, then attaches Stage 0's queries.
     static func load(root: String) throws -> (questions: [ScenarioQuestion], sha256: String) {
-        let path = (root as NSString).appendingPathComponent(relativePath)
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        let digest = RLMDigest.sha256Hex([UInt8](data))
-        guard digest == pinnedSHA256 else {
-            throw RLMFailure.corpusSourceFailed(
-                "the frozen question set changed (expected SHA-256 \(pinnedSHA256), found \(digest))"
-            )
-        }
-        return (try parse(String(decoding: data, as: UTF8.self)), digest)
-    }
-
-    /// Parses `## Qn — …` sections into their question and reference answer.
-    static func parse(_ text: String) throws -> [ScenarioQuestion] {
-        let questions = try text.components(separatedBy: "\n## Q").dropFirst().map { section in
-            let id = "Q" + section.prefix { $0.isNumber }
-            guard let question = field("Question", in: section),
-                  let answer = field("Reference answer", in: section),
-                  let query = queries[id] else {
-                throw RLMFailure.corpusSourceFailed("\(id) is missing a question, reference answer, or Stage 0 query")
+        let url = URL(fileURLWithPath: root).appendingPathComponent(relativePath)
+        let (cases, digest) = try ExperimentScenarioCaseSet.load(
+            from: url,
+            expectedSHA256: RLMScenarioQuestionSetPin.sha256
+        )
+        let questions = try cases.map { scenarioCase -> ScenarioQuestion in
+            guard let query = queries[scenarioCase.id] else {
+                throw RLMFailure.corpusSourceFailed("\(scenarioCase.id) has no Stage 0 query")
             }
-            return ScenarioQuestion(id: id, question: normalized(question), query: query, answer: normalized(answer))
+            return ScenarioQuestion(
+                id: scenarioCase.id,
+                question: scenarioCase.prompt,
+                query: query,
+                answer: scenarioCase.reference
+            )
         }
         guard questions.map(\.id) == (1...12).map({ "Q\($0)" }) else {
             throw RLMFailure.corpusSourceFailed("expected Q1 through Q12, found \(questions.map(\.id))")
         }
-        return questions
-    }
-
-    /// The manifest §7 normalization: inline-code delimiters dropped and
-    /// line-wrapped whitespace collapsed.
-    static func normalized(_ value: String) -> String {
-        value.replacingOccurrences(of: "`", with: "")
-            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    }
-
-    private static func field(_ name: String, in section: String) -> String? {
-        guard let start = section.range(of: "**\(name).**") else { return nil }
-        let rest = section[start.upperBound...]
-        return String(rest[..<(rest.range(of: "\n\n")?.lowerBound ?? rest.endIndex)])
+        return (questions, digest)
     }
 }
 
@@ -216,8 +195,8 @@ struct Stage0Harness {
         var rows: [ScenarioRow] = []
         for question in questionSet.questions {
             let scripted = await runScripted(question: question, source: source)
-            let guile = await runWorker(question: question, source: source, runtime: "guile")
-            let chibi = await runWorker(question: question, source: source, runtime: "chibi")
+            let guile = await runWorker(question: question, source: source, selection: .guile)
+            let chibi = await runWorker(question: question, source: source, selection: .chibi)
             rows.append(
                 ScenarioRow(
                     id: question.id,
@@ -251,7 +230,7 @@ struct Stage0Harness {
             corpusScope: ScenarioQuestions.corpusPrefixes,
             budgets: Stage0BudgetDescription(Self.budget),
             executorBuilds: try Self.executorBuilds(),
-            host: HostDescription.current,
+            host: RLMHostDescription.current,
             outcome: "stage-0-question-measurements",
             rows: rows
         )
@@ -301,16 +280,18 @@ struct Stage0Harness {
     private func runWorker(
         question: ScenarioQuestion,
         source: any RLMCorpusSource,
-        runtime: String
+        selection: RLMWorkerSelection
     ) async -> ArmMeasurement {
+        let runtime = selection.rawValue
         let host = RLMWorkerHostState(
             leafModel: ScriptedLeafModel(defaultResponse: "evidence"),
             budget: Self.budget,
             tokenEstimator: RLMCharacterTokenEstimator(),
             progressSink: nil
         )
-        let (driver, handle, timing) = makeDriverAndHandle(runtime: runtime, host: host)
-        let evaluator = RLMWorkerCellEvaluator(driver: driver, host: host)
+        let handle = Self.makeDriver(selection: selection, host: host)
+        let timing = Stage0TimedWorkerDriver(base: handle.driver)
+        let evaluator = RLMWorkerCellEvaluator(driver: timing, host: host)
         let clock = ContinuousClock()
         let startupClock = clock.now
         do {
@@ -321,7 +302,7 @@ struct Stage0Harness {
         }
         let startup = Self.milliseconds(startupClock.duration(to: .now))
         let processID = await handle.processIdentifier
-        let before = ProcessSample.read(processID)
+        let before = RLMWorkerProcessSample.read(processID)
 
         let engine = RLMAnalysisEngine(
             budget: Self.budget,
@@ -336,8 +317,8 @@ struct Stage0Harness {
         let evaluationClock = clock.now
         let result = await engine.run(question: question.question, workspaceID: "stage0-workspace", source: source)
         let elapsed = Self.milliseconds(evaluationClock.duration(to: .now))
-        let after = ProcessSample.read(processID)
-        let cancellation = await measureCancellation(runtime: runtime)
+        let after = RLMWorkerProcessSample.read(processID)
+        let cancellation = await measureCancellation(selection: selection)
         await evaluator.shutdown()
 
         return ArmMeasurement(
@@ -348,7 +329,7 @@ struct Stage0Harness {
             runMilliseconds: elapsed,
             cancellationMilliseconds: cancellation.latencyMilliseconds,
             sampledPeakRSSBytes: [before, after].compactMap(\.rssBytes).max(),
-            sampledCPUTimeMilliseconds: Self.cpuDelta(before: before, after: after),
+            sampledCPUTimeMilliseconds: RLMWorkerProcessSample.cpuDelta(before: before, after: after),
             outcome: Self.outcome(result.outcome),
             semanticDigest: Self.digest(result.outcome),
             rootIterations: result.metrics.rootIterations,
@@ -365,19 +346,19 @@ struct Stage0Harness {
         )
     }
 
-    private func measureCancellation(runtime: String) async -> CancellationMeasurement {
+    private func measureCancellation(selection: RLMWorkerSelection) async -> RLMCancellationMeasurement {
         let host = RLMWorkerHostState(
             leafModel: ScriptedLeafModel(defaultResponse: "evidence"),
             budget: Self.budget,
             tokenEstimator: RLMCharacterTokenEstimator(),
             progressSink: nil
         )
-        let (driver, _, _) = makeDriverAndHandle(runtime: runtime, host: host)
+        let driver = Self.makeDriver(selection: selection, host: host).driver
         do {
             try await driver.start()
         } catch {
             await driver.shutdown()
-            return CancellationMeasurement(latencyMilliseconds: nil, outcome: "unavailable")
+            return RLMCancellationMeasurement(latencyMilliseconds: nil, outcome: "unavailable")
         }
         let evaluation = Task { await driver.evaluate(source: "(define (spin n) (spin n)) (spin 0)") }
         try? await Task.sleep(for: .milliseconds(50))
@@ -387,42 +368,22 @@ struct Stage0Harness {
         _ = await evaluation.value
         let latency = Self.milliseconds(started.duration(to: .now))
         await driver.shutdown()
-        return CancellationMeasurement(latencyMilliseconds: latency, outcome: "cancelled")
+        return RLMCancellationMeasurement(latencyMilliseconds: latency, outcome: "cancelled")
     }
 
-    private func makeDriverAndHandle(
-        runtime: String,
+    /// Builds the measured worker through the shared factory. The script falls
+    /// back to an empty path, so an unavailable worker is recorded as an arm
+    /// measurement rather than a thrown error.
+    private static func makeDriver(
+        selection: RLMWorkerSelection,
         host: RLMWorkerHostState
-    ) -> (any RLMWorkerDriver, RLMProcessWorkerDriverHandle, Stage0TimedWorkerDriver) {
-        if runtime == "guile" {
-            let configuration = RLMGuileWorkerConfiguration(
-                runID: "stage0-guile",
-                workerScriptPath: RLMGuileWorkerConfiguration.defaultWorkerScriptPath ?? "",
-                executablePath: RLMGuileWorkerConfiguration.defaultExecutablePath
-            )
-            let driver = RLMProcessWorkerDriver<RLMGuileExecutor>(
-                configuration: configuration,
-                host: RLMGuileClosureHost { operation in try await host.service(operation) },
-                wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
-                outputLimitBytes: configuration.maxOutputBytes
-            )
-            let timing = Stage0TimedWorkerDriver(base: driver)
-            return (timing, RLMProcessWorkerDriverHandle(driver: driver), timing)
-        }
-
-        let configuration = RLMChibiWorkerConfiguration(
-            runID: "stage0-chibi",
-            workerScriptPath: RLMChibiWorkerConfiguration.defaultWorkerScriptPath ?? "",
-            executablePath: RLMChibiWorkerConfiguration.defaultExecutablePath
+    ) -> RLMWorkerDriverHandle {
+        RLMWorkerFactory.makeHandle(
+            selection: selection,
+            runID: "stage0-\(selection.rawValue)",
+            host: host,
+            workerScriptPath: RLMWorkerFactory.scriptPath(for: selection) ?? ""
         )
-        let driver = RLMProcessWorkerDriver<RLMChibiExecutor>(
-            configuration: configuration,
-            host: RLMChibiClosureHost { operation in try await host.service(operation) },
-            wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
-            outputLimitBytes: configuration.maxOutputBytes
-        )
-        let timing = Stage0TimedWorkerDriver(base: driver)
-        return (timing, RLMProcessWorkerDriverHandle(driver: driver), timing)
     }
 
     private static func repositoryRoot() -> String {
@@ -501,18 +462,11 @@ struct Stage0Harness {
     }
 
     private static func hashNormalizedText(_ value: String) -> String {
-        RLMDigest.sha256Hex(ScenarioQuestions.normalized(value))
+        ExperimentScenarioCaseSet.hashNormalizedText(value)
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {
-        let components = duration.components
-        return Double(components.seconds) * 1_000
-            + Double(components.attoseconds) / 1_000_000_000_000_000
-    }
-
-    private static func cpuDelta(before: ProcessSample, after: ProcessSample) -> Double? {
-        guard let before = before.cpuMilliseconds, let after = after.cpuMilliseconds else { return nil }
-        return max(0, after - before)
+        RLMWorkerMeasurement.milliseconds(duration)
     }
 
     private func rate(repairs: Int, rootIterations: Int) -> Double? {
@@ -521,59 +475,7 @@ struct Stage0Harness {
     }
 }
 
-/// Holds the concrete driver so the harness can read its process identifier for
-/// sampling while the evaluator sees only the `RLMWorkerDriver` protocol.
-struct RLMProcessWorkerDriverHandle: Sendable {
-    private let processIdentifierProvider: @Sendable () async -> Int32?
-
-    init(driver: RLMProcessWorkerDriver<some RLMWorkerExecutor>) {
-        self.processIdentifierProvider = { await driver.processIdentifier }
-    }
-
-    var processIdentifier: Int32? {
-        get async { await processIdentifierProvider() }
-    }
-}
-
-// MARK: - Process sampling
-
-struct ProcessSample: Sendable {
-    let rssBytes: Int?
-    let cpuMilliseconds: Double?
-
-    static func read(_ processID: Int32?) -> ProcessSample {
-        guard let processID else { return ProcessSample(rssBytes: nil, cpuMilliseconds: nil) }
-        #if os(Linux)
-        let statusPath = "/proc/\(processID)/status"
-        let statPath = "/proc/\(processID)/stat"
-        let rss = (try? String(contentsOfFile: statusPath, encoding: .utf8))
-            .flatMap { status in status.split(separator: "\n").first { $0.hasPrefix("VmHWM:") } }
-            .flatMap { line -> Int? in
-                let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                guard parts.count >= 2, let kilobytes = Int(parts[1]) else { return nil }
-                return kilobytes * 1_024
-            }
-        let cpu = (try? String(contentsOfFile: statPath, encoding: .utf8)).flatMap { stat -> Double? in
-            guard let close = stat.lastIndex(of: ")") else { return nil }
-            let fields = stat[stat.index(after: close)...].split(whereSeparator: { $0 == " " || $0 == "\t" })
-            guard fields.count > 12, let user = Int64(fields[11]), let system = Int64(fields[12]) else { return nil }
-            let ticks = sysconf(Int32(_SC_CLK_TCK))
-            guard ticks > 0 else { return nil }
-            return Double(user + system) * 1_000 / Double(ticks)
-        }
-        return ProcessSample(rssBytes: rss, cpuMilliseconds: cpu)
-        #else
-        return ProcessSample(rssBytes: nil, cpuMilliseconds: nil)
-        #endif
-    }
-}
-
 // MARK: - Report
-
-struct CancellationMeasurement: Codable, Sendable {
-    let latencyMilliseconds: Double?
-    let outcome: String?
-}
 
 actor Stage0TimedWorkerDriver: RLMWorkerDriver {
     private let base: any RLMWorkerDriver
@@ -706,29 +608,6 @@ struct Stage0ExecutorBuild: Codable, Sendable {
     let buildFlags: [String]
 }
 
-struct HostDescription: Codable, Sendable {
-    let operatingSystem: String
-    let architecture: String
-
-    static var current: HostDescription {
-        #if os(Linux)
-        let operatingSystem = "linux"
-        #elseif os(macOS)
-        let operatingSystem = "macos"
-        #else
-        let operatingSystem = "other"
-        #endif
-        #if arch(x86_64)
-        let architecture = "x86_64"
-        #elseif arch(arm64)
-        let architecture = "arm64"
-        #else
-        let architecture = "unknown"
-        #endif
-        return HostDescription(operatingSystem: operatingSystem, architecture: architecture)
-    }
-}
-
 struct Stage0Report: Codable, Sendable {
     let schemaVersion: Int
     let scenario: String
@@ -750,7 +629,7 @@ struct Stage0Report: Codable, Sendable {
     let budgets: Stage0BudgetDescription
     let executorBuilds: [Stage0ExecutorBuild]
     var validationEvidence: [String: Stage0ValidationEvidence]?
-    let host: HostDescription
+    let host: RLMHostDescription
     let outcome: String
     let rows: [ScenarioRow]
 }

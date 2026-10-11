@@ -108,6 +108,8 @@ public actor RLMWorkerHostState {
     }
 }
 
+extension RLMWorkerHostState: RLMWorkerHost {}
+
 /// Adapts any `RLMWorkerDriver` to the harness cell-evaluator protocols.
 ///
 /// The evaluator is executor-independent: the driver supplies the runtime and
