@@ -89,6 +89,7 @@ public struct GnosticWorkspaceToolResult: Codable, Sendable, Equatable {
 public final class GnosticWorkspaceClient {
     private let catalog: NetworkCatalog
     private let lookup: GnosticCatalogLookup
+    private let resolver: CatalogTargetResolver
     private let channel: GnosticCallChannel<GnosticWorkspaceClientError>
     private let timeout: Duration
 
@@ -100,6 +101,7 @@ public final class GnosticWorkspaceClient {
     ) {
         self.catalog = catalog
         lookup = GnosticCatalogLookup(manager: manager, catalog: catalog, subscription: subscription, timeout: timeout)
+        resolver = CatalogTargetResolver(lookup: lookup)
         channel = GnosticCallChannel(manager: manager)
         self.timeout = timeout
     }
@@ -142,8 +144,11 @@ public final class GnosticWorkspaceClient {
     ) async throws {
         guard approved else { throw GnosticWorkspaceClientError.approvalRequired }
         _ = try await resolvedWorkspaceProvider(nil, for: workspaceID)
-        let target = try await resolvedTimelineProvider(providerID, for: timelineID)
-        try await requireAttachmentCapability(forTimeline: timelineID, providerID: target)
+        let target = try await resolvedTimelineProvider(
+            providerID,
+            for: timelineID,
+            requiredCapability: GnosticCapability.workspaceAttachment
+        )
         let result = try await channel.call(
             WorkspaceOpsProvider.attachOperation,
             request: WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
@@ -169,14 +174,19 @@ public final class GnosticWorkspaceClient {
     ///   - providerID: The expected provider that owns the Timeline, or `nil` to
     ///     resolve it from the session catalog.
     /// - Throws: ``GnosticWorkspaceClientError`` when the Timeline cannot be
-    ///   resolved, the addressed provider does not own it, or the serve rejected
-    ///   the detach.
+    ///   resolved, the addressed provider does not own it, its operating
+    ///   Ascendant does not advertise ``GnosticCapability/workspaceAttachment``,
+    ///   or the serve rejected the detach.
     public func detach(
         workspaceID: UUID,
         from timelineID: UUID,
         providerID: String? = nil
     ) async throws {
-        let target = try await resolvedTimelineProvider(providerID, for: timelineID)
+        let target = try await resolvedTimelineProvider(
+            providerID,
+            for: timelineID,
+            requiredCapability: GnosticCapability.workspaceAttachment
+        )
         let result = try await channel.call(
             WorkspaceOpsProvider.detachOperation,
             request: WorkspaceOpsRequest(workspaceID: workspaceID, timelineID: timelineID),
@@ -214,7 +224,9 @@ public final class GnosticWorkspaceClient {
         providerID: String? = nil
     ) async throws -> GnosticWorkspaceToolResult {
         let target = try await resolvedWorkspaceProvider(providerID, for: workspaceID)
-        try await requireInvocationCapability(providerID: target)
+        guard await resolver.providerAdvertises(GnosticCapability.workspaceToolInvocation, providerID: target) else {
+            throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceToolInvocation)
+        }
         return try await channel.call(
             GnosticWorkspaceProtocol.invocationOperation,
             request: WorkspaceInvocation(
@@ -255,54 +267,32 @@ public final class GnosticWorkspaceClient {
         }
     }
 
+    /// Resolves the Timeline's provider and, when a capability is required,
+    /// requires its operating Ascendant to advertise it.
     private func resolvedTimelineProvider(
         _ explicitProviderID: String?,
-        for timelineID: UUID
+        for timelineID: UUID,
+        requiredCapability: String? = nil
     ) async throws -> String {
-        let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
-        switch GnosticCatalogLookup.provider(
-            of: GnosticObjectType.timeline,
+        switch await resolver.resolve(
+            .timeline,
             id: timelineID,
-            in: entries,
-            expected: explicitProviderID
+            expectedProviderID: explicitProviderID,
+            requiredCapability: requiredCapability
         ) {
-        case let .provider(providerID): return providerID
-        case .unavailable: throw GnosticWorkspaceClientError.timelineUnavailable(timelineID)
-        case .ambiguous: throw GnosticWorkspaceClientError.timelineAmbiguous(timelineID)
-        case .mismatch: throw GnosticWorkspaceClientError.providerMismatch
+        case let .success(target): return target.providerID
+        case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
         }
     }
 
-    private func requireAttachmentCapability(
-        forTimeline timelineID: UUID,
-        providerID: String
-    ) async throws {
-        let entries = await catalog.networkObjects()
-        guard let ascendantID = GnosticCatalogLookup.operatingAscendantID(
-            ofTimeline: timelineID,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticWorkspaceClientError.timelineUnavailable(timelineID)
-        }
-        guard GnosticCatalogLookup.ascendantAdvertises(
-            GnosticCapability.workspaceAttachment,
-            ascendantID: ascendantID,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceAttachment)
-        }
-    }
-
-    private func requireInvocationCapability(providerID: String) async throws {
-        let entries = await catalog.networkObjects()
-        guard GnosticCatalogLookup.ascendantAdvertises(
-            GnosticCapability.workspaceToolInvocation,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceToolInvocation)
+    /// The one mapping from catalog target failures to Workspace client errors
+    /// addressed by Timeline.
+    static func error(for failure: CatalogTargetFailure, timeline timelineID: UUID) -> GnosticWorkspaceClientError {
+        switch failure {
+        case .unavailable: .timelineUnavailable(timelineID)
+        case .ambiguous: .timelineAmbiguous(timelineID)
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
     }
 

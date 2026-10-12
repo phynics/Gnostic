@@ -36,7 +36,7 @@ import GnosticProtocol
 @MainActor
 public final class GnosticDiagnosticsClient {
     private let catalog: NetworkCatalog
-    private let lookup: GnosticCatalogLookup
+    private let resolver: CatalogTargetResolver
     private let channel: GnosticCallChannel<GnosticDiagnosticsClientError>
     private let timeout: Duration
 
@@ -47,7 +47,12 @@ public final class GnosticDiagnosticsClient {
         timeout: Duration
     ) {
         self.catalog = catalog
-        lookup = GnosticCatalogLookup(manager: manager, catalog: catalog, subscription: subscription, timeout: timeout)
+        resolver = CatalogTargetResolver(lookup: GnosticCatalogLookup(
+            manager: manager,
+            catalog: catalog,
+            subscription: subscription,
+            timeout: timeout
+        ))
         channel = GnosticCallChannel(manager: manager)
         self.timeout = timeout
     }
@@ -84,32 +89,21 @@ public final class GnosticDiagnosticsClient {
     ///   resolved, its provider does not advertise
     ///   ``GnosticCapability/diagnostics``, or the serve rejected the call.
     public func ascendant(_ ascendantID: UUID, providerID: String? = nil) async throws -> AscendantDiagnostics {
-        let entries = await lookup.entries(requiring: GnosticObjectType.ascendant, id: ascendantID)
-        let target: String
-        switch GnosticCatalogLookup.provider(
-            of: GnosticObjectType.ascendant,
+        let target: CatalogTarget
+        switch await resolver.resolve(
+            .ascendant,
             id: ascendantID,
-            in: entries,
-            expected: providerID
+            expectedProviderID: providerID,
+            requiredCapability: GnosticCapability.diagnostics
         ) {
-        case let .provider(providerID): target = providerID
-        case .unavailable: throw GnosticDiagnosticsClientError.ascendantUnavailable(ascendantID)
-        case .ambiguous: throw GnosticDiagnosticsClientError.ascendantAmbiguous(ascendantID)
-        case .mismatch: throw GnosticDiagnosticsClientError.providerMismatch
-        }
-        guard GnosticCatalogLookup.ascendantAdvertises(
-            GnosticCapability.diagnostics,
-            ascendantID: ascendantID,
-            providerID: target,
-            in: entries
-        ) else {
-            throw GnosticDiagnosticsClientError.missingCapability(GnosticCapability.diagnostics)
+        case let .success(resolved): target = resolved
+        case let .failure(failure): throw Self.error(for: failure, ascendant: ascendantID)
         }
         return try await channel.call(
             DiagnosticsProvider.ascendantOperation,
             request: DiagnosticsTargetRequest(id: ascendantID),
             context: "diagnostics.ascendant request",
-            providerID: target,
+            providerID: target.providerID,
             timeout: timeout,
             returning: AscendantDiagnostics.self
         )
@@ -123,70 +117,75 @@ public final class GnosticDiagnosticsClient {
     ///     to resolve it from the session catalog.
     /// - Returns: The payload-free Timeline diagnostics snapshot.
     /// - Throws: ``GnosticDiagnosticsClientError`` when the Timeline cannot be
-    ///   resolved, its operating Ascendant does not advertise
-    ///   ``GnosticCapability/diagnostics``, or the serve rejected the call.
+    ///   resolved or names no operating Ascendant (`timelineUnavailable`), its
+    ///   operating Ascendant does not advertise
+    ///   ``GnosticCapability/diagnostics`` (`missingCapability`), or the serve
+    ///   rejected the call.
     public func timeline(_ timelineID: UUID, providerID: String? = nil) async throws -> TimelineDiagnostics {
-        let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
-        let target: String
-        switch GnosticCatalogLookup.provider(
-            of: GnosticObjectType.timeline,
+        let target: CatalogTarget
+        switch await resolver.resolve(
+            .timeline,
             id: timelineID,
-            in: entries,
-            expected: providerID
+            expectedProviderID: providerID,
+            requiredCapability: GnosticCapability.diagnostics
         ) {
-        case let .provider(providerID): target = providerID
-        case .unavailable: throw GnosticDiagnosticsClientError.timelineUnavailable(timelineID)
-        case .ambiguous: throw GnosticDiagnosticsClientError.timelineAmbiguous(timelineID)
-        case .mismatch: throw GnosticDiagnosticsClientError.providerMismatch
-        }
-        guard let ascendantID = GnosticCatalogLookup.operatingAscendantID(
-            ofTimeline: timelineID,
-            providerID: target,
-            in: entries
-        ), GnosticCatalogLookup.ascendantAdvertises(
-            GnosticCapability.diagnostics,
-            ascendantID: ascendantID,
-            providerID: target,
-            in: entries
-        ) else {
-            throw GnosticDiagnosticsClientError.missingCapability(GnosticCapability.diagnostics)
+        case let .success(resolved): target = resolved
+        case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
         }
         return try await channel.call(
             DiagnosticsProvider.timelineOperation,
             request: DiagnosticsTargetRequest(id: timelineID),
             context: "diagnostics.timeline request",
-            providerID: target,
+            providerID: target.providerID,
             timeout: timeout,
             returning: TimelineDiagnostics.self
         )
     }
 
+    /// Resolves the node-wide diagnostics provider. An explicit provider that
+    /// does not serve diagnostics is ``GnosticDiagnosticsClientError/nodeUnavailable``
+    /// rather than ``GnosticDiagnosticsClientError/providerMismatch``: no
+    /// object is addressed, so there is no ownership to mismatch.
     private func resolvedDiagnosticsProvider(_ explicitProviderID: String?) async throws -> String {
-        var providers = GnosticCatalogLookup.providers(
+        switch await resolver.resolveProvider(
             advertising: GnosticCapability.diagnostics,
-            in: await catalog.networkObjects()
-        )
-        if providers.isEmpty {
-            await lookup.refresh()
-            providers = GnosticCatalogLookup.providers(
-                advertising: GnosticCapability.diagnostics,
-                in: await catalog.networkObjects()
-            )
+            expectedProviderID: explicitProviderID
+        ) {
+        case let .success(target): return target.providerID
+        case let .failure(failure): throw Self.nodeError(for: failure)
         }
-        guard !providers.isEmpty else {
-            throw GnosticDiagnosticsClientError.missingCapability(GnosticCapability.diagnostics)
+    }
+
+    /// The one mapping from catalog target failures to diagnostics client errors
+    /// addressed by Ascendant.
+    static func error(for failure: CatalogTargetFailure, ascendant ascendantID: UUID) -> GnosticDiagnosticsClientError {
+        switch failure {
+        case .unavailable: .ascendantUnavailable(ascendantID)
+        case .ambiguous: .ascendantAmbiguous(ascendantID)
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
-        if let explicitProviderID {
-            guard let match = providers.first(where: {
-                $0.caseInsensitiveCompare(explicitProviderID) == .orderedSame
-            }) else {
-                throw GnosticDiagnosticsClientError.nodeUnavailable
-            }
-            return match
+    }
+
+    /// The one mapping from catalog target failures to diagnostics client errors
+    /// addressed by Timeline.
+    static func error(for failure: CatalogTargetFailure, timeline timelineID: UUID) -> GnosticDiagnosticsClientError {
+        switch failure {
+        case .unavailable: .timelineUnavailable(timelineID)
+        case .ambiguous: .timelineAmbiguous(timelineID)
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
-        guard providers.count == 1, let providerID = providers.first else {
-            throw GnosticDiagnosticsClientError.nodeAmbiguous
+    }
+
+    /// The one mapping from node-wide catalog target failures to diagnostics
+    /// client errors.
+    static func nodeError(for failure: CatalogTargetFailure) -> GnosticDiagnosticsClientError {
+        switch failure {
+        case .unavailable: .nodeUnavailable
+        case .ambiguous: .nodeAmbiguous
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
-        return providerID
     }
 }

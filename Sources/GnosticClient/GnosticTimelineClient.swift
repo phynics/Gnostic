@@ -17,7 +17,7 @@ import GnosticProtocol
 /// Gnostic wire contract.
 @MainActor
 public final class GnosticTimelineClient {
-    private let lookup: GnosticCatalogLookup
+    private let resolver: CatalogTargetResolver
     private let channel: GnosticCallChannel<GnosticTimelineClientError>
     private let timeout: Duration
 
@@ -27,7 +27,12 @@ public final class GnosticTimelineClient {
         subscription: GnosticSubscription,
         timeout: Duration
     ) {
-        lookup = GnosticCatalogLookup(manager: manager, catalog: catalog, subscription: subscription, timeout: timeout)
+        resolver = CatalogTargetResolver(lookup: GnosticCatalogLookup(
+            manager: manager,
+            catalog: catalog,
+            subscription: subscription,
+            timeout: timeout
+        ))
         channel = GnosticCallChannel(manager: manager)
         self.timeout = timeout
     }
@@ -65,7 +70,7 @@ public final class GnosticTimelineClient {
     ///   resolved, its Ascendant lacks Timeline management, or the serve
     ///   rejects the call.
     public func update(timelineID: UUID, title: String) async throws -> TimelineStatus {
-        let providerID = try await resolvedTimelineProvider(for: timelineID)
+        let providerID = try await resolvedTimelineProvider(for: timelineID, requiredCapability: GnosticCapability.timelineManagement)
         return try await channel.call(
             TimelineManagementProvider.updateOperation,
             request: TimelineUpdateRequest(timelineID: timelineID, title: title),
@@ -95,12 +100,7 @@ public final class GnosticTimelineClient {
         if let explicitProviderID {
             providerID = explicitProviderID
         } else {
-            let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
-            switch GnosticCatalogLookup.provider(of: GnosticObjectType.timeline, id: timelineID, in: entries) {
-            case let .provider(resolved): providerID = resolved
-            case .unavailable, .mismatch: throw GnosticTimelineClientError.timelineUnavailable(timelineID)
-            case .ambiguous: throw GnosticTimelineClientError.timelineAmbiguous(timelineID)
-            }
+            providerID = try await resolvedTimelineProvider(for: timelineID)
         }
         return try await channel.call(
             TimelineStatusProvider.statusOperation,
@@ -113,49 +113,45 @@ public final class GnosticTimelineClient {
     }
 
     private func resolvedAscendantProvider(for ascendantID: UUID, expected: String?) async throws -> String {
-        let entries = await lookup.entries(requiring: GnosticObjectType.ascendant, id: ascendantID)
-        switch GnosticCatalogLookup.provider(of: GnosticObjectType.ascendant, id: ascendantID, in: entries, expected: expected) {
-        case let .provider(providerID):
-            guard GnosticCatalogLookup.ascendantAdvertises(
-                GnosticCapability.timelineManagement,
-                ascendantID: ascendantID,
-                providerID: providerID,
-                in: entries
-            ) else {
-                throw GnosticTimelineClientError.missingCapability(GnosticCapability.timelineManagement)
-            }
-            return providerID
-        case .unavailable: throw GnosticTimelineClientError.ascendantUnavailable(ascendantID)
-        case .ambiguous: throw GnosticTimelineClientError.ascendantAmbiguous(ascendantID)
-        case .mismatch: throw GnosticTimelineClientError.providerMismatch
+        switch await resolver.resolve(
+            .ascendant,
+            id: ascendantID,
+            expectedProviderID: expected,
+            requiredCapability: GnosticCapability.timelineManagement
+        ) {
+        case let .success(target): return target.providerID
+        case let .failure(failure): throw Self.error(for: failure, ascendant: ascendantID)
         }
     }
 
-    /// Resolves the Timeline's provider and requires its operating Ascendant to
-    /// advertise Timeline management.
-    private func resolvedTimelineProvider(for timelineID: UUID) async throws -> String {
-        let entries = await lookup.entries(requiring: GnosticObjectType.timeline, id: timelineID)
-        let providerID: String
-        switch GnosticCatalogLookup.provider(of: GnosticObjectType.timeline, id: timelineID, in: entries) {
-        case let .provider(resolved): providerID = resolved
-        case .unavailable, .mismatch: throw GnosticTimelineClientError.timelineUnavailable(timelineID)
-        case .ambiguous: throw GnosticTimelineClientError.timelineAmbiguous(timelineID)
+    /// Resolves the Timeline's provider and, when a capability is required,
+    /// requires its operating Ascendant to advertise it.
+    private func resolvedTimelineProvider(for timelineID: UUID, requiredCapability: String? = nil) async throws -> String {
+        switch await resolver.resolve(.timeline, id: timelineID, requiredCapability: requiredCapability) {
+        case let .success(target): return target.providerID
+        case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
         }
-        guard let ascendantID = GnosticCatalogLookup.operatingAscendantID(
-            ofTimeline: timelineID,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticTimelineClientError.timelineUnavailable(timelineID)
+    }
+
+    /// The one mapping from catalog target failures to Ascendant-addressed
+    /// Timeline client errors.
+    static func error(for failure: CatalogTargetFailure, ascendant ascendantID: UUID) -> GnosticTimelineClientError {
+        switch failure {
+        case .unavailable: .ascendantUnavailable(ascendantID)
+        case .ambiguous: .ascendantAmbiguous(ascendantID)
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
-        guard GnosticCatalogLookup.ascendantAdvertises(
-            GnosticCapability.timelineManagement,
-            ascendantID: ascendantID,
-            providerID: providerID,
-            in: entries
-        ) else {
-            throw GnosticTimelineClientError.missingCapability(GnosticCapability.timelineManagement)
+    }
+
+    /// The one mapping from catalog target failures to Timeline-addressed
+    /// client errors.
+    static func error(for failure: CatalogTargetFailure, timeline timelineID: UUID) -> GnosticTimelineClientError {
+        switch failure {
+        case .unavailable: .timelineUnavailable(timelineID)
+        case .ambiguous: .timelineAmbiguous(timelineID)
+        case .providerMismatch: .providerMismatch
+        case let .missingCapability(capability): .missingCapability(capability)
         }
-        return providerID
     }
 }
