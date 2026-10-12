@@ -139,7 +139,7 @@ public extension RLMWorkerSelection {
     ///
     /// - Parameter settings: The RLM module's own settings (for example `worker`).
     /// - Returns: One fact per prerequisite path, in check order.
-    public static func prerequisiteChecks(settings: [String: String]) -> [GnosticModulePrerequisite] {
+    static func prerequisiteChecks(settings: [String: String]) -> [GnosticModulePrerequisite] {
         let raw = settings["worker"]?.lowercased() ?? RLMWorkerSelection.guile.rawValue
         let selection = RLMWorkerSelection(rawValue: raw) ?? .guile
         switch selection {

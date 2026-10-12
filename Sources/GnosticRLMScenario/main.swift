@@ -396,7 +396,7 @@ struct Stage0Harness {
     private static func outcome(_ outcome: RLMRunResult.Outcome) -> String {
         switch outcome {
         case .completed: return "completed"
-        case let .failed(failure): return "failed: \(failure)"
+        case let .failed(failure): return "failed: \(failure.description)"
         case .cancelled: return "cancelled"
         case .fenced: return "fenced"
         }
