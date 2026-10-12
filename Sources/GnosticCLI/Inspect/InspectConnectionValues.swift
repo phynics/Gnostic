@@ -7,12 +7,21 @@ public struct InspectConnectionValues: Sendable {
     public var port: Int?
     public var namespace: String?
     public var observeSeconds: Double
+    /// The Node manifest to resolve broker defaults from, or `nil` for the default store.
+    public var configPath: URL?
 
-    public init(host: String? = nil, port: Int? = nil, namespace: String? = nil, observeSeconds: Double = 1.0) {
+    public init(
+        host: String? = nil,
+        port: Int? = nil,
+        namespace: String? = nil,
+        observeSeconds: Double = 1.0,
+        configPath: URL? = nil
+    ) {
         self.host = host
         self.port = port
         self.namespace = namespace
         self.observeSeconds = observeSeconds
+        self.configPath = configPath
     }
 }
 

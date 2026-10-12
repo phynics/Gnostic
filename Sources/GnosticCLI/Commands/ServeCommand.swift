@@ -17,8 +17,7 @@ struct ServeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT broker host (overrides config).")
     var host: String?
 
-    @Option(name: .customLong("config"), help: "Path to the node manifest.")
-    var configPath: String?
+    @OptionGroup var configOptions: ConfigPathOptions
 
     @Option(name: .long, help: "MQTT broker port (overrides config).")
     var port: Int?
@@ -83,7 +82,7 @@ struct ServeCommand: AsyncParsableCommand {
         let terminationMonitor = ProcessTerminationMonitor()
         defer { terminationMonitor.cancel() }
 
-        let store = CLIConfigurationStore(configPath: configPath.map { URL(fileURLWithPath: $0) })
+        let store = configOptions.store()
         do {
             let plan = try ServeLaunchPlan.load(
                 manifest: store.loadManifest,
