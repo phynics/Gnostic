@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticKit
+import GnosticRLM
 
 /// Reads the frozen #354 question set and refuses any text that is not the
 /// approved one, so a live round cannot silently run edited questions.
@@ -10,14 +11,12 @@ import GnosticKit
 /// is RLM-only glue: it pins the #354 file and digests, asserts the Q1–Q12
 /// shape, and maps the kit's structured failures onto ``RLMScenarioError``.
 enum RLMScenarioQuestionSet {
-    static let relativePath = "Documentation/Experiments/rlm-scenario-questions.md"
+    /// The shared pin lives in GnosticRLM so the scenario executable and this
+    /// command cannot disagree about the approved file.
+    static let relativePath = RLMScenarioQuestionSetPin.relativePath
     /// The SHA-256 of the approved file, as recorded by the Stage 0 artifact.
-    static let pinnedSHA256 = "5d57d96fd84a2afe7c9f303325cc6c8dd53138a8717a195b1a25ecaa2cc89475"
-    static let corpusPrefixes = [
-        "Sources/GnosticCore/Runtime",
-        "Sources/GnosticRLM",
-        "Documentation/Architecture",
-    ]
+    static let pinnedSHA256 = RLMScenarioQuestionSetPin.sha256
+    static let corpusPrefixes = RLMScenarioQuestionSetPin.corpusPrefixes
 
     static func load(repositoryRoot: URL) throws -> (questions: [ExperimentScenarioCase], sha256: String) {
         do {

@@ -2,13 +2,8 @@
 
 import Foundation
 import GnosticRLM
-import GnosticRLMChibi
-import GnosticRLMGuile
 import GnosticRLMProcessWorker
-
-#if os(Linux)
-import Glibc
-#endif
+import GnosticRLMWorkerSupport
 
 @main
 struct GnosticRLMBenchmark {
@@ -37,15 +32,15 @@ private struct RLMRuntimeBenchmark {
 
     func run() async -> BenchmarkReport {
         let scripted = await runScriptedEngine()
-        let guile = await measureWorker(runtime: "guile", make: makeGuileDriver)
-        let chibi = await measureWorker(runtime: "chibi", make: makeChibiDriver)
+        let guile = await measureWorker(runtime: "guile", make: { makeDriver(.guile) })
+        let chibi = await measureWorker(runtime: "chibi", make: { makeDriver(.chibi) })
 
         return BenchmarkReport(
             schemaVersion: 1,
             benchmark: Self.scenarioName,
             generatedAtUTC: ProcessInfo.processInfo.environment["GNOSTIC_BENCHMARK_TIMESTAMP"] ?? Self.timestamp(),
             gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_BENCHMARK_COMMIT"],
-            host: HostDescription.current,
+            host: RLMHostDescription.current,
             outcome: "CONTINUE_EXPERIMENT",
             decisionRationale: "The repository gate has deterministic operational data, but no live provider quality, monetary cost, or macOS Chibi data. Promotion is bounded until those measurements are captured with the same fixture and model family.",
             measurements: [scripted, guile, chibi],
@@ -141,12 +136,12 @@ private struct RLMRuntimeBenchmark {
         }
         let startupMilliseconds = milliseconds(startupClock.duration(to: .now))
         let processID = await driver.processIdentifier
-        let before = ProcessSample.read(processID)
+        let before = RLMWorkerProcessSample.read(processID)
 
         let evaluationClock = ContinuousClock.now
         let evaluation = await driver.evaluate(source: Self.schemeSource)
         let evaluationMilliseconds = milliseconds(evaluationClock.duration(to: .now))
-        let after = ProcessSample.read(processID)
+        let after = RLMWorkerProcessSample.read(processID)
         await driver.shutdown()
 
         let cancellation = await measureCancellation(make: make)
@@ -158,7 +153,7 @@ private struct RLMRuntimeBenchmark {
             evaluationMilliseconds: evaluationMilliseconds,
             cancellationMilliseconds: cancellation.latencyMilliseconds,
             sampledPeakRSSBytes: samples.compactMap(\.rssBytes).max(),
-            sampledCPUTimeMilliseconds: Self.cpuDelta(before: before, after: after),
+            sampledCPUTimeMilliseconds: RLMWorkerProcessSample.cpuDelta(before: before, after: after),
             sampleCount: samples.filter { $0.rssBytes != nil || $0.cpuMilliseconds != nil }.count,
             evaluationOutcome: evaluation.outcome,
             cancellationOutcome: cancellation.outcome,
@@ -178,13 +173,13 @@ private struct RLMRuntimeBenchmark {
 
     private func measureCancellation(
         make: @escaping @Sendable () -> (any BenchmarkWorkerDriver, BenchmarkHost)
-    ) async -> CancellationMeasurement {
+    ) async -> RLMCancellationMeasurement {
         let (driver, _) = make()
         do {
             try await driver.start()
         } catch {
             await driver.shutdown()
-            return CancellationMeasurement(latencyMilliseconds: nil, outcome: "unavailable: \(error)")
+            return RLMCancellationMeasurement(latencyMilliseconds: nil, outcome: "unavailable: \(error)")
         }
         let evaluation = Task { await driver.evaluate(source: Self.infiniteSource) }
         try? await Task.sleep(for: .milliseconds(50))
@@ -193,39 +188,21 @@ private struct RLMRuntimeBenchmark {
         let result = await evaluation.value
         let latency = milliseconds(cancellationClock.duration(to: .now))
         await driver.shutdown()
-        return CancellationMeasurement(latencyMilliseconds: latency, outcome: result.outcome)
+        return RLMCancellationMeasurement(latencyMilliseconds: latency, outcome: result.outcome)
     }
 
-    private func makeGuileDriver() -> (any BenchmarkWorkerDriver, BenchmarkHost) {
+    /// Builds one measured worker through the shared factory. An empty script
+    /// path is kept on purpose: an unavailable worker is recorded as a
+    /// measurement by the caller's start failure.
+    private func makeDriver(_ selection: RLMWorkerSelection) -> (any BenchmarkWorkerDriver, BenchmarkHost) {
         let host = BenchmarkHost()
-        let configuration = RLMGuileWorkerConfiguration(
-            runID: "benchmark-guile",
-            workerScriptPath: RLMGuileWorkerConfiguration.defaultWorkerScriptPath ?? "",
-            executablePath: RLMGuileWorkerConfiguration.defaultExecutablePath
+        let handle = RLMWorkerFactory.makeHandle(
+            selection: selection,
+            runID: "benchmark-\(selection.rawValue)",
+            host: RLMWorkerClosureHost { operation in try await host.service(operation) },
+            workerScriptPath: RLMWorkerFactory.scriptPath(for: selection) ?? ""
         )
-        let driver = RLMProcessWorkerDriver<RLMGuileExecutor>(
-            configuration: configuration,
-            host: RLMGuileClosureHost { operation in try await host.service(operation) },
-            wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
-            outputLimitBytes: configuration.maxOutputBytes
-        )
-        return (BenchmarkProcessDriver(driver: driver), host)
-    }
-
-    private func makeChibiDriver() -> (any BenchmarkWorkerDriver, BenchmarkHost) {
-        let host = BenchmarkHost()
-        let configuration = RLMChibiWorkerConfiguration(
-            runID: "benchmark-chibi",
-            workerScriptPath: RLMChibiWorkerConfiguration.defaultWorkerScriptPath ?? "",
-            executablePath: RLMChibiWorkerConfiguration.defaultExecutablePath
-        )
-        let driver = RLMProcessWorkerDriver<RLMChibiExecutor>(
-            configuration: configuration,
-            host: RLMChibiClosureHost { operation in try await host.service(operation) },
-            wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
-            outputLimitBytes: configuration.maxOutputBytes
-        )
-        return (BenchmarkProcessDriver(driver: driver), host)
+        return (BenchmarkProcessDriver(handle: handle), host)
     }
 
     private static func corpusSource() -> RLMInMemoryCorpusSource {
@@ -242,18 +219,7 @@ private struct RLMRuntimeBenchmark {
     }
 
     private func milliseconds(_ duration: Duration) -> Double {
-        Self.milliseconds(duration)
-    }
-
-    private static func milliseconds(_ duration: Duration) -> Double {
-        let components = duration.components
-        return Double(components.seconds) * 1_000
-            + Double(components.attoseconds) / 1_000_000_000_000_000
-    }
-
-    private static func cpuDelta(before: ProcessSample, after: ProcessSample) -> Double? {
-        guard let before = before.cpuMilliseconds, let after = after.cpuMilliseconds else { return nil }
-        return max(0, after - before)
+        RLMWorkerMeasurement.milliseconds(duration)
     }
 
     private func outcomeDescription(_ outcome: RLMRunResult.Outcome) -> String {
@@ -304,18 +270,18 @@ private extension BenchmarkEvaluation {
     }
 }
 
-private struct BenchmarkProcessDriver<Executor: RLMWorkerExecutor>: BenchmarkWorkerDriver {
-    let driver: RLMProcessWorkerDriver<Executor>
+private struct BenchmarkProcessDriver: BenchmarkWorkerDriver {
+    let handle: RLMWorkerDriverHandle
 
-    func start() async throws { try await driver.start() }
+    func start() async throws { try await handle.driver.start() }
 
     func evaluate(source: String) async -> BenchmarkEvaluation {
-        BenchmarkEvaluation(await driver.evaluate(source: source))
+        BenchmarkEvaluation(await handle.driver.evaluate(source: source))
     }
 
-    func cancel() async { await driver.cancel() }
-    func shutdown() async { await driver.shutdown() }
-    var processIdentifier: Int32? { get async { await driver.processIdentifier } }
+    func cancel() async { await handle.driver.cancel() }
+    func shutdown() async { await handle.driver.shutdown() }
+    var processIdentifier: Int32? { get async { await handle.processIdentifier } }
 }
 
 private actor BenchmarkHost {
@@ -359,44 +325,6 @@ private actor BenchmarkHost {
             throw RLMFailure.evaluatorFailed("finish must not be serviced by the benchmark host")
         }
     }
-}
-
-private struct ProcessSample: Sendable {
-    let rssBytes: Int?
-    let cpuMilliseconds: Double?
-
-    static func read(_ processID: Int32?) -> ProcessSample {
-        guard let processID else { return ProcessSample(rssBytes: nil, cpuMilliseconds: nil) }
-        #if os(Linux)
-        let statusPath = "/proc/\(processID)/status"
-        let statPath = "/proc/\(processID)/stat"
-        let rss = (try? String(contentsOfFile: statusPath, encoding: .utf8))
-            .flatMap { status in
-                status.split(separator: "\n").first { $0.hasPrefix("VmHWM:") }
-            }
-            .flatMap { line -> Int? in
-                let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                guard parts.count >= 2, let kilobytes = Int(parts[1]) else { return nil }
-                return kilobytes * 1_024
-            }
-        let cpu = (try? String(contentsOfFile: statPath, encoding: .utf8)).flatMap { stat -> Double? in
-            guard let close = stat.lastIndex(of: ")") else { return nil }
-            let fields = stat[stat.index(after: close)...].split(whereSeparator: { $0 == " " || $0 == "\t" })
-            guard fields.count > 12, let user = Int64(fields[11]), let system = Int64(fields[12]) else { return nil }
-            let ticks = sysconf(Int32(_SC_CLK_TCK))
-            guard ticks > 0 else { return nil }
-            return Double(user + system) * 1_000 / Double(ticks)
-        }
-        return ProcessSample(rssBytes: rss, cpuMilliseconds: cpu)
-        #else
-        return ProcessSample(rssBytes: nil, cpuMilliseconds: nil)
-        #endif
-    }
-}
-
-private struct CancellationMeasurement: Codable, Sendable {
-    let latencyMilliseconds: Double?
-    let outcome: String?
 }
 
 private struct RuntimeMeasurement: Codable, Sendable {
@@ -454,35 +382,12 @@ private struct UnavailableMeasurement: Codable, Sendable {
     let reason: String
 }
 
-private struct HostDescription: Codable, Sendable {
-    let operatingSystem: String
-    let architecture: String
-
-    static var current: HostDescription {
-        #if os(Linux)
-        let operatingSystem = "linux"
-        #elseif os(macOS)
-        let operatingSystem = "macos"
-        #else
-        let operatingSystem = "other"
-        #endif
-        #if arch(x86_64)
-        let architecture = "x86_64"
-        #elseif arch(arm64)
-        let architecture = "arm64"
-        #else
-        let architecture = "unknown"
-        #endif
-        return HostDescription(operatingSystem: operatingSystem, architecture: architecture)
-    }
-}
-
 private struct BenchmarkReport: Codable, Sendable {
     let schemaVersion: Int
     let benchmark: String
     let generatedAtUTC: String
     let gitCommit: String?
-    let host: HostDescription
+    let host: RLMHostDescription
     let outcome: String
     let decisionRationale: String
     let measurements: [RuntimeMeasurement]

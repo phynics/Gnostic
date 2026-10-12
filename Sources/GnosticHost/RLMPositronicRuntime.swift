@@ -6,6 +6,7 @@ import GnosticRLM
 import GnosticRLMGuile
 import GnosticRLMChibi
 import GnosticRLMProcessWorker
+import GnosticRLMWorkerSupport
 import PKContracts
 import PositronicKit
 import GnosticPositronicBackend
@@ -130,10 +131,7 @@ private struct RLMLeafModelAdapter: RLMLeafModelClient {
     }
 }
 
-public enum RLMWorkerSelection: String, Sendable, CaseIterable {
-    case guile
-    case chibi
-
+public extension RLMWorkerSelection {
     /// Reports the external prerequisite paths for one worker selection.
     ///
     /// The doctor calls this before a run so a missing interpreter or bundled
@@ -141,7 +139,7 @@ public enum RLMWorkerSelection: String, Sendable, CaseIterable {
     ///
     /// - Parameter settings: The RLM module's own settings (for example `worker`).
     /// - Returns: One fact per prerequisite path, in check order.
-    public static func prerequisiteChecks(settings: [String: String]) -> [GnosticModulePrerequisite] {
+    static func prerequisiteChecks(settings: [String: String]) -> [GnosticModulePrerequisite] {
         let raw = settings["worker"]?.lowercased() ?? RLMWorkerSelection.guile.rawValue
         let selection = RLMWorkerSelection(rawValue: raw) ?? .guile
         switch selection {
@@ -178,55 +176,6 @@ public enum RLMWorkerSelection: String, Sendable, CaseIterable {
             isAvailable: path.map { FileManager.default.fileExists(atPath: $0) } ?? false,
             hint: "Build the package so the bundled worker script is present."
         )
-    }
-}
-
-enum RLMWorkerFactory {
-    /// Resolves the worker script.
-    ///
-    /// An explicit environment override wins for development; otherwise the
-    /// script bundled with the executor is used, so a deployed binary does not
-    /// depend on its working directory.
-    static func scriptPath(
-        for selection: RLMWorkerSelection,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> String? {
-        let environmentKey = selection == .guile ? "GNOSTIC_GUILE_WORKER" : "GNOSTIC_CHIBI_WORKER"
-        if let path = environment[environmentKey], FileManager.default.fileExists(atPath: path) {
-            return path
-        }
-        switch selection {
-        case .guile: return RLMGuileWorkerConfiguration.defaultWorkerScriptPath
-        case .chibi: return RLMChibiWorkerConfiguration.defaultWorkerScriptPath
-        }
-    }
-
-    static func make(
-        selection: RLMWorkerSelection,
-        runID: String,
-        host: RLMWorkerHostState
-    ) throws -> any RLMWorkerDriver {
-        guard let scriptPath = scriptPath(for: selection) else {
-            throw RLMFailure.evaluatorFailed("selected Scheme worker script is unavailable")
-        }
-        switch selection {
-        case .guile:
-            let configuration = RLMGuileWorkerConfiguration(runID: runID, workerScriptPath: scriptPath)
-            return RLMProcessWorkerDriver<RLMGuileExecutor>(
-                configuration: configuration,
-                host: RLMGuileClosureHost(handler: { operation in try await host.service(operation) }),
-                wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
-                outputLimitBytes: configuration.maxOutputBytes
-            )
-        case .chibi:
-            let configuration = RLMChibiWorkerConfiguration(runID: runID, workerScriptPath: scriptPath)
-            return RLMProcessWorkerDriver<RLMChibiExecutor>(
-                configuration: configuration,
-                host: RLMChibiClosureHost(handler: { operation in try await host.service(operation) }),
-                wallTimeLimit: .milliseconds(Int64(configuration.wallDeadlineSeconds * 1_000)),
-                outputLimitBytes: configuration.maxOutputBytes
-            )
-        }
     }
 }
 

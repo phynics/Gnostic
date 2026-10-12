@@ -87,6 +87,7 @@ let package = Package(
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
                 "GnosticRLMProcessWorker",
+                "GnosticRLMWorkerSupport",
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "PKOpenAIProvider", package: "PositronicKit"),
@@ -190,8 +191,8 @@ let package = Package(
             ],
             resources: [.copy("Resources/worker.scm")]
         ),
-        .executableTarget(
-            name: "GnosticRLMBenchmark",
+        .target(
+            name: "GnosticRLMWorkerSupport",
             dependencies: [
                 "GnosticRLM",
                 "GnosticRLMGuile",
@@ -199,13 +200,35 @@ let package = Package(
                 "GnosticRLMProcessWorker",
             ]
         ),
-        .executableTarget(
-            name: "GnosticRLMScenario",
+        .testTarget(
+            name: "GnosticRLMWorkerSupportTests",
             dependencies: [
                 "GnosticRLM",
                 "GnosticRLMGuile",
                 "GnosticRLMChibi",
                 "GnosticRLMProcessWorker",
+                "GnosticRLMWorkerSupport",
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticRLMBenchmark",
+            dependencies: [
+                "GnosticRLM",
+                "GnosticRLMGuile",
+                "GnosticRLMChibi",
+                "GnosticRLMProcessWorker",
+                "GnosticRLMWorkerSupport",
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticRLMScenario",
+            dependencies: [
+                "GnosticKit",
+                "GnosticRLM",
+                "GnosticRLMGuile",
+                "GnosticRLMChibi",
+                "GnosticRLMProcessWorker",
+                "GnosticRLMWorkerSupport",
             ]
         ),
         .testTarget(
