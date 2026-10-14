@@ -21,6 +21,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case timelineAmbiguous(UUID)
     case providerMismatch
     case missingCapability(String)
+    case promptTooLarge
 
     public var errorDescription: String? {
         switch self {
@@ -41,6 +42,8 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case let .timelineAmbiguous(id): "Timeline \(id.uuidString.lowercased()) is advertised by more than one Node."
         case .providerMismatch: "The response came from a different provider than the addressed Node."
         case let .missingCapability(capability): "The selected Ascendant does not advertise capability \(capability)."
+        case .promptTooLarge:
+            "The prompt exceeds the maximum size the Turn wire accepts. Shorten it and retry."
         }
     }
 
@@ -64,6 +67,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .timelineAmbiguous: "timelineAmbiguous"
         case .providerMismatch: "providerMismatch"
         case .missingCapability: "missingCapability"
+        case .promptTooLarge: "promptTooLarge"
         }
     }
 }

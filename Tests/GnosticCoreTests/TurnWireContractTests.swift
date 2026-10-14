@@ -66,6 +66,27 @@ struct TurnWireContractTests {
         }
     }
 
+    @Test("A prompt whose JSON encoding overflows the envelope is refused, not truncated")
+    func escapeHeavyPromptIsRefused() throws {
+        // 1,400 quote characters stay inside the field bound but double during
+        // JSON encoding, so the request exceeds the embedded envelope.
+        let message = String(repeating: "\"", count: GnosticWirePayload.maximumTurnMessageBytes)
+        let request = AscendantTurnRequest(
+            message: message,
+            timelineID: timelineID,
+            clientTurnID: String(repeating: "c", count: 128)
+        )
+        do {
+            _ = try GnosticWirePayload.encode(request, context: "test request")
+            Issue.record("an escape-heavy prompt was accepted")
+        } catch let error as GnosticWirePayload.Error {
+            guard case .tooLarge = error else {
+                Issue.record("unexpected payload error: \(error)")
+                return
+            }
+        }
+    }
+
     @Test("A long prompt replay digests the same bytes as its run")
     func longPromptReplayDigestMatchesRun() async throws {
         let message = String(repeating: "p", count: 512)
