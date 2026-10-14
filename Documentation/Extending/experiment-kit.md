@@ -216,7 +216,9 @@ stays with the module.
 ## Trace and replay
 
 A Run can record a **trace**: model requests and responses, tool calls and
-results, and the outcome, in order and correlated to a Turn. Recording is
+results, and the outcome, in order and correlated to a Turn. The tape also
+records the Run's full `ExperimentRegime` (schema version 2), so replay names
+the same Regime as the run record instead of a fixed label. Recording is
 opt-in by construction. Nothing records unless a caller builds an
 `ExperimentTraceRecorder` and wraps a transport or tool executor with
 `TracingExperimentModelTransport` or `TracingExperimentToolExecutor`. The tape

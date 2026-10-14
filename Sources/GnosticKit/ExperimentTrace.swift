@@ -78,14 +78,21 @@ public struct ExperimentTraceEvent: Codable, Sendable, Equatable {
 /// default.
 public struct ExperimentTrace: Codable, Sendable, Equatable {
     /// The tape schema version.
-    public static let currentSchemaVersion = 1
+    ///
+    /// Version 2 replaced the regime label with the full ``ExperimentRegime``,
+    /// so replay reads the Regime the run actually used instead of a fixed
+    /// label. A version 1 tape does not decode.
+    public static let currentSchemaVersion = 2
 
     /// The tape schema version this value was written with.
     public let schemaVersion: Int
     /// The run identity the tape belongs to.
     public let runID: String
-    /// The Regime label, when the run named one.
-    public let regime: String?
+    /// The full Regime the recorded run executed under, when the run named one.
+    ///
+    /// It is the value the shared resolver produced (ADR 0013), so replay names
+    /// the same Regime the run record does.
+    public let regime: ExperimentRegime?
     /// The start time, ISO-8601.
     public let startedAtUTC: String
     /// The ordered events.
@@ -95,7 +102,7 @@ public struct ExperimentTrace: Codable, Sendable, Equatable {
     public init(
         schemaVersion: Int = ExperimentTrace.currentSchemaVersion,
         runID: String,
-        regime: String? = nil,
+        regime: ExperimentRegime? = nil,
         startedAtUTC: String,
         events: [ExperimentTraceEvent]
     ) {
@@ -244,7 +251,12 @@ public actor ExperimentTraceRecorder {
     public func snapshot() -> [ExperimentTraceEvent] { events }
 
     /// Builds the tape from the recorded events.
-    public func trace(regime: String? = nil, startedAtUTC: String = "1970-01-01T00:00:00Z") -> ExperimentTrace {
+    ///
+    /// - Parameters:
+    ///   - regime: The full Regime the run executed under, when it named one.
+    ///   - startedAtUTC: The run start time, ISO-8601.
+    /// - Returns: The tape value.
+    public func trace(regime: ExperimentRegime? = nil, startedAtUTC: String = "1970-01-01T00:00:00Z") -> ExperimentTrace {
         ExperimentTrace(runID: runID, regime: regime, startedAtUTC: startedAtUTC, events: events)
     }
 

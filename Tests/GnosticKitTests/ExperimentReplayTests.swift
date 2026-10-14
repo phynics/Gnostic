@@ -24,7 +24,7 @@ struct ExperimentReplayTests {
         if calls > 0 { _ = try? await model.generate(prompt: "q1", tier: .primary) }
         if calls > 1 { _ = try? await model.generate(prompt: "q2", tier: .utility) }
         await recorder.recordOutcome(outcome)
-        return await recorder.trace(regime: "kit", startedAtUTC: "2026-10-05T00:00:00Z")
+        return await recorder.trace(regime: .selfCheck, startedAtUTC: "2026-10-05T00:00:00Z")
     }
 
     @Test("a tape replays through its own harness with no divergences")

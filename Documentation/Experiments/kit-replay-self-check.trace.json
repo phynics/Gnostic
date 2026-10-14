@@ -61,8 +61,24 @@
       "turnID" : "replay-self-check"
     }
   ],
-  "regime" : "kit",
+  "regime" : {
+    "backendKind" : "kit",
+    "endpoint" : "",
+    "modelTiers" : {
+
+    },
+    "moduleVersions" : {
+
+    },
+    "modules" : [
+
+    ],
+    "policies" : {
+
+    },
+    "provider" : ""
+  },
   "runID" : "kit-replay-self-check",
-  "schemaVersion" : 1,
+  "schemaVersion" : 2,
   "startedAtUTC" : "2026-10-05T00:00:00Z"
 }
