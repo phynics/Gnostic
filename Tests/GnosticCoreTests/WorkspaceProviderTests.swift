@@ -142,6 +142,49 @@ struct WorkspaceProviderTests {
         #expect(await recorder.timelineID == timeline.id)
     }
 
+    @Test("attachment accepts a Timeline created after service construction")
+    @MainActor
+    func attachmentAcceptsRuntimeCreatedTimeline() async throws {
+        let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-00000000000A")!
+        let catalog = NetworkCatalog()
+        let payload = """
+        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[]}
+        """
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
+        let store = InMemoryWorkspacePersistence()
+        let runtimeRepository = InMemoryTimelineRuntimeRepository()
+        let kit = PKRuntime(configuration: .init(
+            languageModel: UnconfiguredLLMService(),
+            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store),
+            runtime: .init(workspaceCreator: RemoteWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
+        ))
+        // Building the service stands in for backend construction. The Timeline
+        // below is created afterwards, like an ACP/pi session Timeline.
+        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces)
+        let created = try await kit.timelines.create(title: "Runtime")
+
+        let reference = try await service.attach(workspaceID: workspaceID, to: created.id, approved: true)
+
+        #expect(reference.id == workspaceID)
+        #expect(try await runtimeRepository.bindings(for: created.id).map(\.workspaceID) == [workspaceID])
+    }
+
+    @Test("attach tool reports an unowned Timeline as a readable failure")
+    @MainActor
+    func attachToolReportsUnownedTimeline() async throws {
+        let service = DiscoveredWorkspaceAttachmentService(catalog: NetworkCatalog(), threadCapability: PKRuntime().timelines, workspaceCapability: PKRuntime().workspaces)
+        let tool = AttachWorkspaceTool(service: service)
+
+        let result = try await tool.execute(parameters: [
+            "workspaceId": AnyCodable(UUID().uuidString),
+            "timelineId": AnyCodable(UUID().uuidString),
+        ])
+
+        #expect(!result.isSuccess)
+        let error = try #require(result.error)
+        #expect(error.contains("not owned"))
+    }
+
     @Test("provider preserves advertised custom definitions and dispatches the addressed tool")
     @MainActor
     func providerDispatchesAdvertisedTool() async throws {

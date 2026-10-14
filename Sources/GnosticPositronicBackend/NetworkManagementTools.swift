@@ -81,7 +81,26 @@ public struct AttachWorkspaceTool: PKTool, Sendable {
               let workspaceID = UUID(uuidString: workspaceRaw), let timelineID = UUID(uuidString: timelineRaw) else {
             return .failure("workspaceId and timelineId must be UUID strings")
         }
-        let workspace = try await service.attach(workspaceID: workspaceID, to: timelineID, approved: true)
-        return .success(workspace.id.uuidString)
+        do {
+            let workspace = try await service.attach(workspaceID: workspaceID, to: timelineID, approved: true)
+            return .success(workspace.id.uuidString)
+        } catch let error as DiscoveredWorkspaceAttachmentError {
+            return .failure(Self.failureMessage(for: error))
+        }
+    }
+
+    /// Renders an attachment refusal as a bounded model-readable message
+    /// instead of an opaque thrown error the model retries.
+    private static func failureMessage(for error: DiscoveredWorkspaceAttachmentError) -> String {
+        switch error {
+        case .approvalRequired:
+            "Workspace attachment requires approval."
+        case .unavailable:
+            "The workspace is not uniquely available for attachment."
+        case .invalidURI:
+            "The workspace advertised an invalid URI."
+        case let .timelineNotOwned(id):
+            "Timeline \(id.uuidString.lowercased()) is not owned by this Ascendant."
+        }
     }
 }
