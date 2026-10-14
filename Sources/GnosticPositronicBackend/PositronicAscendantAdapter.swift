@@ -167,12 +167,11 @@ import GnosticCore
         ))
 
         let resolvedNetworkTools: [AnyTool]
-        if let host = services.capability(BackendWorkspaceDiscoveryCapability.self) {
-            let attachmentHost = services.capability(BackendWorkspaceAttachmentCapability.self)
+        if let host = services.capability(BackendWorkspaceDiscoveryCapability.self),
+           let attachmentHost = services.capability(BackendWorkspaceAttachmentCapability.self) {
             let attachmentService = DiscoveredWorkspaceAttachmentService(
                 discovery: host.discovery,
                 threadCapability: createdKit.timelines,
-                workspaceCapability: createdKit.workspaces,
                 hostAttachment: attachmentHost
             )
             resolvedNetworkTools = [
