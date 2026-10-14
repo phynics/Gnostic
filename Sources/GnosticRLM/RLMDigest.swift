@@ -5,6 +5,13 @@
 /// The RLM harness must produce the same chunk, file, and snapshot identity on
 /// every host and on every run. A pure Swift implementation keeps the harness
 /// free of provider, process, and platform crypto dependencies.
+///
+/// This is the one deliberate duplicate of `SHA256` in `GnosticCore`. The RLM
+/// boundary requires `GnosticRLM` to declare no target dependency and to import
+/// no Foundation or kernel module, so the harness cannot link the kernel
+/// primitive. `BackendArchitectureFitnessTests` pins both copies and
+/// `RLMBoundaryFitnessTests` pins the boundary, so a third copy cannot appear.
+/// The vectors match the kernel implementation and the shared test vectors.
 public enum RLMDigest {
     /// Returns the lowercase hexadecimal SHA-256 digest of `bytes`.
     public static func sha256Hex(_ bytes: [UInt8]) -> String {

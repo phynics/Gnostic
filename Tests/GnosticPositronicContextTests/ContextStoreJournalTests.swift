@@ -86,8 +86,11 @@ struct ContextStoreJournalTests {
         try await writer.insert(first, for: key)
         try await writer.insert(second, for: key)
 
+        // Tear the final frame by dropping its terminating newline. `recover`
+        // reports a final record with no newline as a torn tail, independent of
+        // the frame's length.
         let data = try Data(contentsOf: url)
-        try Data(data.dropLast(12)).write(to: url)
+        try Data(data.dropLast(1)).write(to: url)
 
         let reader = InMemoryContextStore()
         try await reader.enableDurability(at: url)

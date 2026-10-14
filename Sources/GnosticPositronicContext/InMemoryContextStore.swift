@@ -27,7 +27,7 @@ public actor InMemoryContextStore {
     }
 
     private var partitions: [ContextStoreKey: Partition] = [:]
-    private var journal: AppendOnlyEventLog<ContextStoreEvent>?
+    private var journal: DurableReplayJournal<ContextStoreEvent>?
 
     /// Creates an empty store.
     public init() {}
@@ -50,11 +50,9 @@ public actor InMemoryContextStore {
     /// - Throws: ``ContextError`` when a recorded mutation is invalid, or
     ///   `EventLogError` when the journal cannot be read or written.
     public func enableDurability(at url: URL) throws {
-        let log = AppendOnlyEventLog<ContextStoreEvent>(fileURL: url)
-        for envelope in try log.recover() {
-            try apply(envelope.payload)
-        }
-        journal = log
+        let candidate = DurableReplayJournal<ContextStoreEvent>(fileURL: url)
+        try candidate.recover { try apply($0) }
+        journal = candidate
     }
 
     private func apply(_ event: ContextStoreEvent) throws {
@@ -77,8 +75,7 @@ public actor InMemoryContextStore {
     }
 
     private func journalRecord(_ event: ContextStoreEvent) throws {
-        guard let journal else { return }
-        try journal.append(event)
+        try journal?.append(event)
     }
 
     /// Inserts an accepted node.
