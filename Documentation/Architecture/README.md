@@ -104,6 +104,14 @@ dependency and imports none. A composition root installs the backend with
 `PositronicBackend.register(into:)`. ADR 0005 records the boundary and its
 fitness checks.
 
+`PositronicWorkspaceProjection` and `PositronicJSONValueBridge` are the only
+conversion points between Gnostic values and their PositronicKit equivalents.
+The projection converts Workspace references in both directions; the bridge
+converts JSON values. The adapter, the network invoker, and the attached proxy
+call these two types and do not carry private copies. One fallback applies per
+target enum: `.unknown` for the provider status, `.unavailable` for the
+effective backend status, and `.runtime` for the location.
+
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.
 

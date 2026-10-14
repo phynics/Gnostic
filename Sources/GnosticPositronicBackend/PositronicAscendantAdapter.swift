@@ -546,26 +546,11 @@ import GnosticCore
     }
 
     private static func positronicReference(_ reference: BackendWorkspaceReference) throws -> WorkspaceReference {
-        guard let uri = WorkspaceURI(parsing: reference.uri) else {
+        do {
+            return try PositronicWorkspaceProjection.reference(from: reference)
+        } catch {
             throw AscendantBackendError.invalidConfiguration("Invalid Workspace URI '\(reference.uri)'.")
         }
-        return WorkspaceReference(
-            id: reference.id,
-            uri: uri,
-            location: .runtime,
-            tools: reference.tools.map { tool in
-                .custom(WorkspaceToolDefinition(
-                    id: tool.id,
-                    name: tool.name,
-                    description: tool.description,
-                    parametersSchema: {
-                        guard let schema = tool.parametersSchema, case let .object(values) = schema else { return [:] }
-                        return values.mapValues { AnyCodable(anyValue($0)) }
-                    }(),
-                    requiresPermission: tool.requiresPermission
-                ))
-            }
-        )
     }
 
     private static func workspaceTools(
@@ -579,17 +564,6 @@ import GnosticCore
             return AnyTool(WorkspaceToolWrapper(workspace: workspace, definition: definition))
         }
     }
-
-    private static func anyValue(_ value: ManifestJSONValue) -> Any {
-        switch value {
-        case let .string(value): return value
-        case let .number(value): return value
-        case let .bool(value): return value
-        case let .object(value): return value.mapValues(anyValue)
-        case let .array(value): return value.map(anyValue)
-        case .null: return NSNull()
-        }
-    }
 }
 
 private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
@@ -600,7 +574,7 @@ private struct PositronicBackendWorkspaceFactory: WorkspaceFactory, Sendable {
     }
 }
 
-private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
+struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Sendable {
     let reference: WorkspaceReference
     let service: any AscendantBackendWorkspaceService?
 
@@ -619,9 +593,7 @@ private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileP
         guard let service else {
             throw AscendantBackendError.invalidConfiguration("Workspace consumption is unavailable.")
         }
-        let arguments = parameters.reduce(into: [String: ManifestJSONValue]()) { result, pair in
-            result[pair.key] = Self.manifestValue(pair.value.value)
-        }
+        let arguments = parameters.mapValues { PositronicJSONValueBridge.manifestValue($0) }
         let result = try await service.invoke(.init(workspaceID: reference.id, toolID: id, arguments: arguments))
         return .success(result.message ?? String(describing: result.value))
     }
@@ -648,25 +620,5 @@ private struct PositronicBackendWorkspace: WorkspaceToolProvider, WorkspaceFileP
         guard let service else { throw WorkspaceError.toolExecutionNotSupported }
         guard let files = service.optionalFileService else { throw WorkspaceError.toolExecutionNotSupported }
         try await files.deleteFile(workspaceID: reference.id, path: path)
-    }
-
-    private static func manifestValue(_ value: Any) -> ManifestJSONValue {
-        if let value = value as? String { return .string(value) }
-        if let value = value as? Bool { return .bool(value) }
-        if let value = value as? Int { return .number(Double(value)) }
-        if let value = value as? Double { return .number(value) }
-        if let value = value as? [String: AnyCodable] {
-            return .object(value.mapValues { manifestValue($0.value) })
-        }
-        if let value = value as? [AnyCodable] {
-            return .array(value.map { manifestValue($0.value) })
-        }
-        if let value = value as? [String: Any] {
-            return .object(value.mapValues(manifestValue))
-        }
-        if let value = value as? [Any] {
-            return .array(value.map(manifestValue))
-        }
-        return .null
     }
 }
