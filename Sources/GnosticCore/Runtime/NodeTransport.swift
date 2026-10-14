@@ -28,19 +28,6 @@ public final class NodeTransport {
         )
     }
 
-    typealias Turn = @MainActor (AscendantTurnRequest) async throws -> AscendantTurnResult
-    typealias TurnCancellation = @MainActor (AscendantTurnCancellationRequest) async -> Bool
-    typealias TimelineStatusLookup = @MainActor (UUID) async throws -> TimelineStatus
-    typealias AscendantSelection = @MainActor (UUID?) throws -> UUID
-    typealias TimelineCreation = @MainActor (String, UUID) async throws -> TimelineStatus
-    typealias TimelineList = @MainActor () async throws -> [TimelineStatus]
-    typealias TimelineRename = @MainActor (TimelineUpdateRequest) async throws -> TimelineStatus
-    typealias WorkspaceList = @MainActor () async -> [WorkspaceListing]
-    typealias WorkspaceMutation = @MainActor (WorkspaceOpsRequest) async throws -> Bool
-    typealias DiagnosticsNode = @MainActor () async throws -> NodeDiagnostics
-    typealias DiagnosticsAscendant = @MainActor (UUID) async throws -> AscendantDiagnostics
-    typealias DiagnosticsTimeline = @MainActor (UUID) async throws -> TimelineDiagnostics
-
     /// Capabilities the serving Node injects into every Ascendant projection.
     ///
     /// Diagnostics are served by the Node itself, not by any Ascendant backend,
@@ -48,16 +35,7 @@ public final class NodeTransport {
     static let advertisedNodeCapabilities: Set<String> = [GnosticCapability.diagnostics]
 
     private let isAvailable: @MainActor () -> Bool
-    private let turnOperation: Turn
-    private let turnCancellationOperation: TurnCancellation
-    private let timelineStatusOperation: TimelineStatusLookup
-    private let selectAscendantOperation: AscendantSelection
-    private let createTimelineOperation: TimelineCreation
-    private let listTimelinesOperation: TimelineList
-    private let renameTimelineOperation: TimelineRename
-    private let listWorkspacesOperation: WorkspaceList
-    private let attachWorkspaceOperation: WorkspaceMutation
-    private let detachWorkspaceOperation: WorkspaceMutation
+    private weak var operations: (any NodeOperations)?
     private let communication: CommunicationManager?
     private let lifecycle: ObjectLifecycleController?
     private let registry: NodeRegistry?
@@ -66,9 +44,6 @@ public final class NodeTransport {
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
     private let workspaceProvider: MultiplexedWorkspaceProvider?
-    private let diagnosticsNodeOperation: DiagnosticsNode
-    private let diagnosticsAscendantOperation: DiagnosticsAscendant
-    private let diagnosticsTimelineOperation: DiagnosticsTimeline
     private let scope: RuntimeEffectScope
     private let registrationScope: RuntimeEffectScope
     private let responderScope: RuntimeEffectScope
@@ -89,19 +64,7 @@ public final class NodeTransport {
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
         localWorkspaces: [UUID: any LocalWorkspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
-        turn: @escaping Turn,
-        cancelTurn: @escaping TurnCancellation = { _ in false },
-        timelineStatus: @escaping TimelineStatusLookup,
-        selectAscendant: @escaping AscendantSelection,
-        createTimeline: @escaping TimelineCreation,
-        listTimelines: @escaping TimelineList,
-        renameTimeline: @escaping TimelineRename,
-        listWorkspaces: @escaping WorkspaceList,
-        attachWorkspace: @escaping WorkspaceMutation,
-        detachWorkspace: @escaping WorkspaceMutation,
-        diagnosticsNode: @escaping DiagnosticsNode = { throw NodeRuntimeError.notRunning },
-        diagnosticsAscendant: @escaping DiagnosticsAscendant = { _ in throw NodeRuntimeError.notRunning },
-        diagnosticsTimeline: @escaping DiagnosticsTimeline = { _ in throw NodeRuntimeError.notRunning },
+        operations: any NodeOperations,
         hooks: TestHooks = .none
     ) {
         self.communication = communication
@@ -117,19 +80,7 @@ public final class NodeTransport {
             isAvailable: { await isAvailable() }
         )
         self.isAvailable = isAvailable
-        turnOperation = turn
-        turnCancellationOperation = cancelTurn
-        timelineStatusOperation = timelineStatus
-        selectAscendantOperation = selectAscendant
-        createTimelineOperation = createTimeline
-        listTimelinesOperation = listTimelines
-        renameTimelineOperation = renameTimeline
-        listWorkspacesOperation = listWorkspaces
-        attachWorkspaceOperation = attachWorkspace
-        detachWorkspaceOperation = detachWorkspace
-        diagnosticsNodeOperation = diagnosticsNode
-        diagnosticsAscendantOperation = diagnosticsAscendant
-        diagnosticsTimelineOperation = diagnosticsTimeline
+        self.operations = operations
         scope = try! RuntimeEffectScope(name: "node-transport")
         registrationScope = try! RuntimeEffectScope(name: "transport-registrations")
         responderScope = try! RuntimeEffectScope(name: "transport-responders")
@@ -139,7 +90,8 @@ public final class NodeTransport {
     }
 
     public func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
-        try await turnOperation(request)
+        guard let operations else { throw NodeRuntimeError.notRunning }
+        return try await operations.turn(request)
     }
 
     func registerOperations(
@@ -168,12 +120,12 @@ public final class NodeTransport {
 
             let turnProvider = AscendantTurnProvider(
                 execute: { [weak self] request in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.turn(request)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.turn(request)
                 },
                 cancel: { [weak self] request in
-                    guard let self, await self.isAvailable() else { return false }
-                    return await self.turnCancellationOperation(request)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { return false }
+                    return await operations.cancelTurn(request)
                 },
                 replayStore: turnUpdates,
                 isAvailable: { [weak self] in await self?.isAvailable() == true }
@@ -203,8 +155,8 @@ public final class NodeTransport {
             )
 
             let status = TimelineStatusProvider { [weak self] request in
-                guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                return try await self.timelineStatusOperation(request.timelineID)
+                guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                return try await operations.timelineStatus(for: request.timelineID)
             }
             try hooks.beforeRegistration("timeline-status")
             _ = try await registrationScope.acquire(
@@ -215,17 +167,17 @@ public final class NodeTransport {
 
             let management = TimelineManagementProvider(
                 create: { [weak self] title, ascendantID in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    let selectedID = try await self.selectAscendantOperation(ascendantID)
-                    return try await self.createTimelineOperation(title, selectedID)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    let selectedID = try await operations.selectAscendant(requested: ascendantID)
+                    return try await operations.createTimeline(title: title, ascendantID: selectedID)
                 },
                 list: { [weak self] in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.listTimelinesOperation()
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.listTimelines()
                 },
                 update: { [weak self] request in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.renameTimelineOperation(request)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.renameTimeline(request)
                 }
             )
             try hooks.beforeRegistration("timeline-management")
@@ -237,16 +189,16 @@ public final class NodeTransport {
 
             let workspace = WorkspaceOpsProvider(
                 list: { [weak self] in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return await self.listWorkspacesOperation()
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return await operations.listWorkspaces()
                 },
                 attach: { [weak self] request in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.attachWorkspaceOperation(request)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.attachWorkspace(request)
                 },
                 detach: { [weak self] request in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.detachWorkspaceOperation(request)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.detachWorkspace(request)
                 }
             )
             try hooks.beforeRegistration("workspace-operations")
@@ -258,16 +210,16 @@ public final class NodeTransport {
 
             let diagnostics = DiagnosticsProvider(
                 node: { [weak self] in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.diagnosticsNodeOperation()
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.diagnosticsNode()
                 },
                 ascendant: { [weak self] ascendantID in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.diagnosticsAscendantOperation(ascendantID)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.diagnosticsAscendant(ascendantID)
                 },
                 timeline: { [weak self] timelineID in
-                    guard let self, await self.isAvailable() else { throw NodeRuntimeError.notRunning }
-                    return try await self.diagnosticsTimelineOperation(timelineID)
+                    guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
+                    return try await operations.diagnosticsTimeline(timelineID)
                 }
             )
             try hooks.beforeRegistration("diagnostics")

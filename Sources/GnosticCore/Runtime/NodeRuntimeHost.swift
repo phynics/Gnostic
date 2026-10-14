@@ -17,19 +17,7 @@ final class NodeRuntimeHost {
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
         let localWorkspaces: [UUID: any LocalWorkspace]
         let isAvailable: @MainActor () -> Bool
-        let turn: NodeTransport.Turn
-        let cancelTurn: NodeTransport.TurnCancellation
-        let timelineStatus: NodeTransport.TimelineStatusLookup
-        let selectAscendant: NodeTransport.AscendantSelection
-        let createTimeline: NodeTransport.TimelineCreation
-        let listTimelines: NodeTransport.TimelineList
-        let renameTimeline: NodeTransport.TimelineRename
-        let listWorkspaces: NodeTransport.WorkspaceList
-        let attachWorkspace: NodeTransport.WorkspaceMutation
-        let detachWorkspace: NodeTransport.WorkspaceMutation
-        let diagnosticsNode: NodeTransport.DiagnosticsNode
-        let diagnosticsAscendant: NodeTransport.DiagnosticsAscendant
-        let diagnosticsTimeline: NodeTransport.DiagnosticsTimeline
+        let operations: any NodeOperations
     }
 
     let lifecycleCoordinator: RuntimeLifecycleCoordinator
@@ -92,19 +80,7 @@ final class NodeRuntimeHost {
             workspaceReferences: wiring.workspaceReferences,
             localWorkspaces: wiring.localWorkspaces,
             isAvailable: wiring.isAvailable,
-            turn: wiring.turn,
-            cancelTurn: wiring.cancelTurn,
-            timelineStatus: wiring.timelineStatus,
-            selectAscendant: wiring.selectAscendant,
-            createTimeline: wiring.createTimeline,
-            listTimelines: wiring.listTimelines,
-            renameTimeline: wiring.renameTimeline,
-            listWorkspaces: wiring.listWorkspaces,
-            attachWorkspace: wiring.attachWorkspace,
-            detachWorkspace: wiring.detachWorkspace,
-            diagnosticsNode: wiring.diagnosticsNode,
-            diagnosticsAscendant: wiring.diagnosticsAscendant,
-            diagnosticsTimeline: wiring.diagnosticsTimeline
+            operations: wiring.operations
         )
         self.refreshUnresolved = refreshUnresolved
     }

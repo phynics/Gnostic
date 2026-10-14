@@ -161,58 +161,7 @@ public final class NodeRuntime {
             workspaceReferences: { [weak self] in await self?.workspaceService.publicReferences() ?? [] },
             localWorkspaces: localWorkspaces,
             isAvailable: { [weak self] in self?.isRunning == true },
-            turn: { [weak self] request in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.turnService.turn(request)
-            },
-            cancelTurn: { [weak self] request in
-                guard let self else { return false }
-                return await self.turnService.cancelTurn(
-                    timelineID: request.timelineID,
-                    clientTurnID: request.clientTurnID
-                )
-            },
-            timelineStatus: { [weak self] id in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.timelineService.status(for: id)
-            },
-            selectAscendant: { [weak self] id in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try self.timelineService.selectAscendant(requested: id)
-            },
-            createTimeline: { [weak self] title, ascendantID in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.timelineService.create(title: title, ascendantID: ascendantID)
-            },
-            listTimelines: { [weak self] in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.timelineService.list()
-            },
-            renameTimeline: { [weak self] request in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.timelineService.rename(request)
-            },
-            listWorkspaces: { [weak self] in await self?.workspaceService.listAttachable() ?? [] },
-            attachWorkspace: { [weak self] request in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.workspaceService.attach(request)
-            },
-            detachWorkspace: { [weak self] request in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.workspaceService.detach(request)
-            },
-            diagnosticsNode: { [weak self] in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return await self.diagnosticsNodeSnapshot()
-            },
-            diagnosticsAscendant: { [weak self] id in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.diagnosticsAscendantSnapshot(id)
-            },
-            diagnosticsTimeline: { [weak self] id in
-                guard let self else { throw NodeRuntimeError.notRunning }
-                return try await self.diagnosticsTimelineSnapshot(id)
-            }
+            operations: self
         )
         runtimeHost.configure(
             registry: registry,
@@ -477,6 +426,26 @@ public final class NodeRuntime {
         try await workspaceService.detach(request)
     }
 
+    func cancelTurn(_ request: AscendantTurnCancellationRequest) async -> Bool {
+        await turnService.cancelTurn(timelineID: request.timelineID, clientTurnID: request.clientTurnID)
+    }
+
+    func listWorkspaces() async -> [WorkspaceListing] {
+        await workspaceService.listAttachable()
+    }
+
+    func diagnosticsNode() async throws -> NodeDiagnostics {
+        await diagnosticsNodeSnapshot()
+    }
+
+    func diagnosticsAscendant(_ ascendantID: UUID) async throws -> AscendantDiagnostics {
+        try await diagnosticsAscendantSnapshot(ascendantID)
+    }
+
+    func diagnosticsTimeline(_ timelineID: UUID) async throws -> TimelineDiagnostics {
+        try await diagnosticsTimelineSnapshot(timelineID)
+    }
+
     /// Discovers and imports a network Workspace only when a caller needs it.
     /// Construction and startup never resolve network attachments.
     @discardableResult
@@ -490,3 +459,6 @@ public final class NodeRuntime {
     }
 
 }
+
+/// `NodeRuntime` is the production adapter for the inward Node operation seam.
+extension NodeRuntime: NodeOperations {}

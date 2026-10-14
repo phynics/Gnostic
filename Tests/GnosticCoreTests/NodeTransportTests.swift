@@ -13,20 +13,14 @@ struct NodeTransportTests {
     @MainActor
     func invokesInwardOperationBoundary() async throws {
         var handled = false
+        let operations = StubNodeOperations()
+        operations.onTurn = { request in
+            handled = true
+            return .init(text: "handled: \(request.message)")
+        }
         let transport = NodeTransport(
             isAvailable: { true },
-            turn: { request in
-                handled = true
-                return .init(text: "handled: \(request.message)")
-            },
-            timelineStatus: { _ in fatalError("not used") },
-            selectAscendant: { _ in fatalError("not used") },
-            createTimeline: { _, _ in fatalError("not used") },
-            listTimelines: { fatalError("not used") },
-            renameTimeline: { _ in fatalError("not used") },
-            listWorkspaces: { [] },
-            attachWorkspace: { _ in fatalError("not used") },
-            detachWorkspace: { _ in fatalError("not used") }
+            operations: operations
         )
 
         let result = try await transport.turn(.init(message: "hello", timelineID: UUID()))
@@ -40,8 +34,10 @@ struct NodeTransportTests {
     func transportRegistrationFailureDisposesEveryEarlierOwnedResource() async throws {
         let communication = try makeTransportCommunication()
         defer { communication.stop() }
+        let operations = StubNodeOperations()
         let transport = makeTransport(
             communication: communication,
+            operations: operations,
             hooks: .init(beforeRegistration: { label in
                 if label == "timeline-status" { throw TransportFault.failed }
             })
@@ -64,8 +60,10 @@ struct NodeTransportTests {
         let communication = try makeTransportCommunication()
         defer { communication.stop() }
         let updates = AscendantTurnUpdateStore()
+        let operations = StubNodeOperations()
         let transport = makeTransport(
             communication: communication,
+            operations: operations,
             hooks: .init(beforeDiscoverResponder: { throw TransportFault.failed })
         )
 
@@ -87,7 +85,8 @@ struct NodeTransportTests {
         let communication = try makeTransportCommunication()
         defer { communication.stop() }
         let updates = AscendantTurnUpdateStore()
-        let transport = makeTransport(communication: communication)
+        let operations = StubNodeOperations()
+        let transport = makeTransport(communication: communication, operations: operations)
 
         try await transport.registerOperations(
             turnUpdates: updates,
@@ -460,22 +459,75 @@ private func makeTransportCommunication() throws -> CommunicationManager {
 @MainActor
 private func makeTransport(
     communication: CommunicationManager,
+    operations: StubNodeOperations,
     hooks: NodeTransport.TestHooks = .none
 ) -> NodeTransport {
     NodeTransport(
         communication: communication,
         isAvailable: { true },
-        turn: { _ in fatalError("not used") },
-        timelineStatus: { _ in fatalError("not used") },
-        selectAscendant: { _ in fatalError("not used") },
-        createTimeline: { _, _ in fatalError("not used") },
-        listTimelines: { fatalError("not used") },
-        renameTimeline: { _ in fatalError("not used") },
-        listWorkspaces: { [] },
-        attachWorkspace: { _ in fatalError("not used") },
-        detachWorkspace: { _ in fatalError("not used") },
+        operations: operations,
         hooks: hooks
     )
+}
+
+/// The test-side adapter for the one Node operation seam. Unstubbed
+/// operations fail loudly so a test cannot silently exercise the wrong path.
+@MainActor
+private final class StubNodeOperations: NodeOperations {
+    var onTurn: (@MainActor (AscendantTurnRequest) async throws -> AscendantTurnResult)?
+
+    func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+        guard let onTurn else { fatalError("turn is not stubbed") }
+        return try await onTurn(request)
+    }
+
+    func cancelTurn(_ request: AscendantTurnCancellationRequest) async -> Bool {
+        fatalError("cancelTurn is not stubbed")
+    }
+
+    func timelineStatus(for timelineID: UUID) async throws -> TimelineStatus {
+        fatalError("timelineStatus is not stubbed")
+    }
+
+    func selectAscendant(requested ascendantID: UUID?) async throws -> UUID {
+        fatalError("selectAscendant is not stubbed")
+    }
+
+    func createTimeline(title: String, ascendantID: UUID) async throws -> TimelineStatus {
+        fatalError("createTimeline is not stubbed")
+    }
+
+    func listTimelines() async throws -> [TimelineStatus] {
+        fatalError("listTimelines is not stubbed")
+    }
+
+    func renameTimeline(_ request: TimelineUpdateRequest) async throws -> TimelineStatus {
+        fatalError("renameTimeline is not stubbed")
+    }
+
+    func listWorkspaces() async -> [WorkspaceListing] {
+        []
+    }
+
+    func attachWorkspace(_ request: WorkspaceOpsRequest) async throws -> Bool {
+        fatalError("attachWorkspace is not stubbed")
+    }
+
+    func detachWorkspace(_ request: WorkspaceOpsRequest) async throws -> Bool {
+        fatalError("detachWorkspace is not stubbed")
+    }
+
+    func diagnosticsNode() async throws -> NodeDiagnostics {
+        fatalError("diagnosticsNode is not stubbed")
+    }
+
+    func diagnosticsAscendant(_ ascendantID: UUID) async throws -> AscendantDiagnostics {
+        fatalError("diagnosticsAscendant is not stubbed")
+    }
+
+    func diagnosticsTimeline(_ timelineID: UUID) async throws -> TimelineDiagnostics {
+        fatalError("diagnosticsTimeline is not stubbed")
+    }
 }
 
 @MainActor
