@@ -219,6 +219,73 @@ struct TurnClientFacadeTests {
         }
     }
 
+    @Test("runs a prompt larger than the label budget without truncation")
+    func runsLongPromptWithoutTruncation() async throws {
+        let namespace = namespaced("long-prompt")
+        let provider = try await startProvider(namespace: namespace)
+        defer { provider.manager.stop() }
+
+        let registration = try await provider.manager.registerCallHandler(
+            operation: AscendantTurnProvider.turnOperation
+        ) { snapshot in
+            guard let parameters = snapshot.parameters,
+                  let request = try? JSONDecoder().decode(
+                      AscendantTurnRequest.self,
+                      from: Data(parameters.utf8)
+                  ),
+                  let result = try? GnosticWirePayload.encode(
+                      AscendantTurnResult(clientTurnID: request.clientTurnID, text: request.message),
+                      context: "test turn result"
+                  ) else {
+                return .failure(code: 400, message: "Invalid test turn request")
+            }
+            return .success(result: String(decoding: result, as: UTF8.self))
+        }
+        defer { registration.cancel() }
+
+        let prompt = String(repeating: "p", count: 300)
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.turnClient(timeout: .seconds(2), promptTimeout: .seconds(3))
+            let result = try await client.run(
+                message: prompt,
+                timelineID: provider.timelineID,
+                clientTurnID: "long-1",
+                providerID: provider.providerID
+            )
+            #expect(result.text == prompt)
+        }
+    }
+
+    @Test("rejects a prompt above the canonical bound at the client")
+    func rejectsOversizePromptAtClient() async throws {
+        let namespace = namespaced("oversize")
+        let provider = try await startProvider(namespace: namespace)
+        defer { provider.manager.stop() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.turnClient(timeout: .seconds(2), promptTimeout: .seconds(3))
+            let prompt = String(repeating: "p", count: GnosticWirePayload.maximumTurnMessageBytes + 1)
+            do {
+                _ = try await client.run(
+                    message: prompt,
+                    timelineID: provider.timelineID,
+                    clientTurnID: "oversize-1",
+                    providerID: provider.providerID
+                )
+                Issue.record("an oversize prompt was accepted by the client")
+            } catch let error as GnosticWirePayload.Error {
+                guard case let .tooLarge(_, actualBytes, maximumBytes) = error else {
+                    Issue.record("unexpected payload error: \(error)")
+                    return
+                }
+                #expect(actualBytes == prompt.utf8.count)
+                #expect(maximumBytes == GnosticWirePayload.maximumTurnMessageBytes)
+            }
+        }
+    }
+
     @Test("maps a serve protocol failure to a structured error")
     func mapsServeFailureToStructuredError() async throws {
         let namespace = namespaced("conflict")

@@ -3,6 +3,7 @@
 import Foundation
 import GnosticClient
 import GnosticCore
+import GnosticProtocol
 
 /// The ACP adapter over the public consumer facade.
 ///
@@ -383,7 +384,7 @@ public final class RemoteTurnClient: Sendable {
 
     /// Maps the public client failures onto the ACP error vocabulary. Serve
     /// rejections and transport failures keep their public client error.
-    private static func remoteError(_ error: any Error) -> any Error {
+    static func remoteError(_ error: any Error) -> any Error {
         switch error {
         case let error as GnosticTurnClientError:
             switch error {
@@ -391,8 +392,11 @@ public final class RemoteTurnClient: Sendable {
             case let .timelineAmbiguous(id): RemoteTurnClientError.timelineAmbiguous(id)
             case .providerMismatch: RemoteTurnClientError.providerMismatch
             case let .missingCapability(capability): RemoteTurnClientError.missingCapability(capability)
-            case .callFailed: error
+            case let .callFailed(reasonCode, _, _):
+                reasonCode == "promptTooLarge" ? RemoteTurnClientError.promptTooLarge : error
             }
+        case let error as GnosticWirePayload.Error:
+            if case .tooLarge = error { RemoteTurnClientError.promptTooLarge } else { error }
         case let error as GnosticTimelineClientError:
             switch error {
             case let .ascendantUnavailable(id): RemoteTurnClientError.ascendantUnavailable(id)

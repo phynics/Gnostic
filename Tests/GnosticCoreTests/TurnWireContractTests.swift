@@ -20,6 +20,113 @@ struct TurnWireContractTests {
         #expect(decoded.clientTurnID == "turn-1")
     }
 
+    @Test("Turn requests round-trip a prompt larger than the label budget")
+    func requestRoundTripPreservesText() throws {
+        let message = String(repeating: "p", count: 512)
+        let request = AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: "turn-long")
+
+        let data = try GnosticWirePayload.encode(request, context: "test request")
+        let decoded = try JSONDecoder().decode(AscendantTurnRequest.self, from: data)
+
+        #expect(decoded.message == message)
+        #expect(decoded.clientTurnID == "turn-long")
+    }
+
+    @Test("Turn encode and decode share one prompt bound and reject instead of truncating")
+    func requestRejectsOversizePrompt() throws {
+        let message = String(repeating: "p", count: GnosticWirePayload.maximumTurnMessageBytes + 1)
+        let request = AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: "turn-long")
+
+        do {
+            _ = try GnosticWirePayload.encode(request, context: "test request")
+            Issue.record("an oversize prompt was accepted by the encoder")
+        } catch let error as GnosticWirePayload.Error {
+            guard case let .tooLarge(context, actualBytes, maximumBytes) = error else {
+                Issue.record("unexpected payload error: \(error)")
+                return
+            }
+            #expect(context == "ascendant.turn message")
+            #expect(actualBytes == message.utf8.count)
+            #expect(maximumBytes == GnosticWirePayload.maximumTurnMessageBytes)
+        }
+
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "protocolMajor": GnosticProtocol.currentMajor,
+            "message": message,
+            "timelineID": timelineID.uuidString,
+        ])
+        do {
+            _ = try JSONDecoder().decode(AscendantTurnRequest.self, from: payload)
+            Issue.record("an oversize prompt was accepted by the decoder")
+        } catch let error as GnosticWirePayload.Error {
+            guard case .tooLarge = error else {
+                Issue.record("unexpected payload error: \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("A prompt whose JSON encoding overflows the envelope is refused, not truncated")
+    func escapeHeavyPromptIsRefused() throws {
+        // 1,400 quote characters stay inside the field bound but double during
+        // JSON encoding, so the request exceeds the embedded envelope.
+        let message = String(repeating: "\"", count: GnosticWirePayload.maximumTurnMessageBytes)
+        let request = AscendantTurnRequest(
+            message: message,
+            timelineID: timelineID,
+            clientTurnID: String(repeating: "c", count: 128)
+        )
+        do {
+            _ = try GnosticWirePayload.encode(request, context: "test request")
+            Issue.record("an escape-heavy prompt was accepted")
+        } catch let error as GnosticWirePayload.Error {
+            guard case .tooLarge = error else {
+                Issue.record("unexpected payload error: \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("A long prompt replay digests the same bytes as its run")
+    func longPromptReplayDigestMatchesRun() async throws {
+        let message = String(repeating: "p", count: 512)
+        let store = AscendantTurnUpdateStore()
+        let coordinator = AscendantTurnCoordinator(ledger: store)
+        let provider = AscendantTurnProvider(
+            execute: { request in
+                try await coordinator.execute(request, ascendantID: UUID()) { request.message }
+            },
+            replayStore: store
+        )
+        let request = try JSONSerialization.data(withJSONObject: [
+            "protocolMajor": GnosticProtocol.currentMajor,
+            "message": message,
+            "timelineID": timelineID.uuidString,
+            "clientTurnID": "long-1",
+        ])
+        let response = try await provider.handle(parameters: String(decoding: request, as: UTF8.self))
+        guard case .success = response else {
+            Issue.record("the long-prompt run failed")
+            return
+        }
+
+        let replayRequest = AscendantTurnReplayRequest(
+            timelineID: timelineID,
+            clientTurnID: "long-1",
+            message: message
+        )
+        let replayResponse = try await provider.handleReplay(
+            parameters: String(decoding: try JSONEncoder().encode(replayRequest), as: UTF8.self)
+        )
+        guard case let .success(result: rawReplay, executionInfo: _) = replayResponse else {
+            Issue.record("the long-prompt replay failed")
+            return
+        }
+        let replay = try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(rawReplay.utf8))
+        #expect(!replay.conflict)
+        #expect(replay.updates.last?.kind == "completion")
+    }
+
     @Test("Turn IDs are canonical across provider results and replay keys")
     func canonicalIDIsSharedByTurnAndReplay() async throws {
         let store = AscendantTurnUpdateStore()

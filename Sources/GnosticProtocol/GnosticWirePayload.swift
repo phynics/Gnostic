@@ -23,6 +23,13 @@ public enum GnosticWirePayload {
     /// value is used while constructing and decoding results.
     public static let maximumTurnResultTextBytes = 1_400
 
+    /// The one canonical bound for an Ascendant Turn prompt. The client encoder
+    /// and the serve decoder both apply it, so an accepted prompt is
+    /// byte-identical on both sides. A larger prompt is rejected, never
+    /// truncated. The bound leaves room inside ``maximumEmbeddedValueBytes``
+    /// for the request envelope and the bounded `clientTurnID`.
+    public static let maximumTurnMessageBytes = 1_400
+
     /// Fixed bounds for values whose source is user- or provider-controlled.
     /// Lists use a separate query/page operation when their size is not fixed.
     public static let maximumLabelBytes = 256
@@ -86,6 +93,26 @@ public enum GnosticWirePayload {
 
     public static func boundedIdentifier(_ value: String) -> String {
         prefix(value, maximumBytes: maximumIdentifierBytes)
+    }
+
+    /// Returns the one accepted representation of a Turn prompt.
+    ///
+    /// The client encoder and the serve decoder share this rule. A prompt that
+    /// exceeds ``maximumTurnMessageBytes`` is rejected with
+    /// ``Error/tooLarge(context:actualBytes:maximumBytes:)`` instead of being
+    /// truncated, so a run and its replay always digest the same bytes.
+    public static func canonicalTurnMessage(
+        _ value: String,
+        context: String = "ascendant.turn message"
+    ) throws -> String {
+        guard value.utf8.count <= maximumTurnMessageBytes else {
+            throw Error.tooLarge(
+                context: context,
+                actualBytes: value.utf8.count,
+                maximumBytes: maximumTurnMessageBytes
+            )
+        }
+        return value
     }
 
     /// Returns the one accepted representation of a client Turn ID.

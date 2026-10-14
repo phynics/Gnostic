@@ -23,7 +23,7 @@ public struct AscendantTurnRequest: Codable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(protocolMajor, forKey: .protocolMajor)
-        try container.encode(message, forKey: .message)
+        try container.encode(try GnosticWirePayload.canonicalTurnMessage(message), forKey: .message)
         try container.encode(timelineID, forKey: .timelineID)
         try container.encodeIfPresent(clientTurnID, forKey: .clientTurnID)
     }
@@ -31,7 +31,7 @@ public struct AscendantTurnRequest: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        message = GnosticWirePayload.prefix(try container.decode(String.self, forKey: .message), maximumBytes: GnosticWirePayload.maximumLabelBytes)
+        message = try GnosticWirePayload.canonicalTurnMessage(try container.decode(String.self, forKey: .message))
         timelineID = try container.decode(UUID.self, forKey: .timelineID)
         clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
             try GnosticWirePayload.canonicalClientTurnID($0)
@@ -130,6 +130,9 @@ public struct AscendantTurnProvider: Sendable {
         } catch let error as GnosticWirePayload.Error {
             if case .invalidIdentifier = error {
                 return .failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+            }
+            if case .tooLarge = error {
+                return .failure(code: 413, reasonCode: "promptTooLarge", message: error.localizedDescription)
             }
             return .failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
         } catch {
@@ -280,6 +283,9 @@ public struct AscendantTurnProvider: Sendable {
             if case .invalidIdentifier = error {
                 return .failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
             }
+            if case .tooLarge = error {
+                return .failure(code: 413, reasonCode: "promptTooLarge", message: error.localizedDescription)
+            }
             return .failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         } catch {
             return .failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
@@ -371,7 +377,7 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
         self.protocolMajor = protocolMajor
         self.timelineID = timelineID
         self.clientTurnID = clientTurnID
-        self.message = message.map { GnosticWirePayload.prefix($0, maximumBytes: 1_200) }
+        self.message = message
         self.afterSequence = afterSequence
     }
 
@@ -382,7 +388,12 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
         try container.encode(protocolMajor, forKey: .protocolMajor)
         try container.encode(timelineID, forKey: .timelineID)
         try container.encode(clientTurnID, forKey: .clientTurnID)
-        try container.encodeIfPresent(message, forKey: .message)
+        if let message {
+            try container.encode(
+                try GnosticWirePayload.canonicalTurnMessage(message, context: "ascendant.turn.replay message"),
+                forKey: .message
+            )
+        }
         try container.encode(afterSequence, forKey: .afterSequence)
     }
 
@@ -393,7 +404,9 @@ public struct AscendantTurnReplayRequest: Codable, Sendable {
         clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
             container.decode(String.self, forKey: .clientTurnID)
         )
-        message = try container.decodeIfPresent(String.self, forKey: .message).map { GnosticWirePayload.prefix($0, maximumBytes: 1_200) }
+        message = try container.decodeIfPresent(String.self, forKey: .message).map {
+            try GnosticWirePayload.canonicalTurnMessage($0, context: "ascendant.turn.replay message")
+        }
         afterSequence = try container.decodeIfPresent(Int.self, forKey: .afterSequence) ?? 0
     }
 }

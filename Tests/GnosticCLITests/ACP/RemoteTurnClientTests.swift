@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticClient
 import GnosticCore
+import GnosticProtocol
 import PKContracts
 import PositronicKit
 import Testing
@@ -107,6 +109,26 @@ struct ACPTransportSelectionTests {
         let error = RemoteTurnClientError.providerOffline("A21D0000-0000-4000-8000-000000000099")
         #expect(error.gnosticCode == "providerOffline")
         #expect(error.errorDescription == "Provider a21d0000-0000-4000-8000-000000000099 went offline.")
+    }
+
+    @Test("an over-bound prompt maps to one typed parameter error")
+    @MainActor
+    func promptTooLargeMapsToTypedParameterError() {
+        let local = RemoteTurnClient.remoteError(
+            GnosticWirePayload.Error.tooLarge(context: "ascendant.turn message", actualBytes: 2_000, maximumBytes: 1_400)
+        )
+        #expect((local as? RemoteTurnClientError)?.gnosticCode == "promptTooLarge")
+
+        let serve = RemoteTurnClient.remoteError(
+            GnosticTurnClientError.callFailed(reasonCode: "promptTooLarge", statusCode: 413, retryable: false)
+        )
+        #expect((serve as? RemoteTurnClientError)?.gnosticCode == "promptTooLarge")
+
+        // An unrelated serve failure keeps its own structured error.
+        let other = RemoteTurnClient.remoteError(
+            GnosticTurnClientError.callFailed(reasonCode: "turnConflict", statusCode: 409, retryable: false)
+        )
+        #expect(other is GnosticTurnClientError)
     }
 }
 

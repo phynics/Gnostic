@@ -78,7 +78,9 @@ public final class GnosticTurnClient {
     /// - Returns: The Turn result.
     /// - Throws: ``GnosticTurnClientError`` when the target cannot be resolved,
     ///   the addressed provider does not own the Timeline, or the serve
-    ///   rejected the call.
+    ///   rejected the call. ``GnosticWirePayload/Error/tooLarge(context:actualBytes:maximumBytes:)``
+    ///   when the prompt exceeds ``GnosticWirePayload/maximumTurnMessageBytes``;
+    ///   the prompt is rejected before the call, never truncated.
     public func run(
         message: String,
         timelineID: UUID,
@@ -134,7 +136,10 @@ public final class GnosticTurnClient {
     /// - Returns: The bounded replay, including the updates the serve retained.
     /// - Throws: ``GnosticTurnClientError`` when the target cannot be resolved,
     ///   the addressed provider does not own the Timeline, or the serve
-    ///   rejected the call.
+    ///   rejected the call. ``GnosticWirePayload/Error/tooLarge(context:actualBytes:maximumBytes:)``
+    ///   when a supplied `message` exceeds
+    ///   ``GnosticWirePayload/maximumTurnMessageBytes``; the message is
+    ///   rejected before the call, never truncated.
     public func replay(
         timelineID: UUID,
         clientTurnID: String,

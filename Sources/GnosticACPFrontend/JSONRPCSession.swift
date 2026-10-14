@@ -261,7 +261,7 @@ public actor JSONRPCSession {
              .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .providerOffline,
              .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
              .missingCapability: .invalidState
-        case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI: .invalidParams
+        case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI, .promptTooLarge: .invalidParams
         }
         return JSONRPCErrorObject(
             code: code.rawValue,
