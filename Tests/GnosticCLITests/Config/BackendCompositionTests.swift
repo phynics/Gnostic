@@ -78,7 +78,7 @@ private final class FixtureCompositionBackend: AscendantBackend {
     ) async throws -> String {
         let reply = "fixture: \(request.message)"
         try await updates.append(
-            AscendantBackendUpdate(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: reply)
+            AscendantBackendUpdate(kind: .assistantText, text: reply)
         )
         return reply
     }

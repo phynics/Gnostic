@@ -120,8 +120,8 @@ public actor AscendantConformanceUpdateSink: AscendantBackendUpdateSink {
     /// Whether any update marked the Turn terminal.
     public var hasTerminal: Bool { updates.contains { $0.terminal } }
 
-    /// The update kinds in arrival order.
-    public var kinds: [String] { updates.map(\.kind) }
+    /// The update kinds in arrival order, as their wire values.
+    public var kinds: [String] { updates.map(\.kind.rawValue) }
 }
 
 /// Always approves a mediated permission request.

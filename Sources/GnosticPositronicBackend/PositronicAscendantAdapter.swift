@@ -405,6 +405,14 @@ import GnosticCore
     }
 
     public func runTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
+        // Core owns the failure terminal update, so this body emits only
+        // success and incremental updates.
+        try await withTerminalFailureUpdate(updates: updates) {
+            try await performTurn(request, updates: updates)
+        }
+    }
+
+    private func performTurn(_ request: AscendantBackendTurnRequest, updates: any AscendantBackendUpdateSink) async throws -> String {
         try requireUsable()
         let operated = try await operatedTimelines()
         guard operated.contains(where: { $0.id == request.timelineID }) else {
@@ -489,7 +497,6 @@ import GnosticCore
                 try await append(updates, kind: .toolState, toolState: .init(toolCallID: id, title: name, status: .failed, content: error))
                 failure = error
             case .error(.generationCancelled):
-                try await append(updates, kind: .cancellation, terminal: true)
                 throw AscendantBackendError.cancelled
             default:
                 break
@@ -528,7 +535,7 @@ import GnosticCore
         toolState: AscendantToolState? = nil,
         terminal: Bool = false
     ) async throws {
-        try await updates.append(.init(kind: kind.rawValue, text: text, toolState: toolState, terminal: terminal))
+        try await updates.append(.init(kind: kind, text: text, toolState: toolState, terminal: terminal))
     }
 
     private nonisolated static func state(_ id: String, _ status: ToolExecutionStatus) -> AscendantToolState {

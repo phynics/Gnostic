@@ -94,11 +94,11 @@ final class EchoAscendantBackend: AscendantBackend {
 
         let reply = "echo: \(request.message)"
         try await updates.append(
-            AscendantBackendUpdate(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: reply)
+            AscendantBackendUpdate(kind: .assistantText, text: reply)
         )
         if cancelled { throw AscendantBackendError.cancelled }
         try await updates.append(
-            AscendantBackendUpdate(kind: AscendantTurnUpdateKind.completion.rawValue, terminal: true)
+            AscendantBackendUpdate(kind: .completion, terminal: true)
         )
         return reply
     }
@@ -174,7 +174,7 @@ private actor RecordingUpdateSink: AscendantBackendUpdateSink {
     private(set) var terminalCount = 0
 
     func append(_ update: AscendantBackendUpdate) async throws {
-        kinds.append(update.kind)
+        kinds.append(update.kind.rawValue)
         if update.terminal { terminalCount += 1 }
     }
 }

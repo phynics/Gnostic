@@ -141,11 +141,14 @@ private struct BackendTurnUpdateSink: AscendantBackendUpdateSink {
         _ = try await store.append(
             timelineID: request.timelineID,
             clientTurnID: clientTurnID,
-            kind: update.kind,
+            kind: update.kind.rawValue,
             text: update.text,
             toolState: update.toolState,
             permissionState: update.permissionState,
-            terminal: update.terminal
+            terminal: update.terminal,
+            reasonCode: update.reasonCode,
+            statusCode: update.statusCode,
+            retryable: update.retryable
         )
     }
 }
