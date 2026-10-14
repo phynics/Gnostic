@@ -35,47 +35,51 @@ PositronicKit tools, permission mediation, and local Workspace execution
 require its value/result protocols. Those APIs are adapter or transport seams,
 not Gnostic identity, manifest, backend, or network projection types.
 
-The retained `PKContracts` imports are limited to the explicit adapter and
-transport seams in `Adapters/AxolotyWorkspace.swift`,
-`Adapters/FileTimelineRuntimeRepository.swift`,
-`Adapters/PositronicAscendantAdapter.swift`,
-`Adapters/PositronicContribution.swift`,
-`Adapters/WorkspaceProvider.swift`,
-`Providers/AscendantTurnProvider.swift`,
-`Providers/TimelineManagementProvider.swift`,
-`Providers/TimelineStatusProvider.swift`,
-`Providers/WorkspaceOpsProvider.swift`,
-`Runtime/AscendantPermissionCoordinator.swift`,
-`Runtime/BackendWorkspaceService.swift`,
-`Runtime/MultiplexedWorkspaceProvider.swift`,
-`Runtime/NodeAssembly.swift`,
-`Runtime/NodeRuntime.swift`,
-`Runtime/NodeRuntimeAdapters.swift`,
-`Runtime/NodeRuntimeHost.swift`,
-`Runtime/NodeTransport.swift`,
-`Runtime/WorkspaceService.swift`,
-`Services/DiscoveredWorkspaceAttachmentService.swift`,
-`Services/NetworkManagementTools.swift`, and
-`Services/WorkspaceReferenceProjection.swift`. The architecture fitness test
-compares this set mechanically so a new import requires an explicit boundary
-review.
+The retained `PKContracts` imports were limited to the explicit adapter and
+transport seams in `Sources/GnosticPositronicBackend/AxolotyWorkspace.swift`,
+`Sources/GnosticPositronicBackend/FileTimelineRuntimeRepository.swift`,
+`Sources/GnosticPositronicBackend/PositronicAscendantAdapter.swift`,
+`Sources/GnosticPositronicBackend/PositronicContribution.swift`,
+`Sources/GnosticCore/Adapters/WorkspaceProvider.swift`,
+`Sources/GnosticCore/Providers/AscendantTurnProvider.swift`,
+`Sources/GnosticCore/Providers/TimelineManagementProvider.swift`,
+`Sources/GnosticCore/Providers/TimelineStatusProvider.swift`,
+`Sources/GnosticCore/Providers/WorkspaceOpsProvider.swift`,
+`Sources/GnosticCore/Runtime/AscendantPermissionCoordinator.swift`,
+`Sources/GnosticCore/Runtime/BackendWorkspaceService.swift`,
+`Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift`,
+`Sources/GnosticCore/Runtime/NodeAssembly.swift`,
+`Sources/GnosticCore/Runtime/NodeRuntime.swift`,
+`Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift`,
+`Sources/GnosticCore/Runtime/NodeRuntimeHost.swift`,
+`Sources/GnosticCore/Runtime/NodeTransport.swift`,
+`Sources/GnosticCore/Runtime/WorkspaceService.swift`,
+`Sources/GnosticPositronicBackend/DiscoveredWorkspaceAttachmentService.swift`,
+`Sources/GnosticPositronicBackend/NetworkManagementTools.swift`, and
+`Sources/GnosticCore/Services/WorkspaceReferenceProjection.swift`. The paths
+name each file's current location after the GNO-PLAT-P7 extraction below. The
+architecture fitness test compared this set mechanically so a new import
+required an explicit boundary review; it now asserts that `GnosticCore` imports
+no Positronic dependency.
 
 ## Import inventory
 
-Every remaining `PositronicKit` import in `GnosticCore` has one of these roles:
+Every remaining `PositronicKit` import in `GnosticCore` had one of these roles.
+The paths name each file's current location after the GNO-PLAT-P7 extraction
+below.
 
 | Files | Role | Boundary rule |
 | --- | --- | --- |
-| `Adapters/PositronicAscendantAdapter.swift` | Positronic Backend implementation | Owns native Agent/TimelineRecord construction, persistence, tools, events, and shutdown. Native values do not cross `AscendantBackend`. |
-| `Adapters/FileTimelineRuntimeRepository.swift` | Durable Timeline runtime store | Composes the in-memory reference repository with Gnostic's append-only event log to persist Timeline history and Turn transitions across restarts. The `BackendTimelineStoreCapability` it defines carries only the backend-neutral `TimelineRuntimeRepository`/`WorkspaceBindingRepository` existentials. |
-| `Adapters/PositronicContribution.swift` | Positronic contribution seam | Generic, statically selected extension of one Positronic Ascendant: additional tools and one bounded `TurnContextSource`. Native tool/context values stay inside the bundled backend boundary; the seam carries no experiment type. |
-| `Adapters/AxolotyWorkspace.swift`, `Runtime/WorkspaceService.swift`, `Runtime/BackendWorkspaceService.swift` | Explicit Workspace host bridge | Converts Gnostic-owned references and backend capability values to native Workspace values only at the local execution seam. |
-| `Services/WorkspaceReferenceProjection.swift` | Explicit projection adapter | Performs the only generic Workspace-reference conversion in both directions. |
-| `Services/DiscoveredWorkspaceAttachmentService.swift` | Positronic attachment bridge | Uses native Timeline/Workspace capabilities behind the backend-owned attachment tool path. |
-| `Services/NetworkManagementTools.swift` | Positronic tool implementation | Implements backend-private network inspection and attachment tools. |
-| `Adapters/WorkspaceProvider.swift` | Positronic workspace call bridge | Adapts Axoloty workspace calls to PositronicKit Workspace errors and tool results. |
-| `Runtime/NodeRuntimeAdapters.swift` | Composition registry | Registers the bundled Positronic factory and local Workspace adapters; generic backends use `registerBackend`. |
-| `Runtime/NodeAssembly.swift`, `Runtime/NodeRuntime.swift`, `Runtime/NodeRuntimeHost.swift`, `Runtime/NodeTransport.swift`, `Runtime/MultiplexedWorkspaceProvider.swift` | Host composition and transport | Keeps native Workspace/tool values in runtime-local forwarding and registration code. |
+| `Sources/GnosticPositronicBackend/PositronicAscendantAdapter.swift` | Positronic Backend implementation | Owns native Agent/TimelineRecord construction, persistence, tools, events, and shutdown. Native values do not cross `AscendantBackend`. |
+| `Sources/GnosticPositronicBackend/FileTimelineRuntimeRepository.swift` | Durable Timeline runtime store | Composes the in-memory reference repository with Gnostic's append-only event log to persist Timeline history and Turn transitions across restarts. The `BackendTimelineStoreCapability` it defines carries only the backend-neutral `TimelineRuntimeRepository`/`WorkspaceBindingRepository` existentials. |
+| `Sources/GnosticPositronicBackend/PositronicContribution.swift` | Positronic contribution seam | Generic, statically selected extension of one Positronic Ascendant: additional tools and one bounded `TurnContextSource`. Native tool/context values stay inside the bundled backend boundary; the seam carries no experiment type. |
+| `Sources/GnosticPositronicBackend/AxolotyWorkspace.swift`, `Sources/GnosticCore/Runtime/WorkspaceService.swift`, `Sources/GnosticCore/Runtime/BackendWorkspaceService.swift` | Explicit Workspace host bridge | Converts Gnostic-owned references and backend capability values to native Workspace values only at the local execution seam. |
+| `Sources/GnosticCore/Services/WorkspaceReferenceProjection.swift` | Explicit projection adapter | Performs the only generic Workspace-reference conversion in both directions. |
+| `Sources/GnosticPositronicBackend/DiscoveredWorkspaceAttachmentService.swift` | Positronic attachment bridge | Uses native Timeline/Workspace capabilities behind the backend-owned attachment tool path. |
+| `Sources/GnosticPositronicBackend/NetworkManagementTools.swift` | Positronic tool implementation | Implements backend-private network inspection and attachment tools. |
+| `Sources/GnosticCore/Adapters/WorkspaceProvider.swift` | Positronic workspace call bridge | Adapted Axoloty workspace calls to PositronicKit Workspace errors and tool results. The bridge moved to `GnosticPositronicBackend`; the Core file now holds the generic `WorkspaceInvocation` payload. |
+| `Sources/GnosticCore/Runtime/NodeRuntimeAdapters.swift` | Composition registry | Registers the bundled Positronic factory and local Workspace adapters; generic backends use `registerBackend`. |
+| `Sources/GnosticCore/Runtime/NodeAssembly.swift`, `Sources/GnosticCore/Runtime/NodeRuntime.swift`, `Sources/GnosticCore/Runtime/NodeRuntimeHost.swift`, `Sources/GnosticCore/Runtime/NodeTransport.swift`, `Sources/GnosticCore/Runtime/MultiplexedWorkspaceProvider.swift` | Host composition and transport | Keeps native Workspace/tool values in runtime-local forwarding and registration code. |
 
 Redundant imports in generic lifecycle, projection, and provider files were
 removed. `PKPrompt` had no Core source consumer and is no longer a Core or Core

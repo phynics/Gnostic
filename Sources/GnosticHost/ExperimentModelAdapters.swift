@@ -10,9 +10,9 @@ import GnosticPositronicBackend
 /// Bridges a kit model service to the Positronic contribution model seam.
 ///
 /// The Positronic contribution hook and its native client stay inside this
-/// composition target, so `GnosticKit` never names a backend type. When the
-/// Positronic backend leaves `GnosticCore` in P7 (#460), this adapter moves with
-/// the backend and the kit is untouched.
+/// composition target, so `GnosticKit` never names a backend type. The P7
+/// extraction (#460) moved the bundled backend to `GnosticPositronicBackend`;
+/// this adapter stays in the composition target and the kit is untouched.
 public struct PositronicContributionModelServiceAdapter: PositronicContributionModelService {
     let service: any ExperimentModelService
 

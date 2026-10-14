@@ -229,11 +229,10 @@ and no production default.
 and a trailing newline. `ExperimentTrace.digest()` is the SHA-256 of that
 canonical JSON, so a tape is content-addressable across hosts.
 
-A Run can also journal its tape durably. `ExperimentTraceJournal` writes each
-event through the kernel's append-only log, and
-`ExperimentTraceRecorder.enableJournal(at:)` recovers a partial tape after a
-crash and continues its current Turn. Journaling is opt-in like recording
-itself: a recorder without a journal keeps its in-memory tape.
+A Run can also journal its tape durably. `ExperimentTraceRecorder.enableJournal(at:)`
+writes each event through the kernel's append-only log, recovers a partial tape
+after a crash, and continues its current Turn. Journaling is opt-in like
+recording itself: a recorder without a journal keeps its in-memory tape.
 
 Replay substitutes recorded model responses for live calls.
 `ExperimentReplay.replay(_:using:)` runs a harness over the tape, records what
@@ -261,6 +260,23 @@ The kit is the handoff target for the first two consumers:
 The regime/run surface and the payload-free instrumentation hooks are the
 handoff points to the CLI console (#463) and the module instrumentation issues
 (#492 Ouroboros, #493 Akasha).
+
+## Turn interception (seam without a production adapter)
+
+`GnosticKit` also owns the Turn interception seam: `TurnModelIntercepting`,
+`TurnToolIntercepting`, and `TurnRoundIntercepting`, composed by
+`TurnInterceptionPipeline`. A module contributes interceptors through the
+`GnosticModule.turnInterception` factory, and the composition layer builds one
+pipeline per Ascendant.
+
+No production module registers `turnInterception`, so the pipeline is `.empty`
+for every production Ascendant. The protocols are kept as the planned seam for
+Ouroboros and Akasha (#465); the only consumers today are the kit tests in
+`TurnInterceptionTests` and the host tests in `TurnInterceptionHostTests`. On the
+Positronic path the model and tool hooks are wired; `TurnRoundIntercepting` is
+not, because a backend that does not expose round boundaries leaves it unused.
+Treat an added `turnInterception` factory as a contract addition and gate it
+with a behavioral test.
 
 ## Validate your change
 
