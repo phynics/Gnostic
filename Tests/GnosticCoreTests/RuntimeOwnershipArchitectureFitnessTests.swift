@@ -103,4 +103,49 @@ struct RuntimeOwnershipArchitectureFitnessTests {
             }
         }
     }
+
+    @Test("the transport depends on one Node operation seam")
+    func transportDependsOnOneOperationSeam() throws {
+        let transport = try String(
+            contentsOf: root.appendingPathComponent("Sources/GnosticCore/Runtime/NodeTransport.swift"),
+            encoding: .utf8
+        )
+        #expect(transport.contains("operations: any NodeOperations"))
+        #expect(transport.contains("weak var operations: (any NodeOperations)?"))
+        for removed in [
+            "turnOperation",
+            "cancelTurnOperation",
+            "timelineStatusOperation",
+            "selectAscendantOperation",
+            "createTimelineOperation",
+            "listTimelinesOperation",
+            "renameTimelineOperation",
+            "listWorkspacesOperation",
+            "attachWorkspaceOperation",
+            "detachWorkspaceOperation",
+            "diagnosticsNodeOperation",
+            "diagnosticsAscendantOperation",
+            "diagnosticsTimelineOperation",
+        ] {
+            #expect(
+                !transport.contains(removed),
+                "NodeTransport still stores the per-operation closure '\(removed)'."
+            )
+        }
+
+        let host = try String(
+            contentsOf: root.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntimeHost.swift"),
+            encoding: .utf8
+        )
+        #expect(host.contains("let operations: any NodeOperations"))
+        #expect(!host.contains("NodeTransport.Turn"))
+
+        // `NodeRuntime` is the production adapter and `StubNodeOperations` in
+        // NodeTransportTests is the second adapter, so the seam is real.
+        let runtime = try String(
+            contentsOf: root.appendingPathComponent("Sources/GnosticCore/Runtime/NodeRuntime.swift"),
+            encoding: .utf8
+        )
+        #expect(runtime.contains("extension NodeRuntime: NodeOperations"))
+    }
 }
