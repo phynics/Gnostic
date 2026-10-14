@@ -47,21 +47,10 @@ public final class AxolotyNetworkWorkspaceInvoker: NetworkWorkspaceInvoking {
         let proxy = AxolotyWorkspace(reference: reference, catalog: catalog, communication: communication, timeout: timeout)
         let result = try await proxy.executeTool(
             id: invocation.toolID,
-            parameters: invocation.arguments.mapValues(Self.anyCodable)
+            parameters: invocation.arguments.mapValues(PositronicJSONValueBridge.anyCodable)
         )
         return BackendWorkspaceResult(
             message: result.isSuccess ? result.output : (result.error ?? "Workspace tool failed.")
         )
-    }
-
-    private static func anyCodable(_ value: ManifestJSONValue) -> AnyCodable {
-        switch value {
-        case let .string(value): return AnyCodable(value)
-        case let .number(value): return AnyCodable(value)
-        case let .bool(value): return AnyCodable(value)
-        case let .object(value): return AnyCodable(value.mapValues(anyCodable))
-        case let .array(value): return AnyCodable(value.map(anyCodable))
-        case .null: return AnyCodable(NSNull())
-        }
     }
 }

@@ -61,7 +61,7 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
             throw WorkspaceError.toolExecutionNotSupported
         }
         do {
-            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters.mapValues(PositronicWorkspaceProjection.manifestValue)))
+            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters.mapValues(PositronicJSONValueBridge.manifestValue)))
         } catch is CancellationError {
             throw CancellationError()
         } catch {
