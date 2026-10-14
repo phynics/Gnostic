@@ -34,6 +34,14 @@ struct ExperimentReplayCommandTests {
         #expect(report.modelCalls == ReplaySelfCheck.steps.count)
     }
 
+    @Test("the committed fixture carries the full Regime, not a fixed label")
+    func fixtureCarriesRegime() throws {
+        let trace = try committedTrace()
+        #expect(trace.regime == ExperimentRegime.selfCheck)
+        #expect(trace.regime?.backendKind == "kit")
+        #expect(trace.schemaVersion == ExperimentTrace.currentSchemaVersion)
+    }
+
     @Test("a freshly recorded tape equals the committed fixture")
     func recordedMatchesFixture() async throws {
         let recorded = await ReplaySelfCheck.recordedTrace()

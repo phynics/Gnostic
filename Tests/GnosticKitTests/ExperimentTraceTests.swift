@@ -55,7 +55,7 @@ struct ExperimentTraceTests {
         await recorder.recordModelRequest(prompt: "hello", tier: .utility)
         await recorder.recordModelResponse(text: "world", promptTokens: 1, completionTokens: 1)
         await recorder.recordOutcome("completed")
-        let trace = await recorder.trace(regime: "kit", startedAtUTC: "2026-10-05T00:00:00Z")
+        let trace = await recorder.trace(regime: .selfCheck, startedAtUTC: "2026-10-05T00:00:00Z")
 
         #expect(trace.schemaVersion == ExperimentTrace.currentSchemaVersion)
         #expect(trace.modelResponses.count == 1)
@@ -72,6 +72,28 @@ struct ExperimentTraceTests {
             events: trace.events + [ExperimentTraceEvent(sequence: 4, turnID: "turn-1", kind: .outcome, label: "failed", detail: "")]
         )
         #expect(try changed.digest() != digest)
+    }
+
+    @Test("a tape records the full Regime, not a label")
+    func recordsFullRegime() async {
+        let regime = ExperimentRegime(
+            backendKind: "positronic",
+            modules: ["rlm"],
+            moduleVersions: ["rlm": "gnostic.rlm"],
+            modelTiers: ["primary": "gpt-5"],
+            provider: "openai",
+            endpoint: "https://example.invalid",
+            policies: ["approvalMode": "auto"]
+        )
+        let recorder = ExperimentTraceRecorder(runID: "run-1")
+        await recorder.recordOutcome("completed")
+
+        let trace = await recorder.trace(regime: regime, startedAtUTC: "2026-10-05T00:00:00Z")
+
+        #expect(trace.regime == regime)
+        #expect(trace.regime?.provider == "openai")
+        #expect(trace.regime?.modelTiers["primary"] == "gpt-5")
+        #expect(trace.regime?.policies["approvalMode"] == "auto")
     }
 
     @Test("a tape round-trips through its file with a trailing newline")

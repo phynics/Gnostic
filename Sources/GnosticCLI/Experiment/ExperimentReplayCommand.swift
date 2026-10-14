@@ -19,7 +19,6 @@ enum ReplaySelfCheck {
 
     static let turnID = "replay-self-check"
     static let runID = "kit-replay-self-check"
-    static let regime = ExperimentRegime.selfCheck.backendKind
     static let startedAtUTC = "2026-10-05T00:00:00Z"
     static let outcome = "completed"
     static let steps: [Step] = [
@@ -50,7 +49,7 @@ enum ReplaySelfCheck {
         _ = try? await tool.invoke(toolInvocation)
         if steps.count > 1 { _ = try? await model.generate(prompt: steps[1].prompt, tier: steps[1].tier) }
         await recorder.recordOutcome(outcome)
-        return await recorder.trace(regime: regime, startedAtUTC: startedAtUTC)
+        return await recorder.trace(regime: .selfCheck, startedAtUTC: startedAtUTC)
     }
 
     /// The harness a replay runs against a tape.
@@ -106,7 +105,7 @@ extension ExperimentCommand {
                 throw ExperimentCommandError.invalidArguments("no trace at \(trace)")
             }
             let report = await ExperimentReplay.replay(loaded, using: ReplaySelfCheck.harness)
-            print("Replay \(report.runID) under regime \(loaded.regime ?? "<unrecorded>"): \(report.modelCalls) model call(s), recorded outcome \(report.recordedOutcome), replayed outcome \(report.replayedOutcome).")
+            print("Replay \(report.runID) under regime \(loaded.regime?.backendKind ?? "<unrecorded>"): \(report.modelCalls) model call(s), recorded outcome \(report.recordedOutcome), replayed outcome \(report.replayedOutcome).")
             guard report.matches else {
                 for divergence in report.divergences {
                     print("Divergence: \(divergence)")
