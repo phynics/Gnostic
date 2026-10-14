@@ -5,54 +5,35 @@ import GnosticCore
 import GnosticProtocol
 import PKContracts
 import PositronicKit
-import struct PositronicKit.TimelineRecord
 
 /// Imports safe discovered workspace references and routes attachment authority
-/// through Gnostic when a backend host capability is available.
+/// through the Gnostic host capability.
+///
+/// The host capability is required. A backend resolves and validates the
+/// discovered Workspace, then delegates the commit to the host, so the private
+/// backend projection cannot become the source of truth for attachment intent,
+/// and there is exactly one attachment path.
 @MainActor
 final class DiscoveredWorkspaceAttachmentService {
     private let discovery: any WorkspaceDiscovery
     private let threadCapability: TimelineCapability
-    private let workspaceCapability: WorkspaceCapability?
-    private let hostAttachment: BackendWorkspaceAttachmentCapability?
-    private let readvertiseTimeline: ((TimelineRecord) -> Void)?
+    private let hostAttachment: BackendWorkspaceAttachmentCapability
 
     /// Creates the attachment bridge using the runtime's discovery boundary.
-    /// Backend construction supplies `hostAttachment` so Gnostic can commit
-    /// the attachment intent and effective state after the backend accepts the
-    /// private projection. The capability path keeps PositronicKit's
-    /// coordinators behind its public v5 facade.
+    ///
+    /// - Parameters:
+    ///   - discovery: The host discovery seam that owns the catalog view.
+    ///   - threadCapability: The Ascendant's current Timeline store, used to
+    ///     reject a Timeline this Ascendant does not own.
+    ///   - hostAttachment: The host authority that commits the attachment.
     init(
         discovery: any WorkspaceDiscovery,
         threadCapability: TimelineCapability,
-        workspaceCapability: WorkspaceCapability? = nil,
-        hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
-        readvertiseTimeline: ((TimelineRecord) -> Void)? = nil
+        hostAttachment: BackendWorkspaceAttachmentCapability
     ) {
         self.discovery = discovery
         self.threadCapability = threadCapability
-        self.workspaceCapability = workspaceCapability
         self.hostAttachment = hostAttachment
-        self.readvertiseTimeline = readvertiseTimeline
-    }
-
-    /// Compatibility initializer for callers that still own the Axoloty
-    /// catalog directly. Backend construction uses the Gnostic discovery seam
-    /// above so raw host values do not cross into adapter services.
-    convenience init(
-        catalog: NetworkCatalog,
-        threadCapability: TimelineCapability,
-        workspaceCapability: WorkspaceCapability? = nil,
-        hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
-        readvertiseTimeline: ((TimelineRecord) -> Void)? = nil
-    ) {
-        self.init(
-            discovery: CatalogWorkspaceDiscovery(catalog: catalog),
-            threadCapability: threadCapability,
-            workspaceCapability: workspaceCapability,
-            hostAttachment: hostAttachment,
-            readvertiseTimeline: readvertiseTimeline
-        )
     }
 
     /// Lists provider-scoped catalog entries for `list_network_objects`.
@@ -68,12 +49,10 @@ final class DiscoveredWorkspaceAttachmentService {
     }
 
     /// Imports a uniquely advertised workspace as a runtime reference and
-    /// attaches it after approval. Backend-originated calls go through the
-    /// Gnostic host capability so the private backend projection cannot become
-    /// the source of truth for attachment intent.
+    /// attaches it through the host. Approval is enforced by
+    /// `AscendantToolApprovalPolicy`; this path holds no approval flag.
     @discardableResult
-    func attach(workspaceID: UUID, to timelineID: UUID, approved: Bool) async throws -> WorkspaceReference {
-        guard approved else { throw DiscoveredWorkspaceAttachmentError.approvalRequired }
+    func attach(workspaceID: UUID, to timelineID: UUID) async throws -> WorkspaceReference {
         // Ownership is the Ascendant's current Timeline set, not a snapshot
         // captured at backend construction. A Timeline created at runtime is
         // persisted before its first Turn, so the same capability that owns
@@ -91,41 +70,7 @@ final class DiscoveredWorkspaceAttachmentService {
               let reference = try? PositronicWorkspaceProjection.reference(from: descriptor) else {
             throw DiscoveredWorkspaceAttachmentError.invalidURI
         }
-        if let hostAttachment {
-            try await hostAttachment.attach(workspaceID: reference.id, timelineID: timelineID)
-        } else {
-            guard let workspaceCapability else {
-                throw DiscoveredWorkspaceAttachmentError.invalidURI
-            }
-            try await workspaceCapability.update(reference)
-            try await threadCapability.attachWorkspace(reference.id, to: timelineID)
-            if let thread = try await threadCapability.get(timelineID) {
-                readvertiseTimeline?(thread)
-            }
-        }
+        try await hostAttachment.attach(workspaceID: reference.id, timelineID: timelineID)
         return reference
-    }
-}
-
-/// Adapts the legacy catalog owner to the narrow discovery seam used by
-/// backend-specific optional services.
-@MainActor
-private final class CatalogWorkspaceDiscovery: WorkspaceDiscovery {
-    private let catalog: NetworkCatalog
-
-    init(catalog: NetworkCatalog) {
-        self.catalog = catalog
-    }
-
-    func discover(timeout _: Duration) async {}
-    func objects() async -> [NetworkCatalogEntry] { await catalog.networkObjects() }
-    func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
-        await catalog.workspaceAttachmentStatus(id: id)
-    }
-
-    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
-
-    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
-        await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID)
     }
 }

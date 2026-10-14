@@ -6,7 +6,6 @@ import Foundation
 @testable import GnosticCore
 import PKContracts
 import PositronicKit
-import struct PositronicKit.TimelineRecord
 import Testing
 
 @Suite("Gnostic runner fixture")
@@ -67,9 +66,25 @@ struct RunnerFixtureE2ETests {
             runtime: .init(workspaceCreator: factory)
         ))
         let timeline = try await kit.timelines.create()
-        let readvertised = TimelineRecorder()
-        let attachment = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces, readvertiseTimeline: { readvertised.record($0) })
-        _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
+        // The production host commits the attachment. This fixture binds the
+        // same host capability to the kit operations the bundled adapter
+        // exposes, so the discovered Workspace is available to the factory.
+        let attachmentHost = BackendWorkspaceAttachmentCapability { workspaceID, timelineID in
+            guard case let .available(providerID, uri) = await catalog.workspaceAttachmentStatus(id: workspaceID),
+                  let descriptor = await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID),
+                  descriptor.uri == uri,
+                  let reference = try? PositronicWorkspaceProjection.reference(from: descriptor) else {
+                throw DiscoveredWorkspaceAttachmentError.invalidURI
+            }
+            try await kit.workspaces.update(reference)
+            try await kit.timelines.attachWorkspace(reference.id, to: timelineID)
+        }
+        let attachment = DiscoveredWorkspaceAttachmentService(
+            discovery: CatalogWorkspaceDiscovery(catalog: catalog),
+            threadCapability: kit.timelines,
+            hostAttachment: attachmentHost
+        )
+        _ = try await attachment.attach(workspaceID: workspaceID, to: timeline.id)
 
         guard let reference = try await kit.workspaces.get(workspaceID) else {
             Issue.record("attached workspace was not persisted")
@@ -118,11 +133,6 @@ private func start(_ manager: CommunicationManager) async throws {
         if state == .online { return }
     }
     throw CancellationError()
-}
-
-private final class TimelineRecorder: @unchecked Sendable {
-    private(set) var timelines: [TimelineRecord] = []
-    func record(_ timeline: TimelineRecord) { timelines.append(timeline) }
 }
 
 private func fixtureReference(id: UUID) -> WorkspaceReference {

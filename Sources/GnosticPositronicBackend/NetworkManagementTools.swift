@@ -82,7 +82,7 @@ public struct AttachWorkspaceTool: PKTool, Sendable {
             return .failure("workspaceId and timelineId must be UUID strings")
         }
         do {
-            let workspace = try await service.attach(workspaceID: workspaceID, to: timelineID, approved: true)
+            let workspace = try await service.attach(workspaceID: workspaceID, to: timelineID)
             return .success(workspace.id.uuidString)
         } catch let error as DiscoveredWorkspaceAttachmentError {
             return .failure(Self.failureMessage(for: error))

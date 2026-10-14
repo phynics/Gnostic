@@ -7,7 +7,6 @@ import Axoloty
 import JSONSchema
 import PKContracts
 import PositronicKit
-import struct PositronicKit.TimelineRecord
 import Testing
 
 @Suite("Gnostic workspace provider")
@@ -18,28 +17,13 @@ struct WorkspaceProviderTests {
         #expect(await catalog.networkObjects().isEmpty)
     }
 
-    @Test("attachment service refuses unapproved discovered workspaces")
-    @MainActor
-    func attachmentRequiresApproval() async throws {
-        let catalog = NetworkCatalog()
-        let kit = PKRuntime()
-        let timeline = try await kit.timelines.create()
-        let service = DiscoveredWorkspaceAttachmentService(
-            catalog: catalog,
-            threadCapability: kit.timelines,
-            workspaceCapability: kit.workspaces
-        )
-
-        await #expect(throws: DiscoveredWorkspaceAttachmentError.self) {
-            try await service.attach(workspaceID: UUID(), to: timeline.id, approved: false)
-        }
-    }
-
     @Test("network management API lists and inspects without attaching") @MainActor
     func networkManagementInspection() async throws {
-        let catalog = NetworkCatalog()
-        let kit = PKRuntime()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces)
+        let service = DiscoveredWorkspaceAttachmentService(
+            discovery: CatalogWorkspaceDiscovery(catalog: NetworkCatalog()),
+            threadCapability: PKRuntime().timelines,
+            hostAttachment: BackendWorkspaceAttachmentCapability()
+        )
         #expect(await service.listNetworkObjects().isEmpty)
         #expect(await service.inspectNetworkObject(id: UUID(), providerID: "none") == nil)
     }
@@ -47,9 +31,9 @@ struct WorkspaceProviderTests {
     @Test("public network tools expose exact IDs, approval metadata, and callable schemas") @MainActor
     func publicNetworkToolsMetadataAndInvalidInput() async throws {
         let service = DiscoveredWorkspaceAttachmentService(
-            catalog: NetworkCatalog(),
+            discovery: CatalogWorkspaceDiscovery(catalog: NetworkCatalog()),
             threadCapability: PKRuntime().timelines,
-            workspaceCapability: PKRuntime().workspaces
+            hostAttachment: BackendWorkspaceAttachmentCapability()
         )
         let list = AnyTool(ListNetworkObjectsTool(service: service))
         let inspect = AnyTool(InspectNetworkObjectTool(service: service))
@@ -73,26 +57,27 @@ struct WorkspaceProviderTests {
         #expect(!(try await attach.execute(parameters: [:])).isSuccess)
     }
 
-    @Test("attachment imports a discovered runtime workspace, attaches it, and readvertises the timeline") @MainActor
-    func attachmentImportsAndReadvertises() async throws {
+    @Test("attachment imports a discovered runtime workspace and delegates the commit to the host") @MainActor
+    func attachmentImportsAndDelegates() async throws {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000003")!
         let catalog = NetworkCatalog()
         let payload = """
         {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
-        let store = InMemoryWorkspacePersistence()
-        let runtimeRepository = InMemoryTimelineRuntimeRepository()
-        let kit = PKRuntime(configuration: .init(
-            languageModel: UnconfiguredLLMService(),
-            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store),
-            runtime: .init(workspaceCreator: RemoteWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
-        ))
+        let kit = PKRuntime()
         let timeline = try await kit.timelines.create()
-        let recorder = TimelineRecorder()
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces, readvertiseTimeline: { recorder.record($0) })
+        let recorder = BackendAttachmentRecorder()
+        let host = BackendWorkspaceAttachmentCapability { workspace, timeline in
+            await recorder.record(workspaceID: workspace, timelineID: timeline)
+        }
+        let service = DiscoveredWorkspaceAttachmentService(
+            discovery: CatalogWorkspaceDiscovery(catalog: catalog),
+            threadCapability: kit.timelines,
+            hostAttachment: host
+        )
 
-        let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id, approved: true)
+        let reference = try await service.attach(workspaceID: workspaceID, to: timeline.id)
         #expect(reference.location == .runtime)
         #expect(reference.tools.map(\.toolID) == ["custom"])
         let tool = try #require(reference.tools.first)
@@ -105,8 +90,8 @@ struct WorkspaceProviderTests {
         #expect(projectedSchema["required"] as? [String] == ["query"])
         let properties = try #require(projectedSchema["properties"] as? [String: Any])
         #expect((properties["query"] as? [String: Any])?["type"] as? String == "string")
-        #expect(try await runtimeRepository.bindings(for: timeline.id).map(\.workspaceID) == [workspaceID])
-        #expect(recorder.ids == [timeline.id])
+        #expect(await recorder.workspaceID == workspaceID)
+        #expect(await recorder.timelineID == timeline.id)
     }
 
     @Test("backend attachment tools delegate authority to the Gnostic host") @MainActor
@@ -125,9 +110,8 @@ struct WorkspaceProviderTests {
             await recorder.record(workspaceID: workspace, timelineID: timeline)
         }
         let service = DiscoveredWorkspaceAttachmentService(
-            catalog: catalog,
+            discovery: CatalogWorkspaceDiscovery(catalog: catalog),
             threadCapability: kit.timelines,
-            workspaceCapability: kit.workspaces,
             hostAttachment: host
         )
         let tool = AttachWorkspaceTool(service: service)
@@ -151,28 +135,34 @@ struct WorkspaceProviderTests {
         {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
-        let store = InMemoryWorkspacePersistence()
-        let runtimeRepository = InMemoryTimelineRuntimeRepository()
-        let kit = PKRuntime(configuration: .init(
-            languageModel: UnconfiguredLLMService(),
-            persistence: .init(runtimeRepository: runtimeRepository, workspacePersistence: store),
-            runtime: .init(workspaceCreator: RemoteWorkspaceFactory(catalog: catalog) { _ in .success("unused") })
-        ))
+        let kit = PKRuntime()
+        let recorder = BackendAttachmentRecorder()
+        let host = BackendWorkspaceAttachmentCapability { workspace, timeline in
+            await recorder.record(workspaceID: workspace, timelineID: timeline)
+        }
         // Building the service stands in for backend construction. The Timeline
         // below is created afterwards, like an ACP/pi session Timeline.
-        let service = DiscoveredWorkspaceAttachmentService(catalog: catalog, threadCapability: kit.timelines, workspaceCapability: kit.workspaces)
+        let service = DiscoveredWorkspaceAttachmentService(
+            discovery: CatalogWorkspaceDiscovery(catalog: catalog),
+            threadCapability: kit.timelines,
+            hostAttachment: host
+        )
         let created = try await kit.timelines.create(title: "Runtime")
 
-        let reference = try await service.attach(workspaceID: workspaceID, to: created.id, approved: true)
+        let reference = try await service.attach(workspaceID: workspaceID, to: created.id)
 
         #expect(reference.id == workspaceID)
-        #expect(try await runtimeRepository.bindings(for: created.id).map(\.workspaceID) == [workspaceID])
+        #expect(await recorder.timelineID == created.id)
     }
 
     @Test("attach tool reports an unowned Timeline as a readable failure")
     @MainActor
     func attachToolReportsUnownedTimeline() async throws {
-        let service = DiscoveredWorkspaceAttachmentService(catalog: NetworkCatalog(), threadCapability: PKRuntime().timelines, workspaceCapability: PKRuntime().workspaces)
+        let service = DiscoveredWorkspaceAttachmentService(
+            discovery: CatalogWorkspaceDiscovery(catalog: NetworkCatalog()),
+            threadCapability: PKRuntime().timelines,
+            hostAttachment: BackendWorkspaceAttachmentCapability()
+        )
         let tool = AttachWorkspaceTool(service: service)
 
         let result = try await tool.execute(parameters: [
@@ -513,11 +503,6 @@ private func encodeProtocolToolResult(_ output: String) throws -> String {
     object["protocolMajor"] = GnosticProtocol.currentMajor
     let encoded = try JSONSerialization.data(withJSONObject: object)
     return try #require(String(data: encoded, encoding: .utf8))
-}
-
-private final class TimelineRecorder: @unchecked Sendable {
-    private(set) var ids: [UUID] = []
-    func record(_ timeline: TimelineRecord) { ids.append(timeline.id) }
 }
 
 private actor BackendAttachmentRecorder {
