@@ -34,9 +34,49 @@ extension CallHandlerResult {
     }
 }
 
+/// The outcome of decoding one request payload against its wire bounds.
+enum GnosticDecoded<Value> {
+    /// The decoded payload.
+    case value(Value)
+    /// The bounded failure that rejects the payload.
+    case rejected(CallHandlerResult)
+}
+
 /// The request, execution, and pagination steps the serve-side Call handlers
 /// share.
 enum GnosticCallHandling {
+    /// Decodes a request payload, mapping its wire-bound errors to the caller's
+    /// reason codes.
+    ///
+    /// Run ``protocolFailure(_:invalidReasonCode:invalidMessage:)`` first so a
+    /// rejected protocol major is reported before a field error.
+    static func decode<Value: Decodable>(
+        _ type: Value.Type,
+        from parameters: String?,
+        invalidReasonCode: String,
+        invalidMessage: String,
+        identifierReasonCode: String,
+        overBudgetReasonCode: String
+    ) -> GnosticDecoded<Value> {
+        guard let parameters else {
+            return .rejected(.failure(code: 400, reasonCode: invalidReasonCode, message: invalidMessage))
+        }
+        do {
+            return .value(try JSONDecoder().decode(type, from: Data(parameters.utf8)))
+        } catch let error as GnosticProtocolError {
+            return .rejected(.failure(error))
+        } catch let error as GnosticWirePayload.Error {
+            switch error {
+            case .invalidIdentifier:
+                return .rejected(.failure(code: 400, reasonCode: identifierReasonCode, message: error.localizedDescription))
+            case .tooLarge:
+                return .rejected(.failure(code: 413, reasonCode: overBudgetReasonCode, message: error.localizedDescription))
+            }
+        } catch {
+            return .rejected(.failure(code: 400, reasonCode: invalidReasonCode, message: invalidMessage))
+        }
+    }
+
     /// Validates the payload's protocol major.
     ///
     /// - Returns: `nil` when the major is compatible; otherwise the protocol

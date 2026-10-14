@@ -104,7 +104,7 @@ struct TurnWireContractTests {
             "timelineID": timelineID.uuidString,
             "clientTurnID": "long-1",
         ])
-        let response = try await provider.handle(parameters: String(decoding: request, as: UTF8.self))
+        let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: String(decoding: request, as: UTF8.self))
         guard case .success = response else {
             Issue.record("the long-prompt run failed")
             return
@@ -115,7 +115,8 @@ struct TurnWireContractTests {
             clientTurnID: "long-1",
             message: message
         )
-        let replayResponse = try await provider.handleReplay(
+        let replayResponse = try await provider.handle(
+            operation: AscendantTurnProvider.replayOperation,
             parameters: String(decoding: try JSONEncoder().encode(replayRequest), as: UTF8.self)
         )
         guard case let .success(result: rawReplay, executionInfo: _) = replayResponse else {
@@ -130,10 +131,11 @@ struct TurnWireContractTests {
     @Test("Turn IDs are canonical across provider results and replay keys")
     func canonicalIDIsSharedByTurnAndReplay() async throws {
         let store = AscendantTurnUpdateStore()
+        let coordinator = AscendantTurnCoordinator(ledger: store)
         let provider = AscendantTurnProvider(
             execute: { request in
                 #expect(request.clientTurnID == "turn-1")
-                return AscendantTurnResult(clientTurnID: request.clientTurnID, text: "answer")
+                return try await coordinator.execute(request, ascendantID: UUID()) { "answer" }
             },
             replayStore: store
         )
@@ -144,6 +146,7 @@ struct TurnWireContractTests {
             "clientTurnID": " turn-1 "
         ])
         let response = try await provider.handle(
+            operation: AscendantTurnProvider.turnOperation,
             parameters: String(decoding: request, as: UTF8.self)
         )
         guard case let .success(result: rawResult, executionInfo: _) = response else {
@@ -156,7 +159,8 @@ struct TurnWireContractTests {
         let replayRequest = AscendantTurnReplayRequest(
             timelineID: timelineID, clientTurnID: "turn-1", message: "hello"
         )
-        let replayResponse = try await provider.handleReplay(
+        let replayResponse = try await provider.handle(
+            operation: AscendantTurnProvider.replayOperation,
             parameters: String(decoding: try JSONEncoder().encode(replayRequest), as: UTF8.self)
         )
         guard case let .success(result: rawReplay, executionInfo: _) = replayResponse else {
@@ -184,7 +188,8 @@ struct TurnWireContractTests {
             "timelineID": targetTimelineID.uuidString,
             "clientTurnID": " turn-1 ",
         ])
-        let response = try await provider.handleCancellation(
+        let response = try await provider.handle(
+            operation: AscendantTurnProvider.cancelOperation,
             parameters: String(decoding: parameters, as: UTF8.self)
         )
         guard case let .success(result: rawResult, executionInfo: _) = response else {
@@ -222,7 +227,7 @@ struct TurnWireContractTests {
         let request = AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: "   ")
         let parameters = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
 
-        let response = try await provider.handleReplay(parameters: parameters)
+        let response = try await provider.handle(operation: AscendantTurnProvider.replayOperation, parameters: parameters)
         guard case let .failure(code, message, _) = response else {
             Issue.record("Invalid replay client ID unexpectedly succeeded")
             return
@@ -245,6 +250,7 @@ struct TurnWireContractTests {
                 "clientTurnID": clientTurnID
             ])
             let response = try await provider.handle(
+                operation: AscendantTurnProvider.turnOperation,
                 parameters: String(decoding: payload, as: UTF8.self)
             )
             guard case let .failure(code, message, _) = response else {

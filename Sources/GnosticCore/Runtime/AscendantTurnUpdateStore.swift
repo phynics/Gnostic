@@ -372,8 +372,15 @@ public actor AscendantTurnUpdateStore {
         return .new
     }
 
-    /// Records the terminal outcome of one admitted Turn. The outcome is the
-    /// replay record: a restarted node answers the same identity from it.
+    /// Records the terminal outcome of one admitted Turn and appends the
+    /// bounded terminal update it replays as. The outcome is the replay record:
+    /// a restarted node answers the same identity from it.
+    ///
+    /// This is the one ledger call the runtime makes to terminalize a Turn. It
+    /// derives the terminal update the wire adapter used to write from its catch
+    /// arms. The append is idempotent because ``append`` returns the retained
+    /// terminal update once an entry holds one, so a terminal the backend already
+    /// emitted is never duplicated.
     internal func recordOutcome(timelineID: UUID, clientTurnID: ValidatedClientTurnID, outcome: TurnTerminalOutcome) {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard var entry = entries[key], entry.outcome == nil else { return }
@@ -391,6 +398,50 @@ public actor AscendantTurnUpdateStore {
             clientTurnID: key.clientTurnID,
             event: .outcome(Self.journalOutcome(outcome))
         ))
+        appendTerminalUpdate(timelineID: timelineID, clientTurnID: clientTurnID, outcome: outcome)
+    }
+
+    /// Appends the bounded update a committed outcome replays as. A capacity
+    /// rejection is swallowed: the outcome is already the replay record, and the
+    /// identity never reruns, so a missing update must not fail the Turn.
+    private func appendTerminalUpdate(
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID,
+        outcome: TurnTerminalOutcome
+    ) {
+        switch outcome {
+        case let .succeeded(text):
+            let streamed = replay(timelineID: timelineID, clientTurnID: clientTurnID)
+                .updates
+                .contains(where: \.carriesAssistantText)
+            if !streamed {
+                _ = try? append(
+                    timelineID: timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: AscendantTurnUpdateKind.assistantText.rawValue,
+                    text: text
+                )
+            }
+            _ = try? append(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                kind: AscendantTurnUpdateKind.completion.rawValue,
+                text: text,
+                terminal: true
+            )
+        case let .failed(error):
+            let kind: AscendantTurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
+            _ = try? append(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                kind: kind.rawValue,
+                text: error.publicMessage,
+                terminal: true,
+                reasonCode: error.reasonCode,
+                statusCode: error.statusCode,
+                retryable: error.retryable
+            )
+        }
     }
 
     /// Opens an entry for a new admission or a recovered start. The identity is

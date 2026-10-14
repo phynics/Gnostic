@@ -71,6 +71,73 @@ struct AscendantTurnUpdateStoreTests {
         #expect(replay.updates.last?.terminal == true)
     }
 
+    @Test("a recorded success appends the bounded terminal update")
+    func recordOutcomeAppendsSuccessUpdate() async throws {
+        let store = AscendantTurnUpdateStore()
+        let timelineID = UUID()
+        let clientTurnID = try await store.validatedClientTurnID("recorded-success")
+        _ = try await store.admit(timelineID: timelineID, clientTurnID: clientTurnID, message: "hello")
+        await store.recordOutcome(timelineID: timelineID, clientTurnID: clientTurnID, outcome: .succeeded(text: "done"))
+
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: "recorded-success")
+        #expect(replay.updates.map(\.kind) == [
+            AscendantTurnUpdateKind.assistantText.rawValue,
+            AscendantTurnUpdateKind.completion.rawValue
+        ])
+        #expect(replay.updates.last?.terminal == true)
+        #expect(replay.updates.last?.text == "done")
+    }
+
+    @Test("a recorded cancellation appends one terminal cancellation update")
+    func recordOutcomeAppendsCancellationUpdate() async throws {
+        let store = AscendantTurnUpdateStore()
+        let timelineID = UUID()
+        let clientTurnID = try await store.validatedClientTurnID("recorded-cancel")
+        _ = try await store.admit(timelineID: timelineID, clientTurnID: clientTurnID, message: "hello")
+        await store.recordOutcome(
+            timelineID: timelineID,
+            clientTurnID: clientTurnID,
+            outcome: .failed(.cancelled(timelineID: timelineID, clientTurnID: "recorded-cancel"))
+        )
+
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: "recorded-cancel")
+        #expect(replay.updates.map(\.kind) == [AscendantTurnUpdateKind.cancellation.rawValue])
+        #expect(replay.updates.last?.terminal == true)
+        #expect(replay.updates.last?.reasonCode == AscendantTurnError.cancelled(
+            timelineID: timelineID,
+            clientTurnID: "recorded-cancel"
+        ).reasonCode)
+    }
+
+    @Test("a recorded outcome never duplicates a terminal the backend already emitted")
+    func recordOutcomeIsIdempotentWithStreamedTerminal() async throws {
+        let store = AscendantTurnUpdateStore()
+        let timelineID = UUID()
+        let clientTurnID = try await store.validatedClientTurnID("streamed-terminal")
+        _ = try await store.admit(timelineID: timelineID, clientTurnID: clientTurnID, message: "hello")
+        _ = try await store.append(
+            timelineID: timelineID,
+            clientTurnID: "streamed-terminal",
+            kind: AscendantTurnUpdateKind.assistantText.rawValue,
+            text: "done"
+        )
+        _ = try await store.append(
+            timelineID: timelineID,
+            clientTurnID: "streamed-terminal",
+            kind: AscendantTurnUpdateKind.completion.rawValue,
+            text: "done",
+            terminal: true
+        )
+        await store.recordOutcome(timelineID: timelineID, clientTurnID: clientTurnID, outcome: .succeeded(text: "done"))
+
+        let replay = try await store.replay(timelineID: timelineID, clientTurnID: "streamed-terminal")
+        #expect(replay.updates.map(\.kind) == [
+            AscendantTurnUpdateKind.assistantText.rawValue,
+            AscendantTurnUpdateKind.completion.rawValue
+        ])
+        #expect(replay.updates.filter(\.terminal).count == 1)
+    }
+
     @Test("compaction retains tool state snapshots")
     func toolStateSurvivesCompaction() async throws {
         let store = AscendantTurnUpdateStore(maxEvents: 2, maxBytes: 10_000)

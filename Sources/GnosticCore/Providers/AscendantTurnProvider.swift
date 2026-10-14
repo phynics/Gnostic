@@ -115,236 +115,141 @@ public struct AscendantTurnProvider: Sendable {
         self.isAvailable = isAvailable
     }
 
-    public func handle(parameters: String?) async throws -> CallHandlerResult {
+    public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
+        guard [Self.turnOperation, Self.replayOperation, Self.cancelOperation].contains(operation) else {
+            return .failure(code: 404, reasonCode: "unknownTurnOperation", message: "Unknown turn operation")
+        }
         guard await isAvailable() else {
             return .failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
         }
-        guard let parameters else {
-            return .failure(GnosticProtocolError.missing)
+        if let failure = GnosticCallHandling.protocolFailure(
+            parameters,
+            invalidReasonCode: Self.invalidReasonCode(for: operation),
+            invalidMessage: Self.invalidMessage(for: operation)
+        ) {
+            return failure
         }
-        let request: AscendantTurnRequest
-        do {
-            request = try JSONDecoder().decode(AscendantTurnRequest.self, from: Data(parameters.utf8))
-        } catch let error as GnosticProtocolError {
-            return .failure(error)
-        } catch let error as GnosticWirePayload.Error {
-            if case .invalidIdentifier = error {
-                return .failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
-            }
-            if case .tooLarge = error {
-                return .failure(code: 413, reasonCode: "promptTooLarge", message: error.localizedDescription)
-            }
-            return .failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
-        } catch {
-            return .failure(code: 400, reasonCode: "invalidAscendantTurnPayload", message: "Invalid ascendant.turn payload")
+        switch operation {
+        case Self.turnOperation:
+            return try await handleTurn(parameters)
+        case Self.replayOperation:
+            return try await handleReplay(parameters)
+        default:
+            return try await handleCancellation(parameters)
         }
-        do {
-            let executedResult = try await executor(request)
-            let result = AscendantTurnResult(
-                clientTurnID: request.clientTurnID ?? executedResult.clientTurnID,
-                text: executedResult.text,
-                replayed: executedResult.replayed,
-                protocolMajor: executedResult.protocolMajor
-            )
-            do {
+    }
+
+    private static func invalidReasonCode(for operation: String) -> String {
+        switch operation {
+        case turnOperation: "invalidAscendantTurnPayload"
+        case replayOperation: "invalidAscendantTurnReplayPayload"
+        default: "invalidAscendantTurnCancellationPayload"
+        }
+    }
+
+    private static func invalidMessage(for operation: String) -> String {
+        switch operation {
+        case turnOperation: "Invalid ascendant.turn payload"
+        case replayOperation: "Invalid ascendant.turn.replay payload"
+        default: "Invalid ascendant.turn.cancel payload"
+        }
+    }
+
+    private func handleTurn(_ parameters: String?) async throws -> CallHandlerResult {
+        switch GnosticCallHandling.decode(
+            AscendantTurnRequest.self,
+            from: parameters,
+            invalidReasonCode: "invalidAscendantTurnPayload",
+            invalidMessage: "Invalid ascendant.turn payload",
+            identifierReasonCode: "invalidClientTurnID",
+            overBudgetReasonCode: "promptTooLarge"
+        ) {
+        case let .rejected(failure):
+            return failure
+        case let .value(request):
+            return try await GnosticCallHandling.run(
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn failed."
+            ) {
+                // The Turn ledger owns every replay update. The coordinator
+                // records the terminal outcome and its bounded update before it
+                // returns the result, so this adapter only maps values to the
+                // wire.
+                let executedResult = try await executor(request)
+                let result = AscendantTurnResult(
+                    clientTurnID: request.clientTurnID ?? executedResult.clientTurnID,
+                    text: executedResult.text,
+                    replayed: executedResult.replayed,
+                    protocolMajor: executedResult.protocolMajor
+                )
                 try GnosticProtocol.validate(result.protocolMajor)
-            } catch let error as GnosticProtocolError {
-                return .failure(error)
+                return try .encoded(result, context: "ascendant.turn result")
             }
-            if let replayStore, let clientTurnID = request.clientTurnID, !result.replayed {
-                let replay = try await replayStore.replay(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID
-                )
-                let streamed = replay.updates.contains(where: \.carriesAssistantText)
-                if !streamed {
-                    _ = try await replayStore.append(
-                        timelineID: request.timelineID,
-                        clientTurnID: clientTurnID,
-                        kind: AscendantTurnUpdateKind.assistantText.rawValue,
-                        text: result.text
-                    )
-                }
-                _ = try await replayStore.append(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID,
-                    kind: AscendantTurnUpdateKind.completion.rawValue,
-                    text: result.text,
-                    terminal: true
-                )
-                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            let encoded = try GnosticWirePayload.encode(result, context: "ascendant.turn result")
-            return .success(result: String(decoding: encoded, as: UTF8.self))
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as AscendantTurnError {
-            let mapped = GnosticProtocol.publicFailure(
-                for: error,
-                fallbackCode: 500,
-                fallbackReasonCode: "internalError",
-                fallbackMessage: "The ascendant turn failed."
-            )
-            if let replayStore, let clientTurnID = request.clientTurnID,
-               !isAdmissionOnlyError(error) {
-                let replay = try await replayStore.replay(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID
-                )
-                guard !replay.terminal else {
-                    try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-                    return .failure(mapped)
-                }
-                let kind: AscendantTurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
-                _ = try await replayStore.append(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID,
-                    kind: kind.rawValue,
-                    text: error.publicMessage,
-                    terminal: true,
-                    reasonCode: error.reasonCode,
-                    statusCode: error.statusCode,
-                    retryable: error.retryable
-                )
-                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            return .failure(mapped)
-        } catch let error as NodeRuntimeError {
-            let mapped = GnosticProtocol.publicFailure(
-                for: error,
-                fallbackCode: 500,
-                fallbackReasonCode: "internalError",
-                fallbackMessage: "The ascendant turn failed."
-            )
-            if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = try await replayStore.append(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID,
-                    kind: AscendantTurnUpdateKind.error.rawValue,
-                    text: error.publicMessage,
-                    terminal: true,
-                    reasonCode: error.reasonCode,
-                    statusCode: error.statusCode
-                )
-                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            return .failure(mapped)
-        } catch let error as GnosticProtocolError {
-            if let replayStore, let clientTurnID = request.clientTurnID {
-                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            return .failure(error)
-        } catch {
-            if let replayStore, let clientTurnID = request.clientTurnID {
-                _ = try await replayStore.append(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID,
-                    kind: AscendantTurnUpdateKind.error.rawValue,
-                    text: "The ascendant turn failed.",
-                    terminal: true,
-                    reasonCode: "internalError",
-                    statusCode: 500
-                )
-                try await replayStore.finish(timelineID: request.timelineID, clientTurnID: clientTurnID)
-            }
-            let mapped = GnosticProtocol.publicFailure(
-                for: error,
-                fallbackCode: 500,
-                fallbackReasonCode: "internalError",
-                fallbackMessage: "The ascendant turn failed."
-            )
-            return .failure(mapped)
         }
     }
 
-    private func isAdmissionOnlyError(_ error: AscendantTurnError) -> Bool {
-        switch error {
-        case .conflict, .replayUnavailable, .capacityExceeded: return true
-        case .failed, .terminal, .cancelled, .lifecycleUnusable, .backendUnavailable: return false
-        }
-    }
-
-    public func handleReplay(parameters: String?) async throws -> CallHandlerResult {
-        guard await isAvailable() else {
-            return .failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
-        }
+    private func handleReplay(_ parameters: String?) async throws -> CallHandlerResult {
         guard let replayStore else {
             return .failure(code: 400, reasonCode: "replayUnavailable", message: "Replay is not configured for this provider.")
         }
-        guard let parameters else {
-            return .failure(GnosticProtocolError.missing)
-        }
-        let request: AscendantTurnReplayRequest
-        do {
-            request = try JSONDecoder().decode(AscendantTurnReplayRequest.self, from: Data(parameters.utf8))
-        } catch let error as GnosticProtocolError {
-            return .failure(error)
-        } catch let error as GnosticWirePayload.Error {
-            if case .invalidIdentifier = error {
-                return .failure(code: 400, reasonCode: "invalidClientTurnID", message: error.localizedDescription)
+        switch GnosticCallHandling.decode(
+            AscendantTurnReplayRequest.self,
+            from: parameters,
+            invalidReasonCode: "invalidAscendantTurnReplayPayload",
+            invalidMessage: "Invalid ascendant.turn.replay payload",
+            identifierReasonCode: "invalidClientTurnID",
+            overBudgetReasonCode: "promptTooLarge"
+        ) {
+        case let .rejected(failure):
+            return failure
+        case let .value(request):
+            return try await GnosticCallHandling.run(
+                fallbackReasonCode: "internalError",
+                fallbackMessage: "The ascendant turn replay failed."
+            ) {
+                let replay = try await replayStore.replay(
+                    timelineID: request.timelineID,
+                    clientTurnID: request.clientTurnID,
+                    message: request.message,
+                    afterSequence: request.afterSequence
+                )
+                if replay.conflict {
+                    return .failure(code: 409, reasonCode: "turnConflict", message: "clientTurnID was already used with different content")
+                }
+                try GnosticProtocol.validate(replay.protocolMajor)
+                return try .encoded(replay, context: "ascendant.turn.replay result")
             }
-            if case .tooLarge = error {
-                return .failure(code: 413, reasonCode: "promptTooLarge", message: error.localizedDescription)
-            }
-            return .failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
-        } catch {
-            return .failure(code: 400, reasonCode: "invalidAscendantTurnReplayPayload", message: "Invalid ascendant.turn.replay payload")
         }
-        let replay = try await replayStore.replay(
-            timelineID: request.timelineID,
-            clientTurnID: request.clientTurnID,
-            message: request.message,
-            afterSequence: request.afterSequence
-        )
-        if replay.conflict {
-            return .failure(code: 409, reasonCode: "turnConflict", message: "clientTurnID was already used with different content")
-        }
-        do {
-            try GnosticProtocol.validate(replay.protocolMajor)
-        } catch let error as GnosticProtocolError {
-            return .failure(error)
-        }
-        let encoded = try GnosticWirePayload.encode(replay, context: "ascendant.turn.replay result")
-        return .success(result: String(decoding: encoded, as: UTF8.self))
     }
 
-    public func handleCancellation(parameters: String?) async throws -> CallHandlerResult {
-        guard await isAvailable() else {
-            return .failure(code: 503, reasonCode: "notRunning", message: "The node runtime is not running.")
-        }
-        guard let parameters else { return .failure(GnosticProtocolError.missing) }
-        let request: AscendantTurnCancellationRequest
-        do {
-            request = try JSONDecoder().decode(AscendantTurnCancellationRequest.self, from: Data(parameters.utf8))
-        } catch {
-            return .failure(code: 400, reasonCode: "invalidAscendantTurnCancellationPayload", message: "Invalid ascendant.turn.cancel payload")
-        }
-        let cancelled = await cancellation(request)
-        let encoded = try GnosticWirePayload.encode(
-            AscendantTurnCancellationResult(cancelled: cancelled),
-            context: "ascendant.turn.cancel result"
-        )
-        return .success(result: String(decoding: encoded, as: UTF8.self))
-    }
-
-    @MainActor
-    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.turnOperation, context: context) { [self] request in
-            try await handle(parameters: request.parameters)
+    private func handleCancellation(_ parameters: String?) async throws -> CallHandlerResult {
+        switch GnosticCallHandling.decode(
+            AscendantTurnCancellationRequest.self,
+            from: parameters,
+            invalidReasonCode: "invalidAscendantTurnCancellationPayload",
+            invalidMessage: "Invalid ascendant.turn.cancel payload",
+            identifierReasonCode: "invalidClientTurnID",
+            overBudgetReasonCode: "promptTooLarge"
+        ) {
+        case let .rejected(failure):
+            return failure
+        case let .value(request):
+            let cancelled = await cancellation(request)
+            return try .encoded(
+                AscendantTurnCancellationResult(cancelled: cancelled),
+                context: "ascendant.turn.cancel result"
+            )
         }
     }
 
     @MainActor
-    public func registerReplay(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.replayOperation, context: context) { [self] request in
-            try await handleReplay(parameters: request.parameters)
-        }
-    }
-
-    @MainActor
-    public func registerCancellation(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> CallHandlerRegistration {
-        try await communication.registerCallHandler(operation: Self.cancelOperation, context: context) { [self] request in
-            try await handleCancellation(parameters: request.parameters)
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
+        try await GnosticCallHandling.register(
+            operations: [Self.turnOperation, Self.replayOperation, Self.cancelOperation],
+            on: communication,
+            context: context
+        ) { [self] operation, parameters in
+            try await handle(operation: operation, parameters: parameters)
         }
     }
 

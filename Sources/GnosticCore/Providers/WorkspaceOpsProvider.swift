@@ -248,7 +248,7 @@ public struct WorkspaceOpsProvider: Sendable {
         }
         return try await run {
             let accepted = try await execute(request)
-            return .success(result: String(decoding: try JSONEncoder().encode(WorkspaceMutationResult(accepted: accepted)), as: UTF8.self))
+            return try .encoded(WorkspaceMutationResult(accepted: accepted), context: "workspace.mutation result")
         }
     }
 
