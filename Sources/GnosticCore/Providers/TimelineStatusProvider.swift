@@ -92,7 +92,7 @@ public struct TimelineStatusProvider: Sendable {
         ) {
             let status = try await executor(request)
             try GnosticProtocol.validate(status.protocolMajor)
-            return .success(result: String(decoding: try JSONEncoder().encode(status), as: UTF8.self))
+            return try .encoded(status, context: "timeline.status result")
         }
     }
 

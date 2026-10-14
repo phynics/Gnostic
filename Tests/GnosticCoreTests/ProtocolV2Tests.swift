@@ -70,13 +70,35 @@ struct ProtocolV2Tests {
         }
         let payload = #"{"message":"hello","timelineID":"B21D0000-0000-4000-8000-000000000002","clientTurnID":"turn-1","protocolMajor":1}"#
 
-        let response = try await provider.handle(parameters: payload)
+        let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload)
         guard case let .failure(code, message, _) = response else {
             Issue.record("unsupported protocol major unexpectedly succeeded")
             return
         }
         #expect(code == 426)
         #expect(message.contains("unsupportedProtocolMajor"))
+    }
+
+    @Test("every turn operation rejects an unsupported major before its fields")
+    func turnOperationsRejectUnsupportedMajor() async throws {
+        let provider = AscendantTurnProvider { request in
+            AscendantTurnResult(clientTurnID: request.clientTurnID, text: request.message)
+        }
+        let payload = #"{"message":"hello","timelineID":"B21D0000-0000-4000-8000-000000000002","clientTurnID":"turn-1","protocolMajor":1}"#
+
+        for operation in [
+            AscendantTurnProvider.turnOperation,
+            AscendantTurnProvider.replayOperation,
+            AscendantTurnProvider.cancelOperation,
+        ] {
+            let response = try await provider.handle(operation: operation, parameters: payload)
+            guard case let .failure(code, message, _) = response else {
+                Issue.record("\(operation) accepted an unsupported protocol major")
+                continue
+            }
+            #expect(code == 426)
+            #expect(message.contains("unsupportedProtocolMajor"))
+        }
     }
 
     @Test("workspace direct calls report missing protocol majors structurally")
@@ -122,7 +144,7 @@ struct ProtocolV2Tests {
             execute: { _ in AscendantTurnResult(text: "unused") },
             isAvailable: { false }
         )
-        let turnFailure = try await turnProvider.handle(parameters: nil)
+        let turnFailure = try await turnProvider.handle(operation: AscendantTurnProvider.turnOperation, parameters: nil)
 
         let permissionProvider = AscendantPermissionProvider(
             coordinator: AscendantPermissionCoordinator(updates: AscendantTurnUpdateStore())

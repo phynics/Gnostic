@@ -182,19 +182,7 @@ public final class NodeTransport {
             _ = try await registrationScope.acquire(
                 label: "ascendant-turn",
                 acquire: { try await turnProvider.register(on: communication, context: context) },
-                cleanup: { registration in registration.cancel() }
-            )
-            try hooks.beforeRegistration("ascendant-turn-replay")
-            _ = try await registrationScope.acquire(
-                label: "ascendant-turn-replay",
-                acquire: { try await turnProvider.registerReplay(on: communication, context: context) },
-                cleanup: { registration in registration.cancel() }
-            )
-            try hooks.beforeRegistration("ascendant-turn-cancel")
-            _ = try await registrationScope.acquire(
-                label: "ascendant-turn-cancel",
-                acquire: { try await turnProvider.registerCancellation(on: communication, context: context) },
-                cleanup: { registration in registration.cancel() }
+                cleanup: { registrations in registrations.forEach { $0.cancel() } }
             )
 
             let permission = AscendantPermissionProvider(coordinator: permissionCoordinator)
