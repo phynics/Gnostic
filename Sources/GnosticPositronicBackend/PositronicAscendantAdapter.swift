@@ -173,8 +173,7 @@ import GnosticCore
                 discovery: host.discovery,
                 threadCapability: createdKit.timelines,
                 workspaceCapability: createdKit.workspaces,
-                hostAttachment: attachmentHost,
-                allowedTimelineIDs: Set(timelines.map(\.id))
+                hostAttachment: attachmentHost
             )
             resolvedNetworkTools = [
                 AnyTool(ListNetworkObjectsTool(service: attachmentService)),

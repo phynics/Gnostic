@@ -3,6 +3,7 @@
 import Foundation
 import GnosticAscendantConformance
 import GnosticCore
+import GnosticProtocol
 import PKContracts
 import PositronicKit
 import Testing
@@ -52,6 +53,56 @@ struct PositronicConformanceTests {
     @MainActor
     func workspaceAttachment() async throws {
         try await positronicConformanceFixture().suite().checkWorkspaceAttachmentProjects()
+    }
+
+    @Test("a model can attach a Workspace to a Timeline created after backend construction")
+    @MainActor
+    func attachWorkspaceToRuntimeCreatedTimeline() async throws {
+        let workspaceID = UUID()
+        let runtimeTimelineID = UUID()
+        let ascendantID = UUID()
+        let defaultTimelineID = UUID()
+        let ascendant = NodeManifest.Ascendant(
+            id: ascendantID,
+            name: "Runtime attachment",
+            defaultTimelineID: defaultTimelineID,
+            backend: .init(kind: AscendantAdapterRegistry.positronicKind)
+        )
+        let timelines = [NodeManifest.Timeline(id: defaultTimelineID, title: "Default", operatingAscendantID: ascendantID)]
+        let discovery = RuntimeAttachmentDiscovery(workspaceID: workspaceID)
+        let recorder = RuntimeAttachmentRecorder()
+        let host = BackendWorkspaceAttachmentCapability { workspaceID, timelineID in
+            await recorder.record(workspaceID: workspaceID, timelineID: timelineID)
+        }
+        let services = AscendantBackendServices(
+            permission: AscendantConformancePermissionService(),
+            optionalCapabilities: [
+                BackendWorkspaceDiscoveryCapability(discovery: discovery),
+                host,
+            ]
+        )
+        let adapter = try await PositronicAscendantAdapter(
+            ascendant: ascendant,
+            backend: ascendant.backend,
+            services: services,
+            timelines: timelines,
+            languageModel: RuntimeAttachmentLanguageModel(workspaceID: workspaceID, timelineID: runtimeTimelineID)
+        )
+        // The Timeline is created after backend construction, like a Timeline
+        // created by an ACP/pi session.
+        _ = try await adapter.createTimeline(id: runtimeTimelineID, title: "Runtime")
+
+        _ = try await adapter.runTurn(
+            AscendantBackendTurnRequest(
+                timelineID: runtimeTimelineID,
+                message: "attach the workspace",
+                clientTurnID: UUID().uuidString
+            ),
+            updates: AscendantConformanceUpdateSink()
+        )
+
+        #expect(await recorder.workspaceID == workspaceID)
+        #expect(await recorder.timelineID == runtimeTimelineID)
     }
 
     @Test("health, quarantine, reconstruction, and replay")
@@ -177,4 +228,110 @@ private final class PositronicConformanceLanguageModel: LLMStreamClient, @unchec
 /// A terminal model failure the adapter maps to ``AscendantBackendError/terminal(_:)``.
 private enum PositronicConformanceError: Error {
     case terminal
+}
+
+/// Discovery for one available Workspace, so the adapter builds the
+/// `attach_workspace` tool without a broker or catalog.
+@MainActor
+private final class RuntimeAttachmentDiscovery: WorkspaceDiscovery {
+    private let workspaceID: UUID
+    private let providerID = "runtime-attachment"
+    private let uri = "workspace://runtime-attachment"
+
+    init(workspaceID: UUID) {
+        self.workspaceID = workspaceID
+    }
+
+    func discover(timeout _: Duration) async {}
+    func objects() async -> [NetworkCatalogEntry] { [] }
+    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
+
+    func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
+        id == workspaceID ? .available(providerID: providerID, uri: uri) : .unavailable
+    }
+
+    func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {
+        guard workspaceID == self.workspaceID, providerID == self.providerID else { return nil }
+        return NetworkWorkspaceDescriptor(id: workspaceID, uri: uri, isAvailable: true, tools: [])
+    }
+}
+
+/// Records the host attachment the `attach_workspace` tool delegates to.
+private actor RuntimeAttachmentRecorder {
+    private(set) var workspaceID: UUID?
+    private(set) var timelineID: UUID?
+
+    func record(workspaceID: UUID, timelineID: UUID) {
+        self.workspaceID = workspaceID
+        self.timelineID = timelineID
+    }
+}
+
+/// A scripted model that calls `attach_workspace` once, then completes.
+private final class RuntimeAttachmentLanguageModel: LLMStreamClient, @unchecked Sendable {
+    private let workspaceID: UUID
+    private let timelineID: UUID
+    private let rounds = RuntimeAttachmentRoundCounter()
+
+    init(workspaceID: UUID, timelineID: UUID) {
+        self.workspaceID = workspaceID
+        self.timelineID = timelineID
+    }
+
+    var isConfigured: Bool { get async { true } }
+    var configuration: LLMConfiguration { get async { .init(activeProvider: .openAI, providers: [:]) } }
+
+    func generationStream(
+        messages _: [LLMMessage],
+        tools _: [LLMToolDefinition]?,
+        toolChoice _: LLMToolChoice?,
+        responseFormat _: LLMResponseFormat?,
+        generationParameters _: GenerationParameters?,
+        modelTier _: ModelTier,
+        responseModalities _: Set<ResponseModality>,
+        audioOutput _: AudioOutputOptions?
+    ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        if await rounds.next() == 1 {
+            let arguments = #"{"workspaceId":"\#(workspaceID.uuidString)","timelineId":"\#(timelineID.uuidString)"}"#
+            return AsyncThrowingStream { continuation in
+                continuation.yield(LLMStreamChunk(
+                    id: "runtime-attachment",
+                    model: "runtime-attachment",
+                    choices: [LLMStreamChoice(
+                        index: 0,
+                        delta: LLMStreamDelta(
+                            role: .assistant,
+                            toolCalls: [LLMToolCallDelta(
+                                index: 0,
+                                id: "call_attach",
+                                function: LLMToolCallDeltaFunction(name: "attach_workspace", arguments: arguments)
+                            )]
+                        ),
+                        finishReason: "tool_calls"
+                    )]
+                ))
+                continuation.finish()
+            }
+        }
+        return AsyncThrowingStream { continuation in
+            continuation.yield(LLMStreamChunk(
+                id: "runtime-attachment-final",
+                model: "runtime-attachment",
+                choices: [LLMStreamChoice(
+                    index: 0,
+                    delta: LLMStreamDelta(content: "attached"),
+                    finishReason: "stop"
+                )]
+            ))
+            continuation.finish()
+        }
+    }
+}
+
+private actor RuntimeAttachmentRoundCounter {
+    private var value = 0
+    func next() -> Int {
+        value += 1
+        return value
+    }
 }

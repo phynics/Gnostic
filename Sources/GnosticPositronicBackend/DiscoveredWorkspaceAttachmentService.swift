@@ -15,7 +15,6 @@ final class DiscoveredWorkspaceAttachmentService {
     private let threadCapability: TimelineCapability
     private let workspaceCapability: WorkspaceCapability?
     private let hostAttachment: BackendWorkspaceAttachmentCapability?
-    private let allowedTimelineIDs: Set<UUID>?
     private let readvertiseTimeline: ((TimelineRecord) -> Void)?
 
     /// Creates the attachment bridge using the runtime's discovery boundary.
@@ -28,14 +27,12 @@ final class DiscoveredWorkspaceAttachmentService {
         threadCapability: TimelineCapability,
         workspaceCapability: WorkspaceCapability? = nil,
         hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
-        allowedTimelineIDs: Set<UUID>? = nil,
         readvertiseTimeline: ((TimelineRecord) -> Void)? = nil
     ) {
         self.discovery = discovery
         self.threadCapability = threadCapability
         self.workspaceCapability = workspaceCapability
         self.hostAttachment = hostAttachment
-        self.allowedTimelineIDs = allowedTimelineIDs
         self.readvertiseTimeline = readvertiseTimeline
     }
 
@@ -47,7 +44,6 @@ final class DiscoveredWorkspaceAttachmentService {
         threadCapability: TimelineCapability,
         workspaceCapability: WorkspaceCapability? = nil,
         hostAttachment: BackendWorkspaceAttachmentCapability? = nil,
-        allowedTimelineIDs: Set<UUID>? = nil,
         readvertiseTimeline: ((TimelineRecord) -> Void)? = nil
     ) {
         self.init(
@@ -55,7 +51,6 @@ final class DiscoveredWorkspaceAttachmentService {
             threadCapability: threadCapability,
             workspaceCapability: workspaceCapability,
             hostAttachment: hostAttachment,
-            allowedTimelineIDs: allowedTimelineIDs,
             readvertiseTimeline: readvertiseTimeline
         )
     }
@@ -79,7 +74,11 @@ final class DiscoveredWorkspaceAttachmentService {
     @discardableResult
     func attach(workspaceID: UUID, to timelineID: UUID, approved: Bool) async throws -> WorkspaceReference {
         guard approved else { throw DiscoveredWorkspaceAttachmentError.approvalRequired }
-        if let allowedTimelineIDs, !allowedTimelineIDs.contains(timelineID) {
+        // Ownership is the Ascendant's current Timeline set, not a snapshot
+        // captured at backend construction. A Timeline created at runtime is
+        // persisted before its first Turn, so the same capability that owns
+        // the store also answers ownership.
+        guard try await threadCapability.get(timelineID) != nil else {
             throw DiscoveredWorkspaceAttachmentError.timelineNotOwned(timelineID)
         }
         let status = await discovery.attachmentStatus(id: workspaceID)
