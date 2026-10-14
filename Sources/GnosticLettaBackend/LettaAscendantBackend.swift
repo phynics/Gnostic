@@ -45,27 +45,30 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     private let permissionService: any AscendantBackendPermissionService
 
-    private struct TimelineState {
-        var title: String
-        var conversationID: String?
-        var attachments: [UUID]
-        var createdAt: Date
-        var updatedAt: Date
-        var isPrivate: Bool
-    }
-
     private struct ResolvedTool {
         let workspaceID: UUID
         let tool: BackendWorkspaceTool
     }
 
-    private var timelines: [UUID: TimelineState]
-    private var timelineOrder: [UUID]
+    private let configuredTimelines: [NodeManifest.Timeline]
     private var toolsByTimeline: [UUID: [String: ResolvedTool]] = [:]
     private var conversationByTimeline: [UUID: String] = [:]
     private var agentID: String?
     private var activeConversationID: String?
     private var cancelRequested = false
+
+    /// Shared Gnostic Timeline bookkeeping. This backend supplies only the
+    /// remote conversation operations.
+    private lazy var timelineRegistry = AscendantTimelineRegistry(
+        ascendantID: identity.id,
+        privateTimelineID: identity.privateTimelineID,
+        configured: configuredTimelines,
+        remote: .init(
+            ensure: { [weak self] id, title in _ = try await self?.ensureTimelineRemote(id: id, title: title) },
+            rename: { [weak self] id, title in _ = await self?.renameTimelineRemote(id: id, title: title) },
+            delete: { [weak self] id in _ = await self?.deleteTimelineRemote(id: id) }
+        )
+    )
 
     public init(
         ascendant: NodeManifest.Ascendant,
@@ -82,21 +85,9 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
         workspaceService = services.workspace
         permissionService = services.permission
         agentID = parsed.agentID
+        configuredTimelines = timelines
 
         let now = Date()
-        var states: [UUID: TimelineState] = [:]
-        for timeline in timelines {
-            states[timeline.id] = TimelineState(
-                title: timeline.title,
-                conversationID: nil,
-                attachments: timeline.attachments.map(\.workspaceID),
-                createdAt: now,
-                updatedAt: now,
-                isPrivate: timeline.id == ascendant.defaultTimelineID
-            )
-        }
-        self.timelines = states
-        timelineOrder = timelines.map(\.id)
         identity = AscendantBackendIdentity(
             id: ascendant.id,
             name: ascendant.name,
@@ -144,59 +135,65 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
     }
 
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
-        timelineOrder.compactMap { projection($0) }
+        timelineRegistry.operatedTimelines()
     }
 
     public func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        let now = Date()
-        if timelines[id] == nil {
-            timelines[id] = TimelineState(
-                title: title,
-                conversationID: nil,
-                attachments: [],
-                createdAt: now,
-                updatedAt: now,
-                isPrivate: false
-            )
-            timelineOrder.append(id)
-        } else {
-            timelines[id]?.title = title
-            timelines[id]?.updatedAt = now
-        }
-        try await ensureAgent()
-        _ = try await ensureConversation(id: id, title: title)
-        return projection(id)!
+        try await timelineRegistry.create(id: id, title: title)
     }
 
     public func removeTimeline(id: UUID) async {
-        guard timelines[id] != nil else { return }
+        await timelineRegistry.remove(id: id)
+    }
+
+    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        try await timelineRegistry.rename(id: id, title: title)
+    }
+
+    // MARK: - Remote Timeline operations
+
+    /// Ensures the Letta agent and the conversation the registry aligned to one
+    /// Gnostic Timeline. This is idempotent for a known Timeline.
+    private func ensureTimelineRemote(id: UUID, title: String) async throws {
+        try await ensureAgent()
+        _ = try await ensureConversation(id: id, title: title)
+    }
+
+    /// Renames the remote conversation. The Gnostic projection is authoritative,
+    /// so a remote failure is best effort.
+    private func renameTimelineRemote(id: UUID, title: String) async {
+        guard let conversationID = await resolvedConversation(for: id) else { return }
+        try? await transport.updateConversation(
+            conversationID: conversationID,
+            description: Self.description(title: title, timelineID: id)
+        )
+    }
+
+    /// Removes the remote conversation and its backend-private indexes.
+    private func deleteTimelineRemote(id: UUID) async {
         if let conversationID = await resolvedConversation(for: id) {
             try? await transport.deleteConversation(conversationID: conversationID)
         }
         conversationByTimeline.removeValue(forKey: id)
-        timelines.removeValue(forKey: id)
-        timelineOrder.removeAll { $0 == id }
         toolsByTimeline.removeValue(forKey: id)
-    }
-
-    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard timelines[id] != nil else { throw AscendantBackendError.timelineNotFound(id) }
-        timelines[id]?.title = title
-        timelines[id]?.updatedAt = Date()
-        if let conversationID = await resolvedConversation(for: id) {
-            try? await transport.updateConversation(
-                conversationID: conversationID,
-                description: Self.description(title: title, timelineID: id)
-            )
-        }
-        return projection(id)!
     }
 
     public func runTurn(
         _ request: AscendantBackendTurnRequest,
         updates: any AscendantBackendUpdateSink
     ) async throws -> String {
-        guard let state = timelines[request.timelineID] else {
+        // Core owns the failure terminal update, so this body emits only
+        // success and incremental updates.
+        try await withTerminalFailureUpdate(updates: updates) {
+            try await performTurn(request, updates: updates)
+        }
+    }
+
+    private func performTurn(
+        _ request: AscendantBackendTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        guard let title = timelineRegistry.title(for: request.timelineID) else {
             throw AscendantBackendError.timelineNotFound(request.timelineID)
         }
         cancelRequested = false
@@ -204,7 +201,7 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
         guard let agentID else {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "lettaAgentUnresolved", message: "The Letta agent could not be resolved."))
         }
-        let conversationID = try await ensureConversation(id: request.timelineID, title: state.title)
+        let conversationID = try await ensureConversation(id: request.timelineID, title: title)
         activeConversationID = conversationID
 
         let resolvedTools = await resolveTools(for: request.timelineID)
@@ -235,12 +232,12 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
                     switch event {
                     case let .assistantText(text):
                         finalText += text
-                        try await updates.append(AscendantBackendUpdate(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: text))
+                        try await updates.append(AscendantBackendUpdate(kind: .assistantText, text: text))
                     case .reasoning:
                         break
                     case let .toolCall(id, name, _):
                         try await updates.append(AscendantBackendUpdate(
-                            kind: AscendantTurnUpdateKind.toolCall.rawValue,
+                            kind: .toolCall,
                             toolState: AscendantToolState(toolCallID: id, title: name, status: .inProgress)
                         ))
                     case let .approvalRequest(_, toolCallID, name, arguments):
@@ -255,7 +252,7 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
                         approvals.append(result)
                     case let .toolReturn(toolCallID, content, isError):
                         try await updates.append(AscendantBackendUpdate(
-                            kind: AscendantTurnUpdateKind.toolState.rawValue,
+                            kind: .toolState,
                             toolState: AscendantToolState(
                                 toolCallID: toolCallID,
                                 status: isError ? .failed : .completed,
@@ -285,8 +282,8 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
             break
         }
 
-        timelines[request.timelineID]?.updatedAt = Date()
-        try await updates.append(AscendantBackendUpdate(kind: AscendantTurnUpdateKind.completion.rawValue, text: finalText, terminal: true))
+        timelineRegistry.touch(id: request.timelineID)
+        try await updates.append(AscendantBackendUpdate(kind: .completion, text: finalText, terminal: true))
         return finalText
     }
 
@@ -303,22 +300,12 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
     // MARK: - Workspace capability
 
     public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
-        guard var state = timelines[timelineID] else {
-            throw AscendantBackendError.timelineNotFound(timelineID)
-        }
-        if !state.attachments.contains(reference.id) {
-            state.attachments.append(reference.id)
-            state.updatedAt = Date()
-            timelines[timelineID] = state
-        }
+        try timelineRegistry.attachWorkspace(reference.id, to: timelineID)
         toolsByTimeline[timelineID] = nil
     }
 
     public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
-        guard var state = timelines[timelineID] else { return }
-        state.attachments.removeAll { $0 == workspaceID }
-        state.updatedAt = Date()
-        timelines[timelineID] = state
+        timelineRegistry.detachWorkspace(workspaceID, from: timelineID)
         toolsByTimeline[timelineID] = nil
     }
 
@@ -360,7 +347,7 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
         }
 
         try await updates.append(AscendantBackendUpdate(
-            kind: AscendantTurnUpdateKind.toolState.rawValue,
+            kind: .toolState,
             toolState: AscendantToolState(toolCallID: toolCallID, title: tool.tool.name, status: .inProgress)
         ))
 
@@ -375,7 +362,7 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
             ))
             guard decision.isApproved else {
                 try await updates.append(AscendantBackendUpdate(
-                    kind: AscendantTurnUpdateKind.toolState.rawValue,
+                    kind: .toolState,
                     toolState: AscendantToolState(toolCallID: toolCallID, title: tool.tool.name, status: .failed, content: "Permission denied.")
                 ))
                 return LettaToolReturn(toolCallID: toolCallID, content: "Permission denied.", isError: true)
@@ -393,14 +380,14 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
             )
             let result = try await service.invoke(invocation)
             try await updates.append(AscendantBackendUpdate(
-                kind: AscendantTurnUpdateKind.toolState.rawValue,
+                kind: .toolState,
                 toolState: AscendantToolState(toolCallID: toolCallID, title: tool.tool.name, status: .completed, content: result.message)
             ))
             return LettaToolReturn(toolCallID: toolCallID, content: result.message ?? "", isError: false)
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? "Workspace tool failed."
             try await updates.append(AscendantBackendUpdate(
-                kind: AscendantTurnUpdateKind.toolState.rawValue,
+                kind: .toolState,
                 toolState: AscendantToolState(toolCallID: toolCallID, title: tool.tool.name, status: .failed, content: message)
             ))
             return LettaToolReturn(toolCallID: toolCallID, content: message, isError: true)
@@ -411,9 +398,9 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
         if let cached = toolsByTimeline[timelineID] {
             return Array(cached.values)
         }
-        guard let state = timelines[timelineID], let service = workspaceService else { return [] }
+        guard let service = workspaceService else { return [] }
         var resolved: [ResolvedTool] = []
-        for workspaceID in state.attachments {
+        for workspaceID in timelineRegistry.attachedWorkspaceIDs(for: timelineID) {
             guard let reference = await service.reference(id: workspaceID), reference.status == .available else { continue }
             for tool in reference.tools {
                 resolved.append(ResolvedTool(workspaceID: workspaceID, tool: tool))
@@ -421,20 +408,6 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
         }
         toolsByTimeline[timelineID] = Dictionary(resolved.map { ($0.tool.id, $0) }, uniquingKeysWith: { first, _ in first })
         return resolved
-    }
-
-    private func projection(_ id: UUID) -> AscendantBackendTimeline? {
-        guard let state = timelines[id] else { return nil }
-        return AscendantBackendTimeline(
-            id: id,
-            title: state.title,
-            attachedWorkspaceIDs: state.attachments,
-            ascendantID: identity.id,
-            isArchived: false,
-            isPrivate: state.isPrivate,
-            createdAt: state.createdAt,
-            updatedAt: state.updatedAt
-        )
     }
 
     // MARK: - Letta state projection
@@ -479,7 +452,6 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
             for conversation in conversations where !conversation.isArchived {
                 guard let timelineID = Self.timelineID(from: conversation.description) else { continue }
                 conversationByTimeline[timelineID] = conversation.id
-                timelines[timelineID]?.conversationID = conversation.id
             }
         } catch let error as LettaTransportError {
             throw Self.mapTransportError(error)
@@ -487,7 +459,6 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
     }
 
     private func resolvedConversation(for timelineID: UUID) async -> String? {
-        if let conversationID = timelines[timelineID]?.conversationID { return conversationID }
         if let conversationID = conversationByTimeline[timelineID] { return conversationID }
         do {
             try await ensureAgent()
@@ -499,11 +470,7 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
     }
 
     private func ensureConversation(id: UUID, title: String) async throws -> String {
-        if let conversationID = timelines[id]?.conversationID { return conversationID }
-        if let conversationID = conversationByTimeline[id] {
-            timelines[id]?.conversationID = conversationID
-            return conversationID
-        }
+        if let conversationID = conversationByTimeline[id] { return conversationID }
         guard let agentID else {
             throw AscendantBackendError.lifecycleUnusable(.init(code: "lettaAgentUnresolved", message: "The Letta agent could not be resolved."))
         }
@@ -513,7 +480,6 @@ public final class LettaAscendantBackend: AscendantBackend, AscendantBackendWork
                 description: Self.description(title: title, timelineID: id)
             )
             conversationByTimeline[id] = conversation.id
-            timelines[id]?.conversationID = conversation.id
             return conversation.id
         } catch let error as LettaTransportError {
             throw Self.mapTransportError(error)

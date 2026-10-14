@@ -143,10 +143,14 @@ public struct AscendantBackendConformanceSuite: Sendable {
     }
 
     /// Asserts a terminal failure is reported as such and leaves the backend usable.
+    ///
+    /// The failure path asserts a terminal update for every kind: Core owns
+    /// the failure terminal behind the backend seam, so no adapter may omit it.
     public func checkTerminalFailureKeepsBackendUsable() async throws {
         var checks = AscendantConformanceChecks(kind: fixture.kind)
         let (setup, backend) = try await makeSetup()
 
+        let failureSink = AscendantConformanceUpdateSink()
         do {
             _ = try await backend.runTurn(
                 .init(
@@ -154,7 +158,7 @@ public struct AscendantBackendConformanceSuite: Sendable {
                     message: AscendantConformanceMessage.message(for: .terminalFailure),
                     clientTurnID: "conformance-terminal"
                 ),
-                updates: AscendantConformanceUpdateSink()
+                updates: failureSink
             )
             checks.require(false, "a terminal-failure Turn returned successfully")
         } catch let error as AscendantBackendError {
@@ -166,6 +170,15 @@ public struct AscendantBackendConformanceSuite: Sendable {
         } catch {
             checks.require(false, "a terminal-failure Turn threw \(error) instead of .terminal")
         }
+        checks.require(
+            await failureSink.hasTerminal,
+            "a failed Turn did not append a terminal update"
+        )
+        let terminalKind = await failureSink.updates.last?.kind
+        checks.require(
+            terminalKind == .error,
+            "a failed Turn's terminal update was \(String(describing: terminalKind)) instead of .error"
+        )
 
         let message = "conformance after failure"
         let expected = fixture.expectedReply(message)

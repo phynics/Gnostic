@@ -21,9 +21,12 @@ public struct AscendantBackendTurnRequest: Sendable, Equatable {
 }
 
 /// The small update shape a backend can emit without knowing Axoloty or ACP.
+///
+/// The kind is the declared ``AscendantTurnUpdateKind`` vocabulary, not a raw
+/// string, so a backend cannot emit an update the host does not understand.
 public struct AscendantBackendUpdate: Sendable, Equatable {
-    /// The update kind, as a raw ``AscendantTurnUpdateKind`` value.
-    public let kind: String
+    /// The update kind.
+    public let kind: AscendantTurnUpdateKind
     /// Assistant text, for text-bearing kinds.
     public let text: String?
     /// Tool call state, for tool-bearing kinds.
@@ -32,20 +35,111 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
     public let permissionState: AscendantPermissionState?
     /// Whether this update ends the Turn.
     public let terminal: Bool
+    /// A stable, low-cardinality failure reason, for a terminal failure.
+    public let reasonCode: String?
+    /// The failure status code, for a terminal failure.
+    public let statusCode: Int?
+    /// Whether an identical retry could succeed, for a terminal failure.
+    public let retryable: Bool?
 
     /// Creates one backend update.
     public init(
-        kind: String,
+        kind: AscendantTurnUpdateKind,
         text: String? = nil,
         toolState: AscendantToolState? = nil,
         permissionState: AscendantPermissionState? = nil,
-        terminal: Bool = false
+        terminal: Bool = false,
+        reasonCode: String? = nil,
+        statusCode: Int? = nil,
+        retryable: Bool? = nil
     ) {
         self.kind = kind
         self.text = text
         self.toolState = toolState
         self.permissionState = permissionState
         self.terminal = terminal
+        self.reasonCode = reasonCode
+        self.statusCode = statusCode
+        self.retryable = retryable
+    }
+}
+
+/// The terminal update Core emits for one thrown backend error.
+///
+/// Failure terminalization is Core-owned so every backend kind presents the
+/// same client-visible failure. A backend emits only success and incremental
+/// updates; this conversion runs behind the backend seam.
+extension AscendantBackendUpdate {
+    /// Builds the terminal failure update for one error.
+    ///
+    /// - Parameter error: The error a backend Turn threw.
+    /// - Returns: A terminal update whose kind is ``AscendantTurnUpdateKind/cancellation``
+    ///   for a cancelled Turn and ``AscendantTurnUpdateKind/error`` otherwise.
+    public static func terminalFailure(for error: any Error) -> AscendantBackendUpdate {
+        if let backendError = error as? AscendantBackendError {
+            switch backendError {
+            case .cancelled:
+                return AscendantBackendUpdate(
+                    kind: .cancellation,
+                    terminal: true,
+                    reasonCode: backendError.reasonCode,
+                    statusCode: backendError.statusCode,
+                    retryable: false
+                )
+            default:
+                return AscendantBackendUpdate(
+                    kind: .error,
+                    text: backendError.errorDescription,
+                    terminal: true,
+                    reasonCode: backendError.reasonCode,
+                    statusCode: backendError.statusCode,
+                    retryable: backendError.retryable
+                )
+            }
+        }
+        if error is CancellationError {
+            return AscendantBackendUpdate(
+                kind: .cancellation,
+                terminal: true,
+                reasonCode: "cancelled",
+                statusCode: 499,
+                retryable: false
+            )
+        }
+        return AscendantBackendUpdate(
+            kind: .error,
+            text: error.localizedDescription,
+            terminal: true,
+            reasonCode: "backendFailure",
+            statusCode: 500,
+            retryable: false
+        )
+    }
+}
+
+/// Runs one backend Turn body and guarantees a terminal failure update.
+///
+/// Core owns the failure terminal update. A backend implements ``AscendantBackend/runTurn(_:updates:)``
+/// with this wrapper, so it emits only success and incremental updates while a
+/// thrown error still reaches the client as exactly one terminal update.
+///
+/// - Parameters:
+///   - updates: The sink receiving the terminal failure update.
+///   - operation: The backend-owned Turn body.
+/// - Returns: The body's result on success.
+/// - Throws: The body's error after the terminal update is appended.
+@MainActor
+public func withTerminalFailureUpdate<T>(
+    updates: any AscendantBackendUpdateSink,
+    _ operation: () async throws -> T
+) async throws -> T {
+    do {
+        return try await operation()
+    } catch {
+        // A capacity rejection leaves the committed outcome as replay state;
+        // it must not replace the backend error the caller sees.
+        try? await updates.append(AscendantBackendUpdate.terminalFailure(for: error))
+        throw error
     }
 }
 
@@ -422,6 +516,13 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case .lifecycleUnusable(let failure): return failure.code
         case .capabilityUnavailable: return "capabilityUnavailable"
         }
+    }
+
+    /// Whether an identical retry could succeed. Only a retryable terminal
+    /// failure asks the client to try again; every other outcome is final.
+    public var retryable: Bool {
+        if case let .terminal(failure) = self { return failure.retryable }
+        return false
     }
 
     /// The Gnostic protocol status code for this failure.

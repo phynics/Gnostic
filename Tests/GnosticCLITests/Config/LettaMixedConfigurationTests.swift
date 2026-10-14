@@ -231,8 +231,8 @@ private final class FixtureAscendantBackend: AscendantBackend {
             throw AscendantBackendError.timelineNotFound(request.timelineID)
         }
         let reply = "fixture: \(request.message)"
-        try await updates.append(.init(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: reply))
-        try await updates.append(.init(kind: AscendantTurnUpdateKind.completion.rawValue, text: reply, terminal: true))
+        try await updates.append(.init(kind: .assistantText, text: reply))
+        try await updates.append(.init(kind: .completion, text: reply, terminal: true))
         return reply
     }
 

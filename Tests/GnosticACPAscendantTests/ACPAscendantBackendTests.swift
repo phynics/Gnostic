@@ -812,11 +812,11 @@ struct ACPAscendantBackendTests {
         #expect(result == "fixture reply: hello")
         let updates = await sink.updates
         #expect(updates.map(\.kind) == [
-            AscendantTurnUpdateKind.assistantText.rawValue,
-            AscendantTurnUpdateKind.assistantText.rawValue,
-            AscendantTurnUpdateKind.toolCall.rawValue,
-            AscendantTurnUpdateKind.toolState.rawValue,
-            AscendantTurnUpdateKind.completion.rawValue,
+            .assistantText,
+            .assistantText,
+            .toolCall,
+            .toolState,
+            .completion,
         ])
         #expect(updates.map(\.text).compactMap { $0 }.joined() == "fixture reply: hello")
         #expect(updates[2].toolState?.toolStatus == .pending)
@@ -833,7 +833,7 @@ struct ACPAscendantBackendTests {
         } catch let AscendantBackendError.terminal(failure) {
             #expect(failure.code == "acpTurnStopped")
         }
-        #expect(await limitedSink.updates.last?.kind == AscendantTurnUpdateKind.error.rawValue)
+        #expect(await limitedSink.updates.last?.kind == AscendantTurnUpdateKind.error)
         await backend.shutdown()
     }
 
@@ -861,7 +861,7 @@ struct ACPAscendantBackendTests {
         )
 
         #expect(response.contains("fixture reply: do long work"))
-        #expect(await sink.updates.filter { $0.kind == AscendantTurnUpdateKind.assistantText.rawValue }.count >= 6)
+        #expect(await sink.updates.filter { $0.kind == AscendantTurnUpdateKind.assistantText }.count >= 6)
         #expect(try await backend.operatedTimelines().map(\.id) == [timelineID])
         await backend.shutdown()
     }

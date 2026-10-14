@@ -34,10 +34,10 @@ return value. It is not an identifier.
 ```swift
 let reply = "echo: \(request.message)"
 try await updates.append(
-    AscendantBackendUpdate(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: reply)
+    AscendantBackendUpdate(kind: .assistantText, text: reply)
 )
 try await updates.append(
-    AscendantBackendUpdate(kind: AscendantTurnUpdateKind.completion.rawValue, terminal: true)
+    AscendantBackendUpdate(kind: .completion, terminal: true)
 )
 return reply
 ```
@@ -49,6 +49,11 @@ returns an empty string.
 Update kinds are declared by `AscendantTurnUpdateKind`; tool and permission
 statuses by `AscendantToolStatus` and `AscendantPermissionStatus`. Use them
 rather than string literals.
+
+The failure terminal update is Core-owned. Wrap the Turn body with
+`withTerminalFailureUpdate(updates:)` and emit only success and incremental
+updates. Core appends the single terminal `.error` or `.cancellation` update
+when the body throws, so every backend kind presents the same failure.
 
 ## Failing correctly
 

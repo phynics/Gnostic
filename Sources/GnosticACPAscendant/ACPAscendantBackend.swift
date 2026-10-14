@@ -46,11 +46,23 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private let configuration: AscendantBackendConfiguration
     private let protocolTimeoutSeconds: TimeInterval
     private let promptTimeoutSeconds: TimeInterval
-    private var timelines: [UUID: AscendantBackendTimeline]
-    private var timelineOrder: [UUID]
+    private let configuredTimelines: [NodeManifest.Timeline]
     private var sessionIDs: [UUID: SessionId]
     private var activeSessionIDs: Set<UUID> = []
     private let sessionMapURL: URL
+
+    /// Shared Gnostic Timeline bookkeeping. This backend supplies only the
+    /// remote ACP session operations.
+    private lazy var timelineRegistry = AscendantTimelineRegistry(
+        ascendantID: identity.id,
+        privateTimelineID: identity.privateTimelineID,
+        configured: configuredTimelines,
+        remote: .init(
+            ensure: { [weak self] id, title in _ = try await self?.ensureTimelineRemote(id: id, title: title) },
+            rename: { [weak self] id, title in _ = try await self?.renameTimelineRemote(id: id, title: title) },
+            delete: { [weak self] id in _ = await self?.deleteTimelineRemote(id: id) }
+        )
+    )
     private var process: Process?
     private var processGroupID: pid_t?
     private var processLeaderWasReaped = false
@@ -114,6 +126,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         self.protocolTimeoutSeconds = protocolTimeoutSeconds
         self.promptTimeoutSeconds = promptTimeoutSeconds
         permissionService = services.permission
+        self.configuredTimelines = configuredTimelines
         sessionMapURL = Self.sessionMapURL(for: ascendant.id)
         let recoveredSessions = Self.loadSessionMap(at: sessionMapURL)
         let configuredTimelineIDs = Set(configuredTimelines.map(\.id))
@@ -123,21 +136,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
 
         let now = Date()
-        var projections: [UUID: AscendantBackendTimeline] = [:]
-        for timeline in configuredTimelines {
-            projections[timeline.id] = AscendantBackendTimeline(
-                id: timeline.id,
-                title: timeline.title,
-                attachedWorkspaceIDs: timeline.attachments.map(\.workspaceID),
-                ascendantID: ascendant.id,
-                isArchived: false,
-                isPrivate: timeline.id == ascendant.defaultTimelineID,
-                createdAt: now,
-                updatedAt: now
-            )
-        }
-        timelines = projections
-        timelineOrder = configuredTimelines.map(\.id)
         identity = AscendantBackendIdentity(
             id: ascendant.id,
             name: ascendant.name,
@@ -192,12 +190,13 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         do {
             let connection = try await requireConnection()
             guard sessionCapabilities?.supportsList == true else {
-                return timelineOrder.compactMap { timelines[$0] }
+                return timelineRegistry.operatedTimelines()
             }
             // NodeRuntime uses this call during startup hydration. Seed the
             // session map here so the advertised session-list intersection can
             // include configured Gnostic Timelines on the first startup.
-            try await ensureSessions(for: timelineOrder, using: connection)
+            let timelineIDs = timelineRegistry.operatedTimelines().map(\.id)
+            try await ensureSessions(for: timelineIDs, using: connection)
             var cursor: Cursor?
             var seenCursors: Set<Cursor> = []
             var available: Set<SessionId> = []
@@ -212,9 +211,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 }
                 cursor = nextCursor
             }
-            return timelineOrder.compactMap { id in
+            return timelineIDs.compactMap { id in
                 guard let sessionID = sessionIDs[id], available.contains(sessionID) else { return nil }
-                return timelines[id]
+                return timelineRegistry.projection(id: id)
             }
         } catch {
             throw map(error, context: "Could not list ACP sessions")
@@ -228,54 +227,49 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     ///   - title: The Timeline title.
     /// - Returns: The new in-memory Timeline projection.
     public func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        if let existing = timelines[id] {
-            if sessionIDs[id] == nil {
-                do {
-                    let connection = try await requireConnection()
-                    let response = try await connection.createSession(request: NewSessionRequest(
-                        cwd: workingDirectory,
-                        mcpServers: []
-                    ))
-                    sessionIDs[id] = response.sessionId
-                    activeSessionIDs.insert(id)
-                    try persistSessionMap()
-                } catch {
-                    throw map(error, context: "Could not create ACP session")
-                }
-            }
-            return existing
-        }
         do {
-            let connection = try await requireConnection()
-            let response = try await connection.createSession(request: NewSessionRequest(
-                cwd: workingDirectory,
-                mcpServers: []
-            ))
-            sessionIDs[id] = response.sessionId
-            activeSessionIDs.insert(id)
+            let timeline = try await timelineRegistry.create(id: id, title: title)
             try persistSessionMap()
+            return timeline
         } catch {
             throw map(error, context: "Could not create ACP session")
         }
-        let now = Date()
-        let timeline = AscendantBackendTimeline(
-            id: id,
-            title: title,
-            attachedWorkspaceIDs: [],
-            ascendantID: identity.id,
-            isArchived: false,
-            isPrivate: false,
-            createdAt: now,
-            updatedAt: now
-        )
-        timelines[id] = timeline
-        timelineOrder.append(id)
-        try persistSessionMap()
-        return timeline
     }
 
     /// Closes its ACP session when the agent advertises session/close.
     public func removeTimeline(id: UUID) async {
+        await timelineRegistry.remove(id: id)
+        try? persistSessionMap()
+    }
+
+    /// Renames an in-memory Timeline projection.
+    ///
+    /// - Parameters:
+    ///   - id: The Timeline identifier to rename.
+    ///   - title: The new title.
+    /// - Returns: The updated in-memory Timeline projection.
+    /// - Throws: ``AscendantBackendError/timelineNotFound(_:)`` when this
+    ///   backend does not project the Timeline.
+    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+        let renamed = try await timelineRegistry.rename(id: id, title: title)
+        try persistSessionMap()
+        return renamed
+    }
+
+    // MARK: - Remote Timeline operations
+
+    /// Ensures the ACP session the registry aligned to one Gnostic Timeline.
+    private func ensureTimelineRemote(id: UUID, title _: String) async throws {
+        let connection = try await requireConnection()
+        _ = try await requireSession(for: id, connection: connection)
+    }
+
+    /// ACP sessions carry no remote title; the Gnostic projection is
+    /// authoritative.
+    private func renameTimelineRemote(id _: UUID, title _: String) async throws {}
+
+    /// Closes the remote ACP session and drops its backend-private indexes.
+    private func deleteTimelineRemote(id: UUID) async {
         if let sessionID = sessionIDs[id],
            let connection,
            sessionCapabilities?.supportsClose == true {
@@ -291,36 +285,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
         sessionIDs.removeValue(forKey: id)
         activeSessionIDs.remove(id)
-        timelines.removeValue(forKey: id)
-        timelineOrder.removeAll { $0 == id }
-        try? persistSessionMap()
-    }
-
-    /// Renames an in-memory Timeline projection.
-    ///
-    /// - Parameters:
-    ///   - id: The Timeline identifier to rename.
-    ///   - title: The new title.
-    /// - Returns: The updated in-memory Timeline projection.
-    /// - Throws: ``AscendantBackendError/timelineNotFound(_:)`` when this
-    ///   backend does not project the Timeline.
-    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard let current = timelines[id] else {
-            throw AscendantBackendError.timelineNotFound(id)
-        }
-        let renamed = AscendantBackendTimeline(
-            id: current.id,
-            title: title,
-            attachedWorkspaceIDs: current.attachedWorkspaceIDs,
-            ascendantID: current.ascendantID,
-            isArchived: current.isArchived,
-            isPrivate: current.isPrivate,
-            createdAt: current.createdAt,
-            updatedAt: Date()
-        )
-        timelines[id] = renamed
-        try persistSessionMap()
-        return renamed
     }
 
     /// Runs a prompt through the ACP session and forwards streamed updates.
@@ -335,7 +299,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         _ request: AscendantBackendTurnRequest,
         updates: any AscendantBackendUpdateSink
     ) async throws -> String {
-        guard timelines[request.timelineID] != nil else {
+        // Core owns the failure terminal update, so this body emits only
+        // success and incremental updates.
+        try await withTerminalFailureUpdate(updates: updates) {
+            try await performTurn(request, updates: updates)
+        }
+    }
+
+    private func performTurn(
+        _ request: AscendantBackendTurnRequest,
+        updates: any AscendantBackendUpdateSink
+    ) async throws -> String {
+        guard timelineRegistry.contains(id: request.timelineID) else {
             throw AscendantBackendError.timelineNotFound(request.timelineID)
         }
         do {
@@ -396,19 +371,14 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             if let streamError { throw streamError }
             guard response.stopReason == .endTurn else {
                 let message = "ACP agent stopped the Turn with reason '\(response.stopReason.rawValue)'."
-                try await updates.append(.init(kind: AscendantTurnUpdateKind.error.rawValue, text: message, terminal: true))
                 throw AscendantBackendError.terminal(.init(code: "acpTurnStopped", message: message))
             }
-            try await updates.append(.init(kind: AscendantTurnUpdateKind.completion.rawValue, terminal: true))
+            try await updates.append(.init(kind: .completion, terminal: true))
             return text
         } catch let error as AscendantBackendError {
             throw error
         } catch {
-            let failure = map(error, context: "ACP Turn failed")
-            if case let .terminal(terminal) = failure {
-                try? await updates.append(.init(kind: AscendantTurnUpdateKind.error.rawValue, text: terminal.message, terminal: true))
-            }
-            throw failure
+            throw map(error, context: "ACP Turn failed")
         }
     }
 
@@ -969,7 +939,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private func persistSessionMap() throws {
         try FileManager.default.createDirectory(at: sessionMapURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let values = Dictionary(uniqueKeysWithValues: sessionIDs.map { id, sessionID in
-            let timeline = timelines[id]
+            let timeline = timelineRegistry.projection(id: id)
             return (id.uuidString, ACPStoredTimelineSession(
                 sessionID: sessionID.value,
                 title: timeline?.title ?? "Timeline",
@@ -1162,10 +1132,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         case .agentMessageChunk(let chunk):
             guard case let .text(text) = chunk.content else { return nil }
             assistantText += text.text
-            return .init(kind: AscendantTurnUpdateKind.assistantText.rawValue, text: text.text)
+            return .init(kind: .assistantText, text: text.text)
         case .toolCall(let toolCall):
             return .init(
-                kind: AscendantTurnUpdateKind.toolCall.rawValue,
+                kind: .toolCall,
                 toolState: .init(
                     toolCallID: toolCall.toolCallId.value,
                     title: toolCall.title,
@@ -1175,7 +1145,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             )
         case .toolCallUpdate(let toolUpdate):
             return .init(
-                kind: AscendantTurnUpdateKind.toolState.rawValue,
+                kind: .toolState,
                 toolState: .init(
                     toolCallID: toolUpdate.toolCallId.value,
                     title: toolUpdate.title,

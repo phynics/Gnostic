@@ -14,7 +14,7 @@ private actor UpdateRecorder: AscendantBackendUpdateSink {
         updates.append(update)
     }
 
-    var kinds: [String] { updates.map(\.kind) }
+    var kinds: [String] { updates.map(\.kind.rawValue) }
     var terminal: Bool { updates.contains { $0.terminal } }
     var text: String { updates.compactMap(\.text).joined() }
 }
