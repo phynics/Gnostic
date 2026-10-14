@@ -30,7 +30,7 @@ records the new Timeline in two in-memory places:
 
 - `PositronicAscendantAdapter.createTimeline` saves a `TimelineRecord` into an
   `InMemoryTimelineRuntimeRepository` constructed per adapter
-  (`Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift:75`, `:265`).
+  (`Sources/GnosticPositronicBackend/PositronicAscendantAdapter.swift:325`, `:102`).
 - `NodeRegistry.registerRuntimeTimeline` records `provenance: .runtime` in
   process memory (`Sources/GnosticCore/Runtime/NodeRegistry.swift:222`).
 
@@ -46,7 +46,7 @@ therefore list ACP sessions it can no longer serve, which is the gap found in
 
 Conversation content is ephemeral for configured Timelines too. The adapter
 re-seeds `TimelineRecord` metadata at startup but never messages
-(`Sources/GnosticCore/Adapters/PositronicAscendantAdapter.swift:83`), and the
+(`Sources/GnosticPositronicBackend/PositronicAscendantAdapter.swift:108`), and the
 per-turn update and replay store lives only for the serve lifetime
 (`Sources/GnosticCore/Runtime/AscendantTurnUpdateStore.swift:5`). Run an ACP
 `session/resume` after a serve restart and the resolved Timeline is gone even

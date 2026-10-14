@@ -38,7 +38,7 @@ bindings. That work was deferred to its own issue, which is this record.
 ### Compose and replay
 
 `FileTimelineRuntimeRepository`
-(`Sources/GnosticCore/Adapters/FileTimelineRuntimeRepository.swift`) is an
+(`Sources/GnosticPositronicBackend/FileTimelineRuntimeRepository.swift`) is an
 `actor` that wraps `InMemoryTimelineRuntimeRepository(isDurable: true)` and an
 `AppendOnlyEventLog<JournaledOperation>`. Every mutating protocol method runs
 the in-memory mutation first and journals the **resolved input** of that
@@ -163,9 +163,9 @@ and `git diff --check`. Behavioral evidence:
   `serveRestartOrphansRuntimeTimelineSessions` still proves the in-memory
   default.
 
-The architecture fitness suite keeps
-`Adapters/FileTimelineRuntimeRepository.swift` in the `GnosticCore` PositronicKit
-dependency inventory of ADR 0005.
+The architecture fitness suite asserts that `Sources/GnosticCore` imports no
+Positronic dependency, so `FileTimelineRuntimeRepository` stays in
+`GnosticPositronicBackend` (ADR 0005).
 
 ## Links
 
