@@ -129,8 +129,11 @@ struct AtlasStoreJournalTests {
         _ = try await writer.register(AscendantShard(id: homeID, ascendantID: ascendantID, name: "Home"))
         _ = try await writer.register(AscendantShard(id: workID, ascendantID: ascendantID, name: "Work"))
 
+        // Tear the final frame by dropping its terminating newline. `recover`
+        // reports a final record with no newline as a torn tail, independent of
+        // the frame's length.
         let data = try Data(contentsOf: url)
-        try Data(data.dropLast(12)).write(to: url)
+        try Data(data.dropLast(1)).write(to: url)
 
         let reader = InMemoryAtlasStore(ascendantID: ascendantID)
         try await reader.enableDurability(at: url)

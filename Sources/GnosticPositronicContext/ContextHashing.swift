@@ -1,20 +1,20 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticKit
+import GnosticCore
 
 /// Stable hashing for context identity.
 ///
 /// The experiment must produce the same identity on every host, so it uses the
-/// kit's dependency-free SHA-256 for digests and a small FNV-1a for the
-/// planner's `UInt64` node fingerprint.
+/// package's one SHA-256 for digests and a small FNV-1a for the planner's
+/// `UInt64` node fingerprint.
 public enum ContextHashing {
     /// Returns the canonical digest of ordered parts.
     ///
     /// - Parameter parts: The parts to hash, in order.
     /// - Returns: The lowercase hexadecimal SHA-256 digest.
     public static func digest(_ parts: [String]) -> String {
-        ExperimentDigest.sha256Hex(parts.joined(separator: "\u{1F}"))
+        SHA256.hexDigest(parts.joined(separator: "\u{1F}"))
     }
 
     /// Returns an FNV-1a 64-bit fingerprint of `value`.

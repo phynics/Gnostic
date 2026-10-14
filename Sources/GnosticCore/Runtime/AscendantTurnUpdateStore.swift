@@ -114,7 +114,7 @@ public actor AscendantTurnUpdateStore {
     private let maxJournalBytes: Int
     private var entries: [Key: Entry] = [:]
     private var entryOrder: [Key] = []
-    private var journal: AppendOnlyEventLog<TurnEventRecord>?
+    private var journal: DurableReplayJournal<TurnEventRecord>?
     private let completedCapacity: Int
     private let identityCapacity: Int
     /// Admitted identities and their message digests. Bounded by
@@ -192,15 +192,13 @@ public actor AscendantTurnUpdateStore {
     /// Call before the first `start`. Recovery replays the bounded updates that
     /// were journaled, so a restarted process sees the same replay ledger.
     public func enableDurability(at url: URL) throws {
-        let log = AppendOnlyEventLog<TurnEventRecord>(fileURL: url)
-        for record in try log.recover() {
-            applyJournalRecord(record.payload)
-        }
-        journal = log
+        let candidate = DurableReplayJournal<TurnEventRecord>(fileURL: url)
+        try candidate.recover { try applyJournalRecord($0) }
+        journal = candidate
         compactJournalIfNeeded()
     }
 
-    private func applyJournalRecord(_ record: TurnEventRecord) {
+    private func applyJournalRecord(_ record: TurnEventRecord) throws {
         let clientTurnID = ValidatedClientTurnID(rawValue: record.clientTurnID)
         let key = Key(timelineID: record.timelineID, clientTurnID: record.clientTurnID)
         do {
@@ -219,9 +217,11 @@ public actor AscendantTurnUpdateStore {
                 try applyCheckpoint(snapshot, timelineID: record.timelineID, clientTurnID: clientTurnID)
             }
         } catch Error.capacityExceeded {
-            // The journal outgrew the live retention bound; skip deterministically.
-        } catch {
-            // Recovery never fails a serve start on one unreadable record.
+            // The journal outgrew the live retention bound. This is a
+            // deterministic skip, not a recovery failure: the journal may
+            // legitimately hold more than the live bound. Every other error
+            // surfaces to `enableDurability` so silent partial recovery cannot
+            // be reported as success.
         }
     }
 
@@ -243,8 +243,7 @@ public actor AscendantTurnUpdateStore {
     }
 
     private func journalRecord(_ record: TurnEventRecord) throws {
-        guard let journal else { return }
-        try journal.append(record)
+        try journal?.append(record)
         compactJournalIfNeeded()
     }
 

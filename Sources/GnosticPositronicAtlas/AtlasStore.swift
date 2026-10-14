@@ -186,7 +186,7 @@ public actor InMemoryAtlasStore: AtlasStore {
     private var reportHeads: [AscendantShardID: UInt64] = [:]
     private var history: [AtlasAcceptedPatch] = []
     private var receipts: [AtlasPatchID: AtlasCommitReceipt] = [:]
-    private var journal: AppendOnlyEventLog<AtlasStoreEvent>?
+    private var journal: DurableReplayJournal<AtlasStoreEvent>?
 
     /// Creates an empty store for one Ascendant.
     public init(ascendantID: UUID, bindingID: UUID = UUID()) {
@@ -222,11 +222,9 @@ public actor InMemoryAtlasStore: AtlasStore {
     ///   this store's Ascendant, or `EventLogError` when the journal cannot be
     ///   read or written.
     public func enableDurability(at url: URL) throws {
-        let log = AppendOnlyEventLog<AtlasStoreEvent>(fileURL: url)
-        for envelope in try log.recover() {
-            try applyJournal(envelope.payload)
-        }
-        journal = log
+        let candidate = DurableReplayJournal<AtlasStoreEvent>(fileURL: url)
+        try candidate.recover { try applyJournal($0) }
+        journal = candidate
     }
 
     private func applyJournal(_ event: AtlasStoreEvent) throws {
@@ -255,8 +253,7 @@ public actor InMemoryAtlasStore: AtlasStore {
     }
 
     private func journalRecord(_ event: AtlasStoreEvent) throws {
-        guard let journal else { return }
-        try journal.append(event)
+        try journal?.append(event)
     }
 
     /// Registers an immutable Shard binding. Exact repeats are idempotent.

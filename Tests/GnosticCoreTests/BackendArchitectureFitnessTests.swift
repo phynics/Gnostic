@@ -411,6 +411,89 @@ struct BackendArchitectureFitnessTests {
         }
     }
 
+    @Test("the package keeps one kernel SHA-256 and documents the boundary-locked RLM copy")
+    func sha256IsDefinedOnce() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourcesRoot = rootURL.appendingPathComponent("Sources")
+        var initialStates: [String] = []
+        for relativePath in try FileManager.default.subpathsOfDirectory(atPath: sourcesRoot.path)
+            where relativePath.hasSuffix(".swift") {
+            let source = try String(
+                contentsOf: sourcesRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            if source.contains("0x6a09_e667") || source.contains("0x6A09E667") {
+                initialStates.append(relativePath)
+            }
+        }
+        // Atlas, the kit, and Context share the kernel implementation. The RLM
+        // harness keeps its own copy because `RLMBoundaryFitnessTests` requires
+        // `GnosticRLM` to declare no target dependency and to import no
+        // Foundation or kernel module. Linking the kernel primitive would
+        // change that accepted boundary and break the worker session suite, so
+        // the RLM copy is the one documented exception, pinned here so it
+        // cannot spread to a third implementation.
+        #expect(
+            initialStates.sorted() == [
+                "GnosticCore/Support/SHA256.swift",
+                "GnosticRLM/RLMDigest.swift",
+            ],
+            "unexpected SHA-256 implementations: \(initialStates.sorted())."
+        )
+
+        // The kit's published entry point delegates instead of reimplementing.
+        let kitDigest = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticKit/ExperimentDigest.swift"),
+            encoding: .utf8
+        )
+        #expect(kitDigest.contains("SHA256.hexDigest"), "ExperimentDigest must delegate to the kernel SHA-256.")
+
+        // Atlas and Context call the kernel primitive directly.
+        for consumer in [
+            "Sources/GnosticPositronicAtlas/AtlasStableIdentity.swift",
+            "Sources/GnosticPositronicContext/ContextHashing.swift",
+        ] {
+            let source = try String(contentsOf: rootURL.appendingPathComponent(consumer), encoding: .utf8)
+            #expect(source.contains("SHA256."), "\(consumer) must use the kernel SHA-256.")
+        }
+
+        // The RLM copy stays dependency-free so the boundary remains intact.
+        let rlmDigest = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticRLM/RLMDigest.swift"),
+            encoding: .utf8
+        )
+        #expect(!rlmDigest.contains("import "), "The RLM SHA-256 copy must not import a module.")
+    }
+
+    @Test("the durable replay helper is dependency-free and shared by every journaled store")
+    func durableReplayHelperIsShared() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let helper = try String(
+            contentsOf: rootURL.appendingPathComponent("Sources/GnosticCore/Persistence/DurableReplayJournal.swift"),
+            encoding: .utf8
+        )
+        for forbiddenModule in ["GnosticProtocol", "GnosticKit", "GnosticHost", "PositronicKit", "PKContracts", "Axoloty"] {
+            #expect(
+                !Self.imports(forbiddenModule, in: helper),
+                "The durable replay helper must not import '\(forbiddenModule)'."
+            )
+        }
+        for store in [
+            "Sources/GnosticPositronicAtlas/AtlasStore.swift",
+            "Sources/GnosticPositronicContext/InMemoryContextStore.swift",
+            "Sources/GnosticCore/Runtime/AscendantTurnUpdateStore.swift",
+        ] {
+            let source = try String(contentsOf: rootURL.appendingPathComponent(store), encoding: .utf8)
+            #expect(source.contains("DurableReplayJournal<"), "\(store) must replay through the shared helper.")
+        }
+    }
+
     @Test("the ACP server front end is a separate target, not part of GnosticCLI")
     func acpFrontendIsNotInCLI() throws {
         let rootURL = URL(fileURLWithPath: #filePath)
