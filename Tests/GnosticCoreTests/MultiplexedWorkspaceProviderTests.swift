@@ -2,6 +2,7 @@
 
 import Foundation
 @testable import GnosticCore
+import GnosticWorkspaceTestSupport
 import Testing
 
 @Suite("Production Workspace invocation and query")

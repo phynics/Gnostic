@@ -1,19 +1,22 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-@testable import GnosticCore
+import GnosticCore
 
 /// A local capability used by provider and broker fixtures. Dispatch remains
 /// in the production MultiplexedWorkspaceProvider.
+///
+/// This target is test-only support shared by `GnosticCoreTests` and
+/// `GnosticClientTests`, so its surface is public to those test targets.
 @MainActor
-final class WorkspaceInvocationTestWorkspace: LocalWorkspace {
-    let reference: BackendWorkspaceReference
-    var tools: [BackendWorkspaceTool]
-    var beforeListing: (@MainActor @Sendable () async throws -> Void)?
-    private(set) var invocationCount = 0
+public final class WorkspaceInvocationTestWorkspace: LocalWorkspace {
+    public let reference: BackendWorkspaceReference
+    public var tools: [BackendWorkspaceTool]
+    public var beforeListing: (@MainActor @Sendable () async throws -> Void)?
+    public private(set) var invocationCount = 0
     private let execute: @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
 
-    init(
+    public init(
         id: UUID,
         tools: [GnosticWorkspaceToolDefinition],
         execute: @escaping @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult = { _, _ in .success("ok") }
@@ -29,19 +32,19 @@ final class WorkspaceInvocationTestWorkspace: LocalWorkspace {
         self.execute = execute
     }
 
-    func listTools() async throws -> [BackendWorkspaceTool] {
+    public func listTools() async throws -> [BackendWorkspaceTool] {
         try await beforeListing?()
         return tools
     }
 
-    func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+    public func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
         invocationCount += 1
         return try await execute(id, parameters)
     }
 }
 
 @MainActor
-func makeWorkspaceInvocationProvider(
+public func makeWorkspaceInvocationProvider(
     workspaceID: UUID,
     tools: [GnosticWorkspaceToolDefinition],
     execute: @escaping @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult

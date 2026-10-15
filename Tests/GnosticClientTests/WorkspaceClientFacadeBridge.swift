@@ -3,6 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticCore
+import GnosticWorkspaceTestSupport
 import PKContracts
 @testable import GnosticPositronicBackend
 

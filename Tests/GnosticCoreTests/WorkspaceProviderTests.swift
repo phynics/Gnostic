@@ -4,6 +4,7 @@ import Foundation
 import Axoloty
 @testable import GnosticPositronicBackend
 @testable import GnosticCore
+import GnosticWorkspaceTestSupport
 import JSONSchema
 import PKContracts
 import PositronicKit
