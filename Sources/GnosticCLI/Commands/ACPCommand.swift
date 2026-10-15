@@ -39,9 +39,12 @@ struct ACPCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Node UUID to pin for this ACP process.")
     var node: String?
 
+    /// The same manifest selection `serve --config` uses.
+    @OptionGroup var configOptions: ConfigPathOptions
+
     @MainActor
     func run() async throws {
-        let store = CLIConfigurationStore()
+        let store = configOptions.store()
         let stored = try store.load()
         if let operation {
             guard operation == "profiles" else {

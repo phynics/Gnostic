@@ -128,8 +128,7 @@ extension ExperimentCommand {
         @Option(name: .long, help: "UUID of the Positronic Ascendant whose provider, models, and key are used.")
         var regime: String?
 
-        @Option(name: .customLong("config"), help: "Path to the node manifest.")
-        var configPath: String?
+        @OptionGroup var configOptions: ConfigPathOptions
 
         @Option(name: .long, help: "Repository root holding the scenario cases and corpus.")
         var repository: String = "."
@@ -172,7 +171,7 @@ extension ExperimentCommand {
                 manifestID: "\(module)-\(scenario)-manifest-v1",
                 manifestVersion: "v1",
                 segment: "run",
-                regime: try Self.resolveRegime(argument: regime, configPath: configPath),
+                regime: try Self.resolveRegime(argument: regime, configPath: configOptions.configPath),
                 gitCommit: ProcessInfo.processInfo.environment["GNOSTIC_SCENARIO_COMMIT"] ?? RLMScenarioGit(root: root).head(),
                 workingTreeClean: RLMScenarioGit(root: root).isClean(),
                 imageDigest: imageDigest,
