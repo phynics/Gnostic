@@ -31,81 +31,12 @@ protocol BackendSessionProviding: AnyObject, Sendable {
     func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async
 }
 
-/// Compatibility bridge for tests and older internal composition points that
-/// still provide the pre-supervisor callback shape.
-@MainActor
-final class ClosureBackendSessionProvider: BackendSessionProviding {
-    private let running: @MainActor () -> Bool
-    private let generation: @MainActor () -> UInt64
-    private let backend: @MainActor (UUID) async throws -> any AscendantBackend
-    private let adapter: @MainActor (UUID) -> any AscendantBackend?
-    private let current: @MainActor (UUID, any AscendantBackend, UInt64) -> Bool
-    private let backendLease: @MainActor (UUID, any AscendantBackend) -> UUID?
-    private let failure: @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void
-
-    init(
-        isRunning: @escaping @MainActor () -> Bool,
-        lifecycleGeneration: @escaping @MainActor () -> UInt64,
-        adapter: @escaping @MainActor (UUID) -> any AscendantBackend?,
-        current: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool,
-        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID?,
-        failure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void,
-        backend: @escaping @MainActor (UUID) async throws -> any AscendantBackend
-    ) {
-        self.running = isRunning
-        self.generation = lifecycleGeneration
-        self.adapter = adapter
-        self.current = current
-        self.backendLease = backendLease
-        self.failure = failure
-        self.backend = backend
-    }
-
-    var isRunning: Bool { running() }
-    var isClosed: Bool { !running() }
-    var lifecycleGeneration: UInt64 { generation() }
-
-    func session(for ascendantID: UUID) -> AscendantBackendSession? {
-        guard let backend = adapter(ascendantID) else { return nil }
-        return AscendantBackendSession(
-            ascendantID: ascendantID,
-            backend: backend,
-            lease: backendLease(ascendantID, backend) ?? UUID(),
-            generation: lifecycleGeneration
-        )
-    }
-
-    func sessionForTurn(_ ascendantID: UUID) async throws -> AscendantBackendSession {
-        let backend = try await self.backend(ascendantID)
-        return AscendantBackendSession(
-            ascendantID: ascendantID,
-            backend: backend,
-            lease: backendLease(ascendantID, backend) ?? UUID(),
-            generation: lifecycleGeneration
-        )
-    }
-
-    func isCurrentBackend(_ ascendantID: UUID, backend: any AscendantBackend, generation: UInt64) -> Bool {
-        current(ascendantID, backend, generation)
-    }
-
-    func isCurrentSession(_ session: AscendantBackendSession) -> Bool {
-        guard current(session.ascendantID, session.backend, session.generation) else { return false }
-        guard let lease = backendLease(session.ascendantID, session.backend) else { return true }
-        return lease == session.lease
-    }
-
-    func lease(for ascendantID: UUID, backend: any AscendantBackend) -> UUID? {
-        backendLease(ascendantID, backend)
-    }
-
-    func markLifecycleFailure(_ session: AscendantBackendSession, failure: AscendantBackendLifecycleFailure) async {
-        guard isCurrentSession(session) else { return }
-        await self.failure(session.ascendantID, session.backend, failure)
-    }
-
-    func markLifecycleFailure(_ ascendantID: UUID, backend: any AscendantBackend, failure: AscendantBackendLifecycleFailure) async {
-        await self.failure(ascendantID, backend, failure)
+extension BackendSessionProviding {
+    /// Fails with ``NodeRuntimeError/notRunning`` unless the session still
+    /// matches the Ascendant's live lease and backend identity. Services use
+    /// this at every suspension point instead of repeating the guard.
+    func requireCurrentSession(_ session: AscendantBackendSession) throws {
+        guard isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
     }
 }
 

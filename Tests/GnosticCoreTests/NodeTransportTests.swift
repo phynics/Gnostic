@@ -124,23 +124,21 @@ struct NodeTransportTests {
         ).compileLaunchPlan()
         let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
-        let backend = adapter
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let backendProvider = StubBackendSessionProvider()
+        backendProvider.install(adapter, for: ascendantID, lease: lease)
         let timelineService = TimelineService(
             ascendantIDs: [ascendantID],
             registry: registry,
-            isClosed: { false },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: backendProvider,
             advertise: { _, _ in }
         )
         let turnService = TurnService(
             registry: registry,
             coordinator: AscendantTurnCoordinator(),
             updates: AscendantTurnUpdateStore(),
-            isRunning: { true },
-            backend: { id in
-                guard id == ascendantID else { throw NodeRuntimeError.unknownAscendant(id) }
-                return backend
-            }
+            backendProvider: backendProvider
         )
 
         let renamed = try await timelineService.rename(.init(timelineID: timelineID, title: "After"))
@@ -177,8 +175,7 @@ struct NodeTransportTests {
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            adapter: { _ in nil },
+            backendProvider: StubBackendSessionProvider(),
             readvertiseTimeline: { _ in }
         )
 
@@ -215,8 +212,7 @@ struct NodeTransportTests {
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            adapter: { _ in nil },
+            backendProvider: StubBackendSessionProvider(),
             readvertiseTimeline: { _ in }
         )
 
@@ -245,6 +241,10 @@ struct NodeTransportTests {
         ).compileLaunchPlan()
         let adapter = ServiceStubAscendantBackend(ascendantID: ascendantID, timelineID: timelineID)
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let backendProvider = StubBackendSessionProvider()
+        backendProvider.install(adapter, for: ascendantID, lease: lease)
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
@@ -263,8 +263,7 @@ struct NodeTransportTests {
             ),
             localWorkspaces: [workspaceID: EchoWorkspace(reference: reference)],
             references: [workspaceID: reference],
-            isRunning: { true },
-            adapter: { $0 == ascendantID ? adapter : nil },
+            backendProvider: backendProvider,
             readvertiseTimeline: { _ in }
         )
 
@@ -304,15 +303,17 @@ struct NodeTransportTests {
             timelines: [.init(id: timelineID, title: "Dynamic", operatingAscendantID: ascendantID)]
         ).compileLaunchPlan()
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await adapter.operatedTimelines())
-        let backend = adapter
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let backendProvider = StubBackendSessionProvider()
+        backendProvider.install(adapter, for: ascendantID, lease: lease)
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: backendProvider,
             readvertiseTimeline: { _ in }
         )
 
@@ -370,14 +371,17 @@ struct NodeTransportTests {
             status: .available(providerID: "stub-provider", uri: uri)
         )
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await backend.operatedTimelines())
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let backendProvider = StubBackendSessionProvider()
+        backendProvider.install(backend, for: ascendantID, lease: lease)
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
             discovery: discovery,
             localWorkspaces: [:],
             references: [:],
-            isRunning: { true },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: backendProvider,
             readvertiseTimeline: { _ in }
         )
 
@@ -416,6 +420,10 @@ struct NodeTransportTests {
             workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://missing-projection", kind: "echo")]
         ).compileLaunchPlan()
         let registry = try NodeRegistry(plan: plan, operatedTimelines: try await backend.operatedTimelines())
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: ascendantID)
+        let backendProvider = StubBackendSessionProvider()
+        backendProvider.install(backend, for: ascendantID, lease: lease)
         let service = WorkspaceService(
             plan: plan,
             registry: registry,
@@ -425,8 +433,7 @@ struct NodeTransportTests {
             ),
             localWorkspaces: [workspaceID: EchoWorkspace(reference: reference)],
             references: [workspaceID: reference],
-            isRunning: { true },
-            adapter: { $0 == ascendantID ? backend : nil },
+            backendProvider: backendProvider,
             readvertiseTimeline: { _ in }
         )
 

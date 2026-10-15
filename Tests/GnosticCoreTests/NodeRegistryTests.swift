@@ -11,8 +11,14 @@ struct NodeRegistryTests {
     func acceptedTimelineStateDrivesEveryReadModel() async throws {
         let fixture = try Fixture()
         let registry = try NodeRegistry(plan: fixture.plan, operatedTimelines: [fixture.operated])
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: fixture.ascendantID)
 
-        let created = try await registry.registerRuntimeTimeline(title: "Runtime", ascendantID: fixture.ascendantID)
+        let created = try await registry.registerRuntimeTimeline(
+            fixture.runtimeTimeline(title: "Runtime"),
+            ascendantID: fixture.ascendantID,
+            backendLease: lease
+        )
         let snapshot = await registry.snapshot()
         let listed = await registry.listTimelines()
         let discoverable = await registry.discoverableTimelineIDs()
@@ -62,10 +68,13 @@ struct NodeRegistryTests {
     func concurrentCreationIsAtomic() async throws {
         let fixture = try Fixture()
         let registry = try NodeRegistry(plan: fixture.plan, operatedTimelines: [fixture.operated])
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: fixture.ascendantID)
+        let pending = (0..<32).map { fixture.runtimeTimeline(title: "Runtime \($0)") }
 
         let created = await withTaskGroup(of: NodeRegistry.TimelineRecord.self, returning: [NodeRegistry.TimelineRecord].self) { group in
-            for index in 0..<32 {
-                group.addTask { try! await registry.registerRuntimeTimeline(title: "Runtime \(index)", ascendantID: fixture.ascendantID) }
+            for timeline in pending {
+                group.addTask { try! await registry.registerRuntimeTimeline(timeline, ascendantID: fixture.ascendantID, backendLease: lease) }
             }
             var records: [NodeRegistry.TimelineRecord] = []
             for await record in group { records.append(record) }
@@ -111,7 +120,13 @@ struct NodeRegistryTests {
     func runtimeAttachmentIntentTracksMutations() async throws {
         let fixture = try Fixture()
         let registry = try NodeRegistry(plan: fixture.plan, operatedTimelines: [fixture.operated])
-        let runtime = try await registry.registerRuntimeTimeline(title: "Runtime", ascendantID: fixture.ascendantID)
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: fixture.ascendantID)
+        let runtime = try await registry.registerRuntimeTimeline(
+            fixture.runtimeTimeline(title: "Runtime"),
+            ascendantID: fixture.ascendantID,
+            backendLease: lease
+        )
 
         #expect(await registry.attachmentIntent(for: runtime.id).isEmpty)
         await registry.upsertAttachmentIntent(.network(fixture.networkWorkspaceID, uri: "workspace://expected"), for: runtime.id)
@@ -169,6 +184,32 @@ struct NodeRegistryTests {
         #expect(await registry.timeline(id: renamed.id)?.timeline == renamed)
     }
 
+    @Test("a stale backend lease cannot mutate canonical Timeline state")
+    func staleBackendLeaseCannotMutateCanonicalState() async throws {
+        let fixture = try Fixture()
+        let registry = try NodeRegistry(plan: fixture.plan, operatedTimelines: [fixture.operated])
+        let liveLease = UUID()
+        let staleLease = UUID()
+        await registry.activateBackendLease(liveLease, for: fixture.ascendantID)
+
+        await #expect(throws: NodeRuntimeError.notRunning) {
+            _ = try await registry.registerRuntimeTimeline(
+                fixture.runtimeTimeline(title: "Stale runtime"),
+                ascendantID: fixture.ascendantID,
+                backendLease: staleLease
+            )
+        }
+        await #expect(throws: NodeRuntimeError.notRunning) {
+            _ = try await registry.commitBackendTimeline(
+                fixture.operated,
+                ascendantID: fixture.ascendantID,
+                backendLease: staleLease
+            )
+        }
+        #expect(await registry.timeline(id: fixture.operated.id)?.timeline.title == "Operated")
+        #expect(await registry.listTimelines().count == 2)
+    }
+
     private struct Fixture: Sendable {
         let ascendantID = UUID(uuidString: "B21D0000-0000-4000-8000-000000000001")!
         let operatedID = UUID(uuidString: "B21D0000-0000-4000-8000-000000000002")!
@@ -177,6 +218,21 @@ struct NodeRegistryTests {
         let operated: AscendantRuntimeTimeline
         let unoperated: AscendantRuntimeTimeline
         let plan: NodeLaunchPlan
+
+        /// Builds a runtime Timeline under this fixture's Ascendant.
+        func runtimeTimeline(id: UUID = UUID(), title: String) -> AscendantRuntimeTimeline {
+            let now = Date()
+            return .init(
+                id: id,
+                title: title,
+                attachedWorkspaceIDs: [],
+                attachedAscendantID: ascendantID,
+                isArchived: false,
+                isPrivate: false,
+                createdAt: now,
+                updatedAt: now
+            )
+        }
 
         init() throws {
             let now = Date(timeIntervalSince1970: 1)
