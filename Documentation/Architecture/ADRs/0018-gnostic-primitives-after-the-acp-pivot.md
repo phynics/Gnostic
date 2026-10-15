@@ -458,7 +458,7 @@ The owner accepted the recommended answer to every question on 2026-10-15
 | Q13 | Replay hash basis | **RFC 8785 canonical JSON** of the prompt content blocks plus the ACP version tag. | §4 |
 | Q14 | Content at rest | **The Turn event log stays digest-only.** Only the opt-in Timeline record stores ACP payload content. | Consequences |
 | Q15 | Runtime instance (added after #630) | **Add a Node-scoped Runtime instance.** It owns install, version, environment, secrets, auth, catalog, and processes. Agents reference an instance; Runtime is the kind. Supersedes the "Runtime is a value" part of Q10. | §1 |
-| Q16 | ACP version (added) | **ACP v2 is the protocol baseline.** Recorded, with its Turn mapping and the open v1 transition question, in [ADR 0019](0019-acp-v2-protocol-baseline.md) (#633). | §4 |
+| Q16 | ACP version (added) | **ACP v2 is the protocol baseline.** Recorded, with its Turn mapping and the decision to support no ACP v1, in [ADR 0019](0019-acp-v2-protocol-baseline.md) (#633). | §4 |
 
 ## Fitness check
 
