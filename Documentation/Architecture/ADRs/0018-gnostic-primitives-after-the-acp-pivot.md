@@ -7,7 +7,7 @@ open question (Q1–Q14), and then made two further decisions the same day:
 a **Runtime instance** layer (Q15, from design reference
 [#630](https://github.com/phynics/Gnostic/issues/630)) and **ACP v2 as the
 protocol baseline** (Q16). On independent-review advice, Q16 is recorded in its
-own decision, ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)). See [Owner decisions](#owner-decisions). Owning issue:
+own decision, [ADR 0019](0019-acp-v2-protocol-baseline.md). See [Owner decisions](#owner-decisions). Owning issue:
 [GNO-ACPF-014 #626](https://github.com/phynics/Gnostic/issues/626), under
 [Epic #602](https://github.com/phynics/Gnostic/issues/602). Builds on
 [ADR 0017](0017-acp-first-host-and-harness-agent.md). Checked by the
@@ -34,7 +34,7 @@ lands, code, wire operations, and the manifest still say "Ascendant".
   Runtime (§1);
 - [ADR 0017](0017-acp-first-host-and-harness-agent.md) in several places:
   - §2: the Timeline record stores ACP payloads as received, not normalized
-    updates (§4), and a Timeline continues through `session/resume` (ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)));
+    updates (§4), and a Timeline continues through `session/resume` ([ADR 0019](0019-acp-v2-protocol-baseline.md));
   - §3 and its Workspace invariant: root delivery is an owner-decided exception
     (§6, Q12);
   - §4: a child Timeline records its operating Agent;
@@ -204,12 +204,12 @@ A Gnostic Turn is a Gnostic **envelope** around ACP **payloads**.
 
   These travel verbatim, tagged with the ACP protocol version, and are never
   reduced to a Gnostic taxonomy.
-- **Protocol baseline.** Payloads are ACP v2, as defined by ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)). That record
+- **Protocol baseline.** Payloads are ACP v2, as defined by [ADR 0019](0019-acp-v2-protocol-baseline.md). That record
   maps the Turn onto the v2 prompt lifecycle: insertion, the idle
   `state_update`, updates outside a Turn, permission requests without a Turn,
   and cancellation. It also settles how peers that still speak v1 are handled.
 - **Gnostic interprets only what it needs:**
-  - the terminal outcome (ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)));
+  - the terminal outcome ([ADR 0019](0019-acp-v2-protocol-baseline.md));
   - the `messageId` of the inserted prompt, recorded as a strong Runtime ref;
   - tool-call identifiers and permission subjects, for permission correlation;
   - usage numbers, for metering;
@@ -223,7 +223,7 @@ A Gnostic Turn is a Gnostic **envelope** around ACP **payloads**.
   `session/request_permission` expects an answer. The envelope carries it as a
   correlated permission request to the Turn's client, holding the ACP v2
   request (title, optional subject, options), and a correlated reply.
-  ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)) covers permission requests that arrive outside a Turn.
+  [ADR 0019](0019-acp-v2-protocol-baseline.md) covers permission requests that arrive outside a Turn.
   - This reuses the existing permission correlation (ADR 0011 mediation;
     `AscendantPermissionCoordinator`).
   - A timeout, a lost connection, or a Node failure answers the Runtime with a
@@ -334,7 +334,7 @@ that #566 started and #611 finishes.
   explicit exception: opt-in per attachment, never `unavailable` or read-only,
   and recorded per span (Q12, accepted).
 - Diagnostics and metering never read Turn payload content.
-- Turn payloads follow the protocol baseline in ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)).
+- Turn payloads follow the protocol baseline in [ADR 0019](0019-acp-v2-protocol-baseline.md).
 - Every Session runs on exactly one Runtime instance, and instances share no
   mutable state (Q15).
 
@@ -387,7 +387,7 @@ None in this record. Delivery:
   can share one ACP model (#572).
 
 - the ACP wire model and the replacement of the v1-only SDK are decided in
-  ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)) (#572);
+  [ADR 0019](0019-acp-v2-protocol-baseline.md) (#572);
 - Runtime instance installs (#631) download ACP Registry distributions at run
   time. They are not package dependencies, but they need checksum
   verification and version pinning.
@@ -447,7 +447,7 @@ The owner accepted the recommended answer to every question on 2026-10-15
 | Q2 | Default Timeline per Agent | **No.** A client or the frontend creates a Timeline on first use. | §1 |
 | Q3 | Switching a Timeline's Agent | **An explicit Timeline operation.** A Turn never switches implicitly. | §3 |
 | Q4 | Concurrent spans | **At most one open span.** Parallel work is child Timelines. | §3 |
-| Q5 | ACP versions | **Tag the ACP version in the envelope.** Refined by ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)). | §4 |
+| Q5 | ACP versions | **Tag the ACP version in the envelope.** Refined by [ADR 0019](0019-acp-v2-protocol-baseline.md). | §4 |
 | Q6 | Payload size | **Resource links** above an advertised per-Node threshold. Reject what still exceeds the budget. | §4 |
 | Q7 | Axoloty scope | **Axoloty stays the cross-Node fabric** for 0.5.0. ACP over HTTP is a trigger only. | §5 |
 | Q8 | Remote roots | **Tools only.** Mounting is outside Gnostic. | §6 |
@@ -458,7 +458,7 @@ The owner accepted the recommended answer to every question on 2026-10-15
 | Q13 | Replay hash basis | **RFC 8785 canonical JSON** of the prompt content blocks plus the ACP version tag. | §4 |
 | Q14 | Content at rest | **The Turn event log stays digest-only.** Only the opt-in Timeline record stores ACP payload content. | Consequences |
 | Q15 | Runtime instance (added after #630) | **Add a Node-scoped Runtime instance.** It owns install, version, environment, secrets, auth, catalog, and processes. Agents reference an instance; Runtime is the kind. Supersedes the "Runtime is a value" part of Q10. | §1 |
-| Q16 | ACP version (added) | **ACP v2 is the protocol baseline.** Recorded, with its Turn mapping and the open v1 transition question, in ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)) (#633). | §4 |
+| Q16 | ACP version (added) | **ACP v2 is the protocol baseline.** Recorded, with its Turn mapping and the open v1 transition question, in [ADR 0019](0019-acp-v2-protocol-baseline.md) (#633). | §4 |
 
 ## Fitness check
 
