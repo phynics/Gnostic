@@ -30,9 +30,9 @@
       "id": "GNO-MOD-LETTA",
       "name": "Letta Ascendant backend",
       "targets": ["GnosticLettaBackend"],
-      "status": "archived",
-      "owningIssue": "https://github.com/phynics/Gnostic/issues/327",
-      "gateIssues": ["https://github.com/phynics/Gnostic/issues/327"],
+      "status": "parked",
+      "owningIssue": "https://github.com/phynics/Gnostic/issues/611",
+      "gateIssues": ["https://github.com/phynics/Gnostic/issues/611"],
       "runnable": false,
       "reviewBy": "2026-12-01"
     },

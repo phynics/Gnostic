@@ -2,7 +2,7 @@
 
 ## Status
 
-**Superseded by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** Every Ascendant Backend is now an ACP agent. The Letta prototype is archived, and `GnosticLettaBackend` is removed by [#611](https://github.com/phynics/Gnostic/issues/611). Letta returns only if it is offered as an ACP agent.
+**Superseded by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** Every Ascendant Backend is now an ACP agent. The Letta prototype is retired: `GnosticLettaBackend` is removed, and its registry entry archived, by [#611](https://github.com/phynics/Gnostic/issues/611). Letta returns only if it is offered as an ACP agent.
 
 Accepted evaluation outcome: **PROTOTYPE**. Delivered by
 [#246](https://github.com/phynics/Gnostic/issues/246) under epic

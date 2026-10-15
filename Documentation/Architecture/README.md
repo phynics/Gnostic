@@ -18,7 +18,7 @@ whether its decision is delivered or remains a target.
 7. [ADR 0006 — Runtime effect ownership and terminal observation](ADRs/0006-runtime-effect-ownership-and-terminal-observation.md)
 8. [ADR 0008 — Runtime-created Timeline durability across serve restarts](ADRs/0008-runtime-created-timeline-durability.md) — process-scoped default; superseded in part by ADR 0015 when a durable state home is configured.
 9. [ADR 0009 — Multi-configuration Ascendant hosting on one Node](ADRs/0009-multi-configuration-ascendant-hosting.md)
-10. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md) — superseded by ADR 0017; the prototype is archived.
+10. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md) — superseded by ADR 0017; the prototype is retired by #611.
 11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md) — amended by ADR 0017: ACP is the only backend boundary, and Workspaces reach ACP agents through the Gnostic gateway.
 12. [ADR 0014 — Durable Turn event log](ADRs/0014-durable-turn-event-log.md)
 13. [ADR 0015 — File-backed Timeline runtime repository](ADRs/0015-file-backed-timeline-runtime-repository.md) — durable backend transcripts, opt-in under the state home. Superseded by ADR 0017's Timeline record once the in-process backend is removed.

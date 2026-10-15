@@ -35,16 +35,18 @@ advertises it, and otherwise through a fallback declared per Ascendant
 
 An Ascendant Backend owns execution for one Ascendant: model and tool
 semantics, model context, compaction, caches, checkpoints, and backend-native
-lifecycle. Every Ascendant Backend is an ACP agent reached over ACP
-(ADR 0017). Gnostic owns the host boundary, identity, Turn admission,
+lifecycle. The target is that every Ascendant Backend is an ACP agent reached
+over ACP (ADR 0017). Until #611 retires them, the in-process `positronic` and
+`letta` kinds remain valid. Gnostic owns the host boundary, identity, Turn admission,
 permission mediation, and the Timeline record around it.
 
 ## Gnostic harness agent
 
 The Gnostic harness agent is the ACP agent this repository builds on
-PositronicKit. Gnostic hosts it as an ordinary Ascendant Backend. It is the
-only place inner modules run, and the only part of Gnostic allowed to depend
-on PositronicKit (ADR 0017). PositronicKit types such as `AgentInstance` and
+PositronicKit. Gnostic hosts it as an ordinary Ascendant Backend. In the
+target state, it is the only place inner modules run, and the only part of
+Gnostic allowed to depend on PositronicKit. Until #604 and #611 land, a
+transitional allow-list in ADR 0017 names the other targets that still do. PositronicKit types such as `AgentInstance` and
 `Thread` stay private to it.
 
 ## Agent session
@@ -218,16 +220,18 @@ counterexample to this rule.
 ## Deprecated terms
 
 These terms remain in older records and in code that has not yet migrated. Do
-not use them in new Gnostic-owned identity, contracts, or documentation.
+not use them in new Gnostic-owned identity, contracts, or documentation. A
+deprecated term can still name working code: deprecation does not mean the
+code or its tests are obsolete. Remove them only through the owning issue.
 
 | Deprecated term | Use instead | Why (decision) |
 | --- | --- | --- |
-| Positronic Backend | Gnostic harness agent | In-process Ascendant Backends are retired; PositronicKit runs only behind ACP (ADR 0017). |
-| Backend kind `positronic`, backend kind `letta` | `acp-client` with an Ascendant definition | One backend boundary (ADR 0017; ADR 0010 is superseded). |
+| Positronic Backend | Gnostic harness agent | In-process Ascendant Backends are being retired (#611); PositronicKit will run only behind ACP (ADR 0017). |
+| Backend kind `positronic`, backend kind `letta` | `acp-client` with an Ascendant definition | One backend boundary (ADR 0017; ADR 0010 is superseded). Both kinds stay valid until #611. |
 | Backend transcript (as Timeline history) | Timeline record | History that crossed the boundary is Gnostic-owned; model context stays backend-owned (ADR 0017). |
 | Timeline runtime repository (`FileTimelineRuntimeRepository`) | Timeline record | Superseded with ADR 0015 once the in-process backend is removed. |
 | Backend envelope model keys (`provider`, `endpoint`, `model`, `utilityModel`, `fastModel`, `apiKey`) | Session configuration in the Ascendant definition | Model choice belongs to the agent and is set through ACP session config options. |
 | `extensions` (Positronic extension selection) | Outer module selection, or the harness agent's session configuration for inner modules | Modules have two layers (ADR 0017). |
-| Positronic contribution (`PositronicContribution`) | Inner module hook | It moves into the Gnostic harness agent. |
-| Backend hook, as a carrier for Modules in the host | Outer module hook point, or inner module | ADR 0013's hook rule is split by layer (ADR 0017). |
+| Positronic contribution (`PositronicContribution`) | The harness agent's inner module interface (defined by #609) | It moves into the Gnostic harness agent. |
+| Backend hook, as a carrier for Modules in the host | Outer module (host hook points defined by #612), or inner module | ADR 0013's hook rule is split by layer (ADR 0017). |
 | Narrative | Atlas | Superseded earlier (ADR 0004). |

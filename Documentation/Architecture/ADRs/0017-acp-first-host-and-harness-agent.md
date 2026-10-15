@@ -153,8 +153,11 @@ Gnostic never offers client `fs/*` or `terminal/*`. An intended attachment on an
 `unsupported`. This amends ADR 0011's Workspace consequence.
 
 ADR 0011's rejection of routing tool calls through
-`AscendantBackendWorkspaceService` still stands. The agent runs its own tool
-loop; it simply sees Gnostic Workspace tools as MCP tools. Delivered by
+`AscendantBackendWorkspaceService` still stands, in its precise sense. That
+alternative required every tool call of an ACP agent to run through Gnostic,
+which would exclude agents that run their own tools. Under this decision, the
+agent keeps running its own native tools, and only Gnostic Workspace tools,
+which the agent chooses to call, go through the gateway. Delivered by
 [#606](https://github.com/phynics/Gnostic/issues/606).
 
 ### 4. Subagents are child Timelines
@@ -225,25 +228,47 @@ Under this rule:
   [#618](https://github.com/phynics/Gnostic/issues/618), and
   [#619](https://github.com/phynics/Gnostic/issues/619).
 - ADR 0016's placement verdicts hold inside the harness agent. Ouroboros keeps
-  the detached direct-turn path. Akasha's dispatcher moves from the host into
-  the harness agent, because the host no longer invokes models. ADR 0016's
-  exclusion of ACP concerns third-party agents; for the harness agent, ACP is
-  only the transport.
+  the detached direct-turn path. Its ACP objections (agent-owned tools and
+  system prompt) concern third-party agents, so they do not apply to the
+  harness agent.
+- Akasha's dispatcher moves from the host into the harness agent, because the
+  host no longer invokes models. **Part of ADR 0016's background-activation
+  invariant is reopened by this move.** ADR 0016 required a host-owned
+  dispatcher whose activations are recorded in the host's durable event log
+  (ADR 0014) and mapped to host Turns. Inside the harness agent, the dispatcher
+  can own cancellation, budget, and a durable log of its own. But ACP has no
+  way to report an activation that happens outside a prompt Turn to the host.
+  Until that is resolved, Akasha meets this record's reconsideration trigger
+  "an inner experiment needs a host capability ACP cannot carry". The design
+  reference #617 must settle it before Akasha restarts.
 - RLM is an outer experiment. Its tool is offered through the gateway
   ([#615](https://github.com/phynics/Gnostic/issues/615)).
 
 ### 7. PositronicKit firewall
 
-Only harness-agent targets may declare or import a PositronicKit product:
-`PositronicKit`, `PKContracts`, `PKPrompt`, or any `PK*Provider`. No other
-target may have a PositronicKit product in its transitive dependency closure.
-This includes test targets.
+Only harness-agent targets may declare or import any product of the
+`PositronicKit` package (for example `PositronicKit`, `PKContracts`,
+`PKPrompt`, `PKTestSupport`, or a `PK*Provider`). No other target, including a
+test target, may have such a product in its transitive dependency closure.
 
-This widens ADR 0005, which constrains only `GnosticCore`. Until #611 lands, a
-transitional allow-list names each target that still reaches PositronicKit, with
-the issue that removes it. The list only shrinks. A new entry needs a reviewed
-exception in `exceptions.json`. Delivered by
-[#604](https://github.com/phynics/Gnostic/issues/604).
+This widens ADR 0005, which constrains only `GnosticCore`. The rule is a
+target. The fitness test that enforces it lands with
+[#604](https://github.com/phynics/Gnostic/issues/604), and until then the
+existing ADR 0005 checks remain the only enforcement.
+
+The **initial transitional allow-list** is every target that declares a
+PositronicKit product on 2026-10-15:
+
+| Kind | Targets | Removed by |
+| --- | --- | --- |
+| Libraries | `GnosticPositronicBackend`, `GnosticPositronicAtlas`, `GnosticPositronicContext` | #611 (removed, or moved under the harness agent) |
+| Libraries | `GnosticHost`, `GnosticCLI` | #604 (move the composition to one transitional target), then #611 |
+| Libraries | `GnosticACPFrontend` (`PKContracts` for `AnyCodable` only) | #604 |
+| Tests | `GnosticCoreTests`, `GnosticClientTests`, `GnosticRunnerTests`, `GnosticCLITests`, `GnosticPositronicAtlasTests`, `GnosticPositronicContextTests` | #604 for the host test targets; #611 for the module test targets |
+
+The list only shrinks. Adding an entry, or adding a PositronicKit product to a
+listed target that did not have it, needs a reviewed exception in
+`exceptions.json`.
 
 ## Invariant
 
@@ -309,9 +334,14 @@ resolution evidence:
 - **The Timeline record writes conversation content to disk** when the state
   home is configured. This is the same opt-in content-at-rest stance as
   ADR 0015.
-- **The module registry gains a layer.** `GNO-MOD-ATLAS`, `GNO-MOD-CONTEXT`,
-  `GNO-MOD-OUROBOROS`, and `GNO-MOD-AKASHA` are `parked`, owned by their design
-  references. `GNO-MOD-LETTA` is `archived`.
+- **The module registry gains a layer.**
+  - `GNO-MOD-ATLAS`, `GNO-MOD-CONTEXT`, `GNO-MOD-OUROBOROS`, and
+    `GNO-MOD-AKASHA` are `parked`, owned by their design references.
+  - `GNO-MOD-LETTA` is `parked` and owned by #611, which removes the target
+    and then archives the entry with the commit that last holds it.
+  - Atlas stays selectable in the host (`runnable: true`) as a transitional
+    state. It is an inner module in a host target only until #611 moves it
+    under the harness agent or archives it.
 - **Experiment telemetry depends on what agents report.** When an agent reports
   no usage, the kit records it as unknown.
 - **`CONTEXT.md` changes.** It redefines Ascendant Backend, Timeline, Module,
