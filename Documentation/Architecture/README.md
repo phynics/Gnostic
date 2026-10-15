@@ -26,6 +26,10 @@ whether its decision is delivered or remains a target.
 15. [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — both experiments are Modules; ACP is excluded; no backend kind is promoted. Placement only: no implementation has started. Amended by ADR 0017: both are parked as inner modules of the Gnostic harness agent.
 16. [ADR 0017 — ACP-first host, the Gnostic harness agent, and the PositronicKit firewall](ADRs/0017-acp-first-host-and-harness-agent.md) — every Ascendant Backend is an ACP agent; Gnostic owns the Timeline record; Workspaces reach agents through the Gnostic gateway; subagents are child Timelines; Modules are outer or inner; only harness-agent targets may reach PositronicKit. Direction decision; delivery is tracked by [Epic #602](https://github.com/phynics/Gnostic/issues/602).
 
+## Proposed decisions
+
+- [ADR 0018 — Gnostic primitives after the ACP pivot: Agent, Runtime, spans, and ACP-native Turns](ADRs/0018-gnostic-primitives-after-the-acp-pivot.md) — **Proposed.** One Gnostic-owned Agent replaces the Ascendant, and the ACP program becomes its Runtime. A Timeline is a sequence of spans. Turns carry ACP payloads in a Gnostic envelope. Axoloty is the discovery and routing fabric. Workspaces are delivered as session roots or gateway tools. Open questions are on [#626](https://github.com/phynics/Gnostic/issues/626).
+
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
 document is historical and is not an accepted architecture decision. [ADR 0007
