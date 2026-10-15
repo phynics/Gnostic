@@ -2,6 +2,10 @@
 
 ## Status
 
+> **Proposed amendment (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
+> would deliver no Workspace as a root under its first placement strategy
+> (§6). This record's protocol decisions are unchanged.
+
 **Accepted** (2026-10-15). The owner also decided its three questions the same
 day; see [Owner decisions](#owner-decisions). In short: **no ACP v1 support at
 all** (T1), 0.5.0 ships ACP as an opt-in **v2 preview** (T2), and an unanswered

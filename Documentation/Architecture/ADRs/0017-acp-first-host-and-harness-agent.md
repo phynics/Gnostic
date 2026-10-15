@@ -2,6 +2,10 @@
 
 ## Status
 
+> **Proposed amendment (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
+> would replace §6's single harness agent with Native Runtimes (one per inner
+> experiment) and move outer experiments out of the host, as Gnostic consumers.
+
 **Amended by [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md) (2026-10-15).** These changes apply to this record:
 
 - "Ascendant" becomes "Agent", with the ACP program as its Runtime.
