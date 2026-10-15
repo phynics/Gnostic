@@ -13,17 +13,18 @@ whether its decision is delivered or remains a target.
 2. [ADR 0002 — Gnostic identity versus backend state](ADRs/0002-gnostic-identity-vs-backend-state.md)
 3. [ADR 0003 — Pre-1.0 manifest and protocol reset](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md)
 4. [ADR 0004 — Atlas supersedes Narrative](ADRs/0004-atlas-supersedes-narrative.md)
-5. [ADR 0005 — Core PositronicKit dependency boundary](ADRs/0005-core-positronic-dependency-boundary.md) — the bundled Positronic backend is extracted to `GnosticPositronicBackend`; `GnosticCore` carries no Positronic dependency.
+5. [ADR 0005 — Core PositronicKit dependency boundary](ADRs/0005-core-positronic-dependency-boundary.md) — the bundled Positronic backend is extracted to `GnosticPositronicBackend`; `GnosticCore` carries no Positronic dependency. Widened by ADR 0017 to every host target.
 6. [ADR 0012 — RLM dual executors with a measured default](ADRs/0012-rlm-runtime-selection.md)
 7. [ADR 0006 — Runtime effect ownership and terminal observation](ADRs/0006-runtime-effect-ownership-and-terminal-observation.md)
 8. [ADR 0008 — Runtime-created Timeline durability across serve restarts](ADRs/0008-runtime-created-timeline-durability.md) — process-scoped default; superseded in part by ADR 0015 when a durable state home is configured.
 9. [ADR 0009 — Multi-configuration Ascendant hosting on one Node](ADRs/0009-multi-configuration-ascendant-hosting.md)
-10. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md)
-11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md)
+10. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md) — superseded by ADR 0017; the prototype is retired by #611.
+11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md) — amended by ADR 0017: ACP is the only backend boundary, and Workspaces reach ACP agents through the Gnostic gateway.
 12. [ADR 0014 — Durable Turn event log](ADRs/0014-durable-turn-event-log.md)
-13. [ADR 0015 — File-backed Timeline runtime repository](ADRs/0015-file-backed-timeline-runtime-repository.md) — durable backend transcripts, opt-in under the state home.
-14. [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — layering, dependency rule, and Module lifecycle; delivered by [Epic #438](https://github.com/phynics/Gnostic/issues/438) (P0–P8).
-15. [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — both experiments are Modules; ACP is excluded; no backend kind is promoted. Placement only: no implementation has started.
+13. [ADR 0015 — File-backed Timeline runtime repository](ADRs/0015-file-backed-timeline-runtime-repository.md) — durable backend transcripts, opt-in under the state home. Superseded by ADR 0017's Timeline record once the in-process backend is removed.
+14. [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — layering, dependency rule, and Module lifecycle; delivered by [Epic #438](https://github.com/phynics/Gnostic/issues/438) (P0–P8). Amended by ADR 0017: Modules are outer (host) or inner (harness agent).
+15. [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — both experiments are Modules; ACP is excluded; no backend kind is promoted. Placement only: no implementation has started. Amended by ADR 0017: both are parked as inner modules of the Gnostic harness agent.
+16. [ADR 0017 — ACP-first host, the Gnostic harness agent, and the PositronicKit firewall](ADRs/0017-acp-first-host-and-harness-agent.md) — every Ascendant Backend is an ACP agent; Gnostic owns the Timeline record; Workspaces reach agents through the Gnostic gateway; subagents are child Timelines; Modules are outer or inner; only harness-agent targets may reach PositronicKit. Direction decision; delivery is tracked by [Epic #602](https://github.com/phynics/Gnostic/issues/602).
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch

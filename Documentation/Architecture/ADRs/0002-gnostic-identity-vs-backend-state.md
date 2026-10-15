@@ -2,6 +2,8 @@
 
 ## Status
 
+**Amended by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** The separation in this record stands. ADR 0017 adds a Gnostic-owned Timeline record of what crossed the backend boundary; model context, compaction, and caches stay backend-owned.
+
 Accepted target architecture. Delivery is tracked by [Epic #140](https://github.com/phynics/Gnostic/issues/140)
 and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145); this ADR
 does not claim that the target implementation is complete.

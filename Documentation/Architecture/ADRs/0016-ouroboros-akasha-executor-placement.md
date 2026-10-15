@@ -2,6 +2,8 @@
 
 ## Status
 
+**Amended by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** The Positronic host of both experiments moves into the Gnostic harness agent. Ouroboros keeps the detached direct-turn path there; the ACP objections about agent-owned tools and system prompts concern third-party agents and do not apply to the harness agent. Akasha's dispatcher moves from the host into the harness agent, because the host no longer invokes models. That **reopens** the part of the background-activation invariant that requires host-owned observation and a host durable record: ACP cannot report activations outside a prompt Turn. The Letta fit note (Q3) and the dedicated-backend-kind fallback (Q4) no longer apply, because every backend is now an ACP agent. Both experiments are collapsed into design references ([#616](https://github.com/phynics/Gnostic/issues/616), [#617](https://github.com/phynics/Gnostic/issues/617)) and parked.
+
 Accepted (2026-10-11). Owning issue:
 [GNO-OURO-001 #465](https://github.com/phynics/Gnostic/issues/465), with
 [Epic #464](https://github.com/phynics/Gnostic/issues/464) (Ouroboros) and

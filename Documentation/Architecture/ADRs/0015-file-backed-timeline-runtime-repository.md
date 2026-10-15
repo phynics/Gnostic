@@ -2,6 +2,8 @@
 
 ## Status
 
+**Superseded by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** The Gnostic-owned Timeline record ([#605](https://github.com/phynics/Gnostic/issues/605)) replaces this Positronic transcript store. This record stays in force for the in-process Positronic backend until [#611](https://github.com/phynics/Gnostic/issues/611) removes it.
+
 Accepted. Owning issue:
 [#531 — file-backed TimelineRuntimeRepository for cross-restart backend
 transcripts](https://github.com/phynics/Gnostic/issues/531), under the

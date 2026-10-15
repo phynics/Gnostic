@@ -143,10 +143,13 @@ Do not use XCTest. Use ErrorKit-compatible structured errors at public
 boundaries.
 
 Keep Gnostic Axoloty-native. Keep Axoloty free of Gnostic, Workspace,
-filesystem, and tool types. Keep `GnosticCore`, `GnosticProtocol`,
-and `GnosticClient` free of PositronicKit; the bundled backend lives in
-`GnosticPositronicBackend` (ADR 0005, ADR 0013). Keep Gnostic-owned contracts
-free of native PositronicKit values. Do not add Gnostic-specific APIs to PositronicKit.
+filesystem, and tool types. Only Gnostic harness agent targets, and the
+shrinking transitional allow-list, may depend on or import PositronicKit
+(ADR 0017). Do not add a host target to the transitional allow-list without a
+reviewed exception. Keep Gnostic-owned contracts free of native PositronicKit
+values. Do not add Gnostic-specific APIs to PositronicKit. Put new experiments
+that need the model loop in the harness agent as inner modules, and keep outer
+modules agent-neutral.
 
 Update the owning issue and architecture record when an accepted decision or
 exception changes.
