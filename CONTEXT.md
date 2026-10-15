@@ -31,7 +31,7 @@ An Agent definition is the Node's configuration for one Agent, and it is that
 Agent's Regime. It holds:
 
 - its identity;
-- its Runtime;
+- its Runtime instance;
 - its instructions;
 - its session configuration, which is where model, mode, and inner-module
   settings are set;
@@ -42,21 +42,37 @@ Agent's Regime. It holds:
 
 Instructions reach the Runtime as the ACP system prompt when the Runtime
 advertises it, and otherwise through a fallback declared per Agent
-(ADR 0017, ADR 0018).
+(ADR 0017, ADR 0018). The Runtime is given as a reference to a Runtime
+instance.
 
 ## Runtime
 
-A Runtime is the ACP harness an Agent runs on, for example Claude Agent, Codex,
-opencode, or a harness built in this repository. It is a value, not Gnostic
-identity. It is identified by its ACP registry ID when one exists. Otherwise it
-is identified by a launch fingerprint over the command, the arguments, and the
-environment variable names, never their values or any secret.
+A Runtime is a kind of ACP harness, for example Claude Agent, Codex, opencode,
+or a harness built in this repository. It is a value, not Gnostic identity. It
+is identified by its ACP registry ID, or as `local-command` with a launch
+fingerprint over the command, the arguments, and the environment variable
+names, never their values or any secret.
 
 A Runtime owns model and tool semantics, model context, compaction, caches, and
-its own lifecycle. One Runtime can back many Agents. Gnostic connects and
-orchestrates Runtimes and depends on none of them. An Agent's capabilities
-derive from its Runtime's ACP `initialize` result plus what Gnostic adds
-(ADR 0018).
+its own lifecycle. Gnostic connects and orchestrates Runtimes and depends on
+none of them. Gnostic speaks only ACP v2 to them (ADR 0018). An Agent's
+capabilities derive from its Runtime's ACP `initialize` result plus what Gnostic
+adds.
+
+## Runtime instance
+
+A Runtime instance is one configured install of a Runtime kind on one Node. It
+owns:
+
+- its install and pinned version, or an executable override;
+- its arguments, environment, and secrets;
+- its authentication state;
+- its advertised catalog of models, modes, and config options;
+- its processes.
+
+Work is routed by instance. Two instances never share mutable state or
+credentials, and Agents that reference one instance share its account. A
+Runtime instance has a Node-scoped ID (ADR 0018, #631).
 
 Until #611 retires them, the in-process `positronic` and `letta` backend kinds
 remain valid.
@@ -72,8 +88,9 @@ names the other targets that still do. PositronicKit types such as
 
 ## Session
 
-A Session is one ACP session of a Runtime. It serves one or more spans of one
-Timeline: a resumed or loaded span reuses an earlier Session. It is
+A Session is one ACP session of a Runtime instance. It serves one or more spans
+of one Timeline: a resumed span reuses an earlier Session through
+`session/resume`, optionally replaying history. It is
 backend-private state and never Gnostic identity. Losing it loses no
 Gnostic-owned state.
 
@@ -93,11 +110,11 @@ A span is the stretch of a Timeline served by one Session of one Agent. It
 records:
 
 - its Agent;
-- its Runtime and Session;
+- its Runtime instance and Session;
 - its first and last Turn;
 - which Workspaces were delivered as roots;
-- how it began: `new`, `resumed`, `loaded`, `seeded` (with the strategy and what
-  was lost), or `forked`.
+- how it began: `new`, `resumed`, `seeded` (with the strategy and what was
+  lost), or `forked`.
 
 Switching a Timeline to another Agent is an explicit Timeline operation that
 closes the open span and opens a new one. A Turn never switches implicitly.
@@ -183,8 +200,11 @@ separate from attachment intent.
 ## Turn
 
 A Turn is a Timeline-addressed, admitted Gnostic operation. It consists of a
-Gnostic-owned **Turn envelope** and ACP **Turn payloads**. Model and tool
-execution semantics are owned by the Runtime.
+Gnostic-owned **Turn envelope** and ACP v2 **Turn payloads**. Model and tool
+execution semantics are owned by the Runtime. A Turn's prompt is accepted when
+the Runtime inserts the user message (`messageId`), and the Turn ends when the
+Runtime reports idle with a stop reason. Updates a Runtime sends outside a Turn
+belong to the Timeline's open span, not to any Turn.
 
 ## Turn envelope
 
@@ -320,3 +340,4 @@ code or its tests are obsolete. Remove them only through the owning issue.
 | `AscendantTurnUpdateKind` (eight kinds and status vocabularies), `turn.text` capability | Turn payloads (ACP session updates) in the Turn envelope | Gnostic no longer re-encodes ACP (ADR 0018, #629). |
 | Bounded legacy Agent terminology | Agent and Runtime definitions | "Agent" now has one Gnostic-owned meaning (ADR 0018). |
 | Atlas, Image, Image invocation (as Gnostic primitives) | Harness vocabulary | Inner-module terms, not Gnostic primitives (ADR 0018). |
+| `session/load`, "loaded" span | `session/resume` with `replayFrom`, "resumed" span | Gnostic speaks ACP v2 only (ADR 0018, Q16). |
