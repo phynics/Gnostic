@@ -245,19 +245,6 @@ public actor NodeRegistry {
         backendLeases.removeValue(forKey: ascendantID)
     }
 
-    public func registerRuntimeTimeline(title: String, ascendantID: UUID) throws -> TimelineRecord {
-        guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        let now = Date()
-        let timeline = AscendantRuntimeTimeline(id: UUID.makeVersion4(), title: title, attachedWorkspaceIDs: [], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
-        let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
-        timelines[timeline.id] = record
-        attachmentIntents[timeline.id] = []
-        timelineMetadata[timeline.id] = ("timeline", [])
-        bumpRevision(for: ascendantID)
-        return record
-    }
-
-    /// Registers an adapter-created runtime timeline under an already selected operator.
     public func registerRuntimeTimeline(
         _ timeline: AscendantRuntimeTimeline,
         ascendantID: UUID,
@@ -283,16 +270,6 @@ public actor NodeRegistry {
     ) throws -> TimelineRecord {
         guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         return try registerRuntimeTimeline(timeline, ascendantID: ascendantID, backendLease: backendLease)
-    }
-
-    /// Replaces only an existing timeline's projection after the adapter has accepted a mutation.
-    public func replaceTimeline(_ timeline: AscendantRuntimeTimeline) throws -> TimelineRecord {
-        guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.attachedAscendantID == current.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
-        let record = TimelineRecord(timeline: timeline, operatorID: current.operatorID, provenance: current.provenance)
-        timelines[timeline.id] = record
-        if let ascendantID = current.operatorID { bumpRevision(for: ascendantID) }
-        return record
     }
 
     /// Atomically verifies backend ownership and commits one Timeline plus its
@@ -346,8 +323,10 @@ public actor NodeRegistry {
 
     /// Commits a Timeline replacement and emits its required projection as one
     /// actor-isolated transition. A projection failure restores the prior
-    /// authoritative record before the error escapes.
-    public func replaceTimeline(
+    /// authoritative record before the error escapes. Internal because no
+    /// runtime path uses it; it exists so the projection-rollback contract can
+    /// be characterized without a live backend lease.
+    func replaceTimeline(
         _ timeline: AscendantRuntimeTimeline,
         projecting: @MainActor @Sendable (TimelineRecord) throws -> Void
     ) async throws -> TimelineRecord {

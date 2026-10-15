@@ -11,33 +11,6 @@ public final class TimelineService {
     private let backendProvider: any BackendSessionProviding
     private let advertise: @MainActor (AscendantRuntimeTimeline, Bool) -> Void
 
-    convenience init(
-        ascendantIDs: Set<UUID>,
-        registry: NodeRegistry,
-        isClosed: @escaping @MainActor () -> Bool,
-        lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
-        isCurrentBackend: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool = { _, _, _ in true },
-        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID? = { _, _ in nil },
-        adapter: @escaping @MainActor (UUID) -> any AscendantBackend?,
-        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
-        advertise: @escaping @MainActor (AscendantRuntimeTimeline, Bool) -> Void
-    ) {
-        self.init(
-            ascendantIDs: ascendantIDs,
-            registry: registry,
-            backendProvider: ClosureBackendSessionProvider(
-                isRunning: { !isClosed() },
-                lifecycleGeneration: lifecycleGeneration,
-                adapter: adapter,
-                current: isCurrentBackend,
-                backendLease: backendLease,
-                failure: lifecycleFailure,
-                backend: { _ in throw NodeRuntimeError.notRunning }
-            ),
-            advertise: advertise
-        )
-    }
-
     init(
         ascendantIDs: Set<UUID>,
         registry: NodeRegistry,
@@ -70,22 +43,22 @@ public final class TimelineService {
         let adapter = session.backend
         let generation = session.generation
         let lease = backendProvider.lease(for: ascendantID, backend: adapter)
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+        try backendProvider.requireCurrentSession(session)
         let requestedID = UUID.makeVersion4()
         var projectedID = requestedID
         do {
             let timeline = try await adapter.createTimeline(id: requestedID, title: title)
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             projectedID = timeline.id
             guard timeline.id == requestedID else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             _ = try await registry.registerRuntimeTimeline(
                 timeline,
                 ascendantID: ascendantID,
                 backendLease: lease,
                 generation: generation
             )
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             advertise(timeline, false)
             return Self.status(timeline)
         } catch {
@@ -115,13 +88,13 @@ public final class TimelineService {
         let adapter = session.backend
         let generation = session.generation
         let lease = backendProvider.lease(for: ascendantID, backend: adapter)
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+        try backendProvider.requireCurrentSession(session)
         let previous = await registry.timeline(id: request.timelineID)?.timeline
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+        try backendProvider.requireCurrentSession(session)
         let timeline: AscendantRuntimeTimeline
         do {
             timeline = try await adapter.renameTimeline(id: request.timelineID, title: request.title)
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
         } catch let error as AscendantBackendError {
             if case let .lifecycleUnusable(failure) = error {
                 guard backendProvider.isCurrentSession(session) else { throw error }
@@ -130,14 +103,14 @@ public final class TimelineService {
             throw error
         }
         do {
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             _ = try await registry.commitBackendTimeline(
                 timeline,
                 ascendantID: ascendantID,
                 backendLease: lease,
                 generation: generation
             )
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             advertise(timeline, true)
             return Self.status(timeline)
         }

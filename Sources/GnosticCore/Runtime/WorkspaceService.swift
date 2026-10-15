@@ -21,41 +21,6 @@ public final class WorkspaceService {
     private let readvertiseTimeline: @MainActor (AscendantRuntimeTimeline) -> Void
     private var references: [UUID: BackendWorkspaceReference]
 
-    convenience init(
-        plan: NodeLaunchPlan,
-        registry: NodeRegistry,
-        discovery: any WorkspaceDiscovery,
-        localWorkspaces: [UUID: any LocalWorkspace],
-        references: [UUID: BackendWorkspaceReference],
-        backendWorkspaceService: (any WorkspaceReferenceUpdating)? = nil,
-        isRunning: @escaping @MainActor () -> Bool,
-        lifecycleGeneration: @escaping @MainActor () -> UInt64 = { 0 },
-        isCurrentBackend: @escaping @MainActor (UUID, any AscendantBackend, UInt64) -> Bool = { _, _, _ in true },
-        backendLease: @escaping @MainActor (UUID, any AscendantBackend) -> UUID? = { _, _ in nil },
-        adapter: @escaping @MainActor (UUID) -> any AscendantBackend?,
-        lifecycleFailure: @escaping @MainActor (UUID, any AscendantBackend, AscendantBackendLifecycleFailure) async -> Void = { _, _, _ in },
-        readvertiseTimeline: @escaping @MainActor (AscendantRuntimeTimeline) -> Void
-    ) {
-        self.init(
-            plan: plan,
-            registry: registry,
-            discovery: discovery,
-            localWorkspaces: localWorkspaces,
-            references: references,
-            backendWorkspaceService: backendWorkspaceService,
-            backendProvider: ClosureBackendSessionProvider(
-                isRunning: isRunning,
-                lifecycleGeneration: lifecycleGeneration,
-                adapter: adapter,
-                current: isCurrentBackend,
-                backendLease: backendLease,
-                failure: lifecycleFailure,
-                backend: { _ in throw NodeRuntimeError.notRunning }
-            ),
-            readvertiseTimeline: readvertiseTimeline
-        )
-    }
-
     init(
         plan: NodeLaunchPlan,
         registry: NodeRegistry,
@@ -200,7 +165,7 @@ public final class WorkspaceService {
             guard timeline.attachedWorkspaceIDs.contains(workspaceID) else {
                 throw NodeRuntimeError.missingTimeline(timelineID)
             }
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             let record = try await registry.commitBackendTimeline(
                 timeline,
                 ascendantID: ascendantID,
@@ -208,7 +173,7 @@ public final class WorkspaceService {
                 generation: session.generation,
                 upserting: Self.intent(for: reference, local: localWorkspaces[workspaceID] != nil)
             )
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             readvertiseTimeline(record.timeline)
         }
         catch {
@@ -233,7 +198,7 @@ public final class WorkspaceService {
             guard !timeline.attachedWorkspaceIDs.contains(request.workspaceID) else {
                 throw NodeRuntimeError.missingTimeline(request.timelineID)
             }
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             let record = try await registry.commitBackendTimeline(
                 timeline,
                 ascendantID: ascendantID,
@@ -241,7 +206,7 @@ public final class WorkspaceService {
                 generation: session.generation,
                 removingWorkspaceID: request.workspaceID
             )
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             readvertiseTimeline(record.timeline)
         }
         catch {
@@ -341,7 +306,7 @@ public final class WorkspaceService {
     private func operatingAdapter(for timelineID: UUID) async throws -> (UUID, AscendantBackendSession) {
         let ascendantID = try await registry.requireOperatingAscendant(for: timelineID)
         guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+        try backendProvider.requireCurrentSession(session)
         return (ascendantID, session)
     }
 
@@ -349,10 +314,10 @@ public final class WorkspaceService {
         _ session: AscendantBackendSession,
         _ operation: () async throws -> T
     ) async throws -> T {
-        guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+        try backendProvider.requireCurrentSession(session)
         do {
             let result = try await operation()
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
             return result
         } catch let error as AscendantBackendError {
             if case let .lifecycleUnusable(failure) = error {
@@ -370,7 +335,7 @@ public final class WorkspaceService {
             for target in await registry.attachmentTargets(for: workspaceID) {
                 guard let session = backendProvider.session(for: target.ascendantID),
                       let runtime = session.backend.optionalCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self) else { continue }
-                guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+                try backendProvider.requireCurrentSession(session)
                 operationContext = session
                 try await runBackendOperation(session) {
                     try await runtime.attachWorkspace(reference, to: target.timelineID)
@@ -390,7 +355,7 @@ public final class WorkspaceService {
             throw error
         }
         if let session = operationContext {
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
         }
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
@@ -407,7 +372,7 @@ public final class WorkspaceService {
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         if let session = operationContext {
-            guard backendProvider.isCurrentSession(session) else { throw NodeRuntimeError.notRunning }
+            try backendProvider.requireCurrentSession(session)
         }
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         references[workspaceID] = reference
