@@ -104,12 +104,15 @@ struct ACPProviderAcceptanceTests {
 
     @Test(
         "ACP binds new, resume, list, prompt, and close to the selected Ascendant provider",
-        .timeLimit(.minutes(1))
+        .timeLimit(.minutes(1)),
+        .enabled(if: ACPAvailability.hasACPCapableCLI, ACPAvailability.acpCLISkipReason)
     )
     @MainActor
     func selectedProviderOwnsACPSessionLifecycle() async throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"]
+        )
 
         let namespace = "acp-provider-session-\(UUID().uuidString.lowercased())"
         let firstAscendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000212")!
@@ -297,12 +300,15 @@ struct ACPProviderAcceptanceTests {
 
     @Test(
         "a captured profile still initializes and opens sessions after a serve restart",
-        .timeLimit(.minutes(2))
+        .timeLimit(.minutes(2)),
+        .enabled(if: ACPAvailability.hasACPCapableCLI, ACPAvailability.acpCLISkipReason)
     )
     @MainActor
     func capturedProfileSurvivesServeRestart() async throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"]
+        )
 
         let namespace = "acp-restart-\(UUID().uuidString.lowercased())"
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000222")!
@@ -409,7 +415,8 @@ struct ACPProviderAcceptanceTests {
 
     @Test(
         "a configured runtime streams whitespace-compatible ACP turn IDs",
-        .timeLimit(.minutes(1))
+        .timeLimit(.minutes(1)),
+        .enabled(if: ACPAvailability.hasACPCapableCLI, ACPAvailability.acpCLISkipReason)
     )
     @MainActor
     func configuredRuntimeSmoke() async throws {
@@ -454,27 +461,27 @@ struct ACPProviderAcceptanceTests {
         }
         try await runtime.start()
 
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"]
+        )
         let stateHome = folder.url.appendingPathComponent("state")
         let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
         defer { probe.stop() }
         try await probe.connect()
         let ascendant = try await waitForOnlyAscendant(using: probe)
-        let profiles = try await runACPProfilesIfAvailable(
-            host: "127.0.0.1",
-            port: 1883,
-            namespace: namespace,
-            configURL: configURL,
-            stateHome: stateHome
-        )
-        if let profiles {
-            #expect(profiles.profiles.map(\.id) == ["gnostic-\(ascendant.id.uuidString.lowercased())"])
-        }
-
         var environment = ProcessInfo.processInfo.environment
         environment["GNOSTIC_CONFIG"] = configURL.path
         environment["GNOSTIC_STATE_HOME"] = stateHome.path
+        let profiles = try await runACPProfiles(
+            binary: binary,
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: namespace,
+            environment: environment
+        )
+        #expect(profiles.profiles.map(\.id) == ["gnostic-\(ascendant.id.uuidString.lowercased())"])
+
         let session = try launchACP(
             binary: binary,
             ascendantID: ascendant.id,
@@ -627,13 +634,19 @@ struct ACPProviderAcceptanceTests {
     /// Node advertises the same Ascendant under a new provider identity (#247),
     /// which is exactly the case where a binding error used to hide the real
     /// cause.
-    @Test("a serve restart orphans an ACP session with a structured timelineUnavailable", .timeLimit(.minutes(2)))
+    @Test(
+        "a serve restart orphans an ACP session with a structured timelineUnavailable",
+        .timeLimit(.minutes(2)),
+        .enabled(if: ACPAvailability.hasServeCapableCLI, ACPAvailability.serveCLISkipReason)
+    )
     @MainActor
     func serveRestartOrphansRuntimeTimelineSessions() async throws {
         let environmentSource = ProcessInfo.processInfo.environment
-        guard let binary = environmentSource["GNOSTIC_SERVE_BINARY"]
+        let binary = try #require(
+            environmentSource["GNOSTIC_SERVE_BINARY"]
                 ?? environmentSource["GNOSTIC_CLI_BINARY"]
-                ?? environmentSource["GNOSTIC_ACP_BINARY"] else { return }
+                ?? environmentSource["GNOSTIC_ACP_BINARY"]
+        )
 
         let namespace = "acp-orphan-\(UUID().uuidString.lowercased())"
         let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000222"))
@@ -756,13 +769,19 @@ struct ACPProviderAcceptanceTests {
 
     /// ADR 0015: with a durable state home, a runtime Timeline survives an
     /// unclean serve restart, so an ACP session resumes instead of orphaning.
-    @Test("a serve restart resumes an ACP session from durable Timeline state", .timeLimit(.minutes(2)))
+    @Test(
+        "a serve restart resumes an ACP session from durable Timeline state",
+        .timeLimit(.minutes(2)),
+        .enabled(if: ACPAvailability.hasServeCapableCLI, ACPAvailability.serveCLISkipReason)
+    )
     @MainActor
     func serveRestartResumesRuntimeTimelineSessions() async throws {
         let environmentSource = ProcessInfo.processInfo.environment
-        guard let binary = environmentSource["GNOSTIC_SERVE_BINARY"]
+        let binary = try #require(
+            environmentSource["GNOSTIC_SERVE_BINARY"]
                 ?? environmentSource["GNOSTIC_CLI_BINARY"]
-                ?? environmentSource["GNOSTIC_ACP_BINARY"] else { return }
+                ?? environmentSource["GNOSTIC_ACP_BINARY"]
+        )
 
         let namespace = "acp-resume-\(UUID().uuidString.lowercased())"
         let ascendantID = try #require(UUID(uuidString: "A21D0000-0000-4000-8000-000000000232"))
@@ -1027,27 +1046,6 @@ private func runACPProfiles(
     let stderr = String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     #expect(process.terminationStatus == 0, Comment(rawValue: stderr))
     return try JSONDecoder().decode(ACPProfileBundle.self, from: output.fileHandleForReading.readDataToEndOfFile())
-}
-
-private func runACPProfilesIfAvailable(
-    host: String,
-    port: Int,
-    namespace: String,
-    configURL: URL,
-    stateHome: URL
-) async throws -> ACPProfileBundle? {
-    guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-            ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] else { return nil }
-    var environment = ProcessInfo.processInfo.environment
-    environment["GNOSTIC_CONFIG"] = configURL.path
-    environment["GNOSTIC_STATE_HOME"] = stateHome.path
-    return try await runACPProfiles(
-        binary: binary,
-        host: host,
-        port: port,
-        namespace: namespace,
-        environment: environment
-    )
 }
 
 private struct ACPProcess {

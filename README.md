@@ -398,8 +398,10 @@ Node:
 gnostic acp profiles --json
 ```
 
-Run `gnostic acp` as the stdio process for an ACP client. A generated profile
-carries `--node` only when more than one Node advertises the same Ascendant.
+Run `gnostic acp` as the stdio process for an ACP client. Like `serve`, it
+accepts `--config PATH` to read broker defaults from a specific Node manifest. A
+generated profile carries `--node` only when more than one Node advertises the
+same Ascendant.
 Node and Ascendant identities come from the manifest, so a captured profile
 stays valid across a `gnostic serve` restart. `--provider` still pins one serve
 process and is needed only for a Node that advertises no identity.

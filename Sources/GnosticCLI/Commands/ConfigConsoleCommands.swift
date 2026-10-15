@@ -82,8 +82,7 @@ struct ConfigModuleCommand: AsyncParsableCommand {
 
     struct Enable: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "enable", abstract: "Select a module on one Ascendant.")
-        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-        var configPath: String?
+        @OptionGroup var configOptions: ConfigPathOptions
         @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
         var dryRun = false
         @OptionGroup var experiments: ExperimentsOptions
@@ -96,7 +95,7 @@ struct ConfigModuleCommand: AsyncParsableCommand {
         func run() async throws {
             let format = try formatOptions.resolved()
             let registry = try experiments.registry()
-            let store = ConfigCommandLogic.store(for: configPath)
+            let store = configOptions.store()
             if dryRun {
                 try ConfigConsoleLogic.applyMutation(store: store, dryRun: true) { preview in
                     try ConfigConsoleLogic.enableModule(ascendantID: ascendantID, module: module, store: preview, registry: registry)
@@ -116,8 +115,7 @@ struct ConfigModuleCommand: AsyncParsableCommand {
 
     struct Disable: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "disable", abstract: "Remove a module from one Ascendant's selection.")
-        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-        var configPath: String?
+        @OptionGroup var configOptions: ConfigPathOptions
         @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
         var dryRun = false
         @OptionGroup var experiments: ExperimentsOptions
@@ -130,7 +128,7 @@ struct ConfigModuleCommand: AsyncParsableCommand {
         func run() async throws {
             let format = try formatOptions.resolved()
             let registry = try experiments.registry()
-            let store = ConfigCommandLogic.store(for: configPath)
+            let store = configOptions.store()
             if dryRun {
                 try ConfigConsoleLogic.applyMutation(store: store, dryRun: true) { preview in
                     try ConfigConsoleLogic.disableModule(ascendantID: ascendantID, module: module, store: preview, registry: registry)
@@ -149,8 +147,7 @@ struct ConfigModuleCommand: AsyncParsableCommand {
 
     struct Keys: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "keys", abstract: "List the modules and keys one Ascendant selects.")
-        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-        var configPath: String?
+        @OptionGroup var configOptions: ConfigPathOptions
         @OptionGroup var formatOptions: OutputFormatOptions
         @Argument(help: "Existing Ascendant UUID.")
         var ascendantID: String
@@ -159,7 +156,7 @@ struct ConfigModuleCommand: AsyncParsableCommand {
             let format = try formatOptions.resolved()
             let entries = try ConfigConsoleLogic.moduleKeys(
                 ascendantID: ascendantID,
-                store: ConfigCommandLogic.store(for: configPath)
+                store: configOptions.store()
             )
             switch format {
             case .human:
@@ -189,8 +186,7 @@ struct ConfigRegimeCommand: AsyncParsableCommand {
             part of the output.
             """
         )
-        @Option(name: .customLong("config"), help: "Path to the Node manifest (overrides GNOSTIC_CONFIG).")
-        var configPath: String?
+        @OptionGroup var configOptions: ConfigPathOptions
         @OptionGroup var experiments: ExperimentsOptions
         @OptionGroup var formatOptions: OutputFormatOptions
         @Argument(help: "Existing Ascendant UUID.")
@@ -200,7 +196,7 @@ struct ConfigRegimeCommand: AsyncParsableCommand {
             let format = try formatOptions.resolved()
             let regime = try ConfigConsoleLogic.regime(
                 ascendantID: ascendantID,
-                store: ConfigCommandLogic.store(for: configPath)
+                store: configOptions.store()
             )
             switch format {
             case .human:

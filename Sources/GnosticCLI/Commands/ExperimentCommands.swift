@@ -81,8 +81,7 @@ struct ExperimentCommand: AsyncParsableCommand {
         @Option(name: .long, help: "UUID of the Positronic Ascendant whose provider, models, and key are used.")
         var ascendant: String
 
-        @Option(name: .customLong("config"), help: "Path to the node manifest.")
-        var configPath: String?
+        @OptionGroup var configOptions: ConfigPathOptions
 
         @Option(name: .long, help: "Repository root holding the corpus and the frozen question set.")
         var repository: String = "."
@@ -260,7 +259,7 @@ struct RLMScenarioPreparation: Sendable {
             )
         }
 
-        let (client, regime) = try loadClient(ascendant: command.ascendant, configPath: command.configPath)
+        let (client, regime) = try loadClient(ascendant: command.ascendant, configPath: command.configOptions.configPath)
         let source = RLMScenarioRepositorySource(root: root.path, prefixes: RLMScenarioQuestionSet.corpusPrefixes)
         let policy = RLMCorpusPolicy(allowedPathPrefixes: RLMScenarioQuestionSet.corpusPrefixes)
         let corpus = try await RLMCorpusSnapshotter(policy: policy).capture(

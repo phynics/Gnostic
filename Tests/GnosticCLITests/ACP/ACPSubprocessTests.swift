@@ -13,12 +13,19 @@ import GnosticPositronicBackend
 
 @Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
-    @Test("pi-acp-client discovers a Gnostic profile and completes the session lifecycle", .timeLimit(.minutes(1)))
+    @Test(
+        "pi-acp-client discovers a Gnostic profile and completes the session lifecycle",
+        .timeLimit(.minutes(1)),
+        .enabled(
+            if: ACPAvailability.hasACPBinary && ACPAvailability.hasPiClientFixture,
+            ACPAvailability.piClientSkipReason
+        )
+    )
     @MainActor
     func piACPClientLifecycle() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let binary = environment["GNOSTIC_ACP_BINARY"],
-              let fixture = environment["GNOSTIC_PI_ACP_CLIENT_FIXTURE"] else { return }
+        let binary = try #require(environment["GNOSTIC_ACP_BINARY"])
+        let fixture = try #require(environment["GNOSTIC_PI_ACP_CLIENT_FIXTURE"])
         let namespace = "pi-acp-client-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
@@ -96,10 +103,14 @@ struct ACPSubprocessTests {
         try attachResult.get()
     }
 
-    @Test("profile discovery emits deterministic source profiles", .timeLimit(.minutes(1)))
+    @Test(
+        "profile discovery emits deterministic source profiles",
+        .timeLimit(.minutes(1)),
+        .enabled(if: ACPAvailability.hasACPBinary, ACPAvailability.acpBinarySkipReason)
+    )
     @MainActor
     func discoversProfiles() async throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"])
         let namespace = "acp-profiles-\(UUID().uuidString.lowercased())"
         let lowerID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
         let node = try await makeACPNode(
@@ -153,10 +164,14 @@ struct ACPSubprocessTests {
         #expect(Set(envelope.keys) == ["version", "profiles"])
     }
 
-    @Test("credentialed broker authenticates ACP profiles and a session", .timeLimit(.minutes(1)))
+    @Test(
+        "credentialed broker authenticates ACP profiles and a session",
+        .timeLimit(.minutes(1)),
+        .enabled(if: ACPAvailability.hasACPBinary, ACPAvailability.acpBinarySkipReason)
+    )
     @MainActor
     func credentialedBrokerAuthenticates() async throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"])
         let namespace = "acp-credentials-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
         let node = try await makeACPNode(
@@ -243,12 +258,18 @@ struct ACPSubprocessTests {
         sessionProcess.waitUntilExit()
     }
 
-    @Test("official ACP client completes the stable session lifecycle", .timeLimit(.minutes(1)))
+    @Test(
+        "official ACP client completes the stable session lifecycle",
+        .timeLimit(.minutes(1)),
+        .enabled(
+            if: ACPAvailability.hasACPBinary && ACPAvailability.hasOfficialClientFixture,
+            ACPAvailability.officialClientSkipReason
+        )
+    )
     @MainActor
     func officialClientLifecycle() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["GNOSTIC_ACP_BINARY"] != nil,
-              let fixture = environment["GNOSTIC_ACP_OFFICIAL_CLIENT"] else { return }
+        let fixture = try #require(environment["GNOSTIC_ACP_OFFICIAL_CLIENT"])
         let namespace = "acp-official-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000002")!
@@ -331,11 +352,12 @@ struct ACPSubprocessTests {
 
     @Test(
         "ACP initializes, creates a session, and completes a permissioned Workspace turn",
-        .timeLimit(.minutes(1))
+        .timeLimit(.minutes(1)),
+        .enabled(if: ACPAvailability.hasACPBinary, ACPAvailability.acpBinarySkipReason)
     )
     @MainActor
     func initializesAndCreatesSession() async throws {
-        guard let binary = ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"])
         let namespace = "acp-subprocess-\(UUID().uuidString.lowercased())"
         let agentID = UUID()
         let workspaceID = UUID(uuidString: "C41D0000-0000-4000-8000-000000000001")!
