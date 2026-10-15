@@ -6,58 +6,44 @@ backend.
 
 ## Node
 
-A Node is one Gnostic host. It publishes one `protocolMajor`, launches the
-Runtimes of the Agents it operates, and may operate several Agents.
-
-## Agent
-
-An Agent is a named, advertised, addressable configuration that binds one
-Runtime to a Regime. Clients discover Agents on the network and address Turns
-to them, and Regimes are compared across them. An Agent's UUID is Gnostic
-identity.
-
-An Agent holds configuration only: no memory and no Timelines of its own.
-Continuity belongs to Timelines. Changing an Agent's Runtime makes a different
-Agent. "Agent" is the Gnostic-owned term, and the ACP program it runs on is its
-Runtime. Code for the ACP protocol role keeps the ACP SDK's names, or an `ACP`
-prefix (ADR 0018).
-
-Until #629 lands, code, wire operations, the manifest, and the CLI still call
-an Agent an **Ascendant**.
-
-## Agent definition
-
-An Agent definition is the Node's configuration for one Agent, and it is that
-Agent's Regime. It holds:
-
-- its identity;
-- its Runtime instance;
-- its instructions;
-- its session configuration options, which is where model, effort, and
-  inner-module settings are set;
-- its permission policy;
-- its outer modules;
-- its default Workspace attachments, including which ones may be delivered as
-  roots.
-
-Instructions reach the Runtime as the ACP system prompt when the Runtime
-advertises it, and otherwise through a fallback declared per Agent
-(ADR 0017, ADR 0018). The Runtime is given as a reference to a Runtime
-instance.
+A Node is one Gnostic host. It publishes one `protocolMajor`, hosts its own
+Runtime instances, and advertises them, its Timelines, and its Workspaces on
+Axoloty. Requests for a Runtime instance are routed to its Node (ADR 0020).
 
 ## Runtime
 
-A Runtime is a kind of ACP harness, for example Claude Agent, Codex, opencode,
-or a harness built in this repository. It is a value, not Gnostic identity. It
-is identified by its ACP registry ID, or as `local-command` with a launch
-fingerprint over the command, the arguments, and the environment variable
-names, never their values or any secret.
+A Runtime is a kind of harness, for example Claude Agent, Codex, opencode, or a
+Native Runtime built in this repository. It is a value, not Gnostic identity.
+An ACP Runtime is identified by its ACP registry ID, or as `local-command` with
+a launch fingerprint over the command, the arguments, and the environment
+variable names, never their values or any secret.
 
-A Runtime owns model and tool semantics, model context, compaction, caches, and
-its own lifecycle. Gnostic connects and orchestrates Runtimes and depends on
-none of them. ACP v2 is Gnostic's protocol baseline (ADR 0019). An Agent's
-capabilities derive from its Runtime's ACP `initialize` result plus what Gnostic
-adds.
+A Runtime owns its identity and instructions (its own system prompt), model and
+tool semantics, model context, compaction, caches, and its own lifecycle.
+Gnostic connects and orchestrates Runtimes and depends on none of them. Every
+Runtime implements one Gnostic Runtime contract: the ACP v2 session surface
+without its JSON-RPC framing (ADR 0019, ADR 0020). A Runtime is an ACP Runtime
+or a Native Runtime.
+
+## ACP Runtime
+
+An ACP Runtime is an external harness that Gnostic speaks to over ACP v2
+(ADR 0019).
+
+## Native Runtime
+
+A Native Runtime is a Runtime built in this repository. It emits ACP v2 update
+objects, so its Timelines look like any other, and it is reached only through
+the Runtime contract. A Native Runtime that depends on PositronicKit is a
+special Node: its own executable that joins the Gnostic network, hosts one
+Runtime instance (itself), and is reached over Axoloty like any Node-hosted
+Runtime instance. It never links the host's composition targets. A Native
+Runtime free of PositronicKit may run inside a host Node's process. Inner
+experiments are Native Runtimes (ADR 0020).
+
+Only Native Runtime targets, and until #604 and #611 land the transitional
+allow-list of ADR 0017, may depend on PositronicKit. PositronicKit types such
+as `AgentInstance` and `Thread` stay private to them.
 
 ## Runtime instance
 
@@ -68,122 +54,154 @@ owns:
 - its arguments, environment, and secrets;
 - its authentication state;
 - its advertised catalog of models and session config options;
+- its default session configuration options and its permission policy;
 - its processes.
 
-Work is routed by instance. Two instances never share mutable state or
-credentials, and Agents that reference one instance share its account. A
-Runtime instance has a Node-scoped ID. Each span records the instance's ID,
-version, and launch fingerprint at its start (ADR 0018, #631).
+Clients choose a Runtime instance when they create a Timeline, and may override
+its session configuration options for that Timeline. Two instances never share
+mutable state or credentials. A Runtime instance has a Node-scoped ID. Its Node
+advertises it together with its Runtime's ACP `initialize` capabilities,
+verbatim, as discovery data. Each span records the instance's ID, version, and
+launch fingerprint at its start (ADR 0018, ADR 0020, #631).
 
 Until #611 retires them, the in-process `positronic` and `letta` backend kinds
 remain valid.
 
-## Gnostic harness agent
+## Session record
 
-The Gnostic harness agent is a Runtime this repository builds on PositronicKit.
-Gnostic hosts it like any other Runtime. In the target state, it and any other
-harness built here are the only parts of Gnostic allowed to depend on
-PositronicKit. Until #604 and #611 land, a transitional allow-list in ADR 0017
-names the other targets that still do. PositronicKit types such as
-`AgentInstance` and `Thread` stay private to it.
+A Session record is Gnostic's record of one Runtime session serving a Timeline,
+one for each pair of Timeline and Runtime instance that has served it. It
+holds:
+
+- the Timeline, the Node, and the Runtime instance;
+- the ACP `sessionId`;
+- the exact `cwd` and `additionalDirectories` the session was set up with;
+- the MCP servers it was given, by reference and never with credentials;
+- `syncedThrough`, the last Turn the Runtime session has seen;
+- the session configuration options in effect;
+- its state: `live`, `resumable`, or `lost`.
+
+A Session record makes a Timeline stick to its Runtime instance. A session is
+resumed only with its original `cwd`. A Timeline returning to a Runtime
+instance resumes its `resumable` session and receives only the Turns after
+`syncedThrough`. A record becomes `lost` only when the Runtime definitively
+rejects the resume; then the Timeline is seeded into a new session. The Runtime
+session is never Gnostic identity (ADR 0020).
 
 ## Session
 
-A Session is one ACP session of a Runtime instance. It serves one or more spans
-of one Timeline: a resumed span reuses an earlier Session through
-`session/resume`, optionally replaying history. It is
-backend-private state and never Gnostic identity. Losing it loses no
-Gnostic-owned state.
+A Session is one Runtime session of a Runtime instance. In Gnostic's vocabulary
+it is described by its Session record.
 
 ## Timeline
 
-A Timeline is a Gnostic-owned conversation, addressed by Gnostic operations. It
-is a sequence of spans, with at most one open span at a time. Timeline identity
-is not model context, execution, compaction, cache, or checkpoint state. A
-Session may project a Timeline into backend-private state, but that projection
-cannot redefine or erase Gnostic Timeline identity. A Timeline may have a
-parent Timeline (see Subagent). Parallel work is modeled as child Timelines,
-never as concurrent spans (ADR 0018).
+A Timeline is Gnostic's primary primitive: a Gnostic-owned conversation, created
+by a client on a Runtime instance and addressed by Gnostic operations. It is an
+ordered list of Turns organized in spans, with at most one open span at a time,
+and it can be handed to a different Runtime instance. Timeline identity is not
+model context, execution, compaction, cache, or checkpoint state. A Runtime may
+project a Timeline into its own state, but that projection cannot redefine or
+erase Gnostic Timeline identity. A Timeline may have a parent Timeline (see
+Subagent) and labels. Parallel work is modeled as child Timelines, never as
+concurrent spans (ADR 0018, ADR 0020).
+
+## Timeline label
+
+A Timeline label is a key and value on a Timeline. The `experiment` key is
+reserved: it marks a Timeline that belongs to an outer experiment (ADR 0020).
 
 ## Span
 
-A span is the stretch of a Timeline served by one Session of one Agent. It
-records:
+A span is the stretch of a Timeline served by one Session record. It records:
 
-- its Agent;
-- its Runtime instance and Session;
+- its Session record, and through it the Runtime instance;
+- the Runtime instance's ID, version, and launch fingerprint at its start;
 - its first and last Turn;
 - which Workspaces were delivered as roots;
 - how it began: `new`, `resumed`, `seeded` (with the strategy and what was
   lost), or `forked`.
 
-Switching a Timeline to another Agent is an explicit Timeline operation that
-closes the open span and opens a new one. A Turn never switches implicitly.
+One Session record can serve several spans. Switching a Timeline to another
+Runtime instance is an explicit Timeline operation that closes the open span
+and opens a new one. A Turn never switches implicitly.
 
 ## Current operator
 
-The current operator of a Timeline is the Agent of its open span. It replaces a
-stored, singular operating Agent on the Timeline.
+The current operator of a Timeline is the Runtime instance of its open span's
+Session record. It replaces a stored, singular operator on the Timeline.
 
 ## Timeline record
 
-The Timeline record is Gnostic's durable account of what crossed the Runtime
-boundary on one Timeline, organized by span. It holds:
-
-- the ACP payloads Gnostic sent and received, as received;
-- its spans and their Sessions;
-- each seeding boundary and what it lost.
-
-It is not the model's context: the Runtime decides what the model sees. It is a
-separate store from the Turn event log, which stays digest-only. The record is
-opt-in under the state home, and it is the only place Turn content is stored
-at rest (ADR 0017, ADR 0018).
+The Timeline record is the Timeline's content. It is the ordered log of every
+ACP v2 update the Runtime sent, as received, with its `_meta`, including kinds
+Gnostic does not recognize, plus the prompts Gnostic sent. Folded entities
+(messages, thoughts, tool calls, plans, compactions, terminal output) and the
+latest session state are derived indexes that can be rebuilt from the log. It
+is always stored on a Node with a state home, and kept in memory otherwise. It
+is not the model's context: the Runtime decides what the model sees. It is a
+separate store from the Turn event log, which stays digest-only (ADR 0020).
 
 ## Seeding
 
-Seeding starts a new Session for an existing Timeline from its Timeline record,
-using a declared strategy. Gnostic seeds when the Runtime cannot resume or load
-the old Session, or when the Timeline switches Agent. Seeding is lossy, and the
-record states the loss.
+Seeding gives a Runtime session Turns it has not seen, through its prompt,
+using a declared strategy. A full seed starts a new session from the whole
+Timeline, after a switch of Runtime instance or a `lost` Session record. A
+delta seed sends only the Turns after the Session record's `syncedThrough`.
+Seeding into an ACP Runtime is lossy, and the record states the loss. A seed is
+recorded as seeding metadata, never as a user Turn (ADR 0020).
 
 ## Subagent
 
 A subagent is a child Timeline. It records its parent Timeline, the Turn that
-spawned it, its operating Agent, and how it arose:
+spawned it, its Session record, and how it arose:
 
-- `delegation`: Gnostic ran a Turn on another Agent;
-- `agentSubagent`: the Runtime exposed its own subagent session;
-- `fork`: the Session was forked.
+- `delegation`: Gnostic ran a Turn on another Runtime instance;
+- `agentSubagent`: the Runtime exposed its own subagent session
+  (`subagent_update`);
+- `fork`: the session was forked.
+
+## Project
+
+A Project names where a Runtime session starts: its `cwd`. Every Session record
+has one. The first Project kind is a **scratch Project**: an empty,
+Gnostic-owned directory on the Runtime's Node, one per Session record, under a
+random name with owner-only permissions, kept as long as the record is `live`
+or `resumable`. Local and Git Projects are later kinds (ADR 0020).
+
+## Placement
+
+Placement decides how a Session's Project and Workspaces reach its Runtime.
+The first strategy is a scratch Project with every Workspace delivered through
+the Gnostic gateway, and no roots. A scratch directory is not a sandbox: a
+Runtime's own tools can reach whatever its OS user can, until #631 isolates
+Runtime instances (ADR 0020).
 
 ## Workspace
 
 A Workspace is a discoverable capability resource. It is not inherently a
 filesystem. A Workspace may expose filesystem tools, but its identity,
 advertisement, attachment relationship, and capabilities are not determined by
-a filesystem implementation. A Workspace reaches a Session in one of two
-delivery forms (ADR 0018):
-
-- as a **root**;
-- as **tools** of the Gnostic gateway.
-
-A remote filesystem Workspace is always delivered as tools.
+a filesystem implementation. A Workspace reaches a Session as tools of the
+Gnostic gateway. Delivery as a root is kept for a later placement strategy
+(ADR 0018, ADR 0020).
 
 ## Root
 
 A root is a Workspace delivered to a Session as a filesystem directory: the
-Session's `cwd` (the primary root), or one of its `additionalDirectories`. The
-Runtime's own file and shell tools use it directly, so Gnostic's effective-status
-and permission checks do not cover those calls. Root delivery is therefore
-opt-in per attachment, never used for an `unavailable` or read-only Workspace,
-and recorded per span. With no root attached, `cwd` is a Gnostic-owned scratch
-directory for the Timeline (ADR 0018).
+Session's `cwd`, or one of its `additionalDirectories`. The Runtime's own file
+and shell tools use it directly, so Gnostic's effective-status and permission
+checks do not cover those calls. Root delivery is opt-in per attachment, never
+used for an `unavailable` or read-only Workspace, and recorded per span. The
+first placement strategy delivers no roots (ADR 0018, ADR 0020).
 
 ## Gnostic gateway
 
 The Gnostic gateway is the MCP server Gnostic passes to a Session. It serves the
-tools of the Workspaces attached to that Timeline that are not delivered as
-roots, plus the network tools. It applies Gnostic's effective-status and
-permission checks to every call (ADR 0017).
+tools of the Workspaces attached to that Timeline, plus the network tools, and
+reaches remote Workspaces over Axoloty. It applies Gnostic's effective-status
+and permission checks to every call (ADR 0017). It uses MCP-over-ACP, HTTP, or
+stdio, in that order, as the Runtime advertises them (ADR 0019); its stdio form
+is a `gnostic` bridge process with a per-Session token (ADR 0020).
 
 ## Attachment intent
 
@@ -200,7 +218,8 @@ separate from attachment intent.
 
 ## Turn
 
-A Turn is a Timeline-addressed, admitted Gnostic operation. It consists of a
+A Turn is a Timeline-addressed, admitted Gnostic operation, and the unit of
+handoff between Runtimes. It consists of a
 Gnostic-owned **Turn envelope** and ACP v2 **Turn payloads**. Model and tool
 execution semantics are owned by the Runtime. A Turn's prompt is accepted when
 the Runtime inserts the user message (`messageId`), and the Turn ends when the
@@ -211,7 +230,7 @@ belong to the Timeline's open span, not to any Turn (ADR 0019).
 
 The Turn envelope is the Gnostic-owned part of a Turn. It holds:
 
-- the Timeline and the addressed Agent;
+- the Timeline and the Session record that served the Turn;
 - `clientTurnID`, admission, and replay;
 - the sequence number;
 - the terminal outcome and failure code;
@@ -232,10 +251,10 @@ travels as a resource link (ADR 0018).
 
 ## Capability
 
-A capability is a named, versioned behavior that a Node or Agent can consume or
-advertise. Interoperability capabilities are selected by `protocolMajor` and
-capability name, never by Runtime assumptions. An Agent's capabilities derive
-from its Runtime's ACP `initialize` result plus what Gnostic adds.
+Gnostic defines no capability names of its own (ADR 0020). A Runtime
+instance's capabilities are its Runtime's ACP `initialize` capabilities,
+advertised verbatim as discovery data. The ACP adapter reads them where the
+protocol requires it.
 
 ## protocol major
 
@@ -245,11 +264,10 @@ one major, and every direct operation revalidates compatibility.
 
 ## Regime
 
-A Regime is the operating configuration of an Agent. It is identical to the
-Agent definition: Runtime, instructions, session configuration, permission
-policy, outer modules, and default attachments. Comparing Regimes, including
-two Agents that differ only in Runtime, is a primary use of Gnostic. A Regime is
-a vocabulary term and a Run record field (ADR 0018).
+A Regime is the configuration a Run uses: its Runtime instance, session
+configuration options, placement, and Workspaces. Comparing Regimes, including
+two that differ only in Runtime instance, is a primary use of Gnostic. A Regime
+is a vocabulary term and a Run record field, not a stored primitive (ADR 0020).
 
 ## Module
 
@@ -260,16 +278,17 @@ owning issue and a lifecycle status (`incubating`, `gated`, `promoted`,
 
 ## Outer module
 
-An outer module runs in the Gnostic host and works with every Runtime. Examples
-are Gnostic gateway tool surfaces, seeding and session rotation, prompt
-shaping, and measurement.
+An outer module is an outer experiment: a Gnostic consumer that works with every
+Runtime. It uses Gnostic's client surface to set up its test, and presents as
+special Workspaces (its tools) and as Timelines labelled `experiment`. It is not
+a host hook (ADR 0020).
 
 ## Inner module
 
-An inner module needs the model loop. Examples are context projection,
-compaction inside a session, cache-aware prompt shaping, and executable
-context. It runs only inside the Gnostic harness agent, and its settings are
-exposed as that agent's session configuration. Atlas is an inner module.
+An inner module is an inner experiment that needs the model loop, such as
+context projection, compaction inside a session, or executable context. Each
+is a Native Runtime, and its settings are that Runtime's session configuration
+options. Atlas is an inner module (ADR 0020).
 
 ## Run
 
@@ -289,14 +308,14 @@ which preserves the recovered ledger.
 
 ## Harness vocabulary
 
-These terms belong to the inner modules of harnesses built in this repository
-(ADR 0017, ADR 0018). They are not Gnostic primitives, and Gnostic-owned
+These terms belong to inner modules, which are Native Runtimes
+(ADR 0017, ADR 0018, ADR 0020). They are not Gnostic primitives, and Gnostic-owned
 contracts do not use them.
 
 ### Atlas
 
 Atlas is the optional continuity and context architecture that supersedes
-Narrative. It is an inner module of the Gnostic harness agent. Generic Gnostic
+Narrative. It is an inner module, delivered as a Native Runtime. Generic Gnostic
 identity and routing do not depend on it.
 
 ### Image
@@ -324,21 +343,25 @@ code or its tests are obsolete. Remove them only through the owning issue.
 
 | Deprecated term | Use instead | Why (decision) |
 | --- | --- | --- |
-| Positronic Backend | Gnostic harness agent | In-process Ascendant Backends are being retired (#611); PositronicKit will run only behind ACP (ADR 0017). |
-| Backend kind `positronic`, backend kind `letta` | `acp-client` with an Agent definition | One backend boundary (ADR 0017; ADR 0010 is superseded). Both kinds stay valid until #611. |
+| Positronic Backend | Native Runtime | In-process Ascendant Backends are being retired (#611); PositronicKit will run only behind ACP (ADR 0017). |
+| Backend kind `positronic`, backend kind `letta` | A Runtime instance of an ACP or Native Runtime | One backend boundary (ADR 0017; ADR 0010 is superseded). Both kinds stay valid until #611. |
 | Backend transcript (as Timeline history) | Timeline record | History that crossed the boundary is Gnostic-owned; model context stays backend-owned (ADR 0017). |
 | Timeline runtime repository (`FileTimelineRuntimeRepository`) | Timeline record | Superseded with ADR 0015 once the in-process backend is removed. |
-| Backend envelope model keys (`provider`, `endpoint`, `model`, `utilityModel`, `fastModel`, `apiKey`) | Session configuration in the Agent definition | Model choice belongs to the agent and is set through ACP session config options. |
-| `extensions` (Positronic extension selection) | Outer module selection, or the harness agent's session configuration for inner modules | Modules have two layers (ADR 0017). |
-| Positronic contribution (`PositronicContribution`) | The harness agent's inner module interface (defined by #609) | It moves into the Gnostic harness agent. |
-| Backend hook, as a carrier for Modules in the host | Outer module (host hook points defined by #612), or inner module | ADR 0013's hook rule is split by layer (ADR 0017). |
+| Backend envelope model keys (`provider`, `endpoint`, `model`, `utilityModel`, `fastModel`, `apiKey`) | Session configuration options of the Runtime instance | Model choice belongs to the agent and is set through ACP session config options. |
+| `extensions` (Positronic extension selection) | An outer experiment, or a Native Runtime's session configuration for inner modules | Modules have two layers (ADR 0017). |
+| Positronic contribution (`PositronicContribution`) | The Native Runtime contract (#609) | It moves into a Native Runtime (ADR 0020). |
+| Backend hook, as a carrier for Modules in the host | Outer module (a Gnostic consumer), or inner module (a Native Runtime) | ADR 0013's hook rule is split by layer (ADR 0017). |
 | Narrative | Atlas | Superseded earlier (ADR 0004). |
-| Ascendant | Agent | One Gnostic-owned primitive (ADR 0018). Code, wire, and manifest rename with #629. |
-| Ascendant definition | Agent definition (which is the Agent's Regime) | ADR 0018 §1. |
-| Ascendant Backend, Agent session | Runtime, Session | The ACP harness is a value, and its session is external state (ADR 0018). |
+| Ascendant | Timeline and Runtime instance | No Agent-like primitive remains (ADR 0018, ADR 0020). Code, wire, and manifest drop it with #629. |
+| Ascendant definition | Runtime instance defaults | ADR 0020, O1. |
+| Ascendant Backend, Agent session | Runtime, Session record | ADR 0018, ADR 0020. |
 | Ascendant private Timeline, Ascendant default Timeline | A Timeline created by the client | Agents hold no Timelines (ADR 0018, Q2). |
-| `operatingAscendantID` | Current operator (the Agent of the open span) | Timelines are sequences of spans (ADR 0018). |
+| `operatingAscendantID` | Current operator (the Runtime instance of the open span) | Timelines are sequences of spans (ADR 0018). |
 | `AscendantTurnUpdateKind` (eight kinds and status vocabularies), `turn.text` capability | Turn payloads (ACP session updates) in the Turn envelope | Gnostic no longer re-encodes ACP (ADR 0018, #629). |
-| Bounded legacy Agent terminology | Agent and Runtime definitions | "Agent" now has one Gnostic-owned meaning (ADR 0018). |
+| Bounded legacy Agent terminology | Runtime and Timeline definitions | Gnostic owns no "Agent" term (ADR 0020). |
 | Atlas, Image, Image invocation (as Gnostic primitives) | Harness vocabulary | Inner-module terms, not Gnostic primitives (ADR 0018). |
 | `session/load`, "loaded" span | `session/resume` with `replayFrom`, "resumed" span | ACP v2 is the protocol baseline (ADR 0019). |
+| Agent (Gnostic-owned), Agent definition | Timeline and Runtime instance; Runtime instance defaults | A harness carries its own identity and instructions (ADR 0020). |
+| Gnostic harness agent | Native Runtime | Each inner experiment is its own Native Runtime (ADR 0020). |
+| Gnostic interoperability capability (`AscendantInteroperabilityCapability`, `GnosticCapability`), backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | Gnostic defines no capability names (ADR 0020). Removed with #629. |
+| `ACPProfile`, `gnostic acp profiles` | Runtime instances and their Timelines | ADR 0020, O7. |

@@ -2,6 +2,13 @@
 
 ## Status
 
+> **Amended (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
+> supersedes §5 (the Ascendant definition; use Runtime instance defaults) and
+> §6 (one harness agent): inner experiments are Native Runtimes, run as special
+> Nodes on the Gnostic network, and outer experiments are Gnostic consumers.
+> §7's firewall is unchanged; its harness-agent targets are the Native Runtime
+> targets.
+
 **Amended by [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md) (2026-10-15).** These changes apply to this record:
 
 - "Ascendant" becomes "Agent", with the ACP program as its Runtime.
