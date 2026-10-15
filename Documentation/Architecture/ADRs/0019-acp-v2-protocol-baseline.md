@@ -2,9 +2,10 @@
 
 ## Status
 
-> **Proposed amendment (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
-> would deliver no Workspace as a root under its first placement strategy
-> (§6). This record's protocol decisions are unchanged.
+> **Amended (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
+> delivers no Workspace as a root under its first placement strategy, and
+> reads "the Agent switches" (§7, T2) as "the Timeline switches Runtime
+> instance". This record's protocol decisions are unchanged.
 
 **Accepted** (2026-10-15). The owner also decided its three questions the same
 day; see [Owner decisions](#owner-decisions). In short: **no ACP v1 support at

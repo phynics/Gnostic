@@ -2,10 +2,11 @@
 
 ## Status
 
-> **Proposed amendment (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
-> would supersede the Agent parts of §1 and §2 (no Agent primitive) and §7
-> (no Gnostic capabilities), and would amend §3, §4, §5, §6 (a scratch Project
-> with gateway Workspaces first), Q3, Q14, and the invariants.
+> **Amended (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
+> supersedes the Agent parts of §1 and §2 (there is no Agent primitive), §7
+> (no Gnostic capabilities), and Q1, Q2, and Q14's opt-in. It amends §3, §4,
+> §5, §6 (a scratch Project with gateway Workspaces first), Q3, and the
+> invariants. Read "Agent" as "Runtime instance" where it names the operator.
 
 **Accepted** (2026-10-15). The owner accepted the recommended answer to every
 open question (Q1–Q14), and then made two further decisions the same day:

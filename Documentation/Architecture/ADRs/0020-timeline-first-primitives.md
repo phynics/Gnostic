@@ -2,10 +2,9 @@
 
 ## Status
 
-**Proposed** (2026-10-15). The owner set the direction in a design review the
-same day. The decisions below record that direction. The owner has decided O9
-(see [Owner decisions](#owner-decisions)); the other questions in
-[Open questions](#open-questions) are not yet decided. Owning issue:
+**Accepted** (2026-10-15). The owner set the direction in a design review the
+same day, decided O9 (Native Runtimes are special Nodes), and accepted the
+recommended answer to O1–O8. See [Owner decisions](#owner-decisions). Owning issue:
 [GNO-ACPF-018 #635](https://github.com/phynics/Gnostic/issues/635), under
 [Epic #602](https://github.com/phynics/Gnostic/issues/602). Checked by the
 [Epic #140](https://github.com/phynics/Gnostic/issues/140) and
@@ -42,7 +41,7 @@ It amends:
   Workspaces, not Agents;
 - ADR 0018 §6 and Q12: root delivery stays the opt-in exception it defines, but
   the first placement strategy (§6 below) delivers no roots;
-- ADR 0018 Q14 and the Timeline record: §2 below (question O2);
+- ADR 0018 Q14 and the Timeline record: §2 below (O2);
 - ADR 0018's invariants and fitness check: read "Agent" as "Runtime instance"
   where they concern the operator, and drop the Agent-model rules;
 - ADR 0017 §4: a child Timeline records its Session record, not an operating
@@ -144,9 +143,10 @@ amended by §4 below). Its content is complete for ACP v2.
   (ADR 0017 §4). Its `session_message` entries belong to the child. The child's
   session is created by the Runtime, so its Session record takes the `cwd` the
   Runtime reports, or none, and it is resumed only through its parent.
-- The Timeline record (#605) is this content. The Turn event log stays
-  digest-only (ADR 0014). Whether the record is always on, or opt-in as in
-  ADR 0018 Q14, is question O2.
+- The Timeline record (#605) is this content. It is always stored on a Node
+  with a state home, since handoff needs it; a Node without one keeps it in
+  memory (O2). This replaces ADR 0018 Q14's opt-in. The Turn event log stays
+  digest-only (ADR 0014).
 
 ### 3. A Turn is one prompt lifecycle, and the unit of handoff
 
@@ -224,7 +224,9 @@ Gnostic has one placement strategy now:
   instance secrets and auth, under a random (UUID) name, with owner-only
   permissions (mode `0700`). A new Session record never inherits another
   Runtime's scratch files, so instructions or configuration one harness wrote
-  there do not leak into the next. Retention is question O4.
+  there do not leak into the next. It lives as long as its Session record is
+  `live` or `resumable`, and is removed when the record is `lost` or its
+  Timeline is deleted (O4).
 - **Workspaces through the gateway.** Every attached Workspace reaches the
   Runtime as tools of the Gnostic gateway, an MCP server that the Runtime's
   Node passes in `mcpServers` (ADR 0017 §3). Every gateway call crosses
@@ -337,7 +339,7 @@ test service.
 
 ## Glossary changes
 
-Applied to `CONTEXT.md` when this record is accepted:
+Applied to `CONTEXT.md` with this record:
 
 - **Deprecate:** Agent, Agent definition (use Runtime instance and its
   defaults); Capability, as a Gnostic-defined name; Gnostic harness agent (use
@@ -351,23 +353,18 @@ Applied to `CONTEXT.md` when this record is accepted:
   later placement strategy); Outer module and Inner module (outer experiments
   are Gnostic consumers; inner experiments are Native Runtimes).
 
-## Open questions
-
-| # | Question | Recommendation |
-| --- | --- | --- |
-| O1 | Where do session configuration and permission policy live without an Agent? | Defaults on the Runtime instance; session configuration options may be overridden when a Timeline is created and are stored on the Session record. Permission policy stays per Runtime instance. |
-| O2 | Is Timeline content always stored? | Yes, on a Node with a state home, since handoff needs it. A Node without one keeps it in memory. The Turn event log stays digest-only. |
-| O3 | How does the gateway serve stdio, the last fallback of ADR 0019 §6? | A `gnostic` bridge process that the Runtime starts, connected to its Node over a local socket with a per-Session token that is regenerated on resume. |
-| O4 | How long does a scratch Project live? | As long as its Session record is `live` or `resumable`, because resume requires the same `cwd`; removed when the record is `lost` or its Timeline is deleted. |
-| O5 | Can a Native Runtime receive a whole Timeline? | Yes, later. The first Native Runtime contract matches ACP's lifecycle; a whole-Timeline handoff is added when the first Native Runtime needs it. |
-| O6 | Is the scratch strategy acceptable for 0.5.0 without Runtime instance isolation? | Yes, with the restriction in §6 and the statement in the compatibility declaration. Isolation is delivered by #631. |
-| O7 | What does `gnostic acp` list for editors? | Runtime instances and their Timelines, in place of profiles. |
-| O8 | How is an experiment Timeline marked? | A label map on the Timeline, with a reserved `experiment` key. |
-
 ## Owner decisions
 
 | # | Question | Decision | Where |
 | --- | --- | --- | --- |
+| O1 | Where do session configuration and permission policy live without an Agent? | **Defaults on the Runtime instance.** Session configuration options may be overridden when a Timeline is created and are stored on the Session record. Permission policy stays per Runtime instance. | §1, §4 |
+| O2 | Is Timeline content always stored? | **Yes, on a Node with a state home**, since handoff needs it. A Node without one keeps it in memory. The Turn event log stays digest-only. Replaces ADR 0018 Q14's opt-in. | §2 |
+| O3 | How does the gateway serve stdio, the last fallback of ADR 0019 §6? | **A `gnostic` bridge process** that the Runtime starts, connected to its Node over a local socket with a per-Session token that is regenerated on resume. | §6 |
+| O4 | How long does a scratch Project live? | **As long as its Session record is `live` or `resumable`**, because resume requires the same `cwd`. Removed when the record is `lost` or its Timeline is deleted. | §6 |
+| O5 | Can a Native Runtime receive a whole Timeline? | **Yes, later.** The first Native Runtime contract matches ACP's lifecycle; a whole-Timeline handoff is added when the first Native Runtime needs it. | §3, §7 |
+| O6 | Is the scratch strategy acceptable for 0.5.0 without Runtime instance isolation? | **Yes**, with the restriction in §6 and a statement in the compatibility declaration. Isolation is delivered by #631. | §6 |
+| O7 | What does `gnostic acp` list for editors? | **Runtime instances and their Timelines**, in place of profiles. | Dependency impact |
+| O8 | How is an experiment Timeline marked? | **A label map on the Timeline**, with a reserved `experiment` key. | §7 |
 | O9 | What carries the Runtime contract to a Native Runtime that cannot run in a host Node's process? | **Native Runtimes are special Node implementations running over Gnostic.** They join the network as Nodes, each hosting its own Runtime instance, and are reached over Axoloty like any Node-hosted Runtime. Neither ACP on stdio nor a separate local channel. | §7 |
 
 ## Invariant
