@@ -2,6 +2,16 @@
 
 ## Status
 
+**Amended by [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md) (2026-10-15).** These changes apply to this record:
+
+- "Ascendant" becomes "Agent", with the ACP program as its Runtime.
+- The Ascendant definition and the Regime are one object, the Agent definition (§5 and §6).
+- The Timeline record stores ACP payloads as received, organized in spans (§2).
+- A child Timeline records its operating Agent (§4).
+- A Workspace may be delivered as an opt-in session root. That is the single, recorded exception to §3's mediation invariant.
+- ACP v2 is the protocol baseline (ADR 0019). Where this record names `session/load`, read `session/resume` with an optional `replayFrom` cursor. The context table records the v1 state at the time of writing.
+- A Session runs on a Node-scoped Runtime instance that owns install, credentials, and processes (ADR 0018 Q15).
+
 Accepted target architecture (2026-10-15). Owning issue:
 [GNO-ACPF-001 #603](https://github.com/phynics/Gnostic/issues/603). Delivery is
 tracked by [Epic #602](https://github.com/phynics/Gnostic/issues/602). Delivery

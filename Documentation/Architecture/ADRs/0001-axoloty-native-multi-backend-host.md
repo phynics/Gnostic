@@ -2,6 +2,8 @@
 
 ## Status
 
+**Amended by [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md) (2026-10-15).** "Axoloty-native" now means Axoloty-native *discovery and routing*. Axoloty finds Nodes, Agents, Timelines, and Workspaces, tracks liveness, routes Gnostic operations, and carries the Turn envelope across Nodes. ACP is the agent protocol, and MCP is the tool protocol. Gnostic defines no tool or conversation semantics on Axoloty.
+
 Accepted target architecture. Delivery is tracked by [Epic #140](https://github.com/phynics/Gnostic/issues/140)
 and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145); this ADR
 does not claim that the target implementation is complete.
