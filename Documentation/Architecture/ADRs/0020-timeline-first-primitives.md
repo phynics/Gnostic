@@ -3,7 +3,8 @@
 ## Status
 
 **Proposed** (2026-10-15). The owner set the direction in a design review the
-same day. The decisions below record that direction. The questions in
+same day. The decisions below record that direction. The owner has decided O9
+(see [Owner decisions](#owner-decisions)); the other questions in
 [Open questions](#open-questions) are not yet decided. Owning issue:
 [GNO-ACPF-018 #635](https://github.com/phynics/Gnostic/issues/635), under
 [Epic #602](https://github.com/phynics/Gnostic/issues/602). Checked by the
@@ -269,20 +270,28 @@ both kinds, including T3.
 - **ACP Runtime.** An external harness spoken to over ACP v2 (ADR 0019).
 - **Native Runtime.** A Runtime built in this repository. It emits ACP v2 update
   objects, so its Timelines look like any other. It is siloed: its own targets,
-  reached only through the Runtime contract, and it imports no Gnostic
-  internals beyond the contract.
+  reached only through the Runtime contract.
 
-**Where a Native Runtime runs.** ADR 0017 §7 forbids PositronicKit anywhere in
-a host target's dependency closure, and that rule stands. So:
+**A Native Runtime is a special Node (owner decision O9).** It is its own
+executable: a Node implementation that joins the Gnostic network and hosts one
+Runtime instance, itself. It speaks Gnostic, not ACP:
 
-- a Native Runtime whose closure is free of PositronicKit may run inside the
-  Node process;
-- a Native Runtime that depends on PositronicKit runs **out of process**, as
-  its own executable product that the Node launches and reaches through the
-  Runtime contract over a local channel. The channel's wire is question O9.
+- it advertises its Runtime instance on Axoloty like any Node (§5), and every
+  request reaches it the way a request reaches any Node-hosted Runtime
+  instance: routed over Axoloty, as Gnostic operations with the Turn envelope
+  and its ACP v2 payloads (ADR 0018 §4, §5);
+- a Session record names that Node, so stickiness, resume, and seeding work
+  unchanged (§4). Its scratch Project lives on that Node (§6);
+- a host Node may launch and supervise it on the same machine, or it may run
+  on any other machine of the network. Either way it is reached the same way;
+- it builds on the Gnostic node and protocol libraries and its own targets. It
+  never links the host's composition targets (`GnosticHost`, `GnosticCLI`, the
+  runner).
 
-Amending ADR 0017 §7 to link a PositronicKit Native Runtime into the Node
-would need a reviewed exception; this record does not take it.
+This keeps ADR 0017 §7 intact without an exception: PositronicKit lives only in
+the special Node's own executable and targets, never in a host target's
+closure. A Native Runtime whose closure is free of PositronicKit may still run
+inside a host Node's process, behind the same Runtime contract.
 
 Experiments map onto these kinds:
 
@@ -290,7 +299,7 @@ Experiments map onto these kinds:
   compiler, Ouroboros, Akasha, Letta, and the PositronicKit-based harness each
   become a Native Runtime (#609, #616–#619, #611). This replaces ADR 0017 §6's
   single harness agent. The PositronicKit firewall is unchanged: the "harness
-  agent targets" of ADR 0017 §7 are now the out-of-process Native Runtime
+  agent targets" of ADR 0017 §7 are now the special-Node Native Runtime
   targets, and its transitional allow-list still only shrinks (#604).
 - **Outer experiments are Gnostic consumers.** They use Gnostic's client
   surface to set up their test. They present as special Workspaces (their
@@ -354,7 +363,12 @@ Applied to `CONTEXT.md` when this record is accepted:
 | O6 | Is the scratch strategy acceptable for 0.5.0 without Runtime instance isolation? | Yes, with the restriction in §6 and the statement in the compatibility declaration. Isolation is delivered by #631. |
 | O7 | What does `gnostic acp` list for editors? | Runtime instances and their Timelines, in place of profiles. |
 | O8 | How is an experiment Timeline marked? | A label map on the Timeline, with a reserved `experiment` key. |
-| O9 | What carries the Runtime contract to an out-of-process Native Runtime? | ACP v2 JSON-RPC over stdio. It is the contract's own wire, so the Node needs no second protocol, and a Native Runtime stays usable by any ACP client. The alternative is a Gnostic-owned local channel carrying the same objects. |
+
+## Owner decisions
+
+| # | Question | Decision | Where |
+| --- | --- | --- | --- |
+| O9 | What carries the Runtime contract to a Native Runtime that cannot run in a host Node's process? | **Native Runtimes are special Node implementations running over Gnostic.** They join the network as Nodes, each hosting its own Runtime instance, and are reached over Axoloty like any Node-hosted Runtime. Neither ACP on stdio nor a separate local channel. | §7 |
 
 ## Invariant
 
@@ -368,8 +382,10 @@ Applied to `CONTEXT.md` when this record is accepted:
   A harness's own tools are outside that guarantee until #631 isolates the
   Runtime instance.
 - No host target has PositronicKit in its dependency closure (ADR 0017 §7).
-  Only out-of-process Native Runtime targets, and the transitional allow-list,
+  Only special-Node Native Runtime targets, and the transitional allow-list,
   may depend on it.
+- A Native Runtime that depends on PositronicKit is reached only over the
+  Gnostic network, as a Node.
 - Both Runtime kinds honour ADR 0019's invariants.
 - Gnostic defines no capability names of its own.
 
@@ -389,6 +405,12 @@ Applied to `CONTEXT.md` when this record is accepted:
   and seeding needs entities.
 - **Link PositronicKit Native Runtimes into the Node.** It breaks ADR 0017 §7's
   closure rule for every host target.
+- **Reach an out-of-process Native Runtime over ACP v2 on stdio.** It ties the
+  Runtime to the machine and process of the Node that launched it, and adds a
+  second path next to the Gnostic network that already routes to Node-hosted
+  Runtime instances (O9).
+- **A Gnostic-owned local channel to a child process.** It invents a third
+  protocol for one machine only (O9).
 - **Persist MCP declarations exactly.** They can hold secrets and per-launch
   tokens that are stale on resume.
 - **Deliver Workspaces as roots first.** It needs the Workspace's directory on
@@ -417,7 +439,8 @@ None in this record. Delivery:
   experiments (§7);
 - #613 implements delta and full seeding (§3, §4);
 - #631 hosts Runtime instances per Node (§5) and isolates them (§6);
-- #604 enforces the firewall for out-of-process Native Runtimes (§7);
+- #604 enforces the firewall for special-Node Native Runtimes (§7);
+- #609 builds the first special Node, the PositronicKit-based Native Runtime (§7);
 - #608 delegates to Runtime instances instead of Agents;
 - #614 compares Regimes that differ in Runtime instance instead of Agent;
 - #584 shows spans with their Session records;
@@ -437,8 +460,8 @@ None in this record. Delivery:
   native tools start in an empty scratch directory, but they are not confined
   to it (§6).
 - **Native Runtimes replace the in-process backends.** #611 retires the
-  in-process backend contract. PositronicKit-based Native Runtimes run out of
-  process.
+  in-process backend contract. PositronicKit-based Native Runtimes run as
+  special Nodes on the Gnostic network.
 - **Outer modules as host hooks** (ADR 0017 §5, #612) give way to consumers.
 
 ## Fitness check
@@ -451,8 +474,8 @@ issues add fitness tests that enforce it:
 - a Timeline store returns an unknown update kind as a JSON value equal to the
   one received, `_meta` included;
 - a Session record contains no MCP environment, header, or token value;
-- no Native Runtime target imports a Gnostic target other than the Runtime
-  contract;
+- no Native Runtime target depends on a host composition target
+  (`GnosticHost`, `GnosticCLI`, the runner);
 - no host target has PositronicKit in its closure (#604);
 - resuming a Session record with a different `cwd` fails before any ACP call;
 - no Gnostic capability set or capability check in `Sources`.
