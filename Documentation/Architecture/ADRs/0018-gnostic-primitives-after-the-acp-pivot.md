@@ -5,8 +5,9 @@
 **Accepted** (2026-10-15). The owner accepted the recommended answer to every
 open question (Q1–Q14), and then made two further decisions the same day:
 a **Runtime instance** layer (Q15, from design reference
-[#630](https://github.com/phynics/Gnostic/issues/630)) and **ACP v2 only**
-(Q16). See [Owner decisions](#owner-decisions). Owning issue:
+[#630](https://github.com/phynics/Gnostic/issues/630)) and **ACP v2 as the
+protocol baseline** (Q16). On independent-review advice, Q16 is recorded in its
+own decision, ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)). See [Owner decisions](#owner-decisions). Owning issue:
 [GNO-ACPF-014 #626](https://github.com/phynics/Gnostic/issues/626), under
 [Epic #602](https://github.com/phynics/Gnostic/issues/602). Builds on
 [ADR 0017](0017-acp-first-host-and-harness-agent.md). Checked by the
@@ -30,13 +31,10 @@ lands, code, wire operations, and the manifest still say "Ascendant".
 - [ADR 0001](0001-axoloty-native-multi-backend-host.md): "Axoloty-native"
   narrows to discovery and routing (§5);
 - [ADR 0011](0011-external-acp-backends.md): the Ascendant Backend becomes the
-  Runtime (§1). The ACP SDK selected for it (`ACP-SDK-Evaluation.md`,
-  `aptove/swift-sdk` 0.1.16) speaks only ACP v1, so it is replaced by a
-  Gnostic-owned ACP v2 wire model (Q16, #572);
+  Runtime (§1);
 - [ADR 0017](0017-acp-first-host-and-harness-agent.md) in several places:
   - §2: the Timeline record stores ACP payloads as received, not normalized
-    updates (§4), and a Timeline continues through `session/resume`, since ACP
-    v2 has no `session/load` (Q16);
+    updates (§4), and a Timeline continues through `session/resume` (ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)));
   - §3 and its Workspace invariant: root delivery is an owner-decided exception
     (§6, Q12);
   - §4: a child Timeline records its operating Agent;
@@ -78,8 +76,8 @@ PositronicKit era. Several of them no longer describe what Gnostic does:
   WebSocket transport.
 - **Workspaces have one delivery path.** ADR 0017 §3 serves every Workspace
   through the gateway as MCP tools. ACP also defines session roots: `cwd`, and
-  `additionalDirectories` (Completed), which an agent's own file and shell
-  tools use directly. Serving a local directory as gateway tools duplicates the
+  `additionalDirectories` (an optional capability), which an agent's own file
+  and shell tools use directly. Serving a local directory as gateway tools duplicates the
   agent's native tools and is worse at the same job.
 
 ## Decision
@@ -92,7 +90,7 @@ Two concepts remain after the pivot, but only one needs identity.
   configuration. It holds:
   - its **Runtime**;
   - instructions;
-  - session configuration (model, mode, and inner-module settings);
+  - session configuration options (model, effort, and inner-module settings);
   - permission policy;
   - outer modules;
   - default Workspace attachments.
@@ -109,10 +107,13 @@ Two concepts remain after the pivot, but only one needs identity.
   - its install and pinned version, or its executable override;
   - its arguments, environment, and secrets;
   - its authentication state;
-  - its advertised catalog (models, modes, config options);
+  - its advertised catalog (models and session config options);
   - its processes.
 
   Every Session runs on exactly one instance, and work is routed by instance.
+  Instances are mutable (updates, catalog, auth), so each span and each Run
+  record captures the instance ID, its version, and its launch fingerprint when
+  the span starts. A later change to the instance never rewrites what ran.
   Two instances of the same kind never share mutable state or credentials, and
   two Agents that reference one instance share one account. An instance has a
   Node-scoped ID. When it has no registry ID, its kind is fingerprinted over
@@ -203,49 +204,26 @@ A Gnostic Turn is a Gnostic **envelope** around ACP **payloads**.
 
   These travel verbatim, tagged with the ACP protocol version, and are never
   reduced to a Gnostic taxonomy.
-- **ACP v2 only (Q16).** Gnostic speaks ACP v2 on both edges: as a client to
-  Runtimes, and as an agent to editors through `gnostic acp`. It negotiates no
-  v1 and converts no v1. A Runtime or editor that speaks only v1 is
-  unsupported, or must be wrapped outside Gnostic. The version tag stays in the
-  envelope for a future ACP major (Q5). The v2 RFDs are in the Active stage, so
-  Gnostic tracks the v2 preview and records the ACP specification revision it
-  implements. The v2 surface Gnostic relies on:
-  - **Prompt lifecycle.** `session/prompt` returns when the user message is
-    inserted, with an agent-generated `messageId`. The Turn ends when the
-    Runtime reports idle through `state_update` with a stop reason. A failure
-    after insertion arrives as an `error` stop reason. Gnostic's terminal
-    outcome maps from that stop reason.
-  - **Updates at any time.** A Runtime may send session updates outside any
-    prompt. Gnostic records them in the Timeline record against the open span,
-    without a Turn, and streams them to the Timeline's subscribers. They never
-    reopen or extend a finished Turn.
-  - **Session baseline.** A Runtime that advertises the `session` capability
-    supports `session/list`, `session/resume` (with optional `replayFrom`), and
-    `session/close`. `session/load` does not exist.
-  - **Update shapes.** `tool_call_update` upserts keyed by `toolCallId`,
-    `tool_call_content_chunk`, message upserts and chunks keyed by `messageId`,
-    `plan_update`, structured diff states, and display-only Agent-owned
-    terminal output. There are no client `fs/*` or `terminal/*` methods.
-  - **Permission requests** carry a `title` and an optional structured
-    `subject` (`tool_call`, `command`, or none).
-  - **Enum extension.** An unknown enum value with a safe fallback is not an
-    error. Values that begin with `_` are extensions.
+- **Protocol baseline.** Payloads are ACP v2, as defined by ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)). That record
+  maps the Turn onto the v2 prompt lifecycle: insertion, the idle
+  `state_update`, updates outside a Turn, permission requests without a Turn,
+  and cancellation. It also settles how peers that still speak v1 are handled.
 - **Gnostic interprets only what it needs:**
-  - the terminal outcome (from the idle `state_update` stop reason);
+  - the terminal outcome (ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)));
   - the `messageId` of the inserted prompt, recorded as a strong Runtime ref;
   - tool-call identifiers and permission subjects, for permission correlation;
   - usage numbers, for metering;
-  - assistant message chunks, only to build the assistant-text snapshot that the
-    Turn event log's compaction keeps (ADR 0014).
+  - assistant messages, only to build the assistant-text snapshot that the Turn
+    event log's compaction keeps (ADR 0014). The snapshot applies whole-message
+    upserts and appends chunks per `messageId`.
 
   It passes the rest through. Update kinds it does not know are forwarded and
   recorded unchanged, never rejected. This is the forward-compatibility rule.
 - **Permission is a request and reply, not an update.** ACP's
   `session/request_permission` expects an answer. The envelope carries it as a
   correlated permission request to the Turn's client, holding the ACP v2
-  request (title, optional subject, options), and a correlated reply. A
-  permission request that arrives outside a Turn goes to the Timeline's
-  subscribed clients under the same correlation rules.
+  request (title, optional subject, options), and a correlated reply.
+  ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)) covers permission requests that arrive outside a Turn.
   - This reuses the existing permission correlation (ADR 0011 mediation;
     `AscendantPermissionCoordinator`).
   - A timeout, a lost connection, or a Node failure answers the Runtime with a
@@ -319,8 +297,8 @@ permission prompts (forwarded through ACP) stand in the way. So:
 or `unsupported`. For example, a local repository can be `available` as a root
 and `unsupported` as tools. Changing roots mid-session needs a Session resume
 with the new root list, because ACP requires the client to resend the full list
-on resume or load. When the Runtime supports neither resume nor load, changing
-roots opens a new seeded span.
+on resume. When the Runtime does not support resume, changing roots opens a new
+seeded span.
 
 A remote filesystem Workspace is always delivered as tools, never as a root.
 Mounting or syncing a remote directory is an operator concern outside Gnostic
@@ -334,7 +312,7 @@ it as such (Q9). A session never starts in an arbitrary directory.
 
 An Agent's advertised capabilities are derived from:
 
-- the Runtime's ACP `initialize` result: load and resume, prompt content types,
+- the Runtime's ACP `initialize` result: session support, prompt content types,
   MCP transports, and session capabilities;
 - what Gnostic itself adds: the gateway, the Timeline record, and delegation.
 
@@ -356,17 +334,12 @@ that #566 started and #611 finishes.
   explicit exception: opt-in per attachment, never `unavailable` or read-only,
   and recorded per span (Q12, accepted).
 - Diagnostics and metering never read Turn payload content.
-- Gnostic speaks only ACP v2 at both edges (Q16).
+- Turn payloads follow the protocol baseline in ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)).
 - Every Session runs on exactly one Runtime instance, and instances share no
   mutable state (Q15).
 
 ## Rejected alternatives
 
-- **Negotiate ACP v1 as a fallback, as T3 Code does (#630).** The v1 and v2
-  prompt lifecycles differ: v1 holds the prompt request open for the whole turn,
-  and v2 returns at insertion and ends on `state_update`. Supporting both doubles
-  the codec and the Turn semantics in the core of Gnostic. A v1-only Runtime or
-  editor can be wrapped outside Gnostic.
 - **Keep the Runtime as a plain value with no instance (this record's
   first accepted text).** Accounts, credentials, installs, and processes are
   mutable state. Without an instance owning them, two Agents on one login
@@ -413,11 +386,8 @@ None in this record. Delivery:
 - the frontend (`gnostic acp`) and the ACP backend pass payloads through. Both
   can share one ACP model (#572).
 
-- the pinned `aptove/swift-sdk` (`exact: "0.1.16"`) supports only ACP v1
-  (`ProtocolVersion.current = 1`; last pushed 2026-04-25). It is replaced by a
-  Gnostic-owned ACP v2 wire model generated from or checked against the ACP
-  specification's schema (#572). Removing the dependency is a dependency
-  change with its own resolution evidence;
+- the ACP wire model and the replacement of the v1-only SDK are decided in
+  ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)) (#572);
 - Runtime instance installs (#631) download ACP Registry distributions at run
   time. They are not package dependencies, but they need checksum
   verification and version pinning.
@@ -477,7 +447,7 @@ The owner accepted the recommended answer to every question on 2026-10-15
 | Q2 | Default Timeline per Agent | **No.** A client or the frontend creates a Timeline on first use. | §1 |
 | Q3 | Switching a Timeline's Agent | **An explicit Timeline operation.** A Turn never switches implicitly. | §3 |
 | Q4 | Concurrent spans | **At most one open span.** Parallel work is child Timelines. | §3 |
-| Q5 | ACP versions | **Tag the ACP version in the envelope.** Refined by Q16: only v2 is spoken; the tag serves a future major. | §4 |
+| Q5 | ACP versions | **Tag the ACP version in the envelope.** Refined by ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)). | §4 |
 | Q6 | Payload size | **Resource links** above an advertised per-Node threshold. Reject what still exceeds the budget. | §4 |
 | Q7 | Axoloty scope | **Axoloty stays the cross-Node fabric** for 0.5.0. ACP over HTTP is a trigger only. | §5 |
 | Q8 | Remote roots | **Tools only.** Mounting is outside Gnostic. | §6 |
@@ -488,7 +458,7 @@ The owner accepted the recommended answer to every question on 2026-10-15
 | Q13 | Replay hash basis | **RFC 8785 canonical JSON** of the prompt content blocks plus the ACP version tag. | §4 |
 | Q14 | Content at rest | **The Turn event log stays digest-only.** Only the opt-in Timeline record stores ACP payload content. | Consequences |
 | Q15 | Runtime instance (added after #630) | **Add a Node-scoped Runtime instance.** It owns install, version, environment, secrets, auth, catalog, and processes. Agents reference an instance; Runtime is the kind. Supersedes the "Runtime is a value" part of Q10. | §1 |
-| Q16 | ACP version (added) | **ACP v2 only, on both edges.** No v1 negotiation or conversion. `session/load` is gone, the prompt lifecycle ends on `state_update`, and updates may arrive outside a Turn. | §3, §4 |
+| Q16 | ACP version (added) | **ACP v2 is the protocol baseline.** Recorded, with its Turn mapping and the open v1 transition question, in ADR 0019 ([#633](https://github.com/phynics/Gnostic/issues/633)) (#633). | §4 |
 
 ## Fitness check
 
@@ -510,8 +480,8 @@ fitness tests that enforce the decision:
   `clientTurnID`.
 - A real use case needs concurrent Sessions on one Timeline.
 - The Agent and Runtime terms confuse users in practice (Q1).
-- The ACP v2 RFDs change incompatibly before they stabilize, or an important
-  Runtime stays on v1 (Q16).
+- A Runtime instance's mutable state makes span capture insufficient for
+  reproducing a Run (Q15).
 
 ## Links
 

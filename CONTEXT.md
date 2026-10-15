@@ -33,8 +33,8 @@ Agent's Regime. It holds:
 - its identity;
 - its Runtime instance;
 - its instructions;
-- its session configuration, which is where model, mode, and inner-module
-  settings are set;
+- its session configuration options, which is where model, effort, and
+  inner-module settings are set;
 - its permission policy;
 - its outer modules;
 - its default Workspace attachments, including which ones may be delivered as
@@ -55,7 +55,7 @@ names, never their values or any secret.
 
 A Runtime owns model and tool semantics, model context, compaction, caches, and
 its own lifecycle. Gnostic connects and orchestrates Runtimes and depends on
-none of them. Gnostic speaks only ACP v2 to them (ADR 0018). An Agent's
+none of them. ACP v2 is Gnostic's protocol baseline (ADR 0019). An Agent's
 capabilities derive from its Runtime's ACP `initialize` result plus what Gnostic
 adds.
 
@@ -67,12 +67,13 @@ owns:
 - its install and pinned version, or an executable override;
 - its arguments, environment, and secrets;
 - its authentication state;
-- its advertised catalog of models, modes, and config options;
+- its advertised catalog of models and session config options;
 - its processes.
 
 Work is routed by instance. Two instances never share mutable state or
 credentials, and Agents that reference one instance share its account. A
-Runtime instance has a Node-scoped ID (ADR 0018, #631).
+Runtime instance has a Node-scoped ID. Each span records the instance's ID,
+version, and launch fingerprint at its start (ADR 0018, #631).
 
 Until #611 retires them, the in-process `positronic` and `letta` backend kinds
 remain valid.
@@ -204,7 +205,7 @@ Gnostic-owned **Turn envelope** and ACP v2 **Turn payloads**. Model and tool
 execution semantics are owned by the Runtime. A Turn's prompt is accepted when
 the Runtime inserts the user message (`messageId`), and the Turn ends when the
 Runtime reports idle with a stop reason. Updates a Runtime sends outside a Turn
-belong to the Timeline's open span, not to any Turn.
+belong to the Timeline's open span, not to any Turn (ADR 0019).
 
 ## Turn envelope
 
@@ -340,4 +341,4 @@ code or its tests are obsolete. Remove them only through the owning issue.
 | `AscendantTurnUpdateKind` (eight kinds and status vocabularies), `turn.text` capability | Turn payloads (ACP session updates) in the Turn envelope | Gnostic no longer re-encodes ACP (ADR 0018, #629). |
 | Bounded legacy Agent terminology | Agent and Runtime definitions | "Agent" now has one Gnostic-owned meaning (ADR 0018). |
 | Atlas, Image, Image invocation (as Gnostic primitives) | Harness vocabulary | Inner-module terms, not Gnostic primitives (ADR 0018). |
-| `session/load`, "loaded" span | `session/resume` with `replayFrom`, "resumed" span | Gnostic speaks ACP v2 only (ADR 0018, Q16). |
+| `session/load`, "loaded" span | `session/resume` with `replayFrom`, "resumed" span | ACP v2 is the protocol baseline (ADR 0019). |
