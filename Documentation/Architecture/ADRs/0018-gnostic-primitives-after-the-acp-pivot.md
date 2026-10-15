@@ -2,7 +2,8 @@
 
 ## Status
 
-**Proposed** (2026-10-15). Owning issue:
+**Accepted** (2026-10-15). The owner accepted the recommended answer to every
+open question (Q1–Q14); see [Owner decisions](#owner-decisions). Owning issue:
 [GNO-ACPF-014 #626](https://github.com/phynics/Gnostic/issues/626), under
 [Epic #602](https://github.com/phynics/Gnostic/issues/602). Builds on
 [ADR 0017](0017-acp-first-host-and-harness-agent.md). Checked by the
@@ -10,27 +11,30 @@
 [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145) documentation
 gates.
 
-This record proposes how Gnostic's primitives change now that every Ascendant
-Backend is an ACP agent. Its main proposal is that one Gnostic-owned primitive,
-the **Agent**, replaces the Ascendant, and that the ACP program an Agent runs
-on becomes a value, its **Runtime**. It changes no code, glossary entry, wire contract, or
-manifest shape while it is Proposed. The owner decides the
-[open questions](#open-questions) first. On acceptance:
+This record decides how Gnostic's primitives change now that every Ascendant
+Backend is an ACP agent. One Gnostic-owned primitive, the **Agent**, replaces
+the Ascendant, and the ACP program an Agent runs on becomes a value, its
+**Runtime**.
 
-- `CONTEXT.md` is revised as described in [Glossary changes on acceptance](#glossary-changes-on-acceptance);
-- the records it amends receive status notes. On acceptance, it amends:
-  - [ADR 0001](0001-axoloty-native-multi-backend-host.md): "Axoloty-native"
-    narrows to discovery and routing (§5);
-  - [ADR 0011](0011-external-acp-backends.md): the Ascendant Backend becomes
-    the Runtime (§1);
-  - [ADR 0017](0017-acp-first-host-and-harness-agent.md) in several places:
-    - §2: the Timeline record stores ACP payloads as received, not normalized
-      updates (§4);
-    - §3 and its Workspace invariant: root delivery is an owner-decided
-      exception (§6, Q12);
-    - §4: a child Timeline records its operating Agent;
-    - §5 and §6: the Agent definition and the Regime merge (§1);
-- each affected child issue of #602 takes the decision into its scope.
+It is a direction decision. It changes no code, wire contract, or manifest
+shape by itself. Delivery is tracked by
+[#629](https://github.com/phynics/Gnostic/issues/629) (Turn envelope, rename,
+new `protocolMajor`) and by the #602 children named in each section. Until #629
+lands, code, wire operations, and the manifest still say "Ascendant".
+
+`CONTEXT.md` is revised with this record. It amends:
+
+- [ADR 0001](0001-axoloty-native-multi-backend-host.md): "Axoloty-native"
+  narrows to discovery and routing (§5);
+- [ADR 0011](0011-external-acp-backends.md): the Ascendant Backend becomes the
+  Runtime (§1);
+- [ADR 0017](0017-acp-first-host-and-harness-agent.md) in several places:
+  - §2: the Timeline record stores ACP payloads as received, not normalized
+    updates (§4);
+  - §3 and its Workspace invariant: root delivery is an owner-decided exception
+    (§6, Q12);
+  - §4: a child Timeline records its operating Agent;
+  - §5 and §6: the Agent definition and the Regime merge (§1).
 
 ## Context
 
@@ -72,7 +76,7 @@ PositronicKit era. Several of them no longer describe what Gnostic does:
   tools use directly. Serving a local directory as gateway tools duplicates the
   agent's native tools and is worse at the same job.
 
-## Decision (proposed)
+## Decision
 
 ### 1. One configured primitive, the Agent, with a Runtime as its value
 
@@ -93,8 +97,10 @@ Two concepts remain after the pivot, but only one needs identity.
   Runtime makes a different Regime, and therefore a different Agent.
 - **Runtime (value, not identity).** The ACP program an Agent runs on: Claude
   Agent, Codex, opencode, or the Gnostic harness agent. It is identified by its
-  launch specification or an ACP registry identifier. Gnostic records the name
-  and version the program reports. One Runtime can back many Agents (a reviewer
+  ACP registry identifier when one exists. Otherwise it is identified by a
+  launch-spec fingerprint over the command, the arguments, and the *names* of
+  the environment variables, never their values or any secret (Q10). Gnostic
+  records the name and version the program reports. One Runtime can back many Agents (a reviewer
   and a researcher on Claude Agent). A cross-Runtime comparison (#614) compares
   two Agents whose definitions differ only in their Runtime. The Run record
   names both Agents and the one field that differs.
@@ -105,7 +111,8 @@ Two concepts remain after the pivot, but only one needs identity.
 
 An Agent has **no memory and no Timelines of its own**:
 
-- the private Timeline and the per-Agent default Timeline are retired;
+- the private Timeline and the per-Agent default Timeline are retired (Q2). A
+  client or the frontend creates a Timeline on first use;
 - continuity belongs to Timelines (ADR 0017 §2).
 
 ### 2. "Ascendant" is retired in favour of "Agent"
@@ -147,9 +154,12 @@ A Timeline has at most one open span at a time.
 
 - The Timeline's **current operator** is the Agent of its open span. It
   replaces the stored `operatingAscendantID`.
-- A Turn addressed to a Timeline runs in its open span. Opening a span for a
-  different Agent is how a Timeline switches agents; Q3 decides how a client
-  asks for that.
+- A Turn addressed to a Timeline runs in its open span. A Turn never names a
+  different Agent implicitly.
+- Switching a Timeline to another Agent is an **explicit Timeline operation**
+  (Q3). It closes the open span and opens a new one, usually `seeded`, so a
+  lossy seeding step never happens by accident.
+- Parallel work is modeled as child Timelines, never as concurrent spans (Q4).
 - Lineage stays on the Timeline (ADR 0017 §4). A child Timeline links to its
   parent Timeline and the spawning Turn, not to a span.
 - The Timeline record (#605) stores spans as its structure.
@@ -170,7 +180,9 @@ A Gnostic Turn is a Gnostic **envelope** around ACP **payloads**.
   - Permission requests carry ACP permission options.
 
   These travel verbatim, tagged with the ACP protocol version, and are never
-  reduced to a Gnostic taxonomy.
+  reduced to a Gnostic taxonomy. When ACP v2 ships, the tag lets Gnostic convert
+  only at the edge whose peer needs another version, instead of raising
+  `protocolMajor` again (Q5).
 - **Gnostic interprets only what it needs:**
   - the terminal outcome;
   - tool-call identifiers, for permission correlation;
@@ -191,19 +203,22 @@ A Gnostic Turn is a Gnostic **envelope** around ACP **payloads**.
   - Replaying a Turn returns the recorded decision and never prompts again.
 - **Replay identity.** The `clientTurnID` conflict check hashes the canonical
   form of the prompt payload: JSON Canonicalization Scheme (RFC 8785) over the
-  content blocks, plus the ACP version tag. Retries that differ only in key
-  order therefore still match.
-- **Size.** Until Q6 is decided, a Turn whose payload exceeds the Axoloty event
-  budget or the journal bound is rejected with an explicit failure code, as
-  oversize prompts already are. It is never truncated or dropped.
+  content blocks, plus the ACP version tag (Q13). Retries that differ only in
+  key order therefore still match.
+- **Size (Q6).** Content above a size threshold travels as an ACP resource link
+  to a blob that Gnostic serves. Each Node advertises its threshold as a
+  capability. A payload still over the Axoloty event budget or the journal bound
+  is rejected with an explicit failure code, as oversize prompts already are. It
+  is never truncated or dropped.
 - **Payload-free diagnostics stay payload-free.** Diagnostics, metering, and the
   console read only envelope fields and usage numbers. They never read tool-call
   titles, `rawInput`, paths, or any content block.
 - **For text-only consumers,** `GnosticClient` offers a projection helper (for
   example, assistant text only). The projection is a client convenience, not
   the wire format.
-- **This changes the wire contract.** It needs a new `protocolMajor` (ADR 0003)
-  and lands inside the 0.5.0 line, before the stable surface is declared
+- **This changes the wire contract.** It needs a new `protocolMajor` (ADR 0003),
+  delivered by #629 together with the rename (§2). It lands inside the 0.5.0
+  line, before the stable surface is declared
   (decision D10 on #551). The eight-kind `AscendantTurnUpdateKind` taxonomy (with its status vocabularies) and
   the `turn.text` capability are retired at that major.
 
@@ -220,6 +235,8 @@ Axoloty keeps four jobs:
 Axoloty is **not** the agent protocol (ACP is), and **not** the tool protocol
 (MCP is). Gnostic defines no new tool or conversation semantics on Axoloty. It
 carries ACP and MCP payloads inside Gnostic envelopes. This narrows ADR 0001.
+Axoloty stays the cross-Node fabric for 0.5.0; ACP over HTTP or WebSocket is a
+reconsideration trigger, not a plan (Q7).
 "Axoloty-native" now means Axoloty-native discovery and routing.
 
 ### 6. Workspaces are delivered as roots or as gateway tools
@@ -236,7 +253,7 @@ A Workspace states which delivery forms it supports:
   (ADR 0017 §3). This is the form for remote Workspaces and for capability
   Workspaces that are not filesystems.
 
-**Root delivery bypasses Gnostic mediation, so it is opt-in (pending Q12).**
+**Root delivery bypasses Gnostic mediation, so it is opt-in (Q12).**
 ADR 0017 makes it an invariant that every Workspace tool call crosses Gnostic's
 effective-status and permission checks. A root breaks that invariant: the
 Runtime's native tools reach the directory directly, and only the Runtime's own
@@ -255,7 +272,13 @@ with the new root list, because ACP requires the client to resend the full list
 on resume or load. When the Runtime supports neither resume nor load, changing
 roots opens a new seeded span.
 
-Q9 decides what `cwd` is when no root Workspace is attached.
+A remote filesystem Workspace is always delivered as tools, never as a root.
+Mounting or syncing a remote directory is an operator concern outside Gnostic
+(Q8).
+
+When no root Workspace is attached, the Session's `cwd` is a Gnostic-owned
+scratch directory for that Timeline under the state home. The record reports
+it as such (Q9). A session never starts in an arbitrary directory.
 
 ### 7. Capabilities come from the Runtime
 
@@ -281,7 +304,7 @@ that #566 started and #611 finishes.
 - Every gateway-delivered Workspace call crosses Gnostic's effective-status and
   permission checks (ADR 0017). A root-delivered Workspace is the single,
   explicit exception: opt-in per attachment, never `unavailable` or read-only,
-  and recorded per span (Q12).
+  and recorded per span (Q12, accepted).
 - Diagnostics and metering never read Turn payload content.
 
 ## Rejected alternatives
@@ -318,10 +341,11 @@ that #566 started and #611 finishes.
 
 ## Dependency impact
 
-None in this record. On acceptance:
+None in this record. Delivery:
 
-- the Turn envelope change raises `protocolMajor`, delivered by a new child of
-  #602;
+- #629 delivers the Turn envelope change, the rename, and the new
+  `protocolMajor`. It lands **before** the Timeline record (#605), so the
+  record stores ACP payloads from day one (Q11);
 - the manifest renames Ascendants to Agents, and loses `defaultTimelineID` and
   `operatingAscendantID` in favour of spans (#607 and #613);
 - the frontend (`gnostic acp`) and the ACP backend pass payloads through. Both
@@ -331,7 +355,6 @@ No new package dependency.
 
 ## Consequences
 
-If accepted:
 
 - **Ascendant becomes Agent everywhere Gnostic-owned:** wire operations,
   capabilities, manifest keys, CLI commands, diagnostics, and docs. Historical
@@ -351,7 +374,7 @@ If accepted:
   change together. It is a breaking change within the pre-1.0 line, declared in
   the 0.5.0 compatibility record.
 
-## Glossary changes on acceptance
+## Glossary changes
 
 - **Add:** Agent (as Gnostic-owned), Runtime, Session, Span, Current operator,
   Root (Workspace delivery), Turn envelope, Turn payload.
@@ -374,68 +397,32 @@ If accepted:
   - the bounded legacy Agent rule;
   - Agent session (use Session).
 
-## Open questions
+## Owner decisions
 
-The owner decides these before acceptance. A recommendation follows each
-question.
+The owner accepted the recommended answer to every question on 2026-10-15
+(recorded on #626). Each answer is folded into the section named.
 
-- **Q1 — One primitive, and its name.** Retire "Ascendant" and use **Agent**
-  (with **Runtime** for the ACP program), as proposed in sections 1 and 2? The
-  alternatives are keeping "Ascendant" with the profile meaning, or "Profile".
-  *Recommendation:* Agent and Runtime, renamed together with the `protocolMajor`
-  change.
-- **Q2 — Default Timeline.** Should an Agent still name a default Timeline,
-  as a convenience for "send a Turn without picking a Timeline"?
-  *Recommendation:* no. The frontend or client creates a Timeline on first use.
-- **Q3 — Switching agents.** Can a Turn addressed to a Timeline name a different
-  Agent and implicitly open a new seeded span? Or must switching be an
-  explicit Timeline operation? *Recommendation:* an explicit operation, so a
-  lossy seeding step never happens by accident.
-- **Q4 — Concurrent spans.** Confirm at most one open span per Timeline, with
-  parallel work as child Timelines. *Recommendation:* confirm.
-- **Q5 — ACP versions.** When ACP v2 ships, do payloads carry a per-Turn ACP
-  version, with Gnostic converting at the edges when peers differ? Or does
-  Gnostic raise `protocolMajor` again? *Recommendation:* tag the ACP version in
-  the envelope, and convert only at the edge that needs it.
-- **Q6 — Payload size.** ACP content blocks (images, embedded resources) can
-  exceed the bounded Axoloty event budget. Chunk them, send them as resource
-  links to a Gnostic-served blob, or cap them? *Recommendation:* resource links
-  above a size threshold, with the threshold advertised as a Node capability.
-- **Q7 — Axoloty scope.** Confirm Axoloty stays the cross-Node fabric for
-  0.5.0, and that ACP over HTTP is only a reconsideration trigger.
-  *Recommendation:* confirm.
-- **Q8 — Remote roots.** Should a remote filesystem Workspace ever become a root
-  (by mount or sync), or always be tools-only? *Recommendation:* tools-only.
-  Mounting is an operator concern outside Gnostic.
-- **Q9 — `cwd` with no root.** When no root Workspace is attached, is `cwd` a
-  Gnostic-owned scratch directory per Timeline under the state home, or is a
-  root Workspace required to start a session? *Recommendation:* a per-Timeline
-  scratch directory, reported as such in the record.
-- **Q10 — Runtime identity.** Identify Runtimes by ACP registry ID when one exists,
-  falling back to a launch-spec fingerprint? *Recommendation:* yes. The fingerprint covers the command, arguments, and the names of the environment variables, never their values or any secret.
-- **Q11 — Delivery order.** Land the envelope change (section 4) before or after
-  the Timeline record (#605)? *Recommendation:* the envelope first, so the record
-  stores ACP payloads from day one.
-
-- **Q12 — Root delivery and mediation.** Allow root delivery at all, given that
-  the Runtime's native tools then reach the directory without Gnostic's
-  effective-status and permission checks (§6)? *Recommendation:* yes, opt-in per
-  attachment, with the limits in §6. A local repository served only as gateway
-  tools is a much worse coding experience than the Runtime's own tools.
-- **Q13 — Replay hash basis.** Confirm RFC 8785 canonical JSON of the prompt
-  content blocks plus the ACP version tag as the `clientTurnID` conflict basis
-  (§4). *Recommendation:* confirm.
-- **Q14 — Content at rest.** Confirm the split: the Turn event log stays
-  digest-only (ADR 0014), and only the opt-in Timeline record stores ACP payload
-  content. *Recommendation:* confirm.
-
-Q1, Q4, and Q7 are recommendations that the body already assumes. Answering
-"no" to any of them reopens the matching section (§1–2, §3, §5).
+| # | Question | Decision | Where |
+| --- | --- | --- | --- |
+| Q1 | One primitive, and its name | **Agent**, with **Runtime** for the ACP program. "Ascendant" is retired, renamed together with the new `protocolMajor` (#629). | §1, §2 |
+| Q2 | Default Timeline per Agent | **No.** A client or the frontend creates a Timeline on first use. | §1 |
+| Q3 | Switching a Timeline's Agent | **An explicit Timeline operation.** A Turn never switches implicitly. | §3 |
+| Q4 | Concurrent spans | **At most one open span.** Parallel work is child Timelines. | §3 |
+| Q5 | ACP versions | **Tag the ACP version in the envelope.** Convert only at the edge that needs it. | §4 |
+| Q6 | Payload size | **Resource links** above an advertised per-Node threshold. Reject what still exceeds the budget. | §4 |
+| Q7 | Axoloty scope | **Axoloty stays the cross-Node fabric** for 0.5.0. ACP over HTTP is a trigger only. | §5 |
+| Q8 | Remote roots | **Tools only.** Mounting is outside Gnostic. | §6 |
+| Q9 | `cwd` with no root | **A per-Timeline scratch directory** under the state home, reported in the record. | §6 |
+| Q10 | Runtime identity | **ACP registry ID**, else a launch fingerprint over the command, the arguments, and the environment variable names, with no secrets. | §1 |
+| Q11 | Delivery order | **Envelope first (#629), then the Timeline record (#605).** | Dependency impact |
+| Q12 | Root delivery and mediation | **Allowed, opt-in per attachment.** Never for `unavailable` or read-only Workspaces; recorded per span. | §6, Invariant |
+| Q13 | Replay hash basis | **RFC 8785 canonical JSON** of the prompt content blocks plus the ACP version tag. | §4 |
+| Q14 | Content at rest | **The Turn event log stays digest-only.** Only the opt-in Timeline record stores ACP payload content. | Consequences |
 
 ## Fitness check
 
-While Proposed, `make docs-check` validates this record and the index. On
-acceptance, the delivering issues add fitness tests that enforce the decision:
+`make docs-check` validates this record and the index. The delivering issues add
+fitness tests that enforce the decision:
 
 - no Gnostic-owned Turn update kind beyond the envelope's terminal states;
 - no Timeline field on the Agent model, and no Gnostic-owned type, wire

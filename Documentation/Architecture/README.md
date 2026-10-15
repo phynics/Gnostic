@@ -9,7 +9,7 @@ whether its decision is delivered or remains a target.
 
 ## Accepted decisions
 
-1. [ADR 0001 — Axoloty-native multi-backend host](ADRs/0001-axoloty-native-multi-backend-host.md)
+1. [ADR 0001 — Axoloty-native multi-backend host](ADRs/0001-axoloty-native-multi-backend-host.md) — amended by ADR 0018: Axoloty is the discovery and routing fabric, not the agent or tool protocol.
 2. [ADR 0002 — Gnostic identity versus backend state](ADRs/0002-gnostic-identity-vs-backend-state.md)
 3. [ADR 0003 — Pre-1.0 manifest and protocol reset](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md)
 4. [ADR 0004 — Atlas supersedes Narrative](ADRs/0004-atlas-supersedes-narrative.md)
@@ -19,16 +19,13 @@ whether its decision is delivered or remains a target.
 8. [ADR 0008 — Runtime-created Timeline durability across serve restarts](ADRs/0008-runtime-created-timeline-durability.md) — process-scoped default; superseded in part by ADR 0015 when a durable state home is configured.
 9. [ADR 0009 — Multi-configuration Ascendant hosting on one Node](ADRs/0009-multi-configuration-ascendant-hosting.md)
 10. [ADR 0010 — Letta as the first non-Positronic Ascendant backend](ADRs/0010-letta-ascendant-backend-evaluation.md) — superseded by ADR 0017; the prototype is retired by #611.
-11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md) — amended by ADR 0017: ACP is the only backend boundary, and Workspaces reach ACP agents through the Gnostic gateway.
+11. [ADR 0011 — External ACP agents as Ascendant backends](ADRs/0011-external-acp-backends.md) — amended by ADR 0017: ACP is the only backend boundary, and Workspaces reach ACP agents through the Gnostic gateway; amended by ADR 0018: the ACP agent is an Agent's Runtime.
 12. [ADR 0014 — Durable Turn event log](ADRs/0014-durable-turn-event-log.md)
 13. [ADR 0015 — File-backed Timeline runtime repository](ADRs/0015-file-backed-timeline-runtime-repository.md) — durable backend transcripts, opt-in under the state home. Superseded by ADR 0017's Timeline record once the in-process backend is removed.
 14. [ADR 0013 — Gnostic as an experimentation platform](ADRs/0013-experimentation-platform.md) — layering, dependency rule, and Module lifecycle; delivered by [Epic #438](https://github.com/phynics/Gnostic/issues/438) (P0–P8). Amended by ADR 0017: Modules are outer (host) or inner (harness agent).
 15. [ADR 0016 — Ouroboros and Akasha executor placement](ADRs/0016-ouroboros-akasha-executor-placement.md) — both experiments are Modules; ACP is excluded; no backend kind is promoted. Placement only: no implementation has started. Amended by ADR 0017: both are parked as inner modules of the Gnostic harness agent.
-16. [ADR 0017 — ACP-first host, the Gnostic harness agent, and the PositronicKit firewall](ADRs/0017-acp-first-host-and-harness-agent.md) — every Ascendant Backend is an ACP agent; Gnostic owns the Timeline record; Workspaces reach agents through the Gnostic gateway; subagents are child Timelines; Modules are outer or inner; only harness-agent targets may reach PositronicKit. Direction decision; delivery is tracked by [Epic #602](https://github.com/phynics/Gnostic/issues/602).
-
-## Proposed decisions
-
-- [ADR 0018 — Gnostic primitives after the ACP pivot: Agent, Runtime, spans, and ACP-native Turns](ADRs/0018-gnostic-primitives-after-the-acp-pivot.md) — **Proposed.** One Gnostic-owned Agent replaces the Ascendant, and the ACP program becomes its Runtime. A Timeline is a sequence of spans. Turns carry ACP payloads in a Gnostic envelope. Axoloty is the discovery and routing fabric. Workspaces are delivered as session roots (opt-in) or gateway tools. On acceptance it amends ADRs 0001, 0011, and 0017. Open questions are on [#626](https://github.com/phynics/Gnostic/issues/626).
+16. [ADR 0017 — ACP-first host, the Gnostic harness agent, and the PositronicKit firewall](ADRs/0017-acp-first-host-and-harness-agent.md) — every Ascendant Backend is an ACP agent; Gnostic owns the Timeline record; Workspaces reach agents through the Gnostic gateway; subagents are child Timelines; Modules are outer or inner; only harness-agent targets may reach PositronicKit. Direction decision; delivery is tracked by [Epic #602](https://github.com/phynics/Gnostic/issues/602). Amended by ADR 0018 (Agent and Runtime, ACP payloads in the record, opt-in roots).
+17. [ADR 0018 — Gnostic primitives after the ACP pivot: Agent, Runtime, spans, and ACP-native Turns](ADRs/0018-gnostic-primitives-after-the-acp-pivot.md) — one Gnostic-owned Agent replaces the Ascendant, and the ACP program becomes its Runtime. A Timeline is a sequence of spans. Turns carry ACP payloads in a Gnostic envelope under a new `protocolMajor`. Axoloty is the discovery and routing fabric. Workspaces are delivered as opt-in session roots or as gateway tools. It amends ADRs 0001, 0011, and 0017. Delivery: [#629](https://github.com/phynics/Gnostic/issues/629) and the [Epic #602](https://github.com/phynics/Gnostic/issues/602) children.
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
