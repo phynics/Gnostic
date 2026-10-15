@@ -3,9 +3,9 @@
 ## Status
 
 > **Proposed amendment (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)
-> would supersede §1 and §2 (no Agent primitive), §6 (Workspaces delivered
-> through the gateway with a scratch Project first), and §7 (no Gnostic
-> capabilities), and would amend §3, §4, and §5.
+> would supersede the Agent parts of §1 and §2 (no Agent primitive) and §7
+> (no Gnostic capabilities), and would amend §3, §4, §5, §6 (a scratch Project
+> with gateway Workspaces first), Q3, Q14, and the invariants.
 
 **Accepted** (2026-10-15). The owner accepted the recommended answer to every
 open question (Q1–Q14), and then made two further decisions the same day:
