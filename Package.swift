@@ -170,6 +170,13 @@ let package = Package(
             path: "Tests/Support/GnosticAscendantConformance"
         ),
         .target(
+            name: "GnosticWorkspaceTestSupport",
+            dependencies: [
+                "GnosticCore",
+            ],
+            path: "Tests/Support/GnosticWorkspaceTestSupport"
+        ),
+        .target(
             name: "GnosticRLMProcessWorker",
             dependencies: [
                 "GnosticRLM",
@@ -259,6 +266,7 @@ let package = Package(
                 "GnosticClient",
                 "GnosticCore",
                 "GnosticPositronicBackend",
+                "GnosticWorkspaceTestSupport",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
                 .product(name: "PositronicKit", package: "PositronicKit"),
@@ -271,7 +279,10 @@ let package = Package(
             dependencies: [
                 "GnosticClient",
                 "GnosticCore",
+                "GnosticPositronicBackend",
+                "GnosticWorkspaceTestSupport",
                 .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .testTarget(

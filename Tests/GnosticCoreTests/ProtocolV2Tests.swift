@@ -3,6 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticCore
+import GnosticWorkspaceTestSupport
 import Testing
 
 @Suite("Gnostic protocol v2 contract")

@@ -269,6 +269,13 @@ dependency changes. Consumers that reached the facade through
 `import GnosticCore` now add `import GnosticClient`;
 `Documentation/Compatibility/0.5.0.md` records the migration.
 
+The consumers' facade regression suites live in `GnosticClientTests` (#565).
+That test target links `GnosticPositronicBackend` and `PKContracts` only as
+serve-side broker fixtures, not as production dependencies. Broker-free
+workspace fixtures shared by `GnosticCoreTests` and `GnosticClientTests` live in
+the test-only `GnosticWorkspaceTestSupport` target. The `GnosticClient`
+production target stays backend-free.
+
 ### Fitness check
 
 `GnosticClientTests.ClientArchitectureFitnessTests` pins the move: the consumer
