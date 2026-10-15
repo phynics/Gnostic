@@ -328,7 +328,9 @@ resolution evidence:
   Gnostic Timeline store) no longer apply to the host. D2 moves to the harness
   agent's own session store
   ([#610](https://github.com/phynics/Gnostic/issues/610), which supersedes #550).
-  The owner re-sequences #551.
+  Owner decision D10 (2026-10-15, recorded on #551): **0.5.0 waits for this
+  pivot.** The first stable surface ships after #602 is complete, without the
+  in-process backends, with the harness agent on PositronicKit 7.0.
 - **Operators of `acp-client` Ascendants gain Gnostic Workspaces** through the
   gateway.
 - **The Timeline record writes conversation content to disk** when the state
