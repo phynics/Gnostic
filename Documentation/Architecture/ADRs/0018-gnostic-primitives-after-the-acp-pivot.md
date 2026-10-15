@@ -18,6 +18,18 @@ manifest shape while it is Proposed. The owner decides the
 [open questions](#open-questions) first. On acceptance:
 
 - `CONTEXT.md` is revised as described in [Glossary changes on acceptance](#glossary-changes-on-acceptance);
+- the records it amends receive status notes. On acceptance, it amends:
+  - [ADR 0001](0001-axoloty-native-multi-backend-host.md): "Axoloty-native"
+    narrows to discovery and routing (§5);
+  - [ADR 0011](0011-external-acp-backends.md): the Ascendant Backend becomes
+    the Runtime (§1);
+  - [ADR 0017](0017-acp-first-host-and-harness-agent.md) in several places:
+    - §2: the Timeline record stores ACP payloads as received, not normalized
+      updates (§4);
+    - §3 and its Workspace invariant: root delivery is an owner-decided
+      exception (§6, Q12);
+    - §4: a child Timeline records its operating Agent;
+    - §5 and §6: the Agent definition and the Regime merge (§1);
 - each affected child issue of #602 takes the decision into its scope.
 
 ## Context
@@ -41,9 +53,10 @@ PositronicKit era. Several of them no longer describe what Gnostic does:
   property of a span of a Timeline, not of the whole Timeline.
 - **A Turn is converted twice and loses content.** `AscendantBackendTurnRequest.message`
   is a `String`, and the advertised capability is
-  `me.atkn.gnostic.capability.turn.text`. `AscendantTurnUpdateKind` has twelve
-  kinds: assistant text and snapshot, tool call and state, permission,
-  completion, cancellation, error, and four statuses. ACP has typed content
+  `me.atkn.gnostic.capability.turn.text`. `AscendantTurnUpdateKind` has eight
+  kinds (assistant text and snapshot, tool call, tool state, permission state,
+  completion, cancellation, error), plus separate tool and permission status
+  vocabularies. ACP has typed content
   blocks (text, image, audio, resource, resource link) and session updates
   (message and thought chunks, tool calls with content and diffs, plans, usage,
   session information, and others). An ACP-to-ACP Turn through Gnostic is
@@ -76,15 +89,18 @@ Two concepts remain after the pivot, but only one needs identity.
 
   Clients discover it on the network and address Turns to it, and Regimes are
   compared across it. Its UUID is Gnostic identity. The Agent definition **is**
-  its Regime, so there is one configuration object, not two.
+  its Regime, so there is one configuration object, not two. Changing the
+  Runtime makes a different Regime, and therefore a different Agent.
 - **Runtime (value, not identity).** The ACP program an Agent runs on: Claude
   Agent, Codex, opencode, or the Gnostic harness agent. It is identified by its
   launch specification or an ACP registry identifier. Gnostic records the name
   and version the program reports. One Runtime can back many Agents (a reviewer
-  and a researcher on Claude Agent), and one Agent configuration can be compared
-  across Runtimes (#614).
-- **Session (external state).** One ACP session of a Runtime. It serves one span
-  of one Timeline (section 3). It is backend-private state, as in ADR 0011.
+  and a researcher on Claude Agent). A cross-Runtime comparison (#614) compares
+  two Agents whose definitions differ only in their Runtime. The Run record
+  names both Agents and the one field that differs.
+- **Session (external state).** One ACP session of a Runtime. It serves one or
+  more spans of one Timeline (section 3); a `resumed` or `loaded` span reuses an
+  earlier Session. It is backend-private state, as in ADR 0011.
   Gnostic records it but never treats it as identity.
 
 An Agent has **no memory and no Timelines of its own**:
@@ -107,6 +123,12 @@ most agent tools use (a name, instructions, a model, tools).
   agent" is used only when talking about the protocol's roles. This keeps the
   one collision (ACP calls the program "the Agent") out of Gnostic's own terms.
 - The ACP frontend's "profiles" become Agents.
+- **Code naming rule.** Gnostic is itself an ACP agent to editors (`gnostic acp`)
+  while it routes Turns to Gnostic Agents. In code:
+  - types for that protocol role keep the ACP SDK's names, or carry an `ACP`
+    prefix (for example `ACPAgentConnection`);
+  - Gnostic-owned types use `GnosticAgent…` wherever the bare name `Agent` would
+    be ambiguous.
 
 The bounded legacy Agent rule is replaced by these definitions.
 
@@ -116,7 +138,7 @@ A **span** is the stretch of a Timeline served by one Session of one Agent.
 Each span records:
 
 - its Agent;
-- its Runtime and Session;
+- its Runtime and Session (a new Session, or a reused one);
 - the first and last Turn;
 - how it began: `new`, `resumed`, `loaded`, `seeded` (with its strategy and
   what was lost), or `forked`.
@@ -149,15 +171,40 @@ A Gnostic Turn is a Gnostic **envelope** around ACP **payloads**.
 
   These travel verbatim, tagged with the ACP protocol version, and are never
   reduced to a Gnostic taxonomy.
-- **Gnostic interprets only what it needs.** That is the terminal outcome, the
-  tool-call identifiers for permission correlation, and usage for metering. It
-  passes the rest through.
+- **Gnostic interprets only what it needs:**
+  - the terminal outcome;
+  - tool-call identifiers, for permission correlation;
+  - usage numbers, for metering;
+  - assistant message chunks, only to build the assistant-text snapshot that the
+    Turn event log's compaction keeps (ADR 0014).
+
+  It passes the rest through. Update kinds it does not know are forwarded and
+  recorded unchanged, never rejected. This is the forward-compatibility rule.
+- **Permission is a request and reply, not an update.** ACP's
+  `session/request_permission` expects an answer. The envelope carries it as a
+  correlated permission request to the Turn's client, holding the ACP tool call
+  and options, and a correlated reply.
+  - This reuses the existing permission correlation (ADR 0011 mediation;
+    `AscendantPermissionCoordinator`).
+  - A timeout, a lost connection, or a Node failure answers the Runtime with a
+    cancelled outcome. Gnostic records it as `unavailable`, not as a denial.
+  - Replaying a Turn returns the recorded decision and never prompts again.
+- **Replay identity.** The `clientTurnID` conflict check hashes the canonical
+  form of the prompt payload: JSON Canonicalization Scheme (RFC 8785) over the
+  content blocks, plus the ACP version tag. Retries that differ only in key
+  order therefore still match.
+- **Size.** Until Q6 is decided, a Turn whose payload exceeds the Axoloty event
+  budget or the journal bound is rejected with an explicit failure code, as
+  oversize prompts already are. It is never truncated or dropped.
+- **Payload-free diagnostics stay payload-free.** Diagnostics, metering, and the
+  console read only envelope fields and usage numbers. They never read tool-call
+  titles, `rawInput`, paths, or any content block.
 - **For text-only consumers,** `GnosticClient` offers a projection helper (for
   example, assistant text only). The projection is a client convenience, not
   the wire format.
 - **This changes the wire contract.** It needs a new `protocolMajor` (ADR 0003)
   and lands inside the 0.5.0 line, before the stable surface is declared
-  (decision D10 on #551). The twelve-kind `AscendantTurnUpdateKind` taxonomy and
+  (decision D10 on #551). The eight-kind `AscendantTurnUpdateKind` taxonomy (with its status vocabularies) and
   the `turn.text` capability are retired at that major.
 
 ### 5. Axoloty is the discovery and routing fabric
@@ -189,11 +236,24 @@ A Workspace states which delivery forms it supports:
   (ADR 0017 §3). This is the form for remote Workspaces and for capability
   Workspaces that are not filesystems.
 
+**Root delivery bypasses Gnostic mediation, so it is opt-in (pending Q12).**
+ADR 0017 makes it an invariant that every Workspace tool call crosses Gnostic's
+effective-status and permission checks. A root breaks that invariant: the
+Runtime's native tools reach the directory directly, and only the Runtime's own
+permission prompts (forwarded through ACP) stand in the way. So:
+
+- a Workspace is delivered as a root only when its attachment explicitly allows
+  it;
+- a Workspace that is `unavailable` or attached read-only is never delivered as
+  a root;
+- the Timeline record states which Workspaces were roots for each span.
+
 **Effective status** is reported per delivery form: `available`, `unavailable`,
 or `unsupported`. For example, a local repository can be `available` as a root
-and `unsupported` as tools. Changing roots mid-session needs an agent session
-Session resume with the new root list, because ACP requires the client to resend the
-full list on resume or load.
+and `unsupported` as tools. Changing roots mid-session needs a Session resume
+with the new root list, because ACP requires the client to resend the full list
+on resume or load. When the Runtime supports neither resume nor load, changing
+roots opens a new seeded span.
 
 Q9 decides what `cwd` is when no root Workspace is attached.
 
@@ -218,6 +278,11 @@ that #566 started and #611 finishes.
 - Gnostic does not re-encode ACP payloads into its own taxonomy. It reads only
   the fields its envelope duties need.
 - Axoloty carries no Gnostic-defined tool or conversation semantics.
+- Every gateway-delivered Workspace call crosses Gnostic's effective-status and
+  permission checks (ADR 0017). A root-delivered Workspace is the single,
+  explicit exception: opt-in per attachment, never `unavailable` or read-only,
+  and recorded per span (Q12).
+- Diagnostics and metering never read Turn payload content.
 
 ## Rejected alternatives
 
@@ -273,6 +338,9 @@ If accepted:
   records keep the old term. The ACP frontend's profiles are Agents.
 - **The Timeline record (#605) stores ACP payloads as received.** The record and
   the wire carry the same objects, so replay and inspection need no conversion.
+  The record is a separate store from the Turn event log. The Turn event log
+  keeps ADR 0014's guarantee: a prompt digest, never prompt content. Content at
+  rest lives only in the opt-in record (Q14).
 - **The gateway's scope narrows (#606)** to non-root Workspaces and the network
   tools.
 - **Seeding and switching agents (#613) open new spans.** The record shows every
@@ -300,7 +368,7 @@ If accepted:
   - Ascendant (use Agent);
   - Ascendant private Timeline and default Timeline;
   - `operatingAscendantID`;
-  - the twelve-kind Turn update taxonomy;
+  - the eight-kind Turn update taxonomy and its status vocabularies;
   - the `turn.text` capability;
   - Ascendant Backend as a pluggable contract (use Runtime);
   - the bounded legacy Agent rule;
@@ -344,10 +412,25 @@ question.
   root Workspace required to start a session? *Recommendation:* a per-Timeline
   scratch directory, reported as such in the record.
 - **Q10 — Runtime identity.** Identify Runtimes by ACP registry ID when one exists,
-  falling back to a launch-spec fingerprint? *Recommendation:* yes.
+  falling back to a launch-spec fingerprint? *Recommendation:* yes. The fingerprint covers the command, arguments, and the names of the environment variables, never their values or any secret.
 - **Q11 — Delivery order.** Land the envelope change (section 4) before or after
   the Timeline record (#605)? *Recommendation:* the envelope first, so the record
   stores ACP payloads from day one.
+
+- **Q12 — Root delivery and mediation.** Allow root delivery at all, given that
+  the Runtime's native tools then reach the directory without Gnostic's
+  effective-status and permission checks (§6)? *Recommendation:* yes, opt-in per
+  attachment, with the limits in §6. A local repository served only as gateway
+  tools is a much worse coding experience than the Runtime's own tools.
+- **Q13 — Replay hash basis.** Confirm RFC 8785 canonical JSON of the prompt
+  content blocks plus the ACP version tag as the `clientTurnID` conflict basis
+  (§4). *Recommendation:* confirm.
+- **Q14 — Content at rest.** Confirm the split: the Turn event log stays
+  digest-only (ADR 0014), and only the opt-in Timeline record stores ACP payload
+  content. *Recommendation:* confirm.
+
+Q1, Q4, and Q7 are recommendations that the body already assumes. Answering
+"no" to any of them reopens the matching section (§1–2, §3, §5).
 
 ## Fitness check
 
@@ -367,7 +450,7 @@ acceptance, the delivering issues add fitness tests that enforce the decision:
   an agent fleet uses it.
 - ACP standardizes a durable client turn identifier that can replace
   `clientTurnID`.
-- A real use case needs concurrent agent sessions on one Timeline.
+- A real use case needs concurrent Sessions on one Timeline.
 - The Agent and Runtime terms confuse users in practice (Q1).
 
 ## Links

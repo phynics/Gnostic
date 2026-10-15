@@ -28,7 +28,7 @@ whether its decision is delivered or remains a target.
 
 ## Proposed decisions
 
-- [ADR 0018 — Gnostic primitives after the ACP pivot: Agent, Runtime, spans, and ACP-native Turns](ADRs/0018-gnostic-primitives-after-the-acp-pivot.md) — **Proposed.** One Gnostic-owned Agent replaces the Ascendant, and the ACP program becomes its Runtime. A Timeline is a sequence of spans. Turns carry ACP payloads in a Gnostic envelope. Axoloty is the discovery and routing fabric. Workspaces are delivered as session roots or gateway tools. Open questions are on [#626](https://github.com/phynics/Gnostic/issues/626).
+- [ADR 0018 — Gnostic primitives after the ACP pivot: Agent, Runtime, spans, and ACP-native Turns](ADRs/0018-gnostic-primitives-after-the-acp-pivot.md) — **Proposed.** One Gnostic-owned Agent replaces the Ascendant, and the ACP program becomes its Runtime. A Timeline is a sequence of spans. Turns carry ACP payloads in a Gnostic envelope. Axoloty is the discovery and routing fabric. Workspaces are delivered as session roots (opt-in) or gateway tools. On acceptance it amends ADRs 0001, 0011, and 0017. Open questions are on [#626](https://github.com/phynics/Gnostic/issues/626).
 
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
