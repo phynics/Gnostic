@@ -2,6 +2,8 @@
 
 ## Status
 
+**Amended by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** The verdicts stand, but the Positronic host moves into the Gnostic harness agent. Ouroboros keeps the detached direct-turn path there. Akasha's dispatcher moves from the host into the harness agent, because the host no longer invokes models. This record's exclusion of ACP concerns third-party agents; for the harness agent, ACP is only the transport. Both experiments are collapsed into design references ([#616](https://github.com/phynics/Gnostic/issues/616), [#617](https://github.com/phynics/Gnostic/issues/617)) and parked.
+
 Accepted (2026-10-11). Owning issue:
 [GNO-OURO-001 #465](https://github.com/phynics/Gnostic/issues/465), with
 [Epic #464](https://github.com/phynics/Gnostic/issues/464) (Ouroboros) and

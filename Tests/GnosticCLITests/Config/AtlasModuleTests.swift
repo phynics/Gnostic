@@ -39,10 +39,11 @@ struct AtlasModuleTests {
         #expect(registryID == "GNO-MOD-ATLAS")
         #expect(entry["runnable"] as? Bool == true)
         // The registry entry must name the open issue that owns the module's
-        // lifecycle. The umbrella epic #438 closed with P0–P8, so ownership
-        // moved to the module owner issue #553 (#554). `make docs-check`
-        // enforces the same open-owner rule when a token reaches the GitHub API.
-        #expect((entry["owningIssue"] as? String)?.contains("/553") == true)
+        // lifecycle. ADR 0017 parked Atlas as an inner module and moved
+        // ownership from #553 to its design reference #619 (#603). `make
+        // docs-check` enforces the same open-owner rule when a token reaches
+        // the GitHub API.
+        #expect((entry["owningIssue"] as? String)?.contains("/619") == true)
     }
 
     @Test("an Ascendant that selects atlas installs its contribution and one recorder")
