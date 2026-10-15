@@ -3,6 +3,8 @@
 This record satisfies GNO-ACPC-001 for the external ACP backend prototype. It
 is an evaluation record, not a public Gnostic protocol contract.
 
+> **Amended by [ADR 0019](ADRs/0019-acp-v2-protocol-baseline.md) (2026-10-15).** ACP v2 is Gnostic's protocol baseline. `aptove/swift-sdk` speaks only ACP v1 (`ProtocolVersion.current = 1`), so it is replaced by a Gnostic-owned ACP v2 wire model (#572). The evaluation below is historical.
+
 ## Outcome
 
 **PROTOTYPE** — use `aptove/swift-sdk` at the exact released tag `v0.1.16`.

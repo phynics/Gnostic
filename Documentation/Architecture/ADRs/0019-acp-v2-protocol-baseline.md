@@ -2,8 +2,10 @@
 
 ## Status
 
-**Accepted** (2026-10-15), with one open owner question:
-[T1, the transition for v1-only peers](#t1--peers-that-speak-only-acp-v1).
+**Accepted** (2026-10-15), with three open owner questions:
+[T1 (v1-only peers)](#t1--peers-that-speak-only-acp-v1),
+[T2 (releasing on a v2 preview)](#t2--releasing-on-a-v2-preview), and
+[T3 (unanswered permission requests)](#t3--unanswered-permission-requests).
 Owning issue: [GNO-ACPF-018 #633](https://github.com/phynics/Gnostic/issues/633),
 under [Epic #602](https://github.com/phynics/Gnostic/issues/602). Checked by the
 [Epic #140](https://github.com/phynics/Gnostic/issues/140) and
@@ -13,9 +15,10 @@ gates.
 The owner's direction is "assume ACP v2". The decision was first recorded as
 question Q16 inside
 [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md). An independent
-review then advised a separate record, because it reverses ADR 0018's
-convert-at-the-edge answer (Q5), replaces ADR 0011's SDK selection, and has
-triggers of its own.
+review then advised a separate record. It narrows ADR 0018's
+convert-at-the-edge answer (Q5) to "one v2 model; conversion only in an edge
+adapter (T1)", it replaces ADR 0011's SDK selection, and it has triggers of its
+own.
 
 This record amends:
 
@@ -25,7 +28,8 @@ This record amends:
 - [ADR 0017](0017-acp-first-host-and-harness-agent.md): wherever it names
   `session/load`, read `session/resume`, optionally with `replayFrom`;
 - [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md): §4's payloads
-  are ACP v2 as specified here, and Q5's version tag serves a future major.
+  are ACP v2 as specified here. Q5's version tag records the v2 revision now,
+  and a future major later.
 
 It changes no code by itself. Delivery: #572 (wire model), #629 (Turn
 envelope), #605 (record), #606 (MCP transports), #631 (Runtime probes), and
@@ -33,7 +37,9 @@ envelope), #605 (record), #606 (MCP transports), #631 (Runtime probes), and
 
 ## Context
 
-Facts on agent-client-protocol `main`, as of 2026-10-15:
+Facts on agent-client-protocol `main`, as of 2026-10-15. These come from the
+v2 RFDs and the draft v2 protocol pages (`docs/protocol/v2/`, including
+`cancellation` and `prompt-lifecycle`):
 
 - **The v2 RFDs are in the Active stage.** The v2 overview asks that v2 ship
   opt-in, off by default, and clearly labeled unstable, and not run in
@@ -49,12 +55,30 @@ Facts on agent-client-protocol `main`, as of 2026-10-15:
     stop reason.
   - An agent may send session updates at any time, not only during a prompt.
   - Cancellation before insertion is `$/cancel_request` (answered with
-    -32800). After insertion it is `session/cancel`.
+    -32800). After insertion it is `session/cancel`. `$/cancel_request` has no
+    capability marker, and a receiver may ignore it.
+  - **A lost `session/prompt` response is ambiguous.** Replay cannot reliably
+    tie a message to an uncertain submission. Clients must not guess from
+    content or order, and must not assume a retry cannot create a second
+    submission.
+  - The user-message update and the prompt response describe one insertion,
+    and **clients must tolerate the update arriving before or after the
+    response**.
+  - Synchronizing the current state on resume is an unresolved follow-up.
 - **The session baseline** (`v2/required-session-methods.mdx`): an agent that
   advertises `session` supports `session/list`, `session/resume`, and
   `session/close`. `session/load` is gone; `session/resume` takes an optional
-  `replayFrom` cursor (`v2/session-resume-replay.mdx`). `session.mcp`
-  advertises MCP transports, and `session.additionalDirectories` is optional.
+  `replayFrom` cursor (`v2/session-resume-replay.mdx`). A full replay should
+  *rebuild* message history rather than merge it by ID, because agent and
+  thought message IDs need not be stable across replays. User-message IDs are
+  stable for retained messages. `session.mcp` advertises MCP transports, and
+  `session.additionalDirectories` is optional. An agent that omits
+  `capabilities.session` offers no `session/new` or `session/prompt`. It is
+  not a conversational agent.
+- **Permission outcomes.** `permission-requests.mdx` defines no new outcomes.
+  The `cancelled` outcome is what a client answers when it sends
+  `session/cancel` (`protocol/v2/cancellation`). An executing party may also
+  cancel a request internally and answer it with error -32800.
 - **Updates.**
   - Messages are upserts and chunks keyed by `messageId`. A whole-message
     update replaces what was accumulated.
@@ -86,32 +110,37 @@ reinterpretation.
 ### 2. Admission, insertion, and completion
 
 - **Serialization.** Gnostic admits Turns per Timeline, as today. It sends
-  `session/prompt` for an admitted Turn only when the Session's last reported
-  state is `idle`, or when no state has been reported since the Session started
-  or resumed. If the Runtime is `running` work it started itself, the admitted
-  Turn waits in Gnostic's queue. Gnostic does not rely on queueing inside the
-  Runtime, because the RFD leaves queueing unspecified.
-- **Insertion.** A Turn is *inserted* when `session/prompt` returns a
-  `messageId`. Gnostic records it as a strong Runtime ref. An error response
-  means not inserted: the Turn fails with that error's code and is never resent
-  automatically.
-- **At most once.** Each admitted Turn sends at most one `session/prompt`. If
-  the response is lost (connection or Node failure), Gnostic resumes the
-  Session with replay. It then looks for the user message it sent, identified by
-  the prompt digest (ADR 0018 Q13), among the messages after the last known
-  `messageId`.
-  - If found, Gnostic binds that `messageId` and continues.
-  - If not found, the Turn ends `insertionUnknown` and is never resent.
-
-  A `clientTurnID` retry returns the recorded outcome. A Gnostic Turn is
-  *admitted* once and *inserted* at most once.
-- **Completion.** The first `idle` `state_update` after insertion ends the
-  Turn. `stopReason` maps to the terminal outcome. An omitted stop reason maps
-  to `endedUnspecified`, which is neither success nor failure.
-  `requires_action` keeps the Turn open.
-- **Attribution.** Updates between insertion and the idle that ends the Turn
-  belong to that Turn. All other updates belong to the Timeline's open span,
-  outside any Turn (section 3).
+  `session/prompt` for an admitted Turn only after it has observed `idle` for
+  the Session. Right after a resume, the current state is unknown (the RFD
+  leaves resume-state synchronization open). Gnostic then waits for a reported
+  state, or for a Node-configured quiet period with no updates, and records
+  that it assumed `idle`. If the Runtime is `running` work it started itself,
+  the admitted Turn waits in Gnostic's queue. Gnostic does not rely on queueing
+  inside the Runtime, which the RFD leaves unspecified.
+- **Pending attribution.** From the moment Gnostic sends `session/prompt`, the
+  Turn is *pending insertion*, and every update belongs to it. Only one Turn
+  per Session can be pending, so the user-message update may arrive before or
+  after the response, as the RFD requires clients to tolerate.
+  - A successful response binds the Turn to its `messageId`. Gnostic records it
+    as a strong Runtime ref and reconciles it with an already received
+    user-message update instead of creating a second message.
+  - An error response means not inserted. The Turn fails with that error's
+    code, is never resent automatically, and its pending updates move to the
+    open span.
+- **At most once, and no guessing.** Each admitted Turn sends at most one
+  `session/prompt`. If the response is lost (connection or Node failure), the
+  outcome is ambiguous, and the RFD forbids guessing from content or order.
+  The Turn ends **`insertionUnknown`**. Gnostic never resends it and never
+  binds a replayed message to it. A `clientTurnID` retry returns the recorded
+  outcome. A Gnostic Turn is *admitted* once and *inserted* at most once.
+- **Completion.** The Turn ends at the first `idle` reported after the prompt
+  was sent, once insertion is confirmed. If `idle` arrives before the response,
+  the Turn ends when the success response arrives. `stopReason` maps to the
+  terminal outcome. An omitted stop reason maps to `endedUnspecified`, which is
+  neither success nor failure. `requires_action` keeps the Turn open.
+- **Attribution after completion.** Every update that arrives while no Turn is
+  pending or open belongs to the Timeline's open span, outside any Turn
+  (section 3).
 
 ### 3. Updates outside a Turn
 
@@ -122,8 +151,11 @@ reinterpretation.
   a reconnecting subscriber instead of implying that nothing happened.
 - They never reopen or extend a finished Turn.
 - History that `session/resume` replays arrives before the resume response, so
-  Gnostic treats it as replay. It reconciles that history with the record by
-  `messageId` and `toolCallId`, and never records it a second time.
+  Gnostic treats it as replay, never as new activity. A full replay is stored
+  as a **replay snapshot** of the span's Runtime-side history, which the RFD
+  says to rebuild rather than merge by ID. It is never merged into recorded
+  Turns. Only user messages are matched, by their stable `messageId`, to link
+  the snapshot to recorded Turns.
 
 ### 4. Permission requests
 
@@ -131,23 +163,34 @@ reinterpretation.
   ADR 0018 §4.
 - **Outside a Turn,** it goes to the Timeline's subscribed clients.
 - **No answer.** If no client answers within a Node-configured bound, or none
-  is subscribed, Gnostic replies with the cancelled outcome and records the
-  request as `unavailable`. A Runtime never waits forever in `requires_action`
-  on Gnostic.
+  is subscribed, Gnostic answers the request without waiting forever, and
+  records it as `unavailable`, never as a denial. The wire answer is owner
+  question [T3](#t3--unanswered-permission-requests). `cancelled` alone is
+  not used, because v2 ties that outcome to `session/cancel`.
 - **Shape.** Gnostic passes the v2 `title`, `subject`, and option IDs through
   unchanged.
 
 ### 5. Cancellation
 
-A Gnostic Turn cancel maps to `$/cancel_request` before insertion, when the
-Runtime supports it. Otherwise Gnostic waits for insertion and then cancels
-with `session/cancel`. After insertion it is always `session/cancel`. The Turn
-then ends on the next `idle`.
+Gnostic cannot know in advance whether a Runtime honours `$/cancel_request`,
+or whether insertion has already happened. So a Gnostic Turn cancel works like
+this:
+
+- **While pending insertion,** send `$/cancel_request` for the prompt.
+  - If the response is error -32800, the Turn ends `cancelled`, not inserted.
+  - If the response is a success (inserted anyway), follow it with
+    `session/cancel`.
+- **After insertion,** send `session/cancel`, and answer any pending permission
+  requests with `cancelled`, as the cancellation page requires.
+
+In both cases the Turn ends on the next `idle`.
 
 ### 6. MCP transports and roots
 
 - **MCP transports.** The gateway (#606) picks its transport from what the
-  Runtime advertises in `session.mcp`: MCP-over-ACP, then HTTP, then stdio. It
+  Runtime advertises in `session.mcp`: MCP-over-ACP, then HTTP, then stdio.
+  MCP-over-ACP is a separate draft RFD, not part of the v2 set. Gnostic uses it
+  only when advertised. It
   uses the v2 `McpServer` form with its `type` discriminator.
 - **Roots.** Workspaces beyond the primary root become roots only when the
   Runtime advertises `session.additionalDirectories`. Otherwise they are served
@@ -156,9 +199,11 @@ then ends on the next `idle`.
 
 ### 7. The session baseline
 
-A Runtime instance (#631) that advertises `session` gets resumable spans. One
-that does not is still usable: every continuation becomes a seeded span
-(ADR 0018 §3), and its capabilities say so.
+A Runtime instance (#631) must advertise `capabilities.session`. Without it, a
+v2 agent offers no `session/new` or `session/prompt`, so it is not a
+conversational Runtime, and Gnostic reports it unsupported. With it, resume is
+baseline. A span is seeded (ADR 0018 §3) only when a resume fails, when the
+Agent switches, or for a v1 peer through the edge adapter (T1 (b)).
 
 ### 8. A Gnostic-owned v2 wire model
 
@@ -193,18 +238,59 @@ Gnostic cannot reach them. The options:
   envelope, and the record never see v1. Each v1 peer the adapter serves is
   listed with a removal condition: that peer ships v2.
 
+  **Cost.** v1 has no insertion event: its prompt response arrives at the end
+  of the turn. The adapter must therefore synthesize the insertion point and a
+  `messageId`, recorded as a *weak* ref. For v1 peers, at-most-once holds only
+  up to Gnostic's send, and any lost response ends `insertionUnknown`. The
+  adapter also translates `session/load` to resume-with-replay, and the v1
+  update shapes to v2.
+
 *Recommendation:* **(b)**. It keeps the v2 model pure, which is what the
-"assume v2" direction protects, and it lets Gnostic run against today's peers.
-The adapter is deleted peer by peer. Until the owner decides, development
-targets the v2 model, and T1 gates only real-Runtime acceptance and the 0.5.0
-release.
+"assume v2" direction protects, and it lets Gnostic run against today's peers,
+with the weaker guarantees stated above. The adapter is deleted peer by peer.
+Until the owner decides, development targets the v2 model, and T1 gates only
+real-Runtime acceptance and the 0.5.0 release.
+
+### T2 — Releasing on a v2 preview
+
+The v2 overview asks that v2 not run in production without feature flags
+before a more stable release. 0.5.0 is meant to be the first stable Gnostic
+line (#551). The options:
+
+- **(a)** Ship 0.5.0 with ACP labeled *v2 preview*, behind an explicit opt-in
+  flag, with the compatibility declaration saying the ACP surface is not
+  covered by the 0.5.x stability promise.
+- **(b)** Hold 0.5.0 until ACP v2 is declared stable.
+- **(c)** Ship 0.5.0 stable on the v1 edge adapter only (T1 (b)), with v2
+  preview opt-in.
+
+*Recommendation:* **(a)**. The Gnostic surfaces that 0.5.0 promises (Agent,
+Timeline, Workspace, the Turn envelope) stay stable, and the ACP payload
+revision is explicitly preview.
+
+### T3 — Unanswered permission requests
+
+When no client answers within the bound, how does Gnostic answer the Runtime?
+
+- **(a)** An internal cancellation of that request: error -32800, which the
+  cancellation page allows the executing party to send. The Turn continues, and
+  the Runtime decides what to do without a decision.
+- **(b)** Select the request's reject option, if offered. This is a denial on
+  the user's behalf, which ADR 0011's mediation rule treats as different from
+  "unavailable".
+- **(c)** Reply `cancelled` and send `session/cancel`, which stops the Turn.
+
+*Recommendation:* **(a)**. It reports "nobody answered" without inventing a
+denial or stopping the work, and it matches recording the request as
+`unavailable`.
 
 ## Invariant
 
 - Gnostic's core, envelope, record, and gateway use only the ACP v2 model.
-- Each admitted Turn is inserted at most once.
-- A Turn ends only on an `idle` after its insertion. Updates outside a Turn
-  never change a Turn's outcome.
+- Each admitted Turn is inserted at most once, and a lost prompt response is
+  never resolved by guessing.
+- A Turn ends only on an `idle` after its prompt was sent, once insertion is
+  confirmed. Updates outside a Turn never change a Turn's outcome.
 - A permission request always gets an answer from Gnostic, never an indefinite
   wait.
 
@@ -231,21 +317,27 @@ release.
 - **#631 probes report v1-only Runtimes explicitly.** Under (a) they are
   unsupported, and under (b) they are served by the edge adapter.
 - **The Turn ledger gains** the `insertionUnknown` and `endedUnspecified`
-  outcomes.
+  outcomes. A lost prompt response is visible to the user rather than silently
+  retried.
 
 ## Fitness check
 
 - `make docs-check` validates this record.
-- The delivering issues add tests: no v1 type outside the edge adapter target
-  (if T1 (b) is chosen); one `session/prompt` per admitted Turn under a dropped
-  response (#632 scenario); and Turn end only on `idle` after insertion.
+- The delivering issues add tests:
+  - no v1 type outside the edge adapter target (if T1 (b) is chosen);
+  - one `session/prompt` per admitted Turn, and `insertionUnknown` under a
+    dropped response (a #632 scenario);
+  - correct attribution when the user-message update and `idle` arrive before
+    the prompt response;
+  - a success response after `$/cancel_request` followed by `session/cancel`.
 
 ## Reconsideration triggers
 
 - The v2 RFDs change incompatibly, or ACP v2 is declared stable.
 - An important peer stays on v1 with no v2 plan (revisit T1).
-- ACP specifies queueing, a durable client turn identifier, or a lost-response
-  recovery rule for `session/prompt`.
+- ACP specifies queueing, a client-generated correlation token for prompts
+  (which would replace `insertionUnknown` with real recovery), or
+  current-state synchronization on resume.
 
 ## Links
 
