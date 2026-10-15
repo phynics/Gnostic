@@ -2,10 +2,10 @@
 
 ## Status
 
-**Accepted** (2026-10-15), with three open owner questions:
-[T1 (v1-only peers)](#t1--peers-that-speak-only-acp-v1),
-[T2 (releasing on a v2 preview)](#t2--releasing-on-a-v2-preview), and
-[T3 (unanswered permission requests)](#t3--unanswered-permission-requests).
+**Accepted** (2026-10-15). The owner also decided its three questions the same
+day; see [Owner decisions](#owner-decisions). In short: **no ACP v1 support at
+all** (T1), 0.5.0 ships ACP as an opt-in **v2 preview** (T2), and an unanswered
+permission request is answered with error **-32800** (T3).
 Owning issue: [GNO-ACPF-018 #633](https://github.com/phynics/Gnostic/issues/633),
 under [Epic #602](https://github.com/phynics/Gnostic/issues/602). Checked by the
 [Epic #140](https://github.com/phynics/Gnostic/issues/140) and
@@ -16,9 +16,8 @@ The owner's direction is "assume ACP v2". The decision was first recorded as
 question Q16 inside
 [ADR 0018](0018-gnostic-primitives-after-the-acp-pivot.md). An independent
 review then advised a separate record. It narrows ADR 0018's
-convert-at-the-edge answer (Q5) to "one v2 model; conversion only in an edge
-adapter (T1)", it replaces ADR 0011's SDK selection, and it has triggers of its
-own.
+convert-at-the-edge answer (Q5) to "one v2 model, and no v1 anywhere" (T1),
+it replaces ADR 0011's SDK selection, and it has triggers of its own.
 
 This record amends:
 
@@ -164,9 +163,13 @@ reinterpretation.
 - **Outside a Turn,** it goes to the Timeline's subscribed clients.
 - **No answer.** If no client answers within a Node-configured bound, or none
   is subscribed, Gnostic answers the request without waiting forever, and
-  records it as `unavailable`, never as a denial. The wire answer is owner
-  question [T3](#t3--unanswered-permission-requests). `cancelled` alone is
-  not used, because v2 ties that outcome to `session/cancel`.
+  records it as `unavailable`, never as a denial. On the wire it answers with
+  error **-32800**, an internal cancellation of that one request, which
+  `protocol/v2/cancellation` allows the executing party to send (T3). The Turn
+  continues, and the Runtime decides how to proceed without a decision.
+  Gnostic does not use `cancelled` here, because v2 ties that outcome to
+  `session/cancel`, and it does not select a reject option, because that would
+  invent a denial.
 - **Shape.** Gnostic passes the v2 `title`, `subject`, and option IDs through
   unchanged.
 
@@ -202,8 +205,8 @@ In both cases the Turn ends on the next `idle`.
 A Runtime instance (#631) must advertise `capabilities.session`. Without it, a
 v2 agent offers no `session/new` or `session/prompt`, so it is not a
 conversational Runtime, and Gnostic reports it unsupported. With it, resume is
-baseline. A span is seeded (ADR 0018 §3) only when a resume fails, when the
-Agent switches, or for a v1 peer through the edge adapter (T1 (b)).
+baseline. A span is seeded (ADR 0018 §3) only when a resume fails or the Agent
+switches.
 
 ### 8. A Gnostic-owned v2 wire model
 
@@ -222,71 +225,27 @@ evidence.
 The in-process `positronic` and `letta` backend kinds are not ACP and are
 outside this record until #611 removes them.
 
-## Open question
+## Owner decisions
 
-### T1 — Peers that speak only ACP v1
+Decided by the owner on 2026-10-15.
 
-Today some Runtimes, and possibly every editor, speak only v1. A v2-only
-Gnostic cannot reach them. The options:
+| # | Question | Decision | Rejected options |
+| --- | --- | --- | --- |
+| T1 | Peers that speak only ACP v1 | **No v1 support at all.** Gnostic neither negotiates nor translates v1, in the core or at an edge adapter. A v1-only Runtime or editor is unsupported until it ships v2. Any bridge someone builds lives outside Gnostic and is not supported by it. | A removable v1 edge adapter (it would have to synthesize insertion and a weak `messageId`, and it weakens at-most-once for v1 peers). |
+| T2 | Releasing on a v2 preview | **0.5.0 ships ACP as an opt-in *v2 preview***, behind an explicit flag. The compatibility declaration states that the ACP surface is outside the 0.5.x stability promise. The Gnostic surfaces (Agent, Timeline, Workspace, the Turn envelope) stay inside it. | Holding 0.5.0 until ACP v2 is stable; shipping stable on a v1 adapter. |
+| T3 | Unanswered permission requests | **Answer with error -32800**, an internal cancellation of that request, and record `unavailable` (§4). | Selecting a reject option (a denial on the user's behalf); `cancelled` plus `session/cancel` (it stops the Turn). |
 
-- **(a) v2 only.** v1-only peers are unsupported until they ship v2, and any
-  bridge lives outside Gnostic. Real-Runtime evidence (#632) and the 0.5.0
-  release wait for v2 peers.
-- **(b) A removable v1 edge adapter.** One isolated target translates a v1
-  peer to the v2 model *at the connection edge*. It is a Runtime-side adapter
-  for `acp-client` and an editor-side adapter for `gnostic acp`. The core, the
-  envelope, and the record never see v1. Each v1 peer the adapter serves is
-  listed with a removal condition: that peer ships v2.
-
-  **Cost.** v1 has no insertion event: its prompt response arrives at the end
-  of the turn. The adapter must therefore synthesize the insertion point and a
-  `messageId`, recorded as a *weak* ref. For v1 peers, at-most-once holds only
-  up to Gnostic's send, and any lost response ends `insertionUnknown`. The
-  adapter also translates `session/load` to resume-with-replay, and the v1
-  update shapes to v2.
-
-*Recommendation:* **(b)**. It keeps the v2 model pure, which is what the
-"assume v2" direction protects, and it lets Gnostic run against today's peers,
-with the weaker guarantees stated above. The adapter is deleted peer by peer.
-Until the owner decides, development targets the v2 model, and T1 gates only
-real-Runtime acceptance and the 0.5.0 release.
-
-### T2 — Releasing on a v2 preview
-
-The v2 overview asks that v2 not run in production without feature flags
-before a more stable release. 0.5.0 is meant to be the first stable Gnostic
-line (#551). The options:
-
-- **(a)** Ship 0.5.0 with ACP labeled *v2 preview*, behind an explicit opt-in
-  flag, with the compatibility declaration saying the ACP surface is not
-  covered by the 0.5.x stability promise.
-- **(b)** Hold 0.5.0 until ACP v2 is declared stable.
-- **(c)** Ship 0.5.0 stable on the v1 edge adapter only (T1 (b)), with v2
-  preview opt-in.
-
-*Recommendation:* **(a)**. The Gnostic surfaces that 0.5.0 promises (Agent,
-Timeline, Workspace, the Turn envelope) stay stable, and the ACP payload
-revision is explicitly preview.
-
-### T3 — Unanswered permission requests
-
-When no client answers within the bound, how does Gnostic answer the Runtime?
-
-- **(a)** An internal cancellation of that request: error -32800, which the
-  cancellation page allows the executing party to send. The Turn continues, and
-  the Runtime decides what to do without a decision.
-- **(b)** Select the request's reject option, if offered. This is a denial on
-  the user's behalf, which ADR 0011's mediation rule treats as different from
-  "unavailable".
-- **(c)** Reply `cancelled` and send `session/cancel`, which stops the Turn.
-
-*Recommendation:* **(a)**. It reports "nobody answered" without inventing a
-denial or stopping the work, and it matches recording the request as
-`unavailable`.
+**What T1 means in practice.** Some Runtimes, and possibly every editor, speak
+only v1 today. Until they ship v2, Gnostic cannot run them, and `gnostic acp`
+cannot serve them. Real-Runtime evidence (#632) and the 0.5.0 release
+candidate need at least one v2-preview Runtime and one v2-preview client. The
+recorded transcripts in #632 and the fixture agent stand in for real peers in
+`verify` until then.
 
 ## Invariant
 
-- Gnostic's core, envelope, record, and gateway use only the ACP v2 model.
+- Gnostic contains no ACP v1 code path: not in the core, the envelope, the
+  record, the gateway, or any edge (T1).
 - Each admitted Turn is inserted at most once, and a lost prompt response is
   never resolved by guessing.
 - A Turn ends only on an `idle` after its prompt was sent, once insertion is
@@ -299,7 +258,10 @@ denial or stopping the work, and it matches recording the request as
 - **Negotiate v1 and v2 in the core, as T3 Code does.** The two prompt
   lifecycles differ: v1 holds the prompt open for the whole turn, and v2
   returns at insertion. Carrying both through the envelope, ledger, and record
-  doubles the Turn semantics. T1 (b) keeps any v1 support at the edge instead.
+  doubles the Turn semantics.
+- **A removable v1 edge adapter.** It would keep the core v2-pure, but it would
+  have to synthesize insertion points and weak `messageId`s, and it would weaken
+  at-most-once for v1 peers. The owner chose no v1 support at all (T1).
 - **Keep v1 as the model and convert to v2 later.** That builds every new
   surface (the envelope, record, gateway, and spans) on the shape that is being
   replaced, and v1 has no updates outside a prompt.
@@ -313,9 +275,12 @@ denial or stopping the work, and it matches recording the request as
 - **#572 becomes a P1 prerequisite of #629.**
 - **Gnostic's ACP support is labeled v2 preview** until the v2 RFDs complete.
   The compatibility declaration says so.
-- **#632's real-Runtime acceptance and the 0.5.0 release depend on T1.**
-- **#631 probes report v1-only Runtimes explicitly.** Under (a) they are
-  unsupported, and under (b) they are served by the edge adapter.
+- **0.5.0 ships ACP as an opt-in v2 preview (T2).** The compatibility
+  declaration excludes the ACP surface from the stability promise.
+- **v1-only peers are unsupported (T1).** #631 probes report them as
+  `unsupported (ACP v1)`. `gnostic acp` refuses a v1 client with a clear error.
+  #632's real-Runtime acceptance, and the 0.5.0 release candidate, need
+  v2-preview peers.
 - **The Turn ledger gains** the `insertionUnknown` and `endedUnspecified`
   outcomes. A lost prompt response is visible to the user rather than silently
   retried.
@@ -324,7 +289,8 @@ denial or stopping the work, and it matches recording the request as
 
 - `make docs-check` validates this record.
 - The delivering issues add tests:
-  - no v1 type outside the edge adapter target (if T1 (b) is chosen);
+  - no ACP v1 type or method name anywhere in `Sources` (a fitness test);
+  - a v1 `initialize` from a Runtime or client is rejected with a clear error;
   - one `session/prompt` per admitted Turn, and `insertionUnknown` under a
     dropped response (a #632 scenario);
   - correct attribution when the user-message update and `idle` arrive before
@@ -334,7 +300,8 @@ denial or stopping the work, and it matches recording the request as
 ## Reconsideration triggers
 
 - The v2 RFDs change incompatibly, or ACP v2 is declared stable.
-- An important peer stays on v1 with no v2 plan (revisit T1).
+- An important peer stays on v1 with no v2 plan, or no v2-preview editor exists
+  by the 0.5.0 release candidate (revisit T1).
 - ACP specifies queueing, a client-generated correlation token for prompts
   (which would replace `insertionUnknown` with real recovery), or
   current-state synchronization on resume.
