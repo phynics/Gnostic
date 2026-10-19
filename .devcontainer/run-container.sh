@@ -21,6 +21,23 @@ if [ -z "$runtime" ]; then
     exit 1
 fi
 
+# Rootless podman maps the host user to container root, so `--user $host_uid`
+# runs as an unmapped subuid that cannot write the host-owned worktree, build,
+# and cache bind mounts. `--userns=keep-id` maps the host user to the same uid
+# and gid inside the container, keeping bind mounts writable. A rootful runtime
+# needs no remap because `--user` already matches the host identity.
+runtime_userns=
+repair_supported=1
+case $(basename -- "$runtime") in
+    podman)
+        runtime_userns=--userns=keep-id
+        # Only a rootful runtime can chown root-owned artifacts. Rootless
+        # podman cannot, and its user namespace would rewrite the ownership to
+        # an unmapped subuid, so leave repair to rootful runtimes.
+        repair_supported=0
+        ;;
+esac
+
 mkdir -p "$build_dir" "$spm_cache_dir"
 build_dir=$(CDPATH= cd -- "$build_dir" && pwd -P)
 spm_cache_dir=$(CDPATH= cd -- "$spm_cache_dir" && pwd -P)
@@ -46,13 +63,8 @@ cleanup_container() {
         "$runtime" rm -f "$ownership_name" >/dev/null 2>&1 || true
         ownership_started=0
     fi
-        rm -rf "$status_dir"
+    rm -rf "$status_dir"
 }
-
-printf 'ownership probe: host_uid=%s host_gid=%s\n' "$host_uid" "$host_gid" >&2
-printf 'ownership probe build: %s\n' "$(ls -ldn "$build_dir" 2>&1)" >&2
-printf 'ownership probe cache: %s\n' "$(ls -ldn "$spm_cache_dir" 2>&1)" >&2
-printf 'ownership probe cache parent: %s\n' "$(ls -ldn "$(dirname "$spm_cache_dir")" 2>&1)" >&2
 
 finish() {
     status=$?
@@ -108,7 +120,15 @@ for external_path in "$spm_cache_dir" "$build_dir"; do
     repair_external_targets="$repair_external_targets /gnostic-repair-$repair_index"
 done
 
-if [ "$repair_legacy_ownership" = 1 ] || [ -n "$repair_external_targets" ]; then
+needs_repair=0
+[ "$repair_legacy_ownership" = 1 ] && needs_repair=1
+[ -n "$repair_external_targets" ] && needs_repair=1
+
+if [ "$needs_repair" = 1 ] && [ "$repair_supported" = 0 ]; then
+    echo "Warning: root-owned generated artifacts are not writable and $runtime cannot repair them; remove and recreate the affected paths" >&2
+fi
+
+if [ "$repair_supported" = 1 ] && [ "$needs_repair" = 1 ]; then
     echo "Repairing ownership of legacy generated artifacts in $root_dir"
     ownership_started=1
     ownership_status=0
@@ -132,7 +152,7 @@ if [ "$repair_legacy_ownership" = 1 ] || [ -n "$repair_external_targets" ]; then
 fi
 
 run_container() {
-    "$runtime" run --rm --name "$container_name" --user "$host_uid:$host_gid" \
+    "$runtime" run --rm --name "$container_name" $runtime_userns --user "$host_uid:$host_gid" \
         -e HOME=/tmp -e "GNOSTIC_HOST_UID=$host_uid" -e "GNOSTIC_HOST_GID=$host_gid" \
         -e GNOSTIC_BUILD_REVISION -e BUILD_CONFIGURATION -e SWIFT_FLAGS -e FILTER -e N -e TEST_TIMEOUT \
         -v "$root_dir:$workdir" \

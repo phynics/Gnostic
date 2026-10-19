@@ -183,6 +183,62 @@ EOF
     assert_contains "$cache_dir:/gnostic-repair-1" "$owner_log" "cache repair bind"
 }
 
+test_podman_runtime_uses_keep_id_userns() {
+    runtime_dir="$fixture_dir/podman-bin"
+    mkdir -p "$runtime_dir"
+    runtime="$runtime_dir/podman"
+    captured="$fixture_dir/podman-runtime-arguments"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/podman.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_RUNTIME_ARGUMENTS="$captured" \
+        BUILD_DIR="$fixture_dir/podman-build" \
+        SPM_CACHE_DIR="$fixture_dir/podman-cache" \
+        IMAGE=fixture-image \
+        "$root_dir/.devcontainer/run.sh" swift --version
+    assert_status 0 "$run_status" "podman runtime invocation"
+    assert_contains "--userns=keep-id" "$captured" "podman keep-id user namespace"
+    assert_precedes "--userns=keep-id" fixture-image "$captured" "keep-id precedes image"
+}
+
+test_podman_runtime_skips_root_owned_repair() {
+    runtime_dir="$fixture_dir/podman-repair-bin"
+    mkdir -p "$runtime_dir"
+    runtime="$runtime_dir/podman"
+    captured="$fixture_dir/podman-repair-arguments"
+    cache_dir="$fixture_dir/podman-readonly-cache"
+    mkdir -p "$cache_dir"
+    chmod 500 "$cache_dir"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/podman-repair.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_RUNTIME_ARGUMENTS="$captured" \
+        BUILD_DIR="$fixture_dir/podman-repair-build" \
+        SPM_CACHE_DIR="$cache_dir" \
+        IMAGE=fixture-image \
+        "$root_dir/.devcontainer/run.sh" true
+    chmod 700 "$cache_dir"
+    assert_status 0 "$run_status" "podman repair skip invocation"
+    assert_contains "cannot repair them" "$output" "podman repair unsupported diagnostic"
+    if [ -f "$captured" ] && grep -F --quiet -- "gnostic-owner-" "$captured"; then
+        fail "podman does not run the root ownership repair container"
+    fi
+}
+
 test_failing_child_releases_lock() {
     output="$fixture_dir/lock.out"
     build_dir="$fixture_dir/locked-build"
@@ -311,6 +367,8 @@ test_missing_runtime_fails
 test_invalid_build_lock_fails
 test_runtime_receives_each_mount_once
 test_nonwritable_shared_cache_is_repaired
+test_podman_runtime_uses_keep_id_userns
+test_podman_runtime_skips_root_owned_repair
 test_failing_child_releases_lock
 test_container_smoke_delegates_to_smoke_script
 test_repository_container_smoke_script_is_executable
@@ -324,4 +382,4 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 
-echo "12 harness tests passed"
+echo "14 harness tests passed"
