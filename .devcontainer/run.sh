@@ -2,54 +2,30 @@
 
 set -eu
 
-root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 runtime=${CONTAINER_RUNTIME:-}
-image=${IMAGE:-gnostic-dev}
-workdir=${WORKDIR:-/workspace}
-build_dir=${BUILD_DIR:-"$root_dir/.build"}
-spm_cache_dir=${SPM_CACHE_DIR:-"${HOME}/.cache/gnostic/swiftpm/swift-6.4.0-linux"}
-build_lock=${BUILD_LOCK:-1}
-extra_container_mounts=${EXTRA_CONTAINER_MOUNTS:-}
-extra_container_env=${EXTRA_CONTAINER_ENV:-}
+build_dir=${BUILD_DIR:-$("$root_dir/Scripts/gnostic-build-path.sh" build-dir)}
+build_lock_timeout=${BUILD_LOCK_TIMEOUT:-1800}
+container_timeout=${CONTAINER_TIMEOUT:-3600}
 
-# BUILD_DIR/SPM_CACHE_DIR may be given relative to the caller's cwd (CI
-# passes ".build" and ".swiftpm-cache"); container runtimes require
-# absolute host paths for bind mounts, so resolve them before use.
+case $container_timeout in
+    ''|*[!0-9]*|0) echo "CONTAINER_TIMEOUT must be a positive integer, got: $container_timeout" >&2; exit 2 ;;
+esac
+
+# Runtime bind mounts require absolute host paths. Lock the canonical build
+# directory so aliases of the same path still serialize.
 mkdir -p "$build_dir"
-build_dir=$(cd "$build_dir" && pwd)
-lock_dir="${build_dir}.lock"
-
-if [ "$build_lock" = "1" ]; then
-    while ! mkdir "$lock_dir" 2>/dev/null; do
-        sleep 1
-    done
-
-    cleanup() {
-        rmdir "$lock_dir" 2>/dev/null || true
-    }
-    trap cleanup EXIT INT TERM
-elif [ "$build_lock" != "0" ]; then
-    echo "BUILD_LOCK must be 0 or 1, got: $build_lock" >&2
-    exit 2
-fi
+build_dir=$(CDPATH= cd -- "$build_dir" && pwd -P)
 
 if [ "${GNOSTIC_DEVCONTAINER:-0}" = "1" ]; then
-    "$@"
-    exit $?
+    exec "$root_dir/.devcontainer/lock.sh" "$build_dir" "$build_lock_timeout" \
+        timeout --signal=TERM --kill-after=5s "${container_timeout}s" "$@"
 fi
 
 if [ -z "$runtime" ]; then
-    echo "No podman or docker runtime found" >&2
+    echo "No podman or docker runtime found; install a container runtime or enter the supported development container" >&2
     exit 1
 fi
 
-mkdir -p "$spm_cache_dir"
-spm_cache_dir=$(cd "$spm_cache_dir" && pwd)
-"$runtime" run --rm \
-    -v "$root_dir:$workdir" \
-    -v "$build_dir:$workdir/.build" \
-    -v "$spm_cache_dir:$workdir/.swiftpm-cache" \
-    -w "$workdir" \
-    $extra_container_env \
-    $extra_container_mounts \
-    "$image" "$@"
+exec "$root_dir/.devcontainer/lock.sh" "$build_dir" "$build_lock_timeout" \
+    env BUILD_DIR="$build_dir" "$root_dir/.devcontainer/run-container.sh" "$@"

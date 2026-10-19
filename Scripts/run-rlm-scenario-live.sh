@@ -12,6 +12,7 @@ set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
+image=${IMAGE:-gnostic-dev:$("$repo_root/.devcontainer/image-fingerprint.sh" "$repo_root")}
 
 if [[ -z "${CONFIG:-}" || ! -f "${CONFIG}" ]]; then
     echo "CONFIG=<path to the node manifest holding the Ascendant's provider and key> is required" >&2
@@ -23,7 +24,7 @@ if [[ -z "${CONTAINER_RUNTIME:-}" ]]; then
 fi
 
 commit=$(git rev-parse HEAD)
-image_digest=$("$CONTAINER_RUNTIME" image inspect "${IMAGE:-gnostic-dev}" --format '{{.Id}}')
+image_digest=$("$CONTAINER_RUNTIME" image inspect "$image" --format '{{.Id}}')
 
 # The manifest carries a provider key: copy it to a private directory for the
 # run instead of placing it under the mounted repository.

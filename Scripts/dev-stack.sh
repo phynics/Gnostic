@@ -5,14 +5,15 @@
 
 set -eu
 
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 runtime=${CONTAINER_RUNTIME:-podman}
-image=${GNOSTIC_IMAGE:-gnostic-dev}
+image=${GNOSTIC_IMAGE:-gnostic-dev:$("$repo_root/.devcontainer/image-fingerprint.sh" "$repo_root")}
 build_root=${GNOSTIC_BUILD_ROOT:?set GNOSTIC_BUILD_ROOT or run through make dev-up}
 seed_config=${GNOSTIC_DEV_CONFIG:-$HOME/.gnostic/config.json}
 stack_dir=${GNOSTIC_DEV_STACK_DIR:-$HOME/.gnostic/dev/stack}
 broker=gnostic-dev-broker
 serve=gnostic-dev-serve
-binary=/workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic
+binary=
 
 die() {
     echo "dev-stack: $*" >&2
@@ -21,6 +22,22 @@ die() {
 
 running() {
     "$runtime" inspect -f '{{.State.Running}}' "$1" 2>/dev/null | grep -qx true
+}
+
+load_binary() {
+    metadata="$build_root/gnostic-bin-path"
+    test -r "$metadata" || die "Gnostic build metadata is missing in $build_root; run 'make build'"
+    container_binary=
+    IFS= read -r container_binary < "$metadata" || true
+    case $container_binary in
+        /workspace/.build/*) binary_relative=${container_binary#/workspace/.build/} ;;
+        *) die "invalid Gnostic executable metadata in $metadata" ;;
+    esac
+    case $binary_relative in
+        ''|..|../*|*/..|*/../*) die "invalid Gnostic executable metadata in $metadata" ;;
+    esac
+    test -x "$build_root/$binary_relative" || die "Gnostic executable is missing from $build_root; run 'make build'"
+    binary=$container_binary
 }
 
 # Polls a readiness check once per second; shows the container log on failure.
@@ -79,7 +96,7 @@ up() {
     test ! -e "$stack_dir/stack.env" || die "a dev stack already exists in $stack_dir; run 'make dev-down' first"
     command -v "$runtime" >/dev/null 2>&1 || die "container runtime '$runtime' was not found"
     command -v node >/dev/null 2>&1 || die "node is required to read discovered profiles"
-    test -x "$build_root/x86_64-unknown-linux-gnu/debug/gnostic" || die "Gnostic is not built in $build_root; run 'make build'"
+    load_binary
     if running "$broker" || running "$serve"; then
         die "dev stack containers are already running; run 'make dev-down' first"
     fi
@@ -168,6 +185,7 @@ EOF
 
 status() {
     load_stack
+    load_binary
     echo "namespace $namespace, broker 127.0.0.1:$port"
     for container in "$broker" "$serve"; do
         state=$("$runtime" inspect -f '{{.State.Status}}' "$container" 2>/dev/null) || state=missing
