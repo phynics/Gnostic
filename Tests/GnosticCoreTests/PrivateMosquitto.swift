@@ -91,9 +91,24 @@ final class PrivateMosquitto {
     }
 
     /// Terminates the broker and waits for it to exit.
+    ///
+    /// The spawned broker inherits the spawning thread's signal mask. On Linux,
+    /// libdispatch worker threads block `SIGTERM`/`SIGINT`, and `Process` does
+    /// not reset the mask, so a graceful `terminate()` leaves the broker running
+    /// forever and `waitUntilExit()` never returns. Fall back to `SIGKILL`,
+    /// which cannot be blocked, after a short grace period.
     func stop() {
         guard let process else { return }
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+            let deadline = Date().addingTimeInterval(1)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
         process.waitUntilExit()
         self.process = nil
     }
