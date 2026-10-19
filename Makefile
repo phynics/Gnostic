@@ -162,4 +162,4 @@ dev-down:
 
 clean:
 	@mkdir -p "$(BUILD_DIR)"
-	@build_dir="$$(CDPATH= cd -- "$(BUILD_DIR)" && pwd -P)"; ./.devcontainer/lock.sh "$$build_dir" "$(BUILD_LOCK_TIMEOUT)" rm -rf -- "$$build_dir" .swiftpm-cache .testing
+	@build_dir="$$(CDPATH= cd -- "$(BUILD_DIR)" && pwd -P)"; ./.devcontainer/lock.sh "$$build_dir" "$(BUILD_LOCK_TIMEOUT)" rm -rf -- "$$build_dir"
