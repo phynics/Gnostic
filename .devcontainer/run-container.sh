@@ -46,8 +46,13 @@ cleanup_container() {
         "$runtime" rm -f "$ownership_name" >/dev/null 2>&1 || true
         ownership_started=0
     fi
-    rm -rf "$status_dir"
+        rm -rf "$status_dir"
 }
+
+printf 'ownership probe: host_uid=%s host_gid=%s\n' "$host_uid" "$host_gid" >&2
+printf 'ownership probe build: %s\n' "$(ls -ldn "$build_dir" 2>&1)" >&2
+printf 'ownership probe cache: %s\n' "$(ls -ldn "$spm_cache_dir" 2>&1)" >&2
+printf 'ownership probe cache parent: %s\n' "$(ls -ldn "$(dirname "$spm_cache_dir")" 2>&1)" >&2
 
 finish() {
     status=$?

@@ -8,6 +8,10 @@ git --version
 node --version
 npm --version
 node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)'
+echo "probe id: $(id)"
+echo "probe workspace: $(ls -ldn /workspace 2>&1)"
+echo "probe build: $(ls -ldn /workspace/.build 2>&1)"
+echo "probe cache: $(ls -ldn /workspace/.swiftpm-cache 2>&1)"
 test "$(id -u)" = "${GNOSTIC_HOST_UID:-$(id -u)}"
 test "$(id -g)" = "${GNOSTIC_HOST_GID:-$(id -g)}"
 test -w /workspace
