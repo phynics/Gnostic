@@ -8,6 +8,10 @@ git --version
 node --version
 npm --version
 node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)'
+test "$(id -u)" = "${GNOSTIC_HOST_UID:-$(id -u)}"
+test "$(id -g)" = "${GNOSTIC_HOST_GID:-$(id -g)}"
+test -w /workspace
+test -w /workspace/.build
 guile --version | grep -F "GNU Guile) 3.0."
 chibi-scheme -V | grep -F "chibi-scheme 0.12"
 test "$(chibi-scheme -p '(+ 2 3)')" = "5"

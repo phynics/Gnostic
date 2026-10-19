@@ -71,6 +71,52 @@ The `verify` workflow runs `make container-smoke`, `make verify`,
 Run local checks before opening a pull request. Treat the workflow as a
 backstop, not as a substitute for local evidence.
 
+## Parallel worktrees and containerized verification
+
+Use one isolated worktree per material issue. The default SwiftPM build path is
+keyed by the canonical worktree path, Swift toolchain, target platform, build
+system, and configuration. Keep each worktree on its default `BUILD_DIR`; never
+point independent worktrees at the same writable build directory. SwiftPM
+dependency downloads may share `SPM_CACHE_DIR`.
+
+Run Swift builds and tests with Makefile targets through the supported pinned
+development container. Do not run host Swift commands. If Podman or Docker is
+unavailable, report the blocker and wait for the supported runtime; do not
+switch silently to an unpinned host toolchain. The runner binds writable build
+artifacts to the current worktree, matches the host UID/GID, reuses an unchanged
+image, and stops/removes a container when its command reaches
+`CONTAINER_TIMEOUT` (3600 seconds by default).
+
+After a change, start with the narrowest focused tests. For example:
+
+```sh
+make test-one FILTER='GnosticSomeTests'
+make test-one-repeat FILTER='GnosticSomeTests' N=5
+```
+
+Focused runs preserve warnings-as-errors, run serially, fail when the filter
+selects no tests, and write diagnostics to `.testing/focused-*.log`. Follow
+focused tests with the applicable full gate and smoke checks before review:
+
+```sh
+make verify
+make container-smoke
+make runner-smoke
+make acp-smoke
+```
+
+`make verify` is the full Swift and documentation gate. Run smoke targets when
+the change affects container execution, startup, or routing; the complete PR
+gate runs all four commands above. Do not run multiple full verifications while
+host CPU or memory is saturated. Report the exact verification commands and
+keep failure logs for review.
+
+The runner locks the resolved build directory. Treat a locked directory as
+owned state: do not delete it manually or disable its lock. The default wait is
+bounded by `BUILD_LOCK_TIMEOUT` (1800 seconds). Investigate a long wait and
+check the reported lock owner before retrying. `make clean` removes only the
+current worktree's build directory under that same lock.
+
 ## Manage dependencies and exceptions
 
 Pin committed dependencies to released semantic versions. A merged upstream

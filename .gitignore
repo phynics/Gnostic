@@ -1,4 +1,6 @@
 .build*/
+.build.lock
+*.lock.owner
 .swiftpm/
 .swiftpm-cache/
 .testing/

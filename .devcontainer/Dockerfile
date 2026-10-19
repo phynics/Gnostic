@@ -42,6 +42,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
     && mkdir -p /workspace/.swiftpm-cache \
     && chown -R vscode:vscode /workspace
 
+# The broker uses a fixed fixture credential. The container runner uses the
+# caller UID, so the broker must be able to read it without running as root.
 RUN printf '%s\n' \
         'per_listener_settings true' \
         '' \
@@ -58,7 +60,7 @@ RUN printf '%s\n' \
         > /etc/mosquitto/gnostic.conf \
     && mosquitto_passwd -b -c /etc/mosquitto/gnostic.passwd gnostic-test gnostic-secret \
     && chown mosquitto:mosquitto /etc/mosquitto/gnostic.passwd \
-    && chmod 0640 /etc/mosquitto/gnostic.passwd
+    && chmod 0644 /etc/mosquitto/gnostic.passwd
 
 ARG CHIBI_VERSION=0.12
 ARG CHIBI_SHA256=b70a1147bc70a0f90df3fb6081bc99808237fd17a9accf9ee7a2cc20d95a4df0

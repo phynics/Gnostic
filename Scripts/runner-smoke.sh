@@ -15,6 +15,11 @@ set -euo pipefail
 cd /workspace
 
 swift_flags=(--cache-path /workspace/.swiftpm-cache --disable-automatic-resolution --build-system native --quiet -Xswiftc -warnings-as-errors)
+case ${BUILD_CONFIGURATION:-debug} in
+    debug) ;;
+    release) swift_flags+=(-c release) ;;
+    *) echo "BUILD_CONFIGURATION must be debug or release, got: ${BUILD_CONFIGURATION}" >&2; exit 2 ;;
+esac
 
 # The pre-#446 startup path carried a fixture scenario and a private error
 # type. Neither may return.

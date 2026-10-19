@@ -97,9 +97,10 @@ EOF
 make_build() {
     build_dir=$1
     revision=$2
-    mkdir -p "$build_dir/x86_64-unknown-linux-gnu/debug"
-    printf '#!/bin/sh\nexit 0\n' >"$build_dir/x86_64-unknown-linux-gnu/debug/gnostic"
-    chmod +x "$build_dir/x86_64-unknown-linux-gnu/debug/gnostic"
+    mkdir -p "$build_dir/bin"
+    printf '#!/bin/sh\nexit 0\n' >"$build_dir/bin/gnostic"
+    chmod +x "$build_dir/bin/gnostic"
+    printf '%s\n' /workspace/.build/bin/gnostic >"$build_dir/gnostic-bin-path"
     printf '%s\n' "$revision" >"$build_dir/gnostic-build-revision"
 }
 
@@ -310,6 +311,29 @@ test_wrapper_requires_a_build() {
     [ ! -f "$arguments" ] || fail "missing build does not start the container"
 }
 
+test_wrapper_rejects_build_metadata_path_escape() {
+    runtime="$fixture_dir/runtime-escape-metadata"
+    arguments="$fixture_dir/escape-metadata-arguments"
+    environment="$fixture_dir/escape-metadata-environment"
+    build_dir="$fixture_dir/escape-metadata-build"
+    output="$fixture_dir/escape-metadata.out"
+    make_fake_runtime "$runtime"
+    mkdir -p "$build_dir"
+    printf '%s\n' /workspace/.build/../../etc/passwd >"$build_dir/gnostic-bin-path"
+    printf '%s\n' "$head_revision" >"$build_dir/gnostic-build-revision"
+
+    run_capture "$output" env \
+        HOME="$home" \
+        CONTAINER_RUNTIME="$runtime" \
+        GNOSTIC_BUILD_ROOT="$build_dir" \
+        FAKE_RUNTIME_ARGUMENTS="$arguments" \
+        FAKE_RUNTIME_ENVIRONMENT="$environment" \
+        "$wrapper" --help
+    assert_status 2 "$run_status" "path-escaping executable metadata is rejected"
+    assert_contains "build metadata is missing or invalid" "$output" "invalid executable metadata has a diagnostic"
+    [ ! -f "$arguments" ] || fail "invalid executable metadata does not start the container"
+}
+
 test_wrapper_forwards_environment
 test_wrapper_mounts_a_fresh_config_directory
 test_wrapper_rejects_parent_directory_escapes
@@ -318,6 +342,7 @@ test_wrapper_rejects_state_home_outside_mounts
 test_wrapper_reports_build_identity
 test_wrapper_warns_when_build_revision_differs
 test_wrapper_requires_a_build
+test_wrapper_rejects_build_metadata_path_escape
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures wrapper harness test(s) failed" >&2

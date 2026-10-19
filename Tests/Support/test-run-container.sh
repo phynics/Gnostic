@@ -105,12 +105,12 @@ test_missing_runtime_fails() {
 test_invalid_build_lock_fails() {
     output="$fixture_dir/build-lock.out"
     run_capture "$output" env \
-        BUILD_LOCK=2 \
-        CONTAINER_RUNTIME= \
+        GNOSTIC_DEVCONTAINER=1 \
+        BUILD_LOCK_TIMEOUT=not-a-number \
         BUILD_DIR="$fixture_dir/invalid-lock-build" \
         "$root_dir/.devcontainer/run.sh" true
     assert_status 2 "$run_status" "invalid BUILD_LOCK"
-    assert_contains "BUILD_LOCK must be 0 or 1" "$output" "invalid BUILD_LOCK diagnostic"
+    assert_contains "BUILD_LOCK_TIMEOUT must be a non-negative integer" "$output" "invalid build lock timeout diagnostic"
 }
 
 test_runtime_receives_each_mount_once() {
@@ -145,16 +145,110 @@ EOF
     assert_precedes "$extra_dir:/extra:ro" fixture-image "$captured" "extra bind precedes image"
 }
 
+test_nonwritable_shared_cache_is_repaired() {
+    if [ "$(id -u)" = 0 ]; then
+        return
+    fi
+    runtime="$fixture_dir/repair-fake-runtime"
+    owner_log="$fixture_dir/repair-owner-arguments"
+    main_log="$fixture_dir/repair-main-arguments"
+    cache_dir="$fixture_dir/readonly-cache"
+    mkdir -p "$cache_dir"
+    chmod 500 "$cache_dir"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+case " $* " in
+    *gnostic-owner-*)
+        printf '%s\n' "$@" >>"$FAKE_OWNER_ARGUMENTS"
+        exit 0
+        ;;
+esac
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/repair.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_OWNER_ARGUMENTS="$owner_log" \
+        FAKE_RUNTIME_ARGUMENTS="$main_log" \
+        BUILD_DIR="$fixture_dir/repair-build" \
+        SPM_CACHE_DIR="$cache_dir" \
+        IMAGE=fixture-image \
+        "$root_dir/.devcontainer/run.sh" true
+    chmod 700 "$cache_dir"
+    assert_status 0 "$run_status" "non-writable SwiftPM cache repair invocation"
+    assert_contains "Repairing ownership of legacy generated artifacts" "$output" "cache repair diagnostic"
+    assert_contains "$cache_dir:/gnostic-repair-1" "$owner_log" "cache repair bind"
+}
+
+test_podman_runtime_uses_keep_id_userns() {
+    runtime_dir="$fixture_dir/podman-bin"
+    mkdir -p "$runtime_dir"
+    runtime="$runtime_dir/podman"
+    captured="$fixture_dir/podman-runtime-arguments"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/podman.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_RUNTIME_ARGUMENTS="$captured" \
+        BUILD_DIR="$fixture_dir/podman-build" \
+        SPM_CACHE_DIR="$fixture_dir/podman-cache" \
+        IMAGE=fixture-image \
+        "$root_dir/.devcontainer/run.sh" swift --version
+    assert_status 0 "$run_status" "podman runtime invocation"
+    assert_contains "--userns=keep-id" "$captured" "podman keep-id user namespace"
+    assert_precedes "--userns=keep-id" fixture-image "$captured" "keep-id precedes image"
+}
+
+test_podman_runtime_skips_root_owned_repair() {
+    runtime_dir="$fixture_dir/podman-repair-bin"
+    mkdir -p "$runtime_dir"
+    runtime="$runtime_dir/podman"
+    captured="$fixture_dir/podman-repair-arguments"
+    cache_dir="$fixture_dir/podman-readonly-cache"
+    mkdir -p "$cache_dir"
+    chmod 500 "$cache_dir"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/podman-repair.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_RUNTIME_ARGUMENTS="$captured" \
+        BUILD_DIR="$fixture_dir/podman-repair-build" \
+        SPM_CACHE_DIR="$cache_dir" \
+        IMAGE=fixture-image \
+        "$root_dir/.devcontainer/run.sh" true
+    chmod 700 "$cache_dir"
+    assert_status 0 "$run_status" "podman repair skip invocation"
+    assert_contains "cannot repair them" "$output" "podman repair unsupported diagnostic"
+    if [ -f "$captured" ] && grep -F --quiet -- "gnostic-owner-" "$captured"; then
+        fail "podman does not run the root ownership repair container"
+    fi
+}
+
 test_failing_child_releases_lock() {
     output="$fixture_dir/lock.out"
     build_dir="$fixture_dir/locked-build"
     run_capture "$output" env \
         GNOSTIC_DEVCONTAINER=1 \
+        GNOSTIC_LOCK_BACKEND=mkdir \
         BUILD_DIR="$build_dir" \
-        BUILD_LOCK=1 \
         "$root_dir/.devcontainer/run.sh" sh -c 'exit 23'
     assert_status 23 "$run_status" "failing child exit status"
-    [ ! -d "$build_dir.lock" ] || fail "failing child releases build lock"
+    [ ! -d "$build_dir.lock" ] || fail "failing child releases fallback build lock"
 }
 
 test_container_smoke_delegates_to_smoke_script() {
@@ -236,32 +330,45 @@ test_dev_stack_rejects_unknown_command() {
 test_worktree_build_root_matches_wrapper() {
     main="$fixture_dir/worktree-main"
     worktree="$fixture_dir/worktree-checkout"
-    mkdir -p "$main/Scripts"
+    mkdir -p "$main/Scripts" "$main/.devcontainer"
     cp "$root_dir/Makefile" "$main/Makefile"
     cp "$root_dir/Scripts/gnostic-container.sh" "$main/Scripts/gnostic-container.sh"
+    cp "$root_dir/Scripts/gnostic-build-path.sh" "$main/Scripts/gnostic-build-path.sh"
+    cp "$root_dir/.devcontainer/Dockerfile" "$main/.devcontainer/Dockerfile"
     git -C "$main" init -q
     git -C "$main" -c user.email=harness@example.invalid -c user.name=harness commit -q --allow-empty -m init
     git -C "$main" worktree add -q "$worktree"
-    mkdir -p "$worktree/Scripts"
+    mkdir -p "$worktree/Scripts" "$worktree/.devcontainer"
     cp "$root_dir/Makefile" "$worktree/Makefile"
     cp "$root_dir/Scripts/gnostic-container.sh" "$worktree/Scripts/gnostic-container.sh"
+    cp "$root_dir/Scripts/gnostic-build-path.sh" "$worktree/Scripts/gnostic-build-path.sh"
+    cp "$root_dir/.devcontainer/Dockerfile" "$worktree/.devcontainer/Dockerfile"
 
     output="$fixture_dir/worktree-make.out"
-    run_capture "$output" env -u BUILD_CACHE_ROOT -u BUILD_DIR make -n -C "$worktree" build
+    run_capture "$output" env -u BUILD_CACHE_ROOT -u BUILD_DIR IMAGE=fixture-image make -n -C "$worktree" build
     assert_status 0 "$run_status" "worktree build dry run"
-    build_dir=$(awk -F'"' '/^BUILD_DIR="/ { print $2; exit }' "$output")
-    [ -n "$build_dir" ] || fail "worktree build root (make did not print BUILD_DIR)"
+    build_dir=$(env -u BUILD_CACHE_ROOT -u BUILD_DIR "$worktree/Scripts/gnostic-build-path.sh" build-dir)
+    assert_contains "$build_dir" "$output" "Makefile resolves the worktree-specific build directory"
 
+    mkdir -p "$build_dir/bin"
+    printf '#!/bin/sh\nexit 0\n' >"$build_dir/bin/gnostic"
+    chmod +x "$build_dir/bin/gnostic"
+    printf '%s\n' /workspace/.build/bin/gnostic >"$build_dir/gnostic-bin-path"
+    git -C "$worktree" rev-parse HEAD >"$build_dir/gnostic-build-revision"
     output="$fixture_dir/worktree-wrapper.out"
-    run_capture "$output" env -u GNOSTIC_BUILD_ROOT "$worktree/Scripts/gnostic-container.sh" acp profiles
-    assert_status 2 "$run_status" "worktree wrapper missing binary"
-    assert_contains "$build_dir/x86_64-unknown-linux-gnu/debug/gnostic" "$output" "worktree wrapper build root"
+    run_capture "$output" env -u GNOSTIC_BUILD_ROOT -u BUILD_CACHE_ROOT -u BUILD_DIR "$worktree/Scripts/gnostic-container.sh" --wrapper-info
+    assert_status 0 "$run_status" "worktree wrapper discovers build metadata"
+    assert_contains "build-root $build_dir" "$output" "worktree wrapper shares the Makefile build root"
+    assert_contains "binary /workspace/.build/bin/gnostic" "$output" "worktree wrapper uses validated executable metadata"
 }
 
 test_direct_command_preserves_exit_status
 test_missing_runtime_fails
 test_invalid_build_lock_fails
 test_runtime_receives_each_mount_once
+test_nonwritable_shared_cache_is_repaired
+test_podman_runtime_uses_keep_id_userns
+test_podman_runtime_skips_root_owned_repair
 test_failing_child_releases_lock
 test_container_smoke_delegates_to_smoke_script
 test_repository_container_smoke_script_is_executable
@@ -275,4 +382,4 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 
-echo "11 harness tests passed"
+echo "14 harness tests passed"

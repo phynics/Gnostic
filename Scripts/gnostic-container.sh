@@ -5,16 +5,22 @@ set -eu
 script_path=$(readlink -f "$0")
 repo_root=$(CDPATH= cd -- "$(dirname "$script_path")/.." && pwd)
 runtime=${CONTAINER_RUNTIME:-podman}
-image=${GNOSTIC_IMAGE:-gnostic-dev}
-# Match the Makefile's build cache, which is shared by the main checkout and
-# all of its worktrees.
-if common_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
-    repository_name=$(basename "${common_dir%/.git}")
-else
-    repository_name=$(basename "$repo_root")
+image=${GNOSTIC_IMAGE:-}
+build_root=${GNOSTIC_BUILD_ROOT:-$("$repo_root/Scripts/gnostic-build-path.sh" build-dir)}
+binary=
+if [ -r "$build_root/gnostic-bin-path" ]; then
+    container_binary=
+    IFS= read -r container_binary < "$build_root/gnostic-bin-path" || true
+    case $container_binary in
+        /workspace/.build/*)
+            binary_relative=${container_binary#/workspace/.build/}
+            case $binary_relative in
+                ''|..|../*|*/..|*/../*) ;;
+                *) if [ -x "$build_root/$binary_relative" ]; then binary=$container_binary; fi ;;
+            esac
+            ;;
+    esac
 fi
-build_root=${GNOSTIC_BUILD_ROOT:-/tmp/gnostic-swift-build/$repository_name/swift-6.4.0-linux/debug}
-binary="$build_root/x86_64-unknown-linux-gnu/debug/gnostic"
 
 # Every variable the CLI reads and that a host tool may want to set. The
 # wrapper forwards each one that is set and non-empty.
@@ -73,8 +79,12 @@ case ${1:-} in
         ;;
 esac
 
-test -x "$binary" || {
-    echo "Gnostic is not built at $binary; run 'make build' in $repo_root" >&2
+if [ -z "$image" ]; then
+    image="gnostic-dev:$("$repo_root/.devcontainer/image-fingerprint.sh" "$repo_root")"
+fi
+
+test -n "$binary" || {
+    echo "Gnostic is not built in $build_root (build metadata is missing or invalid); run 'make build' in $repo_root" >&2
     exit 2
 }
 
@@ -119,4 +129,4 @@ exec "$runtime" run --rm -i --network host \
     -v "$HOME/.local/state/gnostic:/root/.local/state/gnostic" \
     $environment_args \
     -w /workspace "$image" \
-    /workspace/.build/x86_64-unknown-linux-gnu/debug/gnostic "$@"
+    "$binary" "$@"
