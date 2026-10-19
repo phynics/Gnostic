@@ -145,6 +145,44 @@ EOF
     assert_precedes "$extra_dir:/extra:ro" fixture-image "$captured" "extra bind precedes image"
 }
 
+test_nonwritable_shared_cache_is_repaired() {
+    if [ "$(id -u)" = 0 ]; then
+        return
+    fi
+    runtime="$fixture_dir/repair-fake-runtime"
+    owner_log="$fixture_dir/repair-owner-arguments"
+    main_log="$fixture_dir/repair-main-arguments"
+    cache_dir="$fixture_dir/readonly-cache"
+    mkdir -p "$cache_dir"
+    chmod 500 "$cache_dir"
+    cat >"$runtime" <<'EOF'
+#!/bin/sh
+case " $* " in
+    *gnostic-owner-*)
+        printf '%s\n' "$@" >>"$FAKE_OWNER_ARGUMENTS"
+        exit 0
+        ;;
+esac
+printf '%s\n' "$@" >>"$FAKE_RUNTIME_ARGUMENTS"
+EOF
+    chmod +x "$runtime"
+
+    output="$fixture_dir/repair.out"
+    run_capture "$output" env \
+        GNOSTIC_DEVCONTAINER=0 \
+        CONTAINER_RUNTIME="$runtime" \
+        FAKE_OWNER_ARGUMENTS="$owner_log" \
+        FAKE_RUNTIME_ARGUMENTS="$main_log" \
+        BUILD_DIR="$fixture_dir/repair-build" \
+        SPM_CACHE_DIR="$cache_dir" \
+        IMAGE=fixture-image \
+        "$root_dir/.devcontainer/run.sh" true
+    chmod 700 "$cache_dir"
+    assert_status 0 "$run_status" "non-writable SwiftPM cache repair invocation"
+    assert_contains "Repairing ownership of legacy generated artifacts" "$output" "cache repair diagnostic"
+    assert_contains "$cache_dir:/gnostic-repair-1" "$owner_log" "cache repair bind"
+}
+
 test_failing_child_releases_lock() {
     output="$fixture_dir/lock.out"
     build_dir="$fixture_dir/locked-build"
@@ -272,6 +310,7 @@ test_direct_command_preserves_exit_status
 test_missing_runtime_fails
 test_invalid_build_lock_fails
 test_runtime_receives_each_mount_once
+test_nonwritable_shared_cache_is_repaired
 test_failing_child_releases_lock
 test_container_smoke_delegates_to_smoke_script
 test_repository_container_smoke_script_is_executable
@@ -285,4 +324,4 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 
-echo "11 harness tests passed"
+echo "12 harness tests passed"

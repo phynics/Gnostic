@@ -65,8 +65,9 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Previous container runs used root and may have left ignored package trees and
-# test logs that the caller UID cannot update. Repair only those generated paths.
+# Previous container runs used root and may have left ignored package trees,
+# test logs, and shared caches that the caller UID cannot update. Repair only
+# those generated paths.
 repair_legacy_ownership=0
 for relative_path in \
     Tests/Fixtures/ACPAgent/node_modules \
@@ -89,18 +90,32 @@ for relative_path in \
         done
     fi
 done
-if [ "$repair_legacy_ownership" = 1 ]; then
+
+# Caches restored from a previous root-owned run live outside the worktree.
+repair_external_mounts=
+repair_external_targets=
+repair_index=0
+for external_path in "$spm_cache_dir" "$build_dir"; do
+    [ -e "$external_path" ] || continue
+    [ -w "$external_path" ] && continue
+    repair_index=$((repair_index + 1))
+    repair_external_mounts="$repair_external_mounts -v $external_path:/gnostic-repair-$repair_index"
+    repair_external_targets="$repair_external_targets /gnostic-repair-$repair_index"
+done
+
+if [ "$repair_legacy_ownership" = 1 ] || [ -n "$repair_external_targets" ]; then
     echo "Repairing ownership of legacy generated artifacts in $root_dir"
     ownership_started=1
     ownership_status=0
     timeout --signal=TERM --kill-after=5s "${container_timeout}s" \
-        "$runtime" run --rm --name "$ownership_name" --user 0:0 -v "$root_dir:$workdir" "$image" \
+        "$runtime" run --rm --name "$ownership_name" --user 0:0 -v "$root_dir:$workdir" $repair_external_mounts "$image" \
         sh -c 'owner=$1; shift; for path do [ ! -e "$path" ] || chown -R "$owner" "$path"; done' \
         sh "$host_uid:$host_gid" \
         /workspace/Tests/Fixtures/ACPAgent/node_modules \
         /workspace/Tests/Fixtures/OfficialACPClient/node_modules \
         /workspace/Tests/Fixtures/PiACPClient/node_modules \
-        /workspace/.testing || ownership_status=$?
+        /workspace/.testing \
+        $repair_external_targets || ownership_status=$?
     if [ "$ownership_status" -ne 0 ]; then
         echo "Legacy dependency ownership repair failed with exit status $ownership_status" >&2
         "$runtime" stop -t 5 "$ownership_name" >/dev/null 2>&1 || true
