@@ -331,6 +331,24 @@ RUNTIME
     [ -f "$fixture_dir/runtime-removed" ] || fail "timed-out container is removed"
 }
 
+test_clean_preserves_shared_cache_and_test_logs() {
+    clean_root="$fixture_dir/clean-fixture"
+    clean_build="$fixture_dir/clean-build"
+    mkdir -p "$clean_root/.devcontainer" "$clean_root/.swiftpm-cache" "$clean_root/.testing" "$clean_build"
+    cp "$root_dir/Makefile" "$clean_root/Makefile"
+    cp "$lock_script" "$clean_root/.devcontainer/lock.sh"
+    printf '%s\n' dependency-cache > "$clean_root/.swiftpm-cache/marker"
+    printf '%s\n' test-log > "$clean_root/.testing/marker"
+    printf '%s\n' build-artifact > "$clean_build/marker"
+
+    run_capture "$fixture_dir/clean-target.log" env -u BUILD_DIR -u BUILD_CACHE_ROOT \
+        make -C "$clean_root" clean BUILD_DIR="$clean_build" GNOSTIC_LOCK_BACKEND=mkdir
+    assert_status 0 "$run_status" "clean target succeeds"
+    [ -f "$clean_root/.swiftpm-cache/marker" ] || fail "clean preserves the shared SwiftPM cache"
+    [ -f "$clean_root/.testing/marker" ] || fail "clean preserves test logs"
+    [ ! -e "$clean_build/marker" ] || fail "clean removes the locked worktree build directory"
+}
+
 test_build_paths_use_stable_canonical_worktree_ids
 test_concurrent_build_path_resolution_is_deterministic
 test_build_locks_serialize_shared_and_allow_distinct_directories
@@ -338,10 +356,11 @@ test_lock_timeout_cancellation_and_stale_recovery
 test_image_fingerprint_reuses_and_invalidates_builds
 test_focused_runner_bounds_selection_and_preserves_failures
 test_container_timeout_stops_and_removes_the_container
+test_clean_preserves_shared_cache_and_test_logs
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures build-isolation test(s) failed" >&2
     exit 1
 fi
 
-echo "7 build isolation tests passed"
+echo "8 build isolation tests passed"
