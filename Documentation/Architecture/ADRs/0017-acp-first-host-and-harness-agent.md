@@ -1,5 +1,12 @@
 # ADR 0017 — ACP-first host, the Gnostic harness agent, and the PositronicKit firewall
 
+> **Superseded in part by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).**
+> The v0.5 contract replaces §1–§2's Ascendant identity and normalized Timeline
+> record, defers §4's automatic subagent lineage, replaces §5–§6's Ascendant
+> definition and single harness agent, and limits §7's PositronicKit exception
+> to the standalone reference Runtime executable. §3's gateway remains, with
+> the v0.5 Workspace and Runtime boundaries in ADR 0021 §§3 and 6.
+
 ## Status
 
 > **Amended (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)

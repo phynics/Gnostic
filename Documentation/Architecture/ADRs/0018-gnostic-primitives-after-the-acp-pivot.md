@@ -1,5 +1,12 @@
 # ADR 0018 — Gnostic primitives after the ACP pivot: Agent, Runtime, spans, and ACP-native Turns
 
+> **Superseded or amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).**
+> §§1–2's Agent identity are superseded. §3 retains the one-open-span rule, but
+> cross-Runtime handoff and automatic lineage are deferred. §4 retains ACP v2
+> payloads, with Turn admission and lifecycle replaced. §5 retains Axoloty for
+> discovery and routing. §6's root delivery is replaced by Project `cwd` and
+> gateway Workspaces. §7 retains only verbatim ACP `initialize` capabilities.
+
 ## Status
 
 > **Amended (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)

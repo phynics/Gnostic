@@ -188,15 +188,18 @@ Use Swift Testing with `import Testing`, `@Test`, `#expect`, and `#require`.
 Do not use XCTest. Use ErrorKit-compatible structured errors at public
 boundaries.
 
-Keep Gnostic Axoloty-native. Keep Axoloty free of Gnostic, Workspace,
-filesystem, and tool types. Only Native Runtime targets, and the shrinking
-transitional allow-list, may depend on or import PositronicKit (ADR 0017, ADR
-0020). Do not add a host target to the transitional allow-list without a
-reviewed exception. Keep Gnostic-owned contracts free of native PositronicKit
-values. Do not add Gnostic-specific APIs to PositronicKit. Build an experiment
-that needs the model loop as a Native Runtime; one that depends on
-PositronicKit runs as a special Node. Build other experiments as Gnostic
-consumers that work with every Runtime (ADR 0020).
+Keep Axoloty free of Gnostic, Workspace, filesystem, and tool types. Axoloty
+provides discovery and routing between Gnostic Nodes. Every Runtime, including
+the in-repository PositronicKit reference Runtime, uses ACP v2 over stdio.
+Only the standalone reference Runtime executable may depend on or import
+PositronicKit. No host target, test target, or Runtime supervisor target may
+depend on it. Keep Gnostic-owned contracts free of PositronicKit values. Do not
+add Gnostic-specific APIs to PositronicKit. Build an experiment that needs a
+model loop as an independent ACP Runtime process. Build other experiments as
+Gnostic consumers that work with every Runtime (ADR 0021).
+
+Use ADR 0021 as the v0.5 architecture contract. Read its supersession map
+before treating ADRs 0017–0020 as current guidance.
 
 Update the owning issue and architecture record when an accepted decision or
 exception changes.

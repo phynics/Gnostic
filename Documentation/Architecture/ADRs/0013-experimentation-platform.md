@@ -4,6 +4,8 @@
 
 **Amended by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** Modules have two layers. Outer modules run in the host for every agent. Inner modules run only in the Gnostic harness agent. A Regime is the agent, its session configuration, and its outer modules ([#612](https://github.com/phynics/Gnostic/issues/612)).
 
+**Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).** No research Module is required to build or run the v0.5 host. An outer experiment is a Gnostic consumer. An experiment that needs a model loop runs as an independent ACP Runtime process, not inside a shared host harness.
+
 Accepted and delivered. Owning issue:
 [GNO-PLAT-001 #440](https://github.com/phynics/Gnostic/issues/440). The
 umbrella [Epic #438](https://github.com/phynics/Gnostic/issues/438) and its

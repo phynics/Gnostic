@@ -8,6 +8,8 @@
 
 **Amended by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** ACP becomes the only backend boundary. Gnostic Workspaces now reach ACP agents as MCP tools through the Gnostic gateway ([#606](https://github.com/phynics/Gnostic/issues/606)), so an intended attachment no longer resolves to `unsupported`. The ownership invariant and the rejection of `AscendantBackendWorkspaceService` routing stand.
 
+**Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).** The v0.5 Runtime contract is ACP v2 over stdio. Gnostic owns Timelines and Runtime instances, with no Agent identity. Workspace calls remain behind the Gnostic gateway.
+
 Accepted target architecture. Delivery is tracked by
 [Epic #288](https://github.com/phynics/Gnostic/issues/288) (External ACP agents
 as Ascendant backends), whose child GNO-ACPC-008 is
