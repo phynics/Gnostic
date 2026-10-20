@@ -1,5 +1,11 @@
 # ADR 0019 — ACP v2 as Gnostic's protocol baseline
 
+> **Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).**
+> ACP v2 only, the opt-in preview status, unanswered-permission error `-32800`,
+> and the advertised MCP transport order remain. §2's queue and quiet-period
+> idle inference are replaced by single-active-Turn admission and busy rejection.
+> §3's updates are durably journaled. Session ambiguity follows ADR 0021 §6.
+
 ## Status
 
 > **Amended (2026-10-15):** [ADR 0020](0020-timeline-first-primitives.md)

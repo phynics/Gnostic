@@ -4,6 +4,8 @@
 
 **Widened by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** The PositronicKit boundary now covers every host target, not only `GnosticCore`. Only Gnostic harness agent targets may reach PositronicKit, with a shrinking transitional allow-list ([#604](https://github.com/phynics/Gnostic/issues/604)).
 
+**Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).** No host or test target may depend on PositronicKit. The only permitted dependency is the standalone PositronicKit 7 reference Runtime executable. The harness-target exception and transitional allow-list no longer apply.
+
 Superseded for the Core dependency boundary by the GNO-PLAT-P7 Positronic
 backend extraction below. The historical investigation and the ACP
 re-evaluation remain for context; the current invariant is that `GnosticCore`

@@ -4,6 +4,8 @@
 
 **Amended by [ADR 0017](0017-acp-first-host-and-harness-agent.md) (2026-10-15).** Atlas is now an inner module of the Gnostic harness agent, parked until that agent exists. Its design reference is [#619](https://github.com/phynics/Gnostic/issues/619).
 
+**Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).** Atlas remains a parked design reference. It is not an inner Runtime or a dependency of the v0.5 host.
+
 Accepted and delivered as the RESET-006 boundary. Delivery is tracked by
 [Epic #140](https://github.com/phynics/Gnostic/issues/140), [RESET-006 #144](https://github.com/phynics/Gnostic/issues/144),
 and [RESET-001 #145](https://github.com/phynics/Gnostic/issues/145). The 0.3

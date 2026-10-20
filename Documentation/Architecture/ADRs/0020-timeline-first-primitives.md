@@ -1,5 +1,15 @@
 # ADR 0020 — Timeline-first primitives: no Agent, a Session record, Projects, and Runtime kinds
 
+> **Superseded or amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).**
+> §1's no-Agent decision and §8's retirement of Gnostic capability names remain.
+> §2's log is expanded to a durable, versioned journal with host events and
+> recovery. §3's cross-Runtime handoff is deferred. §4 adds ambiguous Session
+> state and new Sessions after Project changes. §5 retains Node-scoped Runtime
+> instances and fixes one Timeline owner. §6 replaces scratch-only placement
+> with local and scratch Projects. §7 replaces Native Runtime special Nodes
+> with ACP v2 stdio processes. §9 keeps Axoloty between Gnostic Nodes. O9 is
+> superseded.
+
 ## Status
 
 **Accepted** (2026-10-15). The owner set the direction in a design review the

@@ -18,6 +18,7 @@ const REQUIRED_FILES = [
   "Documentation/Architecture/ADRs/0002-gnostic-identity-vs-backend-state.md",
   "Documentation/Architecture/ADRs/0003-pre-1-0-manifest-and-protocol-reset.md",
   "Documentation/Architecture/ADRs/0004-atlas-supersedes-narrative.md",
+  "Documentation/Architecture/ADRs/0021-gnostic-v0-5-architecture-reconciliation.md",
   "Documentation/Architecture/exceptions.json",
   "Documentation/Architecture/experiments.json",
   COMPATIBILITY_FILE,
@@ -599,6 +600,7 @@ function writeFixture(root) {
     "0002": "0002-gnostic-identity-vs-backend-state.md",
     "0003": "0003-pre-1-0-manifest-and-protocol-reset.md",
     "0004": "0004-atlas-supersedes-narrative.md",
+    "0021": "0021-gnostic-v0-5-architecture-reconciliation.md",
   };
   for (const number of Object.keys(adrNames)) {
     files[`Documentation/Architecture/ADRs/${adrNames[number]}`] = [
