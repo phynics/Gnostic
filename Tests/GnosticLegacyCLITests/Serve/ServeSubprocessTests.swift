@@ -153,7 +153,7 @@ struct ServeSubprocessTests {
         signalDelay: Duration = .seconds(1),
         requireOnlineBeforeSignal: Bool = true
     ) async throws {
-        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_SERVE_BINARY"])
         let namespace = "serve-signal-\(UUID().uuidString.lowercased())"
         let configDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-serve-config-\(UUID().uuidString)")

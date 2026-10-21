@@ -21,6 +21,13 @@ struct GnosticJSONValueTests {
         #expect(decoded == value)
     }
 
+    @Test("decoding rejects a value that is not JSON")
+    func decodingRejectsNonJSON() {
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(GnosticJSONValue.self, from: Data("not json".utf8))
+        }
+    }
+
     @Test("decoding keeps signed and unsigned integers distinct")
     func decodingKeepsIntegerWidths() throws {
         let signed = try JSONDecoder().decode(GnosticJSONValue.self, from: Data("-12".utf8))

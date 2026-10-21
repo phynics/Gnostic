@@ -4,10 +4,8 @@ import Foundation
 import GnosticACPAscendant
 import GnosticCore
 import GnosticHost
-import GnosticLegacyPositronicHost
 import GnosticLettaBackend
 import Testing
-import GnosticPositronicBackend
 
 @testable import GnosticRunner
 
@@ -29,12 +27,8 @@ struct RunnerCompositionTests {
             "The runner must compose from BackendComposition.default, not a narrower registry."
         )
         #expect(
-            RunnerRuntime.composition.registeredPositronicExtensions
-                == GnosticHost.BackendComposition.default.registeredPositronicExtensions
-        )
-        #expect(
-            RunnerRuntime.composition.registeredPositronicExtensions.isEmpty,
-            "The clean host installs no provider-specific contribution."
+            Set(RunnerRuntime.composition.moduleDescriptors.map(\.name))
+                == Set(GnosticHost.BackendComposition.default.moduleDescriptors.map(\.name))
         )
         #expect(
             RunnerRuntime.composition.registeredKinds.isSuperset(of: [

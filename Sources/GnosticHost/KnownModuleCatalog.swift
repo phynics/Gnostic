@@ -2,12 +2,13 @@
 
 import GnosticCore
 
-/// Clean metadata for modules whose provider-specific execution remains in the
-/// temporary legacy composition target.
+/// The registry identity of every module whose provider-specific execution
+/// remains in the temporary legacy composition target.
 ///
-/// Keeping the names and registry identities visible lets config and doctor
-/// report existing manifests without loading PositronicKit into the host.
-enum LegacyModuleCatalog {
+/// The clean host knows the names and the registry identities, so config and
+/// doctor can report an existing manifest without loading PositronicKit into
+/// the host process. The clean host executes none of them.
+enum KnownModuleCatalog {
     static let atlas = GnosticModule(
         name: "atlas",
         registryID: "GNO-MOD-ATLAS"

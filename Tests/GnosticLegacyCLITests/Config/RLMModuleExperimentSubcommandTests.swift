@@ -8,9 +8,9 @@ import GnosticPositronicBackend
 @testable import GnosticLegacyCLI
 @testable import GnosticLegacyPositronicHost
 
-/// Why a binary-backed test is skipped when GNOSTIC_CLI_BINARY is unset. The
+/// Why a binary-backed test is skipped when GNOSTIC_LEGACY_CLI_BINARY is unset. The
 /// trait reports a skip, so the test never passes without running.
-private let binarySkipReason: Comment = "GNOSTIC_CLI_BINARY is unset, so this binary test is skipped. make verify sets it."
+private let binarySkipReason: Comment = "GNOSTIC_LEGACY_CLI_BINARY is unset, so this binary test is skipped. make verify sets it."
 
 /// Behavioral evidence for GNO-PLAT-022 (#450): `gnostic experiment
 /// rlm-scenario` is routed through the RLM module descriptor's optional
@@ -111,10 +111,10 @@ struct RLMModuleExperimentSubcommandTests {
 struct RLMExperimentSubcommandSubprocessTests {
     @Test(
         "gnostic experiment still lists and routes rlm-scenario after the descriptor migration",
-        .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"] != nil, binarySkipReason)
+        .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_CLI_BINARY"] != nil, binarySkipReason)
     )
     func experimentSurfacePreserved() throws {
-        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"])
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_CLI_BINARY"])
 
         let help = try run(binary: binary, arguments: ["experiment", "--help"])
         #expect(help.status == 0, Comment(rawValue: help.output))

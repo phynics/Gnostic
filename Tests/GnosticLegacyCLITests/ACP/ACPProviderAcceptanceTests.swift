@@ -112,7 +112,7 @@ struct ACPProviderAcceptanceTests {
     func selectedProviderOwnsACPSessionLifecycle() async throws {
         let binary = try #require(
             ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_CLI_BINARY"]
         )
 
         let namespace = "acp-provider-session-\(UUID().uuidString.lowercased())"
@@ -308,7 +308,7 @@ struct ACPProviderAcceptanceTests {
     func capturedProfileSurvivesServeRestart() async throws {
         let binary = try #require(
             ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_CLI_BINARY"]
         )
 
         let namespace = "acp-restart-\(UUID().uuidString.lowercased())"
@@ -464,7 +464,7 @@ struct ACPProviderAcceptanceTests {
 
         let binary = try #require(
             ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"]
-                ?? ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"]
+                ?? ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_CLI_BINARY"]
         )
         let stateHome = folder.url.appendingPathComponent("state")
         let probe = try ACPBrokerProbe(host: "127.0.0.1", port: 1883, namespace: namespace)
@@ -644,8 +644,8 @@ struct ACPProviderAcceptanceTests {
     func serveRestartOrphansRuntimeTimelineSessions() async throws {
         let environmentSource = ProcessInfo.processInfo.environment
         let binary = try #require(
-            environmentSource["GNOSTIC_SERVE_BINARY"]
-                ?? environmentSource["GNOSTIC_CLI_BINARY"]
+            environmentSource["GNOSTIC_LEGACY_SERVE_BINARY"]
+                ?? environmentSource["GNOSTIC_LEGACY_CLI_BINARY"]
                 ?? environmentSource["GNOSTIC_ACP_BINARY"]
         )
 
@@ -779,8 +779,8 @@ struct ACPProviderAcceptanceTests {
     func serveRestartResumesRuntimeTimelineSessions() async throws {
         let environmentSource = ProcessInfo.processInfo.environment
         let binary = try #require(
-            environmentSource["GNOSTIC_SERVE_BINARY"]
-                ?? environmentSource["GNOSTIC_CLI_BINARY"]
+            environmentSource["GNOSTIC_LEGACY_SERVE_BINARY"]
+                ?? environmentSource["GNOSTIC_LEGACY_CLI_BINARY"]
                 ?? environmentSource["GNOSTIC_ACP_BINARY"]
         )
 

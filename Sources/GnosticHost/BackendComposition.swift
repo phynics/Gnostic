@@ -38,8 +38,8 @@ public struct BackendComposition: Sendable {
     /// listing stays free of credentials and network access.
     public static var `default`: BackendComposition {
         var composition = BackendComposition()
-        composition.registerModule(LegacyModuleCatalog.atlas)
-        composition.registerModule(LegacyModuleCatalog.rlm)
+        composition.registerModule(KnownModuleCatalog.atlas)
+        composition.registerModule(KnownModuleCatalog.rlm)
         composition.registerLettaBackend()
         composition.registerACPBackend()
         return composition
@@ -67,14 +67,6 @@ public struct BackendComposition: Sendable {
         try Self.selectedModuleNames(for: ascendant, backend: ascendant.backend)
     }
 
-    /// Every compiled-in module that installs a provider-specific contribution.
-    ///
-    /// The clean host installs none, so this is empty. The property remains for
-    /// configuration consoles that report what the selected runtime composes.
-    public var registeredPositronicExtensions: Set<String> {
-        Set(modules.values.filter(\.installsContribution).map(\.name))
-    }
-
     /// The experiment subcommands the registered modules declare, sorted by name.
     public var registeredExperimentSubcommands: [GnosticModuleSubcommand] {
         modules.values
@@ -88,9 +80,7 @@ public struct BackendComposition: Sendable {
     /// keys, so a generic configuration command can list and validate them
     /// without knowing the module.
     public func settingsSchema(for kind: String) -> AscendantBackendSettingsSchema? {
-        guard let base = registry.settingsSchema(for: kind) else { return nil }
-        guard kind == AscendantAdapterRegistry.positronicKind else { return base }
-        return AscendantBackendSettingsSchema(keys: base.keys + Self.moduleKeys(modules))
+        registry.settingsSchema(for: kind)
     }
 
     /// Registers one compiled-in module.
@@ -225,22 +215,6 @@ public struct BackendComposition: Sendable {
             guard entry.key.hasPrefix(prefix) else { return }
             result[String(entry.key.dropFirst(prefix.count))] = entry.value
         }
-    }
-
-    private static func moduleKeys(
-        _ modules: [String: GnosticModule]
-    ) -> [AscendantBackendSettingsSchema.Key] {
-        modules.values
-            .sorted { $0.name < $1.name }
-            .flatMap { module in
-                module.settingKeys.map { key in
-                    AscendantBackendSettingsSchema.Key(
-                        name: "\(module.name).\(key.name)",
-                        summary: "\(module.name) module: \(key.summary)",
-                        isSecret: key.isSecret
-                    )
-                }
-            }
     }
 }
 

@@ -6,7 +6,7 @@ import Testing
 /// Availability gates for ACP tests that drive a built executable or an
 /// external client fixture instead of in-process types.
 ///
-/// `make verify` sets `GNOSTIC_CLI_BINARY` and `GNOSTIC_SERVE_BINARY`.
+/// `make verify` sets `GNOSTIC_LEGACY_CLI_BINARY` and `GNOSTIC_LEGACY_SERVE_BINARY`.
 /// `make acp-smoke` sets `GNOSTIC_ACP_BINARY` and both client fixtures. A
 /// direct `swift test` sets none of them, so an unavailable test is reported as
 /// skipped through `.enabled(if:)` instead of returning early and passing
@@ -27,12 +27,12 @@ enum ACPAvailability {
 
     /// Either executable that serves `gnostic acp`: the ACP binary or the CLI.
     static var hasACPCapableCLI: Bool {
-        hasACPBinary || environment("GNOSTIC_CLI_BINARY") != nil
+        hasACPBinary || environment("GNOSTIC_LEGACY_CLI_BINARY") != nil
     }
 
     /// Either executable that serves `gnostic serve` or `gnostic acp`.
     static var hasServeCapableCLI: Bool {
-        environment("GNOSTIC_SERVE_BINARY") != nil || hasACPCapableCLI
+        environment("GNOSTIC_LEGACY_SERVE_BINARY") != nil || hasACPCapableCLI
     }
 
     /// The pi-acp-client fixture entry point.
@@ -45,10 +45,10 @@ enum ACPAvailability {
         "GNOSTIC_ACP_BINARY is unset, so this binary test is skipped. make acp-smoke sets it."
 
     static let acpCLISkipReason: Comment =
-        "GNOSTIC_ACP_BINARY and GNOSTIC_CLI_BINARY are unset, so this binary test is skipped. make verify sets GNOSTIC_CLI_BINARY."
+        "GNOSTIC_ACP_BINARY and GNOSTIC_LEGACY_CLI_BINARY are unset, so this binary test is skipped. make verify sets GNOSTIC_LEGACY_CLI_BINARY."
 
     static let serveCLISkipReason: Comment =
-        "GNOSTIC_SERVE_BINARY, GNOSTIC_CLI_BINARY, and GNOSTIC_ACP_BINARY are unset, so this binary test is skipped. make verify sets the first two."
+        "GNOSTIC_LEGACY_SERVE_BINARY, GNOSTIC_LEGACY_CLI_BINARY, and GNOSTIC_ACP_BINARY are unset, so this binary test is skipped. make verify sets the first two."
 
     static let piClientSkipReason: Comment =
         "GNOSTIC_ACP_BINARY or GNOSTIC_PI_ACP_CLIENT_FIXTURE is unset, so this binary test is skipped. make acp-smoke sets both."

@@ -54,6 +54,33 @@ struct ACPSubprocessTests {
         let profiles = try JSONDecoder().decode(ACPProfileBundle.self, from: data)
         #expect(profiles.profiles.contains { $0.args.contains(lowerID.uuidString.lowercased()) })
     }
+
+    @Test(
+        "the shipped command line advertises its ACP and serve commands",
+        .timeLimit(.minutes(1)),
+        .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"] != nil, "GNOSTIC_ACP_BINARY is not set")
+    )
+    func advertisesItsCommands() async throws {
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["--help"]
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let standardError = String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        let help = String(decoding: data, as: UTF8.self)
+        #expect(help.contains("acp"))
+        #expect(help.contains("serve"))
+        #expect(help.contains("config"))
+    }
 }
 
 @MainActor

@@ -26,7 +26,7 @@ struct AtlasServeManifestTests {
     @Test("gnostic serve starts and stops with an atlas-selecting manifest", .timeLimit(.minutes(1)))
     @MainActor
     func serveStartsWithAtlasManifest() async throws {
-        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_LEGACY_SERVE_BINARY"])
         let configDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-atlas-serve-\(UUID().uuidString)")
         let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])

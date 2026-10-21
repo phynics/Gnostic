@@ -38,7 +38,8 @@ public struct GnosticModulePrerequisite: Sendable, Equatable {
 ///
 /// The host keeps only the clean descriptor surface. Provider-specific
 /// contribution and interception factories live in the transitional legacy
-/// target, so this module cannot execute PositronicKit in the host process.
+/// target, so this module cannot execute PositronicKit in the host process and
+/// this descriptor cannot say that it installs a contribution.
 ///
 /// The registry lives in the composition source; `GnosticCore` never depends on
 /// a module. Selection is static: there is no live enable, disable, or hot
@@ -67,11 +68,6 @@ public struct GnosticModule: Sendable {
     public let requiresModelService: Bool
     /// The optional experiment subcommand this module owns.
     public let experimentSubcommand: GnosticModuleSubcommand?
-    /// Whether the module installs a provider-specific contribution.
-    ///
-    /// The clean host never installs one. The flag exists so configuration
-    /// listings remain honest about a descriptor that still declares one.
-    public let installsContribution: Bool
     /// Builds the terminal Turn observers for one Ascendant.
     public let terminalTurnObservers: [ObserverFactory]
     /// Reports the module's external prerequisites for one Ascendant's settings.
@@ -84,7 +80,6 @@ public struct GnosticModule: Sendable {
         settingKeys: [AscendantBackendSettingsSchema.Key] = [],
         requiresModelService: Bool = false,
         experimentSubcommand: GnosticModuleSubcommand? = nil,
-        installsContribution: Bool = false,
         terminalTurnObservers: [ObserverFactory] = [],
         prerequisites: PrerequisiteFactory? = nil
     ) {
@@ -97,7 +92,6 @@ public struct GnosticModule: Sendable {
         self.settingKeys = settingKeys
         self.requiresModelService = requiresModelService
         self.experimentSubcommand = experimentSubcommand
-        self.installsContribution = installsContribution
         self.terminalTurnObservers = terminalTurnObservers
         self.prerequisites = prerequisites
     }

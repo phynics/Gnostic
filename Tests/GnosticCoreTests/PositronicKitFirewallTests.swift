@@ -8,6 +8,10 @@ import Testing
 /// PositronicKit runs only in the standalone ACP Runtime process. The host,
 /// core, protocol, client, kit, CLI, and frontend targets must not declare it,
 /// import it, or reach it through another target's dependency closure.
+///
+/// The checks are plain functions over parsed data so the seeded cases run
+/// through exactly the same code as the repository cases. A check that stops
+/// looking therefore fails the seeded test as well.
 @Suite("PositronicKit firewall")
 struct PositronicKitFirewallTests {
     private var root: URL {
@@ -17,7 +21,7 @@ struct PositronicKitFirewallTests {
             .deletingLastPathComponent()
     }
 
-    /// The targets that may still declare a PositronicKit product.
+    /// The targets that may still declare or import a PositronicKit product.
     ///
     /// The list is explicit on purpose. A prefix rule would silently allow a
     /// new target that only looks transitional.
@@ -26,8 +30,11 @@ struct PositronicKitFirewallTests {
     ///   transitional host composition.
     /// - `GnosticLegacy*` is the isolated transitional composition that #611
     ///   deletes.
-    /// - `GnosticReferenceRuntime` is the standalone reference Runtime
-    ///   executable that owns the only permitted PositronicKit link.
+    ///
+    /// The standalone reference Runtime executable that owns the only
+    /// permitted PositronicKit link arrives with #609. It has no name yet, so
+    /// it is not listed here. Adding it is a one-line change to this file, and
+    /// the allowance test below rejects a name that no target declares.
     private static let transitionalTargets: Set<String> = [
         "GnosticPositronicBackend",
         "GnosticPositronicAtlas",
@@ -38,10 +45,11 @@ struct PositronicKitFirewallTests {
         "GnosticLegacyPositronicHost",
         "GnosticLegacyCLI",
         "GnosticLegacyCLITests",
-        "GnosticReferenceRuntime",
     ]
 
-    private static let hostTargets = [
+    /// The shipped targets the issue names. Each one, and each of its test
+    /// targets, must stay free of PositronicKit.
+    private static let shippedTargets = [
         "GnosticProtocol",
         "GnosticCore",
         "GnosticClient",
@@ -51,77 +59,157 @@ struct PositronicKitFirewallTests {
         "GnosticACPFrontend",
     ]
 
-    @Test("no target outside the Runtime and transitional targets declares PositronicKit")
+    @Test("no target outside the transitional set declares PositronicKit")
     func packageDeclarationsAreClean() throws {
         let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
-        let targets = try parseTargets(package)
-        for target in targets {
-            guard !isAllowed(target.name) else { continue }
-            for dependency in target.dependencies where isPositronicDependency(dependency) {
-                Issue.record("Target \(target.name) declares PositronicKit dependency \(dependency).")
-            }
+        for violation in declarationViolations(package: package) {
+            Issue.record(Comment(rawValue: violation))
         }
     }
 
-    @Test("every non-transitional target closure contains no PositronicKit product")
+    @Test("no shipped target reaches PositronicKit through a dependency closure")
     func hostClosuresAreClean() throws {
         let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
         let targets = try parseTargets(package)
-        let byName = Dictionary(uniqueKeysWithValues: targets.map { ($0.name, $0) })
-        for name in Self.hostTargets {
-            _ = try #require(byName[name], "Package.swift has no target named \(name).")
+        for name in Self.shippedTargets {
+            _ = try #require(
+                targets.first(where: { $0.name == name }),
+                "Package.swift has no target named \(name)."
+            )
         }
+        for violation in closureViolations(package: package) {
+            Issue.record(Comment(rawValue: violation))
+        }
+    }
+
+    @Test("no shipped source imports PositronicKit")
+    func sourceImportsAreClean() throws {
+        var sources: [String: String] = [:]
+        for relativePath in try swiftFiles(in: root) {
+            sources[relativePath] = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        }
+        for violation in importViolations(sources: sources) {
+            Issue.record(Comment(rawValue: violation))
+        }
+    }
+
+    @Test("the allowance names only targets that exist and still need it")
+    func allowanceIsExact() throws {
+        let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let targets = try parseTargets(package)
+        let byName = Dictionary(uniqueKeysWithValues: targets.map { ($0.name, $0) })
+        for name in Self.transitionalTargets {
+            let target = try #require(
+                byName[name],
+                "The firewall allows '\(name)', but Package.swift declares no such target."
+            )
+            #expect(
+                reachesPositronic(target: target, byName: byName),
+                "The firewall allows '\(name)', but that target no longer reaches PositronicKit."
+            )
+        }
+    }
+
+    @Test("the firewall rejects a seeded illegal declaration, import, and closure")
+    func seededViolationsAreDetected() throws {
+        // A seeded package: a direct product declaration, a plain target
+        // dependency, and a two-step path into the Positronic backend.
+        let seededPackage = """
+        .target(name: "GnosticCore", dependencies: [.product(name: "PKContracts", package: "PositronicKit")]),
+        .target(name: "GnosticHost", dependencies: ["PositronicKit"]),
+        .target(name: "GnosticClient", dependencies: ["GnosticClean"]),
+        .target(name: "GnosticClean", dependencies: ["GnosticPositronicBackend"]),
+        .target(name: "GnosticPositronicBackend", dependencies: [.product(name: "PositronicKit", package: "PositronicKit")]),
+        """
+        let seededDeclarations = declarationViolations(package: seededPackage)
+        #expect(seededDeclarations.contains { $0.contains("GnosticCore") })
+        #expect(seededDeclarations.contains { $0.contains("GnosticHost") })
+
+        let seededClosures = closureViolations(package: seededPackage)
+        #expect(seededClosures.contains { $0.contains("GnosticClient") })
+        #expect(seededClosures.contains { $0.contains("GnosticClean") })
+
+        // A seeded source: an import in the kernel and one in the host, plus a
+        // scoped import that names a type from the package.
+        let seededSources = [
+            "Sources/GnosticCore/Seeded.swift": "import Foundation\nimport PositronicKit\n",
+            "Sources/GnosticHost/Seeded.swift": "import PKContracts\n",
+            "Sources/GnosticClient/Seeded.swift": "import class PositronicKit.SomeType\n",
+        ]
+        let seededImports = importViolations(sources: seededSources)
+        #expect(seededImports.contains { $0.contains("Sources/GnosticCore/Seeded.swift") })
+        #expect(seededImports.contains { $0.contains("Sources/GnosticHost/Seeded.swift") })
+        #expect(seededImports.contains { $0.contains("Sources/GnosticClient/Seeded.swift") })
+    }
+
+    // MARK: - Checks
+
+    /// Reports every target that declares a PositronicKit product outside the
+    /// transitional set.
+    private func declarationViolations(package: String) -> [String] {
+        guard let targets = try? parseTargets(package) else { return [] }
+        var violations: [String] = []
+        for target in targets where !isAllowed(target.name) {
+            for dependency in target.dependencies where isPositronicDependency(dependency) {
+                violations.append("Target \(target.name) declares PositronicKit dependency \(dependency).")
+            }
+        }
+        return violations
+    }
+
+    /// Reports every non-transitional target that reaches PositronicKit
+    /// through its dependency closure.
+    private func closureViolations(package: String) -> [String] {
+        guard let targets = try? parseTargets(package) else { return [] }
+        let byName = Dictionary(uniqueKeysWithValues: targets.map { ($0.name, $0) })
+        var violations: [String] = []
         for target in targets where !isAllowed(target.name) {
             var seen: Set<String> = []
             var queue = target.dependencies.map(dependencyName)
             while let dependency = queue.popLast() {
                 guard let dependency else { continue }
                 guard seen.insert(dependency).inserted else { continue }
-                #expect(!isPositronicDependency(dependency), "\(target.name) reaches PositronicKit through \(dependency).")
+                if isPositronicDependency(dependency) {
+                    violations.append("\(target.name) reaches PositronicKit through \(dependency).")
+                    continue
+                }
                 if let dependencyTarget = byName[dependency] {
                     queue.append(contentsOf: dependencyTarget.dependencies.map(dependencyName))
                 }
             }
         }
+        return violations
     }
 
-    @Test("no host source imports PositronicKit")
-    func sourceImportsAreClean() throws {
-        for relativePath in try swiftFiles(in: root) {
+    /// Reports every shipped source file that imports a PositronicKit product.
+    private func importViolations(sources: [String: String]) -> [String] {
+        var violations: [String] = []
+        for (relativePath, source) in sources.sorted(by: { $0.key < $1.key }) {
             let allowed = Self.transitionalTargets.contains { target in
                 relativePath.hasPrefix("Sources/\(target)/")
                     || relativePath.hasPrefix("Tests/\(target)/")
             }
             guard !allowed else { continue }
-            let source = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
             for module in importedModules(in: source) where isPositronicModule(module) {
-                Issue.record("\(relativePath) imports \(module).")
+                violations.append("\(relativePath) imports \(module).")
             }
         }
+        return violations
     }
 
-    @Test("the firewall rejects seeded illegal declarations and imports")
-    func seededIllegalImportIsDetected() throws {
-        let seededPackage = """
-        .target(name: "GnosticCore", dependencies: [.product(name: "PKContracts", package: "PositronicKit")]),
-        .target(name: "GnosticHost", dependencies: ["PositronicKit"]),
-        """
-        let seededTargets = try parseTargets(seededPackage)
-        #expect(seededTargets.count == 2)
-        #expect(seededTargets.allSatisfy { target in
-            target.dependencies.contains(where: isPositronicDependency)
-        })
-
-        // The seeded source is assembled at runtime so this test file does not
-        // itself contain a literal illegal import line.
-        let seededCoreSource = [
-            "import Foundation",
-            "import " + "Positronic" + "Kit",
-            "@testable " + "import " + "PK" + "Contracts",
-        ].joined(separator: "\n")
-        let seededModules = importedModules(in: seededCoreSource)
-        #expect(seededModules.contains("PositronicKit"))
-        #expect(seededModules.contains("PKContracts"))
+    /// Whether one target reaches a PositronicKit product.
+    private func reachesPositronic(target: Target, byName: [String: Target]) -> Bool {
+        var seen: Set<String> = []
+        var queue = target.dependencies.map(dependencyName)
+        while let dependency = queue.popLast() {
+            guard let dependency else { continue }
+            guard seen.insert(dependency).inserted else { continue }
+            if isPositronicDependency(dependency) { return true }
+            if let dependencyTarget = byName[dependency] {
+                queue.append(contentsOf: dependencyTarget.dependencies.map(dependencyName))
+            }
+        }
+        return false
     }
 
     // MARK: - Package parsing
@@ -139,12 +227,17 @@ struct PositronicKitFirewallTests {
         isPositronicModule(dependencyName(dependency) ?? dependency)
     }
 
+    /// Whether one module name names a PositronicKit product.
+    ///
+    /// A scoped import such as `import class PositronicKit.SomeType` names the
+    /// package as its root.
     private func isPositronicModule(_ name: String) -> Bool {
-        name == "PositronicKit" || name.hasPrefix("PK")
+        let root = name.split(separator: ".").first.map(String.init) ?? name
+        return root == "PositronicKit" || root.hasPrefix("PK")
     }
 
     private func dependencyName(_ dependency: String) -> String? {
-        if dependency.hasPrefix(".product(name: \"") {
+        if dependency.hasPrefix(".product(") {
             return dependency
                 .replacingOccurrences(of: ".product(name: \"", with: "")
                 .split(separator: "\"")
@@ -213,6 +306,8 @@ struct PositronicKitFirewallTests {
         dependencies.append(trimmed)
     }
 
+    // MARK: - Source parsing
+
     /// The modules one Swift source file imports.
     private func importedModules(in source: String) -> [String] {
         source.split(separator: "\n").compactMap { line -> String? in
@@ -221,11 +316,18 @@ struct PositronicKitFirewallTests {
                 || trimmed.hasPrefix("@testable import ")
                 || trimmed.hasPrefix("@_exported import ")
             guard isImport else { return nil }
-            return trimmed
-                .replacingOccurrences(of: "@testable import ", with: "")
-                .replacingOccurrences(of: "@_exported import ", with: "")
+            var module = trimmed
+                .replacingOccurrences(of: "@testable ", with: "")
+                .replacingOccurrences(of: "@_exported ", with: "")
                 .replacingOccurrences(of: "import ", with: "")
                 .trimmingCharacters(in: .whitespaces)
+            for kind in ["class ", "struct ", "enum ", "typealias ", "protocol ", "func ", "var ", "let "] {
+                if module.hasPrefix(kind) {
+                    module = String(module.dropFirst(kind.count))
+                    break
+                }
+            }
+            return module
         }
     }
 

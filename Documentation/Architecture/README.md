@@ -127,8 +127,9 @@ firewall. It parses `Package.swift` and the Swift sources, fails when a target
 outside the transitional set declares or imports a PositronicKit product
 (including `PKContracts` and `PKTestSupport`), and fails when a shipped target
 reaches one through a dependency closure. The check also detects a seeded
-illegal declaration and a seeded illegal import, so the rule cannot pass
-because it stopped looking.
+illegal declaration, a seeded illegal import, and a seeded transitive path, so
+the rule cannot pass because it stopped looking. The transitional targets are
+recorded as the exception `GNO-EXC-0002`.
 
 `PositronicWorkspaceProjection` and `PositronicJSONValueBridge` are the only
 conversion points between Gnostic values and their PositronicKit equivalents.
@@ -144,11 +145,13 @@ state, and the entry records the review decision rather than active ownership.
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. It records one accepted exception, `GNO-EXC-0001`, for the
+exception registry. It records two accepted exceptions. `GNO-EXC-0001` covers the
 Coaty vocabulary that `GnosticCore` still publishes through
 `Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift` and that
 `GnosticProtocol` publishes through
-`Sources/GnosticProtocol/CoatyObjectModel.swift`. Every
+`Sources/GnosticProtocol/CoatyObjectModel.swift`. `GNO-EXC-0002` covers the
+transitional targets that still declare a PositronicKit product until #611
+deletes them. Every
 exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,

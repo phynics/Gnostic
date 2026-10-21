@@ -37,7 +37,9 @@ public enum GnosticJSONValue: Codable, Sendable, Equatable, Hashable, CustomStri
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(String.self) {
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(String.self) {
             self = .string(value)
         } else if let value = try? container.decode(Bool.self) {
             self = .boolean(value)
@@ -52,7 +54,10 @@ public enum GnosticJSONValue: Codable, Sendable, Equatable, Hashable, CustomStri
         } else if let value = try? container.decode([GnosticJSONValue].self) {
             self = .array(value)
         } else {
-            self = .null
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "A JSON value must be a string, a number, a boolean, an object, an array, or null."
+            )
         }
     }
 
