@@ -7,10 +7,14 @@ enum ACPPermissionBridge {
     static func parameters(sessionID: String, state: AscendantPermissionState) -> GnosticJSONValue {
         .dictionary([
             "sessionId": .string(sessionID),
-            "toolCall": .dictionary([
-                "toolCallId": .string(state.toolCallID),
-                "title": .string(state.title),
-                "status": .string("pending"),
+            "title": .string(state.title),
+            "subject": .dictionary([
+                "type": .string("tool_call"),
+                "toolCall": .dictionary([
+                    "toolCallId": .string(state.toolCallID),
+                    "title": .string(state.title),
+                    "status": .string("pending"),
+                ]),
             ]),
             "options": .array([
                 .dictionary([

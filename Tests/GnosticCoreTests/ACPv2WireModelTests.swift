@@ -139,13 +139,11 @@ struct ACPv2WireModelTests {
 
         let promptResp = ACPPromptResponse(
             messageId: "msg-999",
-            stopReason: .endTurn,
             meta: ["turnDurationMs": .int(150)]
         )
         let respData = try encoder.encode(promptResp)
         let decodedResp = try decoder.decode(ACPPromptResponse.self, from: respData)
         #expect(decodedResp.messageId == "msg-999")
-        #expect(decodedResp.stopReason == .endTurn)
         #expect(decodedResp.meta?["turnDurationMs"] == .int(150))
     }
 

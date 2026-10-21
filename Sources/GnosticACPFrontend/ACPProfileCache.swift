@@ -40,7 +40,7 @@ public struct ACPProfileCache: Sendable {
               let entry = try? JSONDecoder().decode(Entry.self, from: data),
               entry.version == 1,
               entry.key == key,
-              entry.bundle.version == ACPProtocol.version,
+              entry.bundle.version == ACPProfileBundle.currentVersion,
               !entry.bundle.profiles.isEmpty else { return nil }
         let age = now.timeIntervalSince(entry.generatedAt)
         guard age >= 0, age <= Self.maxAge else { return nil }

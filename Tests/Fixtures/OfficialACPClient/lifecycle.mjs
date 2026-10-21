@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 
 const binary = process.env.GNOSTIC_ACP_BINARY;
 assert(binary, "GNOSTIC_ACP_BINARY is required");
@@ -45,13 +45,11 @@ try {
     .connectWith(stream, async (ctx) => {
       const initialized = await ctx.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: {},
-        clientInfo: { name: "gnostic-official-client-fixture", version: "1" },
+        capabilities: {},
+        info: { name: "gnostic-official-client-fixture", version: "1" },
       });
       assert.equal(initialized.protocolVersion, acp.PROTOCOL_VERSION);
-      assert(initialized.agentCapabilities.sessionCapabilities?.resume);
-      assert(initialized.agentCapabilities.sessionCapabilities?.list);
-      assert(initialized.agentCapabilities.sessionCapabilities?.close);
+      assert(initialized.capabilities.session);
 
       const created = await ctx.request(acp.methods.agent.session.new, {
         cwd,
@@ -63,15 +61,18 @@ try {
       await writeFile(timelineFile, `${created._meta.gnosticTimelineID}\n`);
       await waitForFile(attachedFile);
 
+      const firstTurnStart = updates.length;
       const completed = await ctx.request(acp.methods.agent.session.prompt, {
         sessionId: created.sessionId,
         prompt: [{ type: "text", text: "use the attached workspace" }],
         _meta: { "dev.phynics.pi-acp-client/clientTurnID": "official-client:turn-1" },
       });
-      assert.equal(completed.stopReason, "end_turn");
+      assert(completed.messageId);
+      await waitForIdle(updates, firstTurnStart);
       assert(JSON.stringify(updates).includes("workspace_echo"), JSON.stringify(updates));
 
       permissionMode = "cancel";
+      const secondTurnStart = updates.length;
       const permissionPending = new Promise((resolve) => { permissionSeen = resolve; });
       const cancelledPrompt = ctx.request(acp.methods.agent.session.prompt, {
         sessionId: created.sessionId,
@@ -79,10 +80,10 @@ try {
         _meta: { "dev.phynics.pi-acp-client/clientTurnID": "official-client:turn-2" },
       });
       await permissionPending;
-      releasePermission();
-      await Promise.resolve();
       await ctx.notify(acp.methods.agent.session.cancel, { sessionId: created.sessionId });
-      assert.equal((await cancelledPrompt).stopReason, "cancelled");
+      releasePermission();
+      assert((await cancelledPrompt).messageId);
+      await waitForIdle(updates, secondTurnStart, "cancelled");
       process.stdout.write("official ACP client permission and cancellation passed\n");
 
       const listed = await ctx.request(acp.methods.agent.session.list, { cwd });
@@ -101,6 +102,20 @@ try {
 }
 
 console.log("official ACP client lifecycle passed");
+
+async function waitForIdle(updates, start, stopReason = "end_turn") {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const idle = updates.slice(start).find((params) =>
+      params.update?.sessionUpdate === "state_update"
+        && params.update.state === "idle"
+        && params.update.stopReason === stopReason
+    );
+    if (idle) return idle;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for idle ${stopReason}: ${JSON.stringify(updates.slice(start))}`);
+}
 
 async function waitForFile(path) {
   const deadline = Date.now() + 30_000;

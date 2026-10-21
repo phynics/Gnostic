@@ -334,9 +334,11 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             let forwardingTask = Task {
                 await Self.forward(eventStream, to: updates, activeTurn: activeTurn)
             }
-            let response: ACPPromptResponse
             do {
-                response = try await withTaskCancellationHandler {
+                // ACP v2 acknowledges insertion, not completion. The turn is
+                // finished by the idle state update, which the forwarding task
+                // consumes before it returns.
+                _ = try await withTaskCancellationHandler {
                     try await connection.prompt(
                         request: ACPPromptRequest(
                             sessionId: sessionID,
@@ -349,21 +351,34 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 }
             } catch {
                 updateRouter.endTurn(sessionID: sessionID)
-                let (_, updateError) = await forwardingTask.value
-                if let updateError { throw updateError }
+                let outcome = await forwardingTask.value
+                if let updateError = outcome.error { throw updateError }
                 if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
                 throw error
             }
+            let idleTimeout = Task { @MainActor [updateRouter] in
+                try? await Task.sleep(for: .seconds(promptTimeoutSeconds))
+                guard !Task.isCancelled else { return }
+                updateRouter.endTurn(sessionID: sessionID)
+            }
+            let outcome = await forwardingTask.value
+            idleTimeout.cancel()
             updateRouter.endTurn(sessionID: sessionID)
             if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
-            let (text, streamError) = await forwardingTask.value
-            if let streamError { throw streamError }
-            if let stopReason = response.stopReason, stopReason != .endTurn {
+            if let streamError = outcome.error { throw streamError }
+            guard let stopReason = outcome.stopReason else {
+                throw AscendantBackendError.terminal(.init(
+                    code: "acpTurnStopped",
+                    message: "ACP agent did not report an idle state for the Turn."
+                ))
+            }
+            if stopReason == .cancelled { throw AscendantBackendError.cancelled }
+            if stopReason != .endTurn {
                 let message = "ACP agent stopped the Turn with reason '\(stopReason.wireValue)'."
                 throw AscendantBackendError.terminal(.init(code: "acpTurnStopped", message: message))
             }
             try await updates.append(.init(kind: .completion, terminal: true))
-            return text
+            return outcome.text
         } catch let error as AscendantBackendError {
             throw error
         } catch {
@@ -534,7 +549,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             )
             connectionStage = "initialize ACP agent"
             let response = try await protocolConnection.initialize(request: initialize)
-            sessionCapabilities = response.capabilities.session
+            sessionCapabilities = response.capabilities?.session
             return protocolConnection
         } catch {
             let failure: AscendantBackendError
@@ -592,20 +607,26 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private func handlePermissionRequest(_ request: ACPJSONRPCRequest) async throws -> ACPJSONRPCResponse {
         guard let params = request.params,
               let data = try? JSONEncoder().encode(params),
-              let permissionRequest = try? JSONDecoder().decode(ACPPermissionRequest.self, from: data) else {
+              let permissionRequest = try? JSONDecoder().decode(ACPRequestPermissionRequest.self, from: data) else {
             Self.recordPermissionFailure("malformed request", requestID: String(describing: request.id))
             return try Self.permissionResponse(for: .cancelled, requestId: request.id)
         }
 
         let sessionID = permissionRequest.sessionId
+        let toolCall: ACPToolCallUpdate? = {
+            guard case let .toolCall(toolCall)? = permissionRequest.subject else { return nil }
+            return toolCall
+        }()
+        let toolCallID = toolCall?.toolCallId ?? "acp-\(request.id)"
+        let title = toolCall?.title ?? toolCall?.name ?? permissionRequest.title
         guard let timelineID = sessionIDs.first(where: { $0.value == sessionID })?.key,
               let activeTurn = activeTurns[timelineID] else {
             Self.recordPermissionFailure(
                 "request has no active Turn",
                 requestID: String(describing: request.id),
                 sessionID: sessionID,
-                toolCallID: permissionRequest.toolCall.toolCallId,
-                title: permissionRequest.toolCall.title
+                toolCallID: toolCallID,
+                title: title
             )
             return try Self.permissionResponse(for: .cancelled, requestId: request.id)
         }
@@ -620,8 +641,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 sessionID: sessionID,
                 timelineID: timelineID,
                 clientTurnID: activeTurn.clientTurnID,
-                toolCallID: permissionRequest.toolCall.toolCallId,
-                title: permissionRequest.toolCall.title,
+                toolCallID: toolCallID,
+                title: title,
                 options: permissionRequest.options.map { "\($0.optionId):\($0.kind)" }
             )
             return try Self.permissionResponse(for: .cancelled, requestId: request.id)
@@ -632,8 +653,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             correlationID: "acp-\(request.id)",
             timelineID: timelineID,
             clientTurnID: activeTurn.clientTurnID,
-            toolCallID: permissionRequest.toolCall.toolCallId,
-            title: permissionRequest.toolCall.title ?? "External ACP tool call"
+            toolCallID: toolCallID,
+            title: title
         )
         let decision = await activeTurn.requestPermission {
             await permissionService.requestApproval(for: backendPermissionRequest)
@@ -653,10 +674,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 sessionID: sessionID,
                 timelineID: timelineID,
                 clientTurnID: activeTurn.clientTurnID,
-                toolCallID: permissionRequest.toolCall.toolCallId,
-                title: permissionRequest.toolCall.title
+                toolCallID: toolCallID,
+                title: title
             )
-            throw ACPError.requestCancelled("Permission mediation unavailable: \(reason)")
+            return try Self.permissionResponse(for: .cancelled, requestId: request.id)
         }
     }
 
@@ -880,7 +901,26 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             lifecycleFailure = failure
             return .lifecycleUnusable(failure)
         }
-        return .terminal(.init(code: "acpAgentFailure", message: redact("\(context): \(error.localizedDescription)")))
+        return .terminal(.init(
+            code: "acpAgentFailure",
+            message: redact("\(context): \(Self.describe(error))")
+        ))
+    }
+
+    /// Describes a failed agent request for the operator.
+    ///
+    /// An ACP v2 agent reports a failed request with a JSON-RPC error whose
+    /// message is generic and whose `data.details` field carries the agent's
+    /// own text. The agent's text is the actionable part, so it belongs in the
+    /// terminal failure message.
+    private nonisolated static func describe(_ error: any Error) -> String {
+        guard case let .custom(_, message, data) = error as? ACPError else {
+            return error.localizedDescription
+        }
+        guard case let .object(fields) = data, case let .string(details)? = fields["details"] else {
+            return message
+        }
+        return "\(message): \(details)"
     }
 
     private func redact(_ message: String) -> String {
@@ -1100,53 +1140,61 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         .invalidConfiguration(message)
     }
 
+    private struct ForwardOutcome: Sendable {
+        var text: String
+        var stopReason: ACPStopReason?
+        var error: (any Error)?
+    }
+
     private nonisolated static func forward(
         _ events: AsyncStream<ACPSessionUpdate>,
         to sink: any AscendantBackendUpdateSink,
         activeTurn: ACPActiveTurn
-    ) async -> (String, (any Error)?) {
+    ) async -> ForwardOutcome {
         var assistantText = ""
         var appendError: (any Error)?
+        var seenToolCalls: Set<String> = []
         for await event in events {
-            guard !(await activeTurn.isTurnCancelled) else { continue }
+            if await activeTurn.isTurnCancelled {
+                return ForwardOutcome(text: assistantText, stopReason: .cancelled, error: appendError)
+            }
+            if case let .stateUpdate(state) = event, let stopReason = state.idleStopReason {
+                return ForwardOutcome(text: assistantText, stopReason: stopReason, error: appendError)
+            }
             guard appendError == nil else { continue }
-            guard let update = backendUpdate(for: event, assistantText: &assistantText) else { continue }
+            guard let update = backendUpdate(
+                for: event,
+                assistantText: &assistantText,
+                seenToolCalls: &seenToolCalls
+            ) else { continue }
             do {
                 try await sink.append(update)
             } catch {
                 appendError = error
             }
         }
-        return (assistantText, appendError)
+        return ForwardOutcome(text: assistantText, stopReason: nil, error: appendError)
     }
 
     private nonisolated static func backendUpdate(
         for event: ACPSessionUpdate,
-        assistantText: inout String
+        assistantText: inout String,
+        seenToolCalls: inout Set<String>
     ) -> AscendantBackendUpdate? {
         switch event {
         case .agentMessageChunk(let chunk):
             guard case let .text(text) = chunk.content else { return nil }
             assistantText += text.text
             return .init(kind: .assistantText, text: text.text)
-        case .toolCall(let toolCall):
+        case .toolCallUpdate(let toolCall):
+            let isInitial = seenToolCalls.insert(toolCall.toolCallId).inserted
             return .init(
-                kind: .toolCall,
+                kind: isInitial ? .toolCall : .toolState,
                 toolState: .init(
                     toolCallID: toolCall.toolCallId,
-                    title: toolCall.title,
-                    status: toolStatus(toolCall.status, fallback: .pending),
+                    title: toolCall.title ?? toolCall.name,
+                    status: toolStatus(toolCall.status, fallback: isInitial ? .pending : .inProgress),
                     content: toolContent(toolCall.rawOutput)
-                )
-            )
-        case .toolCallUpdate(let toolUpdate):
-            return .init(
-                kind: .toolState,
-                toolState: .init(
-                    toolCallID: toolUpdate.toolCallId,
-                    title: toolUpdate.title,
-                    status: toolStatus(toolUpdate.status, fallback: .inProgress),
-                    content: toolContent(toolUpdate.rawOutput)
                 )
             )
         default:
@@ -1172,22 +1220,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
               let data = try? JSONEncoder().encode(value) else { return nil }
         return String(data: data, encoding: .utf8)
     }
-}
-
-private struct ACPPermissionRequest: Decodable, Sendable {
-    let sessionId: String
-    let toolCall: ACPPermissionToolCall
-    let options: [ACPPermissionOption]
-}
-
-private struct ACPPermissionToolCall: Decodable, Sendable {
-    let toolCallId: String
-    let title: String?
-}
-
-private struct ACPPermissionOption: Decodable, Sendable {
-    let optionId: String
-    let kind: String
 }
 
 @MainActor

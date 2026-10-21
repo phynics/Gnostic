@@ -22,27 +22,24 @@ public struct ACPImplementation: Codable, Sendable, Equatable {
         self.version = version
         self.meta = meta
     }
+}
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
-        self.title = try container.decodeIfPresent(String.self, forKey: .title)
-        self.version = try container.decodeIfPresent(String.self, forKey: .version) ?? ""
-        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+/// Presence-only capability object. Supplying `{}` advertises support.
+public struct ACPPresenceCapability: Codable, Sendable, Equatable {
+    public var meta: [String: ACPValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case meta = "_meta"
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(name, forKey: .name)
-        try container.encodeIfPresent(title, forKey: .title)
-        try container.encode(version, forKey: .version)
-        try container.encodeIfPresent(meta, forKey: .meta)
+    public init(meta: [String: ACPValue]? = nil) {
+        self.meta = meta
     }
 }
 
-/// Client capabilities declared during ACP v2 initialization.
-public struct ACPClientCapabilities: Codable, Sendable, Equatable {
-    public var terminal: Bool?
+/// Client authentication capabilities.
+public struct ACPAuthCapabilities: Codable, Sendable, Equatable {
+    public var terminal: ACPPresenceCapability?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
@@ -50,17 +47,63 @@ public struct ACPClientCapabilities: Codable, Sendable, Equatable {
         case meta = "_meta"
     }
 
-    public init(terminal: Bool? = nil, meta: [String: ACPValue]? = nil) {
+    public init(terminal: ACPPresenceCapability? = nil, meta: [String: ACPValue]? = nil) {
         self.terminal = terminal
+        self.meta = meta
+    }
+}
+
+/// Client elicitation capabilities.
+public struct ACPElicitationCapabilities: Codable, Sendable, Equatable {
+    public var form: ACPPresenceCapability?
+    public var url: ACPPresenceCapability?
+    public var meta: [String: ACPValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case form
+        case url
+        case meta = "_meta"
+    }
+
+    public init(
+        form: ACPPresenceCapability? = nil,
+        url: ACPPresenceCapability? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
+        self.form = form
+        self.url = url
+        self.meta = meta
+    }
+}
+
+/// Client capabilities declared during ACP v2 initialization.
+public struct ACPClientCapabilities: Codable, Sendable, Equatable {
+    public var auth: ACPAuthCapabilities?
+    public var elicitation: ACPElicitationCapabilities?
+    public var meta: [String: ACPValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case auth
+        case elicitation
+        case meta = "_meta"
+    }
+
+    public init(
+        auth: ACPAuthCapabilities? = nil,
+        elicitation: ACPElicitationCapabilities? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
+        self.auth = auth
+        self.elicitation = elicitation
         self.meta = meta
     }
 }
 
 /// Prompt capabilities declared by an agent in ACP v2.
 public struct ACPPromptCapabilities: Codable, Sendable, Equatable {
-    public var image: Bool?
-    public var audio: Bool?
-    public var embeddedContext: Bool?
+    public var image: ACPPresenceCapability?
+    public var audio: ACPPresenceCapability?
+    public var embeddedContext: ACPPresenceCapability?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
@@ -70,7 +113,12 @@ public struct ACPPromptCapabilities: Codable, Sendable, Equatable {
         case meta = "_meta"
     }
 
-    public init(image: Bool? = nil, audio: Bool? = nil, embeddedContext: Bool? = nil, meta: [String: ACPValue]? = nil) {
+    public init(
+        image: ACPPresenceCapability? = nil,
+        audio: ACPPresenceCapability? = nil,
+        embeddedContext: ACPPresenceCapability? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
         self.image = image
         self.audio = audio
         self.embeddedContext = embeddedContext
@@ -78,121 +126,101 @@ public struct ACPPromptCapabilities: Codable, Sendable, Equatable {
     }
 }
 
-/// Agent session capabilities declared in ACP v2.
-public struct ACPAgentSessionCapabilities: Codable, Sendable, Equatable {
-    public var list: ACPValue?
-    public var resume: ACPValue?
-    public var close: ACPValue?
-    public var additionalDirectories: Bool?
-    public var mcp: [String]?
+/// MCP transport capabilities declared by an agent.
+public struct ACPMcpCapabilities: Codable, Sendable, Equatable {
+    public var stdio: ACPPresenceCapability?
+    public var http: ACPPresenceCapability?
     public var meta: [String: ACPValue]?
 
-    public var supportsResume: Bool {
-        if let resume {
-            return resume != .boolean(false) && resume != .null
-        }
-        return true
-    }
-
-    public var supportsClose: Bool {
-        if let close {
-            return close != .boolean(false) && close != .null
-        }
-        return true
-    }
-
-    public var supportsList: Bool {
-        if let list {
-            return list != .boolean(false) && list != .null
-        }
-        if resume != nil || close != nil {
-            return false
-        }
-        return true
-    }
-
     enum CodingKeys: String, CodingKey {
-        case list
-        case resume
-        case close
-        case additionalDirectories
-        case mcp
+        case stdio
+        case http
         case meta = "_meta"
     }
 
     public init(
-        list: ACPValue? = nil,
-        resume: ACPValue? = nil,
-        close: ACPValue? = nil,
-        additionalDirectories: Bool? = nil,
-        mcp: [String]? = nil,
+        stdio: ACPPresenceCapability? = nil,
+        http: ACPPresenceCapability? = nil,
         meta: [String: ACPValue]? = nil
     ) {
-        self.list = list
-        self.resume = resume
-        self.close = close
-        self.additionalDirectories = additionalDirectories
-        self.mcp = mcp
+        self.stdio = stdio
+        self.http = http
         self.meta = meta
     }
+}
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.list = try container.decodeIfPresent(ACPValue.self, forKey: .list)
-        self.resume = try container.decodeIfPresent(ACPValue.self, forKey: .resume)
-        self.close = try container.decodeIfPresent(ACPValue.self, forKey: .close)
-        self.additionalDirectories = try container.decodeIfPresent(Bool.self, forKey: .additionalDirectories)
-        self.mcp = try container.decodeIfPresent([String].self, forKey: .mcp)
-        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+/// Agent session capabilities declared in ACP v2.
+///
+/// An empty capability object advertises the baseline session methods
+/// (`new`, `list`, `resume`, `close`, `prompt`, `cancel`, `update`).
+public struct ACPAgentSessionCapabilities: Codable, Sendable, Equatable {
+    public var prompt: ACPPromptCapabilities?
+    public var mcp: ACPMcpCapabilities?
+    public var delete: ACPPresenceCapability?
+    public var additionalDirectories: ACPPresenceCapability?
+    public var meta: [String: ACPValue]?
+
+    /// Baseline session methods are available whenever this object is present.
+    public var supportsResume: Bool { true }
+    public var supportsClose: Bool { true }
+    public var supportsList: Bool { true }
+
+    enum CodingKeys: String, CodingKey {
+        case prompt
+        case mcp
+        case delete
+        case additionalDirectories
+        case meta = "_meta"
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(list, forKey: .list)
-        try container.encodeIfPresent(resume, forKey: .resume)
-        try container.encodeIfPresent(close, forKey: .close)
-        try container.encodeIfPresent(additionalDirectories, forKey: .additionalDirectories)
-        try container.encodeIfPresent(mcp, forKey: .mcp)
-        try container.encodeIfPresent(meta, forKey: .meta)
+    public init(
+        prompt: ACPPromptCapabilities? = nil,
+        mcp: ACPMcpCapabilities? = nil,
+        delete: ACPPresenceCapability? = nil,
+        additionalDirectories: ACPPresenceCapability? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
+        self.prompt = prompt
+        self.mcp = mcp
+        self.delete = delete
+        self.additionalDirectories = additionalDirectories
+        self.meta = meta
+    }
+}
+
+/// Agent authentication extension capabilities.
+public struct ACPAgentAuthCapabilities: Codable, Sendable, Equatable {
+    public var meta: [String: ACPValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case meta = "_meta"
+    }
+
+    public init(meta: [String: ACPValue]? = nil) {
+        self.meta = meta
     }
 }
 
 /// Agent capabilities declared during ACP v2 initialization.
 public struct ACPAgentCapabilities: Codable, Sendable, Equatable {
     public var session: ACPAgentSessionCapabilities?
-    public var prompt: ACPPromptCapabilities?
+    public var auth: ACPAgentAuthCapabilities?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case session
-        case sessionCapabilities
-        case prompt
+        case auth
         case meta = "_meta"
     }
 
     public init(
         session: ACPAgentSessionCapabilities? = nil,
-        prompt: ACPPromptCapabilities? = nil,
+        auth: ACPAgentAuthCapabilities? = nil,
         meta: [String: ACPValue]? = nil
     ) {
         self.session = session
-        self.prompt = prompt
+        self.auth = auth
         self.meta = meta
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.session = try container.decodeIfPresent(ACPAgentSessionCapabilities.self, forKey: .session)
-            ?? container.decodeIfPresent(ACPAgentSessionCapabilities.self, forKey: .sessionCapabilities)
-        self.prompt = try container.decodeIfPresent(ACPPromptCapabilities.self, forKey: .prompt)
-        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(session, forKey: .session)
-        try container.encodeIfPresent(prompt, forKey: .prompt)
-        try container.encodeIfPresent(meta, forKey: .meta)
     }
 }
 
@@ -206,9 +234,7 @@ public struct ACPInitializeRequest: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion
         case info
-        case clientInfo
         case capabilities
-        case clientCapabilities
         case meta = "_meta"
     }
 
@@ -223,43 +249,20 @@ public struct ACPInitializeRequest: Codable, Sendable, Equatable {
         self.capabilities = capabilities
         self.meta = meta
     }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.protocolVersion = try container.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? ACPv2Protocol.protocolVersion
-        self.info = try container.decodeIfPresent(ACPImplementation.self, forKey: .info)
-            ?? container.decodeIfPresent(ACPImplementation.self, forKey: .clientInfo)
-            ?? ACPImplementation(name: "unknown", version: "0.0.0")
-        self.capabilities = try container.decodeIfPresent(ACPClientCapabilities.self, forKey: .capabilities)
-            ?? container.decodeIfPresent(ACPClientCapabilities.self, forKey: .clientCapabilities)
-        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(protocolVersion, forKey: .protocolVersion)
-        try container.encode(info, forKey: .info)
-        try container.encode(info, forKey: .clientInfo)
-        try container.encodeIfPresent(capabilities, forKey: .capabilities)
-        try container.encodeIfPresent(capabilities, forKey: .clientCapabilities)
-        try container.encodeIfPresent(meta, forKey: .meta)
-    }
 }
 
 /// Response returned by the `initialize` method in ACP v2.
 public struct ACPInitializeResponse: Codable, Sendable, Equatable {
     public var protocolVersion: Int
     public var info: ACPImplementation
-    public var capabilities: ACPAgentCapabilities
+    public var capabilities: ACPAgentCapabilities?
     public var authMethods: [ACPValue]?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion
         case info
-        case agentInfo
         case capabilities
-        case agentCapabilities
         case authMethods
         case meta = "_meta"
     }
@@ -267,7 +270,7 @@ public struct ACPInitializeResponse: Codable, Sendable, Equatable {
     public init(
         protocolVersion: Int = ACPv2Protocol.protocolVersion,
         info: ACPImplementation,
-        capabilities: ACPAgentCapabilities,
+        capabilities: ACPAgentCapabilities? = nil,
         authMethods: [ACPValue]? = nil,
         meta: [String: ACPValue]? = nil
     ) {
@@ -277,44 +280,55 @@ public struct ACPInitializeResponse: Codable, Sendable, Equatable {
         self.authMethods = authMethods
         self.meta = meta
     }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.protocolVersion = try container.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? ACPv2Protocol.protocolVersion
-        self.info = try container.decodeIfPresent(ACPImplementation.self, forKey: .info)
-            ?? container.decodeIfPresent(ACPImplementation.self, forKey: .agentInfo)
-            ?? ACPImplementation(name: "unknown", version: "0.0.0")
-        self.capabilities = try container.decodeIfPresent(ACPAgentCapabilities.self, forKey: .capabilities)
-            ?? container.decodeIfPresent(ACPAgentCapabilities.self, forKey: .agentCapabilities)
-            ?? ACPAgentCapabilities()
-        self.authMethods = try container.decodeIfPresent([ACPValue].self, forKey: .authMethods)
-        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(protocolVersion, forKey: .protocolVersion)
-        try container.encode(info, forKey: .info)
-        try container.encode(capabilities, forKey: .capabilities)
-        try container.encodeIfPresent(authMethods, forKey: .authMethods)
-        try container.encodeIfPresent(meta, forKey: .meta)
-    }
 }
 
-/// MCP server configuration passed in session initialization.
-public struct ACPMcpServer: Codable, Sendable, Equatable {
+/// Environment variable entry.
+public struct ACPEnvVariable: Codable, Sendable, Equatable {
     public var name: String
-    public var type: String
-    public var command: String?
-    public var args: [String]?
-    public var env: [String: String]?
-    public var url: String?
-    public var headers: [String: String]?
+    public var value: String
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case name
+        case value
+        case meta = "_meta"
+    }
+
+    public init(name: String, value: String, meta: [String: ACPValue]? = nil) {
+        self.name = name
+        self.value = value
+        self.meta = meta
+    }
+}
+
+/// HTTP header for an HTTP MCP server.
+public struct ACPMcpHTTPHeader: Codable, Sendable, Equatable {
+    public var name: String
+    public var value: String
+    public var meta: [String: ACPValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case value
+        case meta = "_meta"
+    }
+
+    public init(name: String, value: String, meta: [String: ACPValue]? = nil) {
+        self.name = name
+        self.value = value
+        self.meta = meta
+    }
+}
+
+/// MCP server configuration passed in session initialization.
+public enum ACPMcpServer: Codable, Sendable, Equatable {
+    case stdio(name: String, command: String, args: [String]?, env: [ACPEnvVariable]?, meta: [String: ACPValue]?)
+    case http(name: String, url: String, headers: [ACPMcpHTTPHeader]?, meta: [String: ACPValue]?)
+    case other(type: String, fields: [String: ACPValue])
+
+    private enum CodingKeys: String, CodingKey {
         case type
+        case name
         case command
         case args
         case env
@@ -323,24 +337,54 @@ public struct ACPMcpServer: Codable, Sendable, Equatable {
         case meta = "_meta"
     }
 
-    public init(
-        name: String,
-        type: String,
-        command: String? = nil,
-        args: [String]? = nil,
-        env: [String: String]? = nil,
-        url: String? = nil,
-        headers: [String: String]? = nil,
-        meta: [String: ACPValue]? = nil
-    ) {
-        self.name = name
-        self.type = type
-        self.command = command
-        self.args = args
-        self.env = env
-        self.url = url
-        self.headers = headers
-        self.meta = meta
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        switch type {
+        case "stdio":
+            let name = try container.decode(String.self, forKey: .name)
+            let command = try container.decode(String.self, forKey: .command)
+            let args = try container.decodeIfPresent([String].self, forKey: .args)
+            let env = try container.decodeIfPresent([ACPEnvVariable].self, forKey: .env)
+            let meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+            self = .stdio(name: name, command: command, args: args, env: env, meta: meta)
+        case "http":
+            let name = try container.decode(String.self, forKey: .name)
+            let url = try container.decode(String.self, forKey: .url)
+            let headers = try container.decodeIfPresent([ACPMcpHTTPHeader].self, forKey: .headers)
+            let meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+            self = .http(name: name, url: url, headers: headers, meta: meta)
+        default:
+            let single = try decoder.singleValueContainer()
+            var fields = (try? single.decode([String: ACPValue].self)) ?? [:]
+            fields.removeValue(forKey: "type")
+            self = .other(type: type, fields: fields)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case let .stdio(name, command, args, env, meta):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode("stdio", forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(command, forKey: .command)
+            try container.encodeIfPresent(args, forKey: .args)
+            try container.encodeIfPresent(env, forKey: .env)
+            try container.encodeIfPresent(meta, forKey: .meta)
+        case let .http(name, url, headers, meta):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode("http", forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(url, forKey: .url)
+            try container.encodeIfPresent(headers, forKey: .headers)
+            try container.encodeIfPresent(meta, forKey: .meta)
+        case let .other(type, fields):
+            var combined = fields
+            combined["type"] = .string(type)
+            var container = encoder.singleValueContainer()
+            try container.encode(combined)
+        }
     }
 }
 
@@ -348,17 +392,25 @@ public struct ACPMcpServer: Codable, Sendable, Equatable {
 public struct ACPNewSessionRequest: Codable, Sendable, Equatable {
     public var cwd: String
     public var mcpServers: [ACPMcpServer]?
+    public var additionalDirectories: [String]?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case cwd
         case mcpServers
+        case additionalDirectories
         case meta = "_meta"
     }
 
-    public init(cwd: String, mcpServers: [ACPMcpServer]? = nil, meta: [String: ACPValue]? = nil) {
+    public init(
+        cwd: String,
+        mcpServers: [ACPMcpServer]? = nil,
+        additionalDirectories: [String]? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
         self.cwd = cwd
         self.mcpServers = mcpServers
+        self.additionalDirectories = additionalDirectories
         self.meta = meta
     }
 }
@@ -366,15 +418,26 @@ public struct ACPNewSessionRequest: Codable, Sendable, Equatable {
 /// Response returned by the `session/new` method in ACP v2.
 public struct ACPNewSessionResponse: Codable, Sendable, Equatable {
     public var sessionId: String
+    public var configOptions: [ACPValue]?
+    public var availableCommands: [ACPValue]?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId
+        case configOptions
+        case availableCommands
         case meta = "_meta"
     }
 
-    public init(sessionId: String, meta: [String: ACPValue]? = nil) {
+    public init(
+        sessionId: String,
+        configOptions: [ACPValue]? = nil,
+        availableCommands: [ACPValue]? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
         self.sessionId = sessionId
+        self.configOptions = configOptions
+        self.availableCommands = availableCommands
         self.meta = meta
     }
 }
@@ -399,20 +462,20 @@ public struct ACPPromptRequest: Codable, Sendable, Equatable {
 }
 
 /// Response returned by the `session/prompt` method in ACP v2.
+///
+/// The response acknowledges insertion only. Completion arrives as an idle
+/// `state_update` session update.
 public struct ACPPromptResponse: Codable, Sendable, Equatable {
-    public var messageId: String?
-    public var stopReason: ACPStopReason?
+    public var messageId: String
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case messageId
-        case stopReason
         case meta = "_meta"
     }
 
-    public init(messageId: String? = nil, stopReason: ACPStopReason? = nil, meta: [String: ACPValue]? = nil) {
+    public init(messageId: String, meta: [String: ACPValue]? = nil) {
         self.messageId = messageId
-        self.stopReason = stopReason
         self.meta = meta
     }
 }
@@ -453,19 +516,28 @@ public struct ACPCancelRequestNotification: Codable, Sendable, Equatable {
 public struct ACPResumeSessionRequest: Codable, Sendable, Equatable {
     public var sessionId: String
     public var cwd: String
+    public var additionalDirectories: [String]?
     public var mcpServers: [ACPMcpServer]?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId
         case cwd
+        case additionalDirectories
         case mcpServers
         case meta = "_meta"
     }
 
-    public init(sessionId: String, cwd: String, mcpServers: [ACPMcpServer]? = nil, meta: [String: ACPValue]? = nil) {
+    public init(
+        sessionId: String,
+        cwd: String,
+        additionalDirectories: [String]? = nil,
+        mcpServers: [ACPMcpServer]? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
         self.sessionId = sessionId
         self.cwd = cwd
+        self.additionalDirectories = additionalDirectories
         self.mcpServers = mcpServers
         self.meta = meta
     }
@@ -473,13 +545,23 @@ public struct ACPResumeSessionRequest: Codable, Sendable, Equatable {
 
 /// Response returned by `session/resume` in ACP v2.
 public struct ACPResumeSessionResponse: Codable, Sendable, Equatable {
+    public var configOptions: [ACPValue]?
+    public var availableCommands: [ACPValue]?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
+        case configOptions
+        case availableCommands
         case meta = "_meta"
     }
 
-    public init(meta: [String: ACPValue]? = nil) {
+    public init(
+        configOptions: [ACPValue]? = nil,
+        availableCommands: [ACPValue]? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
+        self.configOptions = configOptions
+        self.availableCommands = availableCommands
         self.meta = meta
     }
 }
@@ -516,21 +598,34 @@ public struct ACPCloseSessionResponse: Codable, Sendable, Equatable {
 /// Session summary info reported by `session/list`.
 public struct ACPSessionInfo: Codable, Sendable, Equatable {
     public var sessionId: String
+    public var cwd: String
+    public var additionalDirectories: [String]?
     public var title: String?
-    public var cwd: String?
+    public var updatedAt: String?
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId
-        case title
         case cwd
+        case additionalDirectories
+        case title
+        case updatedAt
         case meta = "_meta"
     }
 
-    public init(sessionId: String, title: String? = nil, cwd: String? = nil, meta: [String: ACPValue]? = nil) {
+    public init(
+        sessionId: String,
+        cwd: String,
+        additionalDirectories: [String]? = nil,
+        title: String? = nil,
+        updatedAt: String? = nil,
+        meta: [String: ACPValue]? = nil
+    ) {
         self.sessionId = sessionId
-        self.title = title
         self.cwd = cwd
+        self.additionalDirectories = additionalDirectories
+        self.title = title
+        self.updatedAt = updatedAt
         self.meta = meta
     }
 }
@@ -575,48 +670,23 @@ public struct ACPListSessionsResponse: Codable, Sendable, Equatable {
 
 /// Permission option provided in `session/request_permission`.
 public struct ACPPermissionOption: Codable, Sendable, Equatable {
-    public var id: String
-    public var title: String?
-    public var kind: String?
+    public var optionId: String
+    public var name: String
+    public var kind: String
     public var meta: [String: ACPValue]?
 
-    public var optionId: String { id }
-
     enum CodingKeys: String, CodingKey {
-        case id
         case optionId
-        case title
+        case name
         case kind
         case meta = "_meta"
     }
 
-    public init(id: String, title: String? = nil, kind: String? = nil, meta: [String: ACPValue]? = nil) {
-        self.id = id
-        self.title = title
+    public init(optionId: String, name: String, kind: String, meta: [String: ACPValue]? = nil) {
+        self.optionId = optionId
+        self.name = name
         self.kind = kind
         self.meta = meta
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let val = try container.decodeIfPresent(String.self, forKey: .id) {
-            self.id = val
-        } else if let val = try container.decodeIfPresent(String.self, forKey: .optionId) {
-            self.id = val
-        } else {
-            self.id = ""
-        }
-        self.title = try container.decodeIfPresent(String.self, forKey: .title)
-        self.kind = try container.decodeIfPresent(String.self, forKey: .kind)
-        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encodeIfPresent(title, forKey: .title)
-        try container.encodeIfPresent(kind, forKey: .kind)
-        try container.encodeIfPresent(meta, forKey: .meta)
     }
 }
 
@@ -642,21 +712,96 @@ public struct ACPRequestPermissionOutcome: Codable, Sendable, Equatable {
         self.optionId = optionId
         self.meta = meta
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.outcome = try container.decode(String.self, forKey: .outcome)
+        self.optionId = try container.decodeIfPresent(String.self, forKey: .optionId)
+        self.meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+        if outcome == "selected", optionId == nil {
+            throw DecodingError.dataCorruptedError(
+                forKey: .optionId,
+                in: container,
+                debugDescription: "A selected permission outcome requires 'optionId'"
+            )
+        }
+    }
+}
+
+/// The operation requiring permission in ACP v2.
+public enum ACPRequestPermissionSubject: Codable, Sendable, Equatable {
+    case toolCall(ACPToolCallUpdate)
+    case command(command: String, cwd: String, toolCallId: String?, terminalId: String?, meta: [String: ACPValue]?)
+    case other(type: String, fields: [String: ACPValue])
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case toolCall
+        case command
+        case cwd
+        case toolCallId
+        case terminalId
+        case meta = "_meta"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        let single = try decoder.singleValueContainer()
+        switch type {
+        case "tool_call":
+            self = .toolCall(try container.decode(ACPToolCallUpdate.self, forKey: .toolCall))
+        case "command":
+            self = .command(
+                command: try container.decode(String.self, forKey: .command),
+                cwd: try container.decode(String.self, forKey: .cwd),
+                toolCallId: try container.decodeIfPresent(String.self, forKey: .toolCallId),
+                terminalId: try container.decodeIfPresent(String.self, forKey: .terminalId),
+                meta: try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+            )
+        default:
+            var fields = (try? single.decode([String: ACPValue].self)) ?? [:]
+            fields.removeValue(forKey: "type")
+            self = .other(type: type, fields: fields)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case let .toolCall(toolCall):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode("tool_call", forKey: .type)
+            try container.encode(toolCall, forKey: .toolCall)
+        case let .command(command, cwd, toolCallId, terminalId, meta):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode("command", forKey: .type)
+            try container.encode(command, forKey: .command)
+            try container.encode(cwd, forKey: .cwd)
+            try container.encodeIfPresent(toolCallId, forKey: .toolCallId)
+            try container.encodeIfPresent(terminalId, forKey: .terminalId)
+            try container.encodeIfPresent(meta, forKey: .meta)
+        case let .other(type, fields):
+            var combined = fields
+            combined["type"] = .string(type)
+            var container = encoder.singleValueContainer()
+            try container.encode(combined)
+        }
+    }
 }
 
 /// Request parameters for `session/request_permission` in ACP v2.
 public struct ACPRequestPermissionRequest: Codable, Sendable, Equatable {
     public var sessionId: String
-    public var toolCall: ACPToolCallUpdate?
-    public var title: String?
-    public var subject: ACPValue?
+    public var title: String
+    public var description: String?
+    public var subject: ACPRequestPermissionSubject?
     public var options: [ACPPermissionOption]
     public var meta: [String: ACPValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId
-        case toolCall
         case title
+        case description
         case subject
         case options
         case meta = "_meta"
@@ -664,15 +809,15 @@ public struct ACPRequestPermissionRequest: Codable, Sendable, Equatable {
 
     public init(
         sessionId: String,
-        toolCall: ACPToolCallUpdate? = nil,
-        title: String? = nil,
-        subject: ACPValue? = nil,
+        title: String,
+        description: String? = nil,
+        subject: ACPRequestPermissionSubject? = nil,
         options: [ACPPermissionOption],
         meta: [String: ACPValue]? = nil
     ) {
         self.sessionId = sessionId
-        self.toolCall = toolCall
         self.title = title
+        self.description = description
         self.subject = subject
         self.options = options
         self.meta = meta

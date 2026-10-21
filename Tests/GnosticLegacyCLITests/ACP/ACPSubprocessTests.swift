@@ -236,8 +236,8 @@ struct ACPSubprocessTests {
         }
 
         try send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("acp-credentials"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("acp-credentials"), "version": .string("1")]),
         ])))
         var iterator = outputLines.stream.makeAsyncIterator()
         let initialized = try await readResponse(from: &iterator)
@@ -402,8 +402,8 @@ struct ACPSubprocessTests {
         }
 
         try send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
         ])))
         var outputIterator = outputLines.stream.makeAsyncIterator()
         let initialized = try await readResponse(from: &outputIterator)
@@ -521,7 +521,11 @@ struct ACPSubprocessTests {
         let cancelledPrompt = try await readResponse(from: &outputIterator)
         #expect(cancelledPrompt.id == .number(5))
         #expect(cancelledPrompt.error == nil)
-        #expect(cancelledPrompt.result == .dictionary(["stopReason": .string("cancelled")]))
+        guard case let .dictionary(cancelledResult)? = cancelledPrompt.result else {
+            Issue.record("session/prompt returned no result")
+            return
+        }
+        #expect(cancelledResult["messageId"] == .string("acp:user:acp-smoke:turn-2"))
 
         try send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
             "sessionId": .string(sessionID),
@@ -559,8 +563,8 @@ struct ACPSubprocessTests {
 
         var resumedIterator = resumedLines.stream.makeAsyncIterator()
         try sendAfterRestart(JSONRPCRequest(id: .number(9), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("acp-smoke"), "version": .string("1")]),
         ])))
         #expect(try await readResponse(from: &resumedIterator).error == nil)
 

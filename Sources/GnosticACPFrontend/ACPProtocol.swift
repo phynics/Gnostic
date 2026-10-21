@@ -79,6 +79,14 @@ public struct ACPProfile: Codable, Sendable {
 }
 
 public struct ACPProfileBundle: Codable, Sendable {
+    /// The profile bundle format version.
+    ///
+    /// The bundle is a profile-file format for the Pi client, not the ACP wire
+    /// protocol. Its version therefore moves independently of
+    /// `ACPProtocol.version`, and a cached bundle stays valid when the ACP
+    /// protocol version changes.
+    public static let currentVersion = 1
+
     public let version: Int
     public let defaultProfile: String?
     public let profiles: [ACPProfile]

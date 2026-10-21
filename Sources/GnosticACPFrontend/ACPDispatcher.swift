@@ -74,34 +74,13 @@ final class ACPDispatcher: Sendable {
         ascendant = try await resolveAscendant()
         return .dictionary([
             "protocolVersion": .integer(Int64(ACPProtocol.version)),
-            "capabilities": .dictionary([
-                "promptCapabilities": .dictionary([
-                    "image": .boolean(false),
-                    "audio": .boolean(false),
-                    "embeddedContext": .boolean(false),
-                ]),
-                "session": .dictionary([
-                    "resume": .dictionary([:]),
-                    "list": .dictionary([:]),
-                    "close": .dictionary([:]),
-                ]),
-            ]),
-            "agentCapabilities": .dictionary([
-                "promptCapabilities": .dictionary([
-                    "image": .boolean(false),
-                    "audio": .boolean(false),
-                    "embeddedContext": .boolean(false),
-                ]),
-                "sessionCapabilities": .dictionary([
-                    "resume": .dictionary([:]),
-                    "list": .dictionary([:]),
-                    "close": .dictionary([:]),
-                ]),
-            ]),
-            "agentInfo": .dictionary([
+            "info": .dictionary([
                 "name": .string("gnostic-acp"),
                 "title": .string("Gnostic ACP"),
                 "version": .string("0.5.0"),
+            ]),
+            "capabilities": .dictionary([
+                "session": .dictionary([:]),
             ]),
         ])
     }
@@ -276,6 +255,8 @@ final class ACPDispatcher: Sendable {
             turnID = "acp:\(record.id):\(UUID().uuidString.lowercased())"
         }
 
+        let messageID = "acp:user:\(turnID)"
+
         // A reconnect may retry a completed turn after the coordinator's
         // terminal-result cache has expired. The replay store is authoritative
         // for the bounded update stream, so consume it before attempting
@@ -289,6 +270,7 @@ final class ACPDispatcher: Sendable {
             if let error = existing.updates.last(where: \.isTerminalFailure) {
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
+            publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
             for update in existing.updates {
                 publishUpdate(
                     sessionID: record.id,
@@ -297,8 +279,11 @@ final class ACPDispatcher: Sendable {
                     replayed: true
                 )
             }
-            return .dictionary(["stopReason": .string("end_turn")])
+            publishState(sessionID: record.id, state: "idle", stopReason: "end_turn", turnID: turnID)
+            return .dictionary(["messageId": .string(messageID)])
         }
+        publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
+        publishState(sessionID: record.id, state: "running", stopReason: nil, turnID: turnID)
         let resultAndSequence: (AscendantTurnResult, Int)
         do {
             resultAndSequence = try await streamPrompt(
@@ -308,12 +293,15 @@ final class ACPDispatcher: Sendable {
             )
         } catch {
             if cancelledSessions.contains(input.sessionID) {
-                return .dictionary(["stopReason": .string("cancelled")])
+                publishState(sessionID: record.id, state: "idle", stopReason: "cancelled", turnID: turnID)
+                return .dictionary(["messageId": .string(messageID)])
             }
+            publishState(sessionID: record.id, state: "idle", stopReason: "error", turnID: turnID)
             throw await orphanAwareError(error, for: record)
         }
         if cancelledSessions.contains(input.sessionID) {
-            return .dictionary(["stopReason": .string("cancelled")])
+            publishState(sessionID: record.id, state: "idle", stopReason: "cancelled", turnID: turnID)
+            return .dictionary(["messageId": .string(messageID)])
         }
         let (result, lastSequence) = resultAndSequence
         let replay = try? await client.replay(
@@ -342,7 +330,8 @@ final class ACPDispatcher: Sendable {
             }
         }
         try await registry.touch(id: record.id)
-        return .dictionary(["stopReason": .string("end_turn")])
+        publishState(sessionID: record.id, state: "idle", stopReason: "end_turn", turnID: turnID)
+        return .dictionary(["messageId": .string(messageID)])
     }
 
     /// The Ascendant operation remains an authoritative unary completion, but
@@ -525,6 +514,45 @@ final class ACPDispatcher: Sendable {
             clientTurnID: turnID,
             approved: false
         ), providerID: providerID)
+    }
+
+    private func publishUserMessage(
+        sessionID: String,
+        messageID: String,
+        text: String,
+        turnID: String
+    ) {
+        publish("session/update", .dictionary([
+            "sessionId": .string(sessionID),
+            "update": .dictionary([
+                "sessionUpdate": .string("user_message"),
+                "messageId": .string(messageID),
+                "content": .array([
+                    .dictionary(["type": .string("text"), "text": .string(text)]),
+                ]),
+                "_meta": .dictionary(["clientTurnID": .string(turnID)]),
+            ]),
+        ]))
+    }
+
+    private func publishState(
+        sessionID: String,
+        state: String,
+        stopReason: String?,
+        turnID: String
+    ) {
+        var update: [String: GnosticJSONValue] = [
+            "sessionUpdate": .string("state_update"),
+            "state": .string(state),
+            "_meta": .dictionary(["clientTurnID": .string(turnID)]),
+        ]
+        if let stopReason {
+            update["stopReason"] = .string(stopReason)
+        }
+        publish("session/update", .dictionary([
+            "sessionId": .string(sessionID),
+            "update": .dictionary(update),
+        ]))
     }
 
     private func publishUpdate(

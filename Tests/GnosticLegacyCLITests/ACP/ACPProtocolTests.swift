@@ -420,10 +420,14 @@ struct ACPProtocolTests {
             state: state
         ).dictionaryValue)
         #expect(params["sessionId"] == .string("session-1"))
-        #expect(params["toolCall"] == .dictionary([
-            "toolCallId": .string("call-1"),
-            "title": .string("Read file"),
-            "status": .string("pending"),
+        #expect(params["title"] == .string("Read file"))
+        #expect(params["subject"] == .dictionary([
+            "type": .string("tool_call"),
+            "toolCall": .dictionary([
+                "toolCallId": .string("call-1"),
+                "title": .string("Read file"),
+                "status": .string("pending"),
+            ]),
         ]))
         #expect(params["options"] == .array([
             .dictionary([

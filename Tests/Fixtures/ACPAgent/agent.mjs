@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 
 const statePath = process.env.GNOSTIC_ACP_FIXTURE_STATE;
 assert(statePath, "GNOSTIC_ACP_FIXTURE_STATE is required");
@@ -37,14 +37,8 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
-      agentCapabilities: {
-        sessionCapabilities: {
-          ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : { list: {} }),
-          resume: {},
-          close: {},
-        },
-      },
-      agentInfo: { name: "gnostic-deterministic-acp-fixture", version: "1" },
+      ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : { capabilities: { session: {} } }),
+      info: { name: "gnostic-deterministic-acp-fixture", version: "1" },
     };
   })
   .onRequest(acp.methods.agent.session.new, async ({ params }) => {
@@ -125,6 +119,19 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
+    const userMessageId = "fixture-user-1";
+    await client.notify(acp.methods.client.session.update, {
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: "user_message",
+        messageId: userMessageId,
+        content: [{ type: "text", text: promptText }],
+      },
+    });
+    await client.notify(acp.methods.client.session.update, {
+      sessionId: params.sessionId,
+      update: { sessionUpdate: "state_update", state: "running" },
+    });
     if (promptText.includes("[fixture:wait]")) {
       if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
         await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE, `${params.sessionId}\n`);
@@ -142,7 +149,11 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
             content: { type: "text", text: "late update" },
           },
         });
-        return { stopReason: "cancelled" };
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: "state_update", state: "idle", stopReason: "cancelled" },
+        });
+        return { messageId: userMessageId };
       }
     }
     if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS) {
@@ -178,11 +189,15 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     if (process.env.GNOSTIC_ACP_FIXTURE_PERMISSION === "1") {
       const permission = await client.request(acp.methods.client.session.requestPermission, {
         sessionId: params.sessionId,
-        toolCall: {
-          toolCallId: "fixture-permission-tool",
-          title: "Inspect fixture input",
-          kind: "read",
-          status: "pending",
+        title: "Inspect fixture input",
+        subject: {
+          type: "tool_call",
+          toolCall: {
+            toolCallId: "fixture-permission-tool",
+            title: "Inspect fixture input",
+            kind: "read",
+            status: "pending",
+          },
         },
         options: process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_CLAUDE === "1"
           ? [
@@ -206,6 +221,13 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       } else {
         assert.deepEqual(permission.outcome, { outcome: "cancelled" });
       }
+      if (cancelledSessions.has(params.sessionId)) {
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: "state_update", state: "idle", stopReason: "cancelled" },
+        });
+        return { messageId: userMessageId };
+      }
     }
 
     const messageId = "fixture-message-1";
@@ -228,7 +250,7 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
       update: {
-        sessionUpdate: "tool_call",
+        sessionUpdate: "tool_call_update",
         toolCallId: "fixture-tool-1",
         title: "Inspect fixture input",
         name: "fixture.inspect",
@@ -253,7 +275,11 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     if (process.env.GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS) {
       setTimeout(() => process.exit(19), Number(process.env.GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS));
     }
-    return { stopReason };
+    await client.notify(acp.methods.client.session.update, {
+      sessionId: params.sessionId,
+      update: { sessionUpdate: "state_update", state: "idle", stopReason },
+    });
+    return { messageId: userMessageId };
   });
 
 const stream = acp.ndJsonStream(
