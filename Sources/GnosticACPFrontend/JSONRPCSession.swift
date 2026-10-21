@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticCore
 import GnosticProtocol
-import PKContracts
+import GnosticCore
 
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
 /// cancellation; the injected handler owns domain semantics.
@@ -14,8 +13,8 @@ public actor JSONRPCSession {
         case stopped
     }
 
-    public typealias RequestHandler = @Sendable (JSONRPCRequest) async throws -> AnyCodable
-    public typealias InitializeHandler = @Sendable () async throws -> AnyCodable
+    public typealias RequestHandler = @Sendable (JSONRPCRequest) async throws -> GnosticJSONValue
+    public typealias InitializeHandler = @Sendable () async throws -> GnosticJSONValue
     public typealias ResponseHandler = @Sendable (JSONRPCResponse) async -> Void
     public typealias Output = @Sendable (Data) -> Void
 
@@ -30,7 +29,7 @@ public actor JSONRPCSession {
     public init(handler: @escaping RequestHandler, output: @escaping Output) {
         self.init(handler: handler, output: output, initialize: {
             .dictionary([
-                "protocolVersion": .integer(Int64(ACPProtocol.version)),
+                "protocolVersion": .integer(2),
                 "capabilities": .dictionary(["cancellation": .boolean(true)]),
             ])
         })
@@ -82,7 +81,7 @@ public actor JSONRPCSession {
 
     /// Emits a JSON-RPC notification without an id. ACP uses notifications for
     /// streamed session updates while the prompt request remains in flight.
-    public func sendNotification(method: String, params: AnyCodable? = nil) {
+    public func sendNotification(method: String, params: GnosticJSONValue? = nil) {
         let request = JSONRPCRequest(id: nil, method: method, params: params)
         guard let data = try? JSONEncoder().encode(request) else { return }
         notification(data + Data([0x0A]))
@@ -131,40 +130,28 @@ public actor JSONRPCSession {
             respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "session is already initialized"))
             return
         }
-
-        do {
-            var result = try await initializeHandler()
-            if case var .dictionary(dict) = result,
-               let params = request.params,
-               let data = try? JSONEncoder().encode(params),
-               let paramsDict = try? JSONDecoder().decode([String: ACPValue].self, from: data),
-               let clientVersion = paramsDict["protocolVersion"] {
-                let requestedVersion: Int?
-                switch clientVersion {
-                case let .int(i):
-                    requestedVersion = Int(i)
-                case let .string(s):
-                    requestedVersion = Int(s)
-                case let .double(d):
-                    requestedVersion = Int(d)
-                default:
-                    requestedVersion = nil
-                }
-                if let requestedVersion {
-                    // The `gnostic acp` edge keeps the ACP v1 projection for
-                    // existing editor clients. Any version outside the
-                    // supported range is rejected rather than echoed.
-                    guard (1...ACPProtocol.version).contains(requestedVersion) else {
-                        respondIfNeeded(to: request, error: JSONRPCErrorObject(
-                            code: ACPv2Protocol.ErrorCode.unsupportedProtocolVersion,
-                            message: "Unsupported ACP protocol version \(requestedVersion)."
-                        ))
-                        return
-                    }
-                    dict["protocolVersion"] = AnyCodable(Int64(requestedVersion))
-                }
-                result = .dictionary(dict)
+        // Strict ACP v1 rejection (ADR 0019 T1): reject incoming v1 initialize cleanly
+        if let params = request.params,
+           let data = try? JSONEncoder().encode(params),
+           let dict = try? JSONDecoder().decode([String: ACPValue].self, from: data),
+           let version = dict["protocolVersion"] {
+            let verInt: Int?
+            switch version {
+            case let .int(i): verInt = Int(i)
+            case let .string(s): verInt = Int(s)
+            case let .double(d): verInt = Int(d)
+            default: verInt = nil
             }
+            if let verInt, verInt < 2 {
+                respondIfNeeded(to: request, error: JSONRPCErrorObject(
+                    code: -32000,
+                    message: "ACP v1 is not supported. Gnostic requires ACP v2 or higher."
+                ))
+                return
+            }
+        }
+        do {
+            let result = try await initializeHandler()
             state = .initialized
             respondIfNeeded(to: request, result: result)
         } catch {
@@ -259,7 +246,7 @@ public actor JSONRPCSession {
         }
     }
 
-    private func respondIfNeeded(to request: JSONRPCRequest, result: AnyCodable) {
+    private func respondIfNeeded(to request: JSONRPCRequest, result: GnosticJSONValue) {
         guard let id = request.id else { return }
         emit(JSONRPCResponse(id: id, result: result))
     }
@@ -303,7 +290,7 @@ public actor JSONRPCSession {
         )
     }
 
-    private func identifier(from value: AnyCodable) -> JSONRPCIdentifier? {
+    private func identifier(from value: GnosticJSONValue) -> JSONRPCIdentifier? {
         switch value {
         case let .string(value): return .string(value)
         case let .integer(value): return .number(value)

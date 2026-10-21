@@ -190,7 +190,8 @@ public enum ConfigConsoleLogic {
             registryName: registryEntry?.name,
             runnable: registryEntry?.runnable,
             owningIssue: registryEntry?.owningIssue,
-            installsContribution: module.contribution != nil,
+            // The clean host installs no provider-specific contribution.
+            installsContribution: false,
             requiresModelService: module.requiresModelService,
             keys: keys,
             warning: warning(module: module.name, entry: registryEntry)

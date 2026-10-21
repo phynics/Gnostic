@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import GnosticCore
-import PKContracts
 
 /// Translates ACP v2 requests into Gnostic's existing remote object and
 /// Timeline operations. ACP remains an adapter: no ACP identifiers are stored
@@ -36,7 +36,7 @@ final class ACPDispatcher: Sendable {
 
     private struct ActivePermissionRequest {
         let token: UUID
-        let task: Task<AnyCodable, Error>
+        let task: Task<GnosticJSONValue, Error>
     }
 
     private let client: RemoteTurnClient
@@ -44,8 +44,8 @@ final class ACPDispatcher: Sendable {
     private let requestedAscendantID: UUID?
     private let requestedProviderID: String?
     private let requestedNodeID: UUID?
-    private let publish: @Sendable (String, AnyCodable) -> Void
-    private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
+    private let publish: @Sendable (String, GnosticJSONValue) -> Void
+    private let requestPermission: @Sendable (GnosticJSONValue) async throws -> GnosticJSONValue
     private var ascendant: Ascendant?
     private var requestedPermissionIDs: Set<String> = []
     private var activePrompts: [String: ActivePrompt] = [:]
@@ -58,8 +58,8 @@ final class ACPDispatcher: Sendable {
         requestedAscendantID: UUID?,
         requestedProviderID: String? = nil,
         requestedNodeID: UUID? = nil,
-        publish: @escaping @Sendable (String, AnyCodable) -> Void,
-        requestPermission: @escaping @Sendable (AnyCodable) async throws -> AnyCodable
+        publish: @escaping @Sendable (String, GnosticJSONValue) -> Void,
+        requestPermission: @escaping @Sendable (GnosticJSONValue) async throws -> GnosticJSONValue
     ) {
         self.client = client
         self.registry = registry
@@ -70,43 +70,22 @@ final class ACPDispatcher: Sendable {
         self.requestPermission = requestPermission
     }
 
-    func initialize() async throws -> AnyCodable {
+    func initialize() async throws -> GnosticJSONValue {
         ascendant = try await resolveAscendant()
         return .dictionary([
             "protocolVersion": .integer(Int64(ACPProtocol.version)),
-            "capabilities": .dictionary([
-                "promptCapabilities": .dictionary([
-                    "image": .boolean(false),
-                    "audio": .boolean(false),
-                    "embeddedContext": .boolean(false),
-                ]),
-                "session": .dictionary([
-                    "resume": .dictionary([:]),
-                    "list": .dictionary([:]),
-                    "close": .dictionary([:]),
-                ]),
-            ]),
-            "agentCapabilities": .dictionary([
-                "promptCapabilities": .dictionary([
-                    "image": .boolean(false),
-                    "audio": .boolean(false),
-                    "embeddedContext": .boolean(false),
-                ]),
-                "sessionCapabilities": .dictionary([
-                    "resume": .dictionary([:]),
-                    "list": .dictionary([:]),
-                    "close": .dictionary([:]),
-                ]),
-            ]),
-            "agentInfo": .dictionary([
+            "info": .dictionary([
                 "name": .string("gnostic-acp"),
                 "title": .string("Gnostic ACP"),
                 "version": .string("0.5.0"),
             ]),
+            "capabilities": .dictionary([
+                "session": .dictionary([:]),
+            ]),
         ])
     }
 
-    func handle(_ request: JSONRPCRequest) async throws -> AnyCodable {
+    func handle(_ request: JSONRPCRequest) async throws -> GnosticJSONValue {
         do {
             return try await route(request)
         } catch let error as RemoteTurnClientError {
@@ -120,7 +99,7 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func route(_ request: JSONRPCRequest) async throws -> AnyCodable {
+    private func route(_ request: JSONRPCRequest) async throws -> GnosticJSONValue {
         switch request.method {
         case "session/new":
             return try await newSession(request.params)
@@ -139,7 +118,7 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func newSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func newSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPSessionParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
@@ -166,7 +145,7 @@ final class ACPDispatcher: Sendable {
         ])
     }
 
-    private func resumeSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func resumeSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPResumeParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
@@ -181,12 +160,12 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func listSessions(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPListParameters = try decode(params ?? .dictionary([:]))
         let cwd = try input.cwd.map { try canonicalCWD($0) }
         let selected = try await currentAscendant()
         let records = await registry.list(cwd: cwd)
-        var sessions: [AnyCodable] = []
+        var sessions: [GnosticJSONValue] = []
         var unresolved: [ACPSessionRecord] = []
         // Registry entries survive process restarts, but a deleted remote
         // Timeline must not be presented as resumable. A closed record or one
@@ -222,7 +201,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary(["sessions": .array(sessions)])
     }
 
-    private func closeSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func closeSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPCloseParameters = try decode(params)
         _ = try await requireSession(id: input.sessionID, cwd: nil)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
@@ -231,7 +210,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary([:])
     }
 
-    private func cancelSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func cancelSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPCloseParameters = try decode(params)
         _ = try await requireSession(id: input.sessionID, cwd: nil)
         guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
@@ -254,7 +233,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary([:])
     }
 
-    private func prompt(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func prompt(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPPromptParameters = try decode(params)
         defer { cancelledSessions.remove(input.sessionID) }
         guard let text = input.text else {
@@ -276,6 +255,8 @@ final class ACPDispatcher: Sendable {
             turnID = "acp:\(record.id):\(UUID().uuidString.lowercased())"
         }
 
+        let messageID = "acp:user:\(turnID)"
+
         // A reconnect may retry a completed turn after the coordinator's
         // terminal-result cache has expired. The replay store is authoritative
         // for the bounded update stream, so consume it before attempting
@@ -289,6 +270,7 @@ final class ACPDispatcher: Sendable {
             if let error = existing.updates.last(where: \.isTerminalFailure) {
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
+            publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
             for update in existing.updates {
                 publishUpdate(
                     sessionID: record.id,
@@ -297,8 +279,11 @@ final class ACPDispatcher: Sendable {
                     replayed: true
                 )
             }
-            return .dictionary(["stopReason": .string("end_turn")])
+            publishState(sessionID: record.id, state: "idle", stopReason: "end_turn", turnID: turnID)
+            return .dictionary(["messageId": .string(messageID)])
         }
+        publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
+        publishState(sessionID: record.id, state: "running", stopReason: nil, turnID: turnID)
         let resultAndSequence: (AscendantTurnResult, Int)
         do {
             resultAndSequence = try await streamPrompt(
@@ -308,12 +293,15 @@ final class ACPDispatcher: Sendable {
             )
         } catch {
             if cancelledSessions.contains(input.sessionID) {
-                return .dictionary(["stopReason": .string("cancelled")])
+                publishState(sessionID: record.id, state: "idle", stopReason: "cancelled", turnID: turnID)
+                return .dictionary(["messageId": .string(messageID)])
             }
+            publishState(sessionID: record.id, state: "idle", stopReason: "error", turnID: turnID)
             throw await orphanAwareError(error, for: record)
         }
         if cancelledSessions.contains(input.sessionID) {
-            return .dictionary(["stopReason": .string("cancelled")])
+            publishState(sessionID: record.id, state: "idle", stopReason: "cancelled", turnID: turnID)
+            return .dictionary(["messageId": .string(messageID)])
         }
         let (result, lastSequence) = resultAndSequence
         let replay = try? await client.replay(
@@ -342,7 +330,8 @@ final class ACPDispatcher: Sendable {
             }
         }
         try await registry.touch(id: record.id)
-        return .dictionary(["stopReason": .string("end_turn")])
+        publishState(sessionID: record.id, state: "idle", stopReason: "end_turn", turnID: turnID)
+        return .dictionary(["messageId": .string(messageID)])
     }
 
     /// The Ascendant operation remains an authoritative unary completion, but
@@ -527,6 +516,45 @@ final class ACPDispatcher: Sendable {
         ), providerID: providerID)
     }
 
+    private func publishUserMessage(
+        sessionID: String,
+        messageID: String,
+        text: String,
+        turnID: String
+    ) {
+        publish("session/update", .dictionary([
+            "sessionId": .string(sessionID),
+            "update": .dictionary([
+                "sessionUpdate": .string("user_message"),
+                "messageId": .string(messageID),
+                "content": .array([
+                    .dictionary(["type": .string("text"), "text": .string(text)]),
+                ]),
+                "_meta": .dictionary(["clientTurnID": .string(turnID)]),
+            ]),
+        ]))
+    }
+
+    private func publishState(
+        sessionID: String,
+        state: String,
+        stopReason: String?,
+        turnID: String
+    ) {
+        var update: [String: GnosticJSONValue] = [
+            "sessionUpdate": .string("state_update"),
+            "state": .string(state),
+            "_meta": .dictionary(["clientTurnID": .string(turnID)]),
+        ]
+        if let stopReason {
+            update["stopReason"] = .string(stopReason)
+        }
+        publish("session/update", .dictionary([
+            "sessionId": .string(sessionID),
+            "update": .dictionary(update),
+        ]))
+    }
+
     private func publishUpdate(
         sessionID: String,
         turnID: String,
@@ -664,7 +692,7 @@ final class ACPDispatcher: Sendable {
     /// inspect. Report it alongside the timeline's actual attachment state so
     /// clients can distinguish an attached runtime Workspace from their local
     /// filesystem workspace.
-    private func sessionMetadata(cwd: String, status: TimelineStatus) -> [String: AnyCodable] {
+    private func sessionMetadata(cwd: String, status: TimelineStatus) -> [String: GnosticJSONValue] {
         [
             "gnosticCWD": .string(cwd),
             "gnosticWorkspaceAttachmentState": .string(
@@ -676,12 +704,12 @@ final class ACPDispatcher: Sendable {
         ]
     }
 
-    private func rejectMCP(_ servers: [AnyCodable]?) throws {
+    private func rejectMCP(_ servers: [GnosticJSONValue]?) throws {
         guard let servers, !servers.isEmpty else { return }
         throw JSONRPCMethodError.invalidParams("client-supplied MCP servers are not supported by gnostic acp yet")
     }
 
-    private func decode<T: Decodable>(_ params: AnyCodable?) throws -> T {
+    private func decode<T: Decodable>(_ params: GnosticJSONValue?) throws -> T {
         guard let params,
               let data = try? JSONEncoder().encode(params),
               let value = try? JSONDecoder().decode(T.self, from: data) else {

@@ -2,7 +2,6 @@
 
 import Foundation
 import GnosticProtocol
-import PKContracts
 
 /// The small stable ACP v2 surface implemented by `gnostic acp`.
 ///
@@ -17,8 +16,8 @@ public enum ACPProtocol {
 struct ACPPromptParameters: Codable, Sendable {
     let sessionID: String
     let prompt: [ACPPromptContent]
-    let mcpServers: [AnyCodable]?
-    let metadata: [String: AnyCodable]?
+    let mcpServers: [GnosticJSONValue]?
+    let metadata: [String: GnosticJSONValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
@@ -35,13 +34,13 @@ struct ACPPromptContent: Codable, Sendable {
 
 struct ACPSessionParameters: Codable, Sendable {
     let cwd: String
-    let mcpServers: [AnyCodable]?
+    let mcpServers: [GnosticJSONValue]?
 }
 
 struct ACPResumeParameters: Codable, Sendable {
     let sessionID: String
     let cwd: String
-    let mcpServers: [AnyCodable]?
+    let mcpServers: [GnosticJSONValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
@@ -80,6 +79,14 @@ public struct ACPProfile: Codable, Sendable {
 }
 
 public struct ACPProfileBundle: Codable, Sendable {
+    /// The profile bundle format version.
+    ///
+    /// The bundle is a profile-file format for the Pi client, not the ACP wire
+    /// protocol. Its version therefore moves independently of
+    /// `ACPProtocol.version`, and a cached bundle stays valid when the ACP
+    /// protocol version changes.
+    public static let currentVersion = 1
+
     public let version: Int
     public let defaultProfile: String?
     public let profiles: [ACPProfile]

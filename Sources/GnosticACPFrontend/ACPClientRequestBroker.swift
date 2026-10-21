@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKContracts
+import GnosticProtocol
 import Synchronization
 
 enum ACPClientRequestError: Error, Equatable, Sendable {
@@ -21,7 +21,7 @@ actor ACPClientRequestBroker {
     private let output: JSONRPCSession.Output
     private var nextID: Int64 = 1
     private nonisolated let pending =
-        Mutex<[JSONRPCIdentifier: CheckedContinuation<AnyCodable, any Error>]>([:])
+        Mutex<[JSONRPCIdentifier: CheckedContinuation<GnosticJSONValue, any Error>]>([:])
 
     init(output: @escaping JSONRPCSession.Output) {
         self.output = output
@@ -29,7 +29,7 @@ actor ACPClientRequestBroker {
 
     var pendingCount: Int { pending.withLock { $0.count } }
 
-    func request(method: String, params: AnyCodable) async throws -> AnyCodable {
+    func request(method: String, params: GnosticJSONValue) async throws -> GnosticJSONValue {
         let id = JSONRPCIdentifier.number(nextID)
         nextID += 1
         let request = JSONRPCRequest(id: id, method: method, params: params)
@@ -64,7 +64,7 @@ actor ACPClientRequestBroker {
     }
 
     func finish() {
-        let continuations = pending.withLock { state -> [CheckedContinuation<AnyCodable, any Error>] in
+        let continuations = pending.withLock { state -> [CheckedContinuation<GnosticJSONValue, any Error>] in
             let values = Array(state.values)
             state.removeAll()
             return values

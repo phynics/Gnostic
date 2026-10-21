@@ -1,16 +1,20 @@
+import GnosticProtocol
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import GnosticCore
-import PKContracts
 
 enum ACPPermissionBridge {
-    static func parameters(sessionID: String, state: AscendantPermissionState) -> AnyCodable {
+    static func parameters(sessionID: String, state: AscendantPermissionState) -> GnosticJSONValue {
         .dictionary([
             "sessionId": .string(sessionID),
-            "toolCall": .dictionary([
-                "toolCallId": .string(state.toolCallID),
-                "title": .string(state.title),
-                "status": .string("pending"),
+            "title": .string(state.title),
+            "subject": .dictionary([
+                "type": .string("tool_call"),
+                "toolCall": .dictionary([
+                    "toolCallId": .string(state.toolCallID),
+                    "title": .string(state.title),
+                    "status": .string("pending"),
+                ]),
             ]),
             "options": .array([
                 .dictionary([
@@ -27,7 +31,7 @@ enum ACPPermissionBridge {
         ])
     }
 
-    static func approved(from response: AnyCodable) -> Bool? {
+    static func approved(from response: GnosticJSONValue) -> Bool? {
         guard case let .dictionary(root) = response,
               case let .dictionary(outcome)? = root["outcome"],
               case let .string(kind)? = outcome["outcome"] else { return nil }
