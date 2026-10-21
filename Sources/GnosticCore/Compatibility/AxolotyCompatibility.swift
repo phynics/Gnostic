@@ -481,6 +481,10 @@ public final class CommunicationManager {
         var builder = try RuntimeBuilder(identity: runtimeIdentity, namespace: namespace, capacities: capacities)
         let callOperations = [
             GnosticWorkspaceProtocol.invocationOperation,
+            TimelineTurnProvider.turnOperation,
+            TimelineTurnProvider.replayOperation,
+            TimelineTurnProvider.cancelOperation,
+            TimelinePermissionProvider.responseOperation,
             AscendantTurnProvider.turnOperation,
             AscendantTurnProvider.replayOperation,
             AscendantPermissionProvider.responseOperation,
@@ -514,6 +518,8 @@ public final class CommunicationManager {
         let calls = try builder.events(matching: .family(.call), buffering: .dropOldest(capacity: 64))
         let permissionChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.permission.response"), buffering: .dropOldest(capacity: 64))
         let turnChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.turn.update"), buffering: .dropOldest(capacity: 64))
+        let timelinePermissionChannel = try builder.events(matching: .channel(identifier: TimelinePermissionProvider.responseChannel), buffering: .dropOldest(capacity: 64))
+        let timelineTurnChannel = try builder.events(matching: .channel(identifier: TimelineTurnProvider.updateChannel), buffering: .dropOldest(capacity: 64))
         // The remaining families and a family-wide channel selector feed the
         // diagnostic raw stream. A consumer cannot know an arbitrary channel
         // identifier in advance, so the channel selector matches the family
@@ -529,6 +535,7 @@ public final class CommunicationManager {
         self.eventStreams = [
             advertise, deadvertise, resolve, retrieves, returns, calls, permissionChannel, turnChannel,
             discovers, queries, updates, completes, allChannels,
+            timelinePermissionChannel, timelineTurnChannel,
         ]
         Task { await dispatch.attach(runtime: self.runtime) }
     }
@@ -569,6 +576,8 @@ public final class CommunicationManager {
             (.update, nil, eventStreams[10]),
             (.complete, nil, eventStreams[11]),
             (.channel, nil, eventStreams[12]),
+            (.channel, TimelinePermissionProvider.responseChannel, eventStreams[13]),
+            (.channel, TimelineTurnProvider.updateChannel, eventStreams[14]),
         ]
         for (family, channelID, stream) in entries {
             eventTasks.append(Task { @MainActor [weak self] in

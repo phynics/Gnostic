@@ -22,7 +22,7 @@ public enum GnosticObjectType {
     /// - Parameter objectType: A network object type.
     /// - Returns: `true` when the type is one of Gnostic's canonical types.
     public static func isSupported(_ objectType: String) -> Bool {
-        [ascendant, timeline, workspace, workspaceTool].contains(objectType)
+        [ascendant, timeline, workspace, workspaceTool, runtimeInstance].contains(objectType)
     }
 }
 
@@ -84,7 +84,6 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable { //
         self.protocolMajor = protocolMajor
         capabilities = identity.capabilities.interoperability
             .union(nodeCapabilities)
-            .filter { GnosticCapability.stable.contains($0) || GnosticCapability.isNamespacedExperimental($0) }
             .sorted()
         self.backendHealth = backendHealth
         backendKind = identity.capabilities.backendKind
@@ -126,7 +125,6 @@ public final class GnosticAscendantObject: CoatyObject, @unchecked Sendable { //
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         capabilities = (try container.decodeIfPresent([String].self, forKey: .capabilities) ?? [])
-            .filter { GnosticCapability.stable.contains($0) || GnosticCapability.isNamespacedExperimental($0) }
             .sorted()
         backendHealth = try container.decodeIfPresent(AscendantBackendHealth.self, forKey: .backendHealth) ?? .unknown
         backendKind = try container.decodeIfPresent(String.self, forKey: .backendKind)

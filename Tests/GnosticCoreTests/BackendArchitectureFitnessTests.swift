@@ -438,7 +438,7 @@ struct BackendArchitectureFitnessTests {
         // cannot spread to a third implementation.
         #expect(
             initialStates.sorted() == [
-                "GnosticCore/Support/SHA256.swift",
+                "GnosticProtocol/Support/SHA256.swift",
                 "GnosticRLM/RLMDigest.swift",
             ],
             "unexpected SHA-256 implementations: \(initialStates.sorted())."

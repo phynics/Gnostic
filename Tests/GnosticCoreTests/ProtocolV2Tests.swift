@@ -233,7 +233,7 @@ struct ProtocolV2Tests {
     func metadataOnlyAdvertisementPreservesCompatibleObject() async throws {
         let objectID = ascendantID.uuidString.lowercased()
         let fullPayload = """
-        {"protocolMajor":2,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.ascendant)","name":"Current","ascendantDescription":"current","privateTimelineID":"\(timelineID.uuidString.lowercased())","lastActiveAt":"2023-11-14T22:13:20Z","createdAt":"2023-11-14T22:13:20Z","updatedAt":"2023-11-14T22:13:20Z"}
+        {"protocolMajor":3,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.ascendant)","name":"Current","ascendantDescription":"current","privateTimelineID":"\(timelineID.uuidString.lowercased())","lastActiveAt":"2023-11-14T22:13:20Z","createdAt":"2023-11-14T22:13:20Z","updatedAt":"2023-11-14T22:13:20Z"}
         """
         let full = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.ascendant, name: "Current", payload: fullPayload)
         let metadata = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.ascendant, name: "Current")

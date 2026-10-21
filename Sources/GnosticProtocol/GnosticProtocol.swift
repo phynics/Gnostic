@@ -56,7 +56,7 @@ public struct GnosticPublicFailure: Sendable, Equatable {
 /// operation payload.  It is never inferred from an object type, backend kind,
 /// or an omitted field.
 public enum GnosticProtocol {
-    public static let currentMajor = 2
+    public static let currentMajor = 3
 
     public static func failureMessage(
         reasonCode: String,
@@ -70,10 +70,10 @@ public enum GnosticProtocol {
             statusCode: statusCode,
             retryable: retryable
         )
-        var data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"internalError","message":"Internal error"}"#.utf8)
+        var data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":3,"reasonCode":"internalError","message":"Internal error"}"#.utf8)
         if data.count > GnosticWirePayload.maximumEmbeddedValueBytes {
             envelope = GnosticProtocolFailure(reasonCode: "payloadTooLarge", message: "The response was too large to send.")
-            data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":2,"reasonCode":"payloadTooLarge","message":"The response was too large to send."}"#.utf8)
+            data = (try? JSONEncoder().encode(envelope)) ?? Data(#"{"protocolMajor":3,"reasonCode":"payloadTooLarge","message":"The response was too large to send."}"#.utf8)
         }
         return String(decoding: data, as: UTF8.self)
     }
@@ -117,7 +117,7 @@ public enum GnosticProtocol {
     }
 }
 
-/// Stable, backend-independent interoperability capabilities.
+/// Stable, backend-independent interoperability capabilities (retired in protocolMajor 3 per ADR 0020 §8; retained for backward compatibility).
 public enum GnosticCapability {
     public static let textTurnInput = AscendantInteroperabilityCapability.textTurn.rawValue
     public static let streamedTurnUpdates = AscendantInteroperabilityCapability.streamedUpdates.rawValue

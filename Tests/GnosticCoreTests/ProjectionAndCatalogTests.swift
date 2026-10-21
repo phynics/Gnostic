@@ -191,7 +191,7 @@ struct ProjectionAndCatalogTests {
 
     @Test("legacy Workspace payloads derive effective status from availability")
     func legacyWorkspacePayloadDerivesEffectiveStatus() throws {
-        let payload = #"{"protocolMajor":2,"objectId":"a21d0000-0000-4000-8000-000000000003","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Legacy","uri":"workspace://legacy","isAvailable":false,"tools":[]}"#
+        let payload = #"{"protocolMajor":3,"objectId":"a21d0000-0000-4000-8000-000000000003","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Legacy","uri":"workspace://legacy","isAvailable":false,"tools":[]}"#
         let object = try JSONDecoder().decode(GnosticWorkspaceObject.self, from: Data(payload.utf8))
 
         #expect(object.effectiveStatus == .unavailable)
@@ -423,7 +423,7 @@ struct ProjectionAndCatalogTests {
             "coreType": "CoatyObject",
             "objectType": GnosticObjectType.ascendant,
             "name": "Remote Ascendant",
-            "protocolMajor": 2,
+            "protocolMajor": 3,
             "privateTimelineID": timelineID.uuidString.lowercased(),
             "ascendantDescription": "Coordinates analysis.",
             "capabilities": [],
@@ -442,7 +442,7 @@ struct ProjectionAndCatalogTests {
         await catalog.ingest(response)
 
         let entry = try #require(await catalog.object(id: ascendantID, providerID: "provider-a"))
-        #expect(entry.protocolMajor == 2)
+        #expect(entry.protocolMajor == 3)
         #expect(entry.isProtocolCompatible)
     }
 
@@ -780,7 +780,7 @@ struct ProjectionAndCatalogTests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .ambiguous)
     }
 
-    private func workspaceSnapshot(uri: String, sourceID: String, protocolMajor: Int = 2) -> AdvertiseEventSnapshot {
+    private func workspaceSnapshot(uri: String, sourceID: String, protocolMajor: Int = GnosticProtocol.currentMajor) -> AdvertiseEventSnapshot {
         AdvertiseEventSnapshot(
             sourceId: sourceID,
             object: CoatyObjectSnapshot(
@@ -861,7 +861,7 @@ struct ProjectionAndCatalogTests {
         )
     }
 
-    private func payload(_ object: [String: Any], protocolMajor: Int = 2) throws -> String {
+    private func payload(_ object: [String: Any], protocolMajor: Int = GnosticProtocol.currentMajor) throws -> String {
         var object = object
         object["protocolMajor"] = protocolMajor
         let data = try JSONSerialization.data(withJSONObject: object)

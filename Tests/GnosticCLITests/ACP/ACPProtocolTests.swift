@@ -123,7 +123,7 @@ struct ACPProtocolTests {
             args: ["acp"],
             env: [:]
         )
-        let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: [profile])
+        let bundle = ACPProfileBundle(version: ACPProtocol.version, defaultProfile: nil, profiles: [profile])
         let generatedAt = Date(timeIntervalSince1970: 10_000)
 
         try cache.store(bundle, for: key, generatedAt: generatedAt)
