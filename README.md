@@ -1,7 +1,10 @@
 # Gnostic
 
-Gnostic hosts Ascendant backends and exposes them over Axoloty. The bundled
-Ascendant backend is `positronic`. The bundled local Workspace backend is
+Gnostic hosts Ascendant backends and exposes them over Axoloty. The shipped
+`gnostic` tool hosts the process-independent `letta` and `acp` Ascendant
+backends. The bundled `positronic` backend runs PositronicKit inside the host
+process, so it is transitional: it ships as the separate `gnostic-legacy`
+executable until #611 removes it. The bundled local Workspace backend is
 `echo`. The latest release is 0.4.2. The next release, 0.5.0, is the first
 supported line and is in development
 ([#551](https://github.com/phynics/Gnostic/issues/551)).
@@ -381,7 +384,8 @@ Timelines created at runtime, so a later resume or prompt fails with
 `timelineUnavailable` and `session/list` omits the session (ADR 0008). The
 session record stays on disk for diagnostics, marked ended.
 
-For Ascendants on the bundled `positronic` backend, runtime-created Timelines
+For Ascendants on the transitional `positronic` backend of `gnostic-legacy`,
+runtime-created Timelines
 and their backend transcripts can survive a restart. Run `gnostic serve` with
 `GNOSTIC_STATE_HOME` set, or with `--turn-log PATH`, whose parent directory
 then serves as the state home. Serve keeps a durable Turn event log and a

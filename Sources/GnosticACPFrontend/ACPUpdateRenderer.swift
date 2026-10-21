@@ -1,11 +1,11 @@
+import GnosticProtocol
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import GnosticCore
-import PKContracts
 
 struct ACPRenderedNotification: Sendable {
     let method: String
-    let params: AnyCodable
+    let params: GnosticJSONValue
 }
 
 enum ACPUpdateRenderer {
@@ -15,14 +15,14 @@ enum ACPUpdateRenderer {
         update: AscendantTurnUpdate,
         replayed: Bool
     ) -> [ACPRenderedNotification] {
-        var metadata: [String: AnyCodable] = [
+        var metadata: [String: GnosticJSONValue] = [
             "clientTurnID": .string(turnID),
             "sequence": .integer(Int64(update.sequence)),
             "kind": .string(update.kind),
             "replayed": .boolean(replayed),
         ]
 
-        var payloads: [AnyCodable] = []
+        var payloads: [GnosticJSONValue] = []
         if update.carriesAssistantText, let text = update.text {
             payloads.append(.dictionary([
                 "sessionUpdate": .string("agent_message_chunk"),
@@ -52,9 +52,9 @@ enum ACPUpdateRenderer {
     private static func toolPayload(
         _ state: AscendantToolState,
         initial: Bool,
-        metadata: [String: AnyCodable]
-    ) -> AnyCodable {
-        var payload: [String: AnyCodable] = [
+        metadata: [String: GnosticJSONValue]
+    ) -> GnosticJSONValue {
+        var payload: [String: GnosticJSONValue] = [
             "sessionUpdate": .string(initial ? "tool_call" : "tool_call_update"),
             "toolCallId": .string(state.toolCallID),
             "status": .string(state.status),

@@ -38,7 +38,7 @@ public enum RegimeResolver {
             throw RegimeResolutionError.ascendantNotFound(ascendantID)
         }
         let modules = try composition.selectedModuleNames(for: ascendant)
-        let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
+        let configuration = ProviderBackendConfiguration(backend: ascendant.backend)
         var modelTiers: [String: String] = [:]
         if let model = configuration.model { modelTiers["primary"] = model }
         if let utility = configuration.utilityModel { modelTiers["utility"] = utility }

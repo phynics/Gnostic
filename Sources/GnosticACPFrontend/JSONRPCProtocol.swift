@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKContracts
+import GnosticProtocol
 
 /// A JSON-RPC 2.0 request identifier.
 public enum JSONRPCIdentifier: Codable, Equatable, Hashable, Sendable {
@@ -42,9 +42,9 @@ public enum JSONRPCErrorCode: Int, Sendable {
 public struct JSONRPCErrorObject: Codable, Equatable, Sendable {
     public let code: Int
     public let message: String
-    public let data: AnyCodable?
+    public let data: GnosticJSONValue?
 
-    public init(code: Int, message: String, data: AnyCodable? = nil) {
+    public init(code: Int, message: String, data: GnosticJSONValue? = nil) {
         self.code = code
         self.message = message
         self.data = data
@@ -62,12 +62,12 @@ public struct JSONRPCRequest: Codable, Equatable, Sendable {
     public let jsonrpc: String
     public let id: JSONRPCIdentifier?
     public let method: String
-    public let params: AnyCodable?
+    public let params: GnosticJSONValue?
 
     public init(
         id: JSONRPCIdentifier?,
         method: String,
-        params: AnyCodable? = nil
+        params: GnosticJSONValue? = nil
     ) {
         jsonrpc = "2.0"
         self.id = id
@@ -85,7 +85,7 @@ public struct JSONRPCRequest: Codable, Equatable, Sendable {
         jsonrpc = "2.0"
         id = try container.decodeIfPresent(JSONRPCIdentifier.self, forKey: .id)
         self.method = method
-        params = try container.decodeIfPresent(AnyCodable.self, forKey: .params)
+        params = try container.decodeIfPresent(GnosticJSONValue.self, forKey: .params)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -108,10 +108,10 @@ public struct JSONRPCRequest: Codable, Equatable, Sendable {
 public struct JSONRPCResponse: Codable, Equatable, Sendable {
     public let jsonrpc: String
     public let id: JSONRPCIdentifier?
-    public let result: AnyCodable?
+    public let result: GnosticJSONValue?
     public let error: JSONRPCErrorObject?
 
-    public init(id: JSONRPCIdentifier?, result: AnyCodable) {
+    public init(id: JSONRPCIdentifier?, result: GnosticJSONValue) {
         jsonrpc = "2.0"
         self.id = id
         self.result = result
@@ -131,7 +131,7 @@ public struct JSONRPCResponse: Codable, Equatable, Sendable {
             throw JSONRPCProtocolError.invalidRequest
         }
         id = try container.decodeIfPresent(JSONRPCIdentifier.self, forKey: .id)
-        result = try container.decodeIfPresent(AnyCodable.self, forKey: .result)
+        result = try container.decodeIfPresent(GnosticJSONValue.self, forKey: .result)
         error = try container.decodeIfPresent(JSONRPCErrorObject.self, forKey: .error)
         guard (result == nil) != (error == nil) else {
             throw JSONRPCProtocolError.invalidRequest

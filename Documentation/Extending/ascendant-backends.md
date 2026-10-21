@@ -299,6 +299,12 @@ the exact replacement condition instead.
 
 ## Extending the bundled Positronic backend
 
+This section describes the transitional `gnostic-legacy` host. The shipped
+`gnostic` tool has no PositronicKit in its dependency closure, so a new
+backend reaches it as an ACP v2 Runtime process over stdio, not as an
+in-process contribution. The transitional host and its contributions are
+removed by #611.
+
 The bundled Positronic backend accepts a static list of
 `PositronicContribution` values at construction. A contribution is compiled in;
 it is not loaded dynamically. It may expose additional tools and one bounded

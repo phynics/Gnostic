@@ -6,7 +6,6 @@ import GnosticCore
 import GnosticHost
 import GnosticLettaBackend
 import Testing
-import GnosticPositronicBackend
 
 @testable import GnosticRunner
 
@@ -24,23 +23,23 @@ struct RunnerCompositionTests {
     @MainActor
     func runnerCompositionMatchesHost() {
         #expect(
-            RunnerRuntime.composition.registeredKinds == BackendComposition.default.registeredKinds,
+            RunnerRuntime.composition.registeredKinds == GnosticHost.BackendComposition.default.registeredKinds,
             "The runner must compose from BackendComposition.default, not a narrower registry."
         )
         #expect(
-            RunnerRuntime.composition.registeredPositronicExtensions
-                == BackendComposition.default.registeredPositronicExtensions
+            Set(RunnerRuntime.composition.moduleDescriptors.map(\.name))
+                == Set(GnosticHost.BackendComposition.default.moduleDescriptors.map(\.name))
         )
         #expect(
             RunnerRuntime.composition.registeredKinds.isSuperset(of: [
-                AscendantAdapterRegistry.positronicKind,
                 LettaAscendantBackend.kind,
                 ACPAscendantBackend.kind,
             ]),
-            "The runner must host every backend kind `gnostic serve` has."
+            "The runner must host every process-independent backend kind `gnostic serve` has."
         )
-        #expect(RunnerRuntime.composition.registeredPositronicExtensions.contains("rlm"))
-        #expect(RunnerRuntime.composition.registeredPositronicExtensions.contains("atlas"))
+        let modules = Set(RunnerRuntime.composition.moduleDescriptors.map(\.name))
+        #expect(modules.contains("rlm"))
+        #expect(modules.contains("atlas"))
     }
 
     @Test("RunnerRuntime keeps no private Ascendant registry")
