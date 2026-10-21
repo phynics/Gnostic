@@ -1,15 +1,16 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import PKContracts
 
-/// The small stable ACP v1 surface implemented by `gnostic acp`.
+/// The small stable ACP v2 surface implemented by `gnostic acp`.
 ///
 /// The wire structs intentionally keep unknown ACP extension fields out of the
 /// Gnostic domain model. They are decoded at the adapter boundary and never
 /// become Timeline or Workspace state.
 public enum ACPProtocol {
-    public static let version = 1
+    public static let version = ACPv2Protocol.protocolVersion
     public static let turnIDMetadataKey = "dev.phynics.pi-acp-client/clientTurnID"
 }
 

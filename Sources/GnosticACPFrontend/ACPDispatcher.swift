@@ -4,7 +4,7 @@ import Foundation
 import GnosticCore
 import PKContracts
 
-/// Translates stable ACP v1 requests into Gnostic's existing remote object and
+/// Translates ACP v2 requests into Gnostic's existing remote object and
 /// Timeline operations. ACP remains an adapter: no ACP identifiers are stored
 /// in the Gnostic object advertisements.
 @MainActor
@@ -74,8 +74,19 @@ final class ACPDispatcher: Sendable {
         ascendant = try await resolveAscendant()
         return .dictionary([
             "protocolVersion": .integer(Int64(ACPProtocol.version)),
+            "capabilities": .dictionary([
+                "promptCapabilities": .dictionary([
+                    "image": .boolean(false),
+                    "audio": .boolean(false),
+                    "embeddedContext": .boolean(false),
+                ]),
+                "session": .dictionary([
+                    "resume": .dictionary([:]),
+                    "list": .dictionary([:]),
+                    "close": .dictionary([:]),
+                ]),
+            ]),
             "agentCapabilities": .dictionary([
-                "loadSession": .boolean(false),
                 "promptCapabilities": .dictionary([
                     "image": .boolean(false),
                     "audio": .boolean(false),
@@ -90,7 +101,7 @@ final class ACPDispatcher: Sendable {
             "agentInfo": .dictionary([
                 "name": .string("gnostic-acp"),
                 "title": .string("Gnostic ACP"),
-                "version": .string("0.1.0"),
+                "version": .string("0.5.0"),
             ]),
         ])
     }
@@ -123,8 +134,6 @@ final class ACPDispatcher: Sendable {
             return try await cancelSession(request.params)
         case "session/prompt":
             return try await prompt(request.params)
-        case "session/load", "session/delete", "session/fork":
-            throw JSONRPCMethodError.methodNotFound("\(request.method) is not advertised by gnostic acp")
         default:
             throw JSONRPCMethodError.methodNotFound(request.method)
         }
