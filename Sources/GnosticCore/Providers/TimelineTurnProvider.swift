@@ -18,6 +18,9 @@ public struct TimelineTurnProvider: Sendable {
     /// confirmed `messageId`. The provider must never synthesize this value.
     public typealias PromptDispatcher = @Sendable (TimelineTurnEnvelope) async throws -> String
 
+    /// Publishes one streamed turn update to the consumer of the update channel.
+    public typealias UpdatePublisher = @Sendable (TimelineTurnUpdate) async -> Void
+
     private let coordinator: TimelineTurnCoordinator
     private let promptDispatcher: PromptDispatcher
     private let isAvailable: @Sendable () async -> Bool
@@ -32,7 +35,11 @@ public struct TimelineTurnProvider: Sendable {
         self.isAvailable = isAvailable
     }
 
-    public func handle(operation: String, parameters: String?) async throws -> CallHandlerResult {
+    public func handle(
+        operation: String,
+        parameters: String?,
+        publishUpdate: UpdatePublisher? = nil
+    ) async throws -> CallHandlerResult {
         guard [Self.turnOperation, Self.replayOperation, Self.cancelOperation].contains(operation) else {
             return .failure(code: 404, reasonCode: "unknownTimelineOperation", message: "Unknown timeline operation")
         }
@@ -48,7 +55,7 @@ public struct TimelineTurnProvider: Sendable {
         }
         switch operation {
         case Self.turnOperation:
-            return try await handleTurn(parameters)
+            return try await handleTurn(parameters, publishUpdate: publishUpdate)
         case Self.replayOperation:
             return try await handleReplay(parameters)
         default:
@@ -72,7 +79,7 @@ public struct TimelineTurnProvider: Sendable {
         }
     }
 
-    private func handleTurn(_ parameters: String?) async throws -> CallHandlerResult {
+    private func handleTurn(_ parameters: String?, publishUpdate: UpdatePublisher?) async throws -> CallHandlerResult {
         switch GnosticCallHandling.decode(
             TimelineTurnEnvelope.self,
             from: parameters,
@@ -87,7 +94,8 @@ public struct TimelineTurnProvider: Sendable {
             do {
                 let result = try await coordinator.execute(
                     envelope: envelope,
-                    promptDispatch: promptDispatcher
+                    promptDispatch: promptDispatcher,
+                    streamUpdates: publishUpdate
                 )
                 try GnosticProtocol.validate(result.protocolMajor)
                 return try .encoded(result, context: "timeline.turn result")
@@ -173,14 +181,35 @@ public struct TimelineTurnProvider: Sendable {
         }
     }
 
+    /// Creates a Channel event carrying one streamed turn update.
+    public static func updateEvent(_ update: TimelineTurnUpdate) throws -> ChannelEvent {
+        let data = try GnosticWirePayload.encode(update, context: "timeline.turn.update event")
+        guard let privateData = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.coderInvalidValue)
+        }
+        let marker = CoatyObject(
+            coreType: .coatyObject,
+            objectType: CoatyObject.objectType,
+            objectId: CoatyUUID(),
+            name: "Gnostic timeline turn update"
+        )
+        return try ChannelEvent.with(object: marker, channelId: updateChannel, privateData: privateData)
+    }
+
     @MainActor
     public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
-        try await GnosticCallHandling.register(
+        // Streamed turn updates travel one way over the update channel, so the
+        // consumer sees them while the Turn is still active.
+        let publishUpdate: UpdatePublisher = { update in
+            guard let event = try? Self.updateEvent(update) else { return }
+            await communication.publishChannel(event)
+        }
+        return try await GnosticCallHandling.register(
             operations: [Self.turnOperation, Self.replayOperation, Self.cancelOperation],
             on: communication,
             context: context
         ) { [self] operation, parameters in
-            try await handle(operation: operation, parameters: parameters)
+            try await handle(operation: operation, parameters: parameters, publishUpdate: publishUpdate)
         }
     }
 }

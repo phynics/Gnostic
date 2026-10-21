@@ -56,16 +56,57 @@ struct TimelineTurnCoordinatorTests {
         let coordinator = TimelineTurnCoordinator()
         let envelope = makeEnvelope()
 
-        let result = try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
+        let result = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
+            await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID,
+                clientTurnID: envelope.clientTurnID,
+                stopReason: .endTurn
+            )
             return "msg-12345"
         })
 
         #expect(result.timelineID == envelope.timelineID)
         #expect(result.clientTurnID == envelope.clientTurnID)
         #expect(result.messageID == "msg-12345")
-        #expect(result.terminalOutcome == .endedUnspecified)
+        #expect(result.terminalOutcome == .completed)
         #expect(result.replayed == false)
         #expect(result.protocolMajor == 3)
+    }
+
+    @Test("A turn stays active until the session emits its terminal update")
+    func turnStaysActiveUntilTerminalUpdate() async throws {
+        let coordinator = TimelineTurnCoordinator()
+        let envelope = makeEnvelope(clientTurnID: "turn-active")
+        let inserted = AsyncStream<Void>.makeStream()
+
+        let execution = Task {
+            try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
+                inserted.continuation.yield(())
+                return "msg-active"
+            })
+        }
+
+        for await _ in inserted.stream { break }
+        // The prompt response is only the insertion handshake, so the Turn is
+        // still active and a second Turn is rejected as busy.
+        do {
+            _ = try await coordinator.execute(
+                envelope: makeEnvelope(timelineID: envelope.timelineID, clientTurnID: "turn-second"),
+                promptDispatch: { _ in "msg-second" }
+            )
+            Issue.record("Expected timelineBusy error while the first turn is active")
+        } catch let error as TimelineTurnError {
+            #expect(error == .timelineBusy)
+        }
+
+        await coordinator.recordTerminalUpdate(
+            timelineID: envelope.timelineID,
+            clientTurnID: envelope.clientTurnID,
+            stopReason: .endTurn
+        )
+        let result = try await execution.value
+        #expect(result.terminalOutcome == .completed)
+        #expect(result.messageID == "msg-active")
     }
 
     @Test("Concurrent distinct turn on active timeline receives pre-insertion timelineBusy error (-32001)")
@@ -79,9 +120,14 @@ struct TimelineTurnCoordinatorTests {
 
         // Launch first turn that holds the promptDispatch
         let task1 = Task {
-            try await coordinator.execute(envelope: envelope1, promptDispatch: { _ in
+            try await coordinator.execute(envelope: envelope1, promptDispatch: { envelope in
                 dispatchStarted.continuation.yield(())
                 try await Task.sleep(for: .milliseconds(200))
+                await coordinator.recordTerminalUpdate(
+                    timelineID: envelope.timelineID,
+                    clientTurnID: envelope.clientTurnID,
+                    stopReason: .endTurn
+                )
                 return "msg-turn-1"
             })
         }
@@ -118,8 +164,13 @@ struct TimelineTurnCoordinatorTests {
         let envelope = makeEnvelope()
 
         let counter = SafeCounter()
-        let result1 = try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
+        let result1 = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
             await counter.increment()
+            await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID,
+                clientTurnID: envelope.clientTurnID,
+                stopReason: .endTurn
+            )
             return "msg-idempotent-1"
         })
 
@@ -146,7 +197,14 @@ struct TimelineTurnCoordinatorTests {
         let timelineID = UUID()
         let envelope1 = makeEnvelope(timelineID: timelineID, clientTurnID: "turn-shared", text: "Original message")
 
-        _ = try await coordinator.execute(envelope: envelope1, promptDispatch: { _ in "msg-1" })
+        _ = try await coordinator.execute(envelope: envelope1, promptDispatch: { envelope in
+            await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID,
+                clientTurnID: envelope.clientTurnID,
+                stopReason: .endTurn
+            )
+            return "msg-1"
+        })
 
         // Different message under identical clientTurnID
         let envelope2 = makeEnvelope(timelineID: timelineID, clientTurnID: "turn-shared", text: "Conflicting message")
@@ -376,6 +434,11 @@ struct TimelineTurnCoordinatorTests {
         let coordinator = TimelineTurnCoordinator()
         let provider = TimelineTurnProvider(coordinator: coordinator, promptDispatcher: { envelope in
             #expect(envelope.state == .pendingInsertion)
+            await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID,
+                clientTurnID: envelope.clientTurnID,
+                stopReason: .endTurn
+            )
             return "msg-confirmed"
         })
         let envelope = makeEnvelope(clientTurnID: "turn-provider")
@@ -391,6 +454,47 @@ struct TimelineTurnCoordinatorTests {
         }
         let decoded = try JSONDecoder().decode(TimelineTurnResult.self, from: Data(result.utf8))
         #expect(decoded.messageID == "msg-confirmed")
+        #expect(decoded.terminalOutcome == .completed)
+    }
+
+    @Test("Provider publishes streamed turn updates to the update channel publisher")
+    func providerPublishesStreamedUpdates() async throws {
+        let coordinator = TimelineTurnCoordinator()
+        let update = TimelineTurnUpdate(
+            timelineID: UUID(),
+            clientTurnID: "turn-publish",
+            sequence: 1,
+            update: .stateUpdate(.idle(stopReason: .endTurn, meta: nil)),
+            terminal: true,
+            terminalOutcome: .completed
+        )
+        let provider = TimelineTurnProvider(coordinator: coordinator, promptDispatcher: { envelope in
+            await coordinator.recordUpdate(
+                TimelineTurnUpdate(
+                    timelineID: envelope.timelineID,
+                    clientTurnID: envelope.clientTurnID,
+                    sequence: 1,
+                    update: .stateUpdate(.idle(stopReason: .endTurn, meta: nil)),
+                    terminal: true,
+                    terminalOutcome: .completed
+                )
+            )
+            return "msg-published"
+        })
+        let envelope = makeEnvelope(timelineID: update.timelineID, clientTurnID: update.clientTurnID)
+        let parameters = String(decoding: try JSONEncoder().encode(envelope), as: UTF8.self)
+        let received = SafeCounter()
+
+        let outcome = try await provider.handle(
+            operation: TimelineTurnProvider.turnOperation,
+            parameters: parameters,
+            publishUpdate: { _ in await received.increment() }
+        )
+        guard case .success = outcome else {
+            Issue.record("Expected a successful timeline.turn result")
+            return
+        }
+        #expect(await received.value() == 1)
     }
 
     @Test("Structured busy error data keeps retryable as a JSON boolean")

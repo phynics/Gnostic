@@ -113,6 +113,7 @@ public actor TimelineTurnCoordinator {
         var terminalOutcome: TimelineTurnTerminalOutcome?
         var updates: [TimelineTurnUpdate]
         var updateHandler: (@Sendable (TimelineTurnUpdate) async -> Void)?
+        var terminalContinuation: AsyncStream<TimelineTurnTerminalOutcome>.Continuation?
         let task: Task<TimelineTurnResult, Error>
     }
 
@@ -137,6 +138,11 @@ public actor TimelineTurnCoordinator {
     public init() {}
 
     /// Executes a Timeline-owned Turn within the single-active-turn contract.
+    ///
+    /// The prompt response is only the insertion handshake. The Turn stays
+    /// active until the session emits its terminal update, the Turn is
+    /// cancelled, or the insertion fails, so a second Turn cannot be admitted
+    /// on the same Timeline while the first one is still running.
     ///
     /// - Parameters:
     ///   - envelope: The turn envelope containing prompt blocks and metadata.
@@ -188,6 +194,8 @@ public actor TimelineTurnCoordinator {
         }
 
         // 3. Admitted: dispatch session/prompt within insertion lifecycle.
+        // The terminal stream carries the outcome that ends the Turn.
+        let (terminalStream, terminalContinuation) = AsyncStream<TimelineTurnTerminalOutcome>.makeStream()
         let coordinator = self
         let task = Task<TimelineTurnResult, Error> {
             var inFlightEnvelope = envelope
@@ -201,18 +209,21 @@ public actor TimelineTurnCoordinator {
             } catch let error as TimelineTurnError where error == .insertionUnknown {
                 inFlightEnvelope.state = .insertionUnknown
                 inFlightEnvelope.terminalOutcome = .insertionUnknown
+                terminalContinuation.finish()
                 await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
                 throw error
             } catch is CancellationError {
                 // A cancelled insertion was explicitly cancelled by the host.
                 inFlightEnvelope.state = .cancelled
                 inFlightEnvelope.terminalOutcome = .cancelled
+                terminalContinuation.finish()
                 await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: nil)
                 throw TimelineTurnError.turnCancelled
             } catch {
                 // Ambiguous or transport failure before message confirmation enters insertionUnknown.
                 inFlightEnvelope.state = .insertionUnknown
                 inFlightEnvelope.terminalOutcome = .insertionUnknown
+                terminalContinuation.finish()
                 await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
                 throw TimelineTurnError.insertionUnknown
             }
@@ -221,18 +232,32 @@ public actor TimelineTurnCoordinator {
             if Task.isCancelled {
                 inFlightEnvelope.state = .cancelled
                 inFlightEnvelope.terminalOutcome = .cancelled
+                terminalContinuation.finish()
                 await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
                 throw TimelineTurnError.turnCancelled
             }
 
-            // Prompt confirmed and inserted. Turn is active.
+            // Prompt confirmed and inserted. The Turn is active until the
+            // session emits its terminal update, the Turn is cancelled, or the
+            // stream ends.
             inFlightEnvelope.state = .active
 
-            // The session's idle update owns the terminal outcome. Fall back to
-            // the envelope or endedUnspecified when the session omits it.
-            let outcome = await coordinator.recordedOutcome(for: key)
+            var terminalOutcome: TimelineTurnTerminalOutcome?
+            for await outcome in terminalStream {
+                terminalOutcome = outcome
+                break
+            }
+            terminalContinuation.finish()
+
+            let outcome = terminalOutcome
                 ?? inFlightEnvelope.terminalOutcome
                 ?? .endedUnspecified
+            if outcome == .cancelled {
+                // The Turn was cancelled while it was active.
+                inFlightEnvelope.state = .cancelled
+                await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
+                throw TimelineTurnError.turnCancelled
+            }
             let result = TimelineTurnResult(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
@@ -256,6 +281,7 @@ public actor TimelineTurnCoordinator {
             terminalOutcome: nil,
             updates: [],
             updateHandler: streamUpdates,
+            terminalContinuation: terminalContinuation,
             task: task
         )
 
@@ -263,6 +289,7 @@ public actor TimelineTurnCoordinator {
             return try await task.value
         } catch {
             activeTurnsByTimeline.removeValue(forKey: envelope.timelineID)
+            terminalContinuation.finish()
             throw error
         }
     }
@@ -288,38 +315,51 @@ public actor TimelineTurnCoordinator {
     }
 
     /// Records a streamed update for replay and forwards it to the stream handler.
+    ///
+    /// A terminal update ends the Turn: it owns the terminal outcome and
+    /// releases the awaiting ``execute(envelope:promptDispatch:streamUpdates:)``.
     public func recordUpdate(_ update: TimelineTurnUpdate) async {
         guard var active = activeTurnsByTimeline[update.timelineID],
               active.clientTurnID == update.clientTurnID else { return }
         active.updates.append(update)
         if update.terminal {
             active.terminalOutcome = update.terminalOutcome
+            active.state = .completed
+            active.terminalContinuation?.yield(update.terminalOutcome ?? .endedUnspecified)
+            active.terminalContinuation = nil
         }
         let handler = active.updateHandler
         activeTurnsByTimeline[update.timelineID] = active
         await handler?(update)
     }
 
-    /// Records an idle update's terminal outcome without completing the in-flight
-    /// dispatch. ``execute(envelope:promptDispatch:streamUpdates:)`` reads it when
-    /// the insertion Call returns.
+    /// Records an idle update's terminal outcome and ends the active Turn.
+    ///
+    /// The Turn stays active until this signal arrives, so a second Turn cannot
+    /// be admitted on the same Timeline while the first one is still running.
     public func recordTerminalUpdate(
         timelineID: UUID,
         clientTurnID: String,
         stopReason: ACPStopReason?
     ) {
         guard var active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else { return }
-        active.terminalOutcome = TimelineTurnTerminalOutcome.from(stopReason: stopReason)
+        let outcome = TimelineTurnTerminalOutcome.from(stopReason: stopReason)
+        active.terminalOutcome = outcome
         active.state = .completed
+        active.terminalContinuation?.yield(outcome)
+        active.terminalContinuation = nil
         activeTurnsByTimeline[timelineID] = active
     }
 
     /// Cancels an active turn on the Timeline if present.
     public func cancel(timelineID: UUID, clientTurnID: String) -> Bool {
-        guard let active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else {
+        guard var active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else {
             return false
         }
         active.task.cancel()
+        active.state = .cancelled
+        active.terminalContinuation?.yield(.cancelled)
+        active.terminalContinuation = nil
         activeTurnsByTimeline.removeValue(forKey: timelineID)
         let key = TurnKey(timelineID: timelineID, clientTurnID: clientTurnID)
         completedTurns[key] = CompletedTurn(
@@ -330,12 +370,6 @@ public actor TimelineTurnCoordinator {
             updates: active.updates
         )
         return true
-    }
-
-    private func recordedOutcome(for key: TurnKey) -> TimelineTurnTerminalOutcome? {
-        guard let active = activeTurnsByTimeline[key.timelineID],
-              active.clientTurnID == key.clientTurnID else { return nil }
-        return active.terminalOutcome
     }
 
     /// Replays updates for a previously recorded turn.
