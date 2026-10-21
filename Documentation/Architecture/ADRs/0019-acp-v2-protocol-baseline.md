@@ -1,10 +1,18 @@
 # ADR 0019 — ACP v2 as Gnostic's protocol baseline
 
 > **Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).**
-> ACP v2 only, the opt-in preview status, unanswered-permission error `-32800`,
-> and the advertised MCP transport order remain. §2's queue and quiet-period
-> idle inference are replaced by single-active-Turn admission and busy rejection.
-> §3's updates are durably journaled. Session ambiguity follows ADR 0021 §6.
+> ACP v2 only, the opt-in preview status, and the advertised MCP transport
+> order remain. §2's queue and quiet-period idle inference are replaced by
+> single-active-Turn admission and busy rejection. §3's updates are durably
+> journaled. Session ambiguity follows ADR 0021 §6.
+>
+> **Amended (2026-10-21):** an unanswered permission request is answered with
+> the v2 `cancelled` outcome instead of JSON-RPC error `-32800` (T3, §4). The
+> pinned ACP v2 SDK rejects the agent's request promise when the client answers
+> with a JSON-RPC error, so the error answer ends the agent's Turn. T3 requires
+> the Turn to continue so the Runtime can decide how to proceed without a
+> decision, and the `cancelled` outcome carries that meaning to the agent
+> without inventing a denial. The request is still recorded as `unavailable`.
 
 ## Status
 
@@ -16,7 +24,7 @@
 **Accepted** (2026-10-15). The owner also decided its three questions the same
 day; see [Owner decisions](#owner-decisions). In short: **no ACP v1 support at
 all** (T1), 0.5.0 ships ACP as an opt-in **v2 preview** (T2), and an unanswered
-permission request is answered with error **-32800** (T3).
+permission request is answered with the v2 **`cancelled`** outcome (T3).
 Owning issue: [GNO-ACPF-018 #633](https://github.com/phynics/Gnostic/issues/633),
 under [Epic #602](https://github.com/phynics/Gnostic/issues/602). Checked by the
 [Epic #140](https://github.com/phynics/Gnostic/issues/140) and
@@ -175,12 +183,17 @@ reinterpretation.
 - **No answer.** If no client answers within a Node-configured bound, or none
   is subscribed, Gnostic answers the request without waiting forever, and
   records it as `unavailable`, never as a denial. On the wire it answers with
-  error **-32800**, an internal cancellation of that one request, which
-  `protocol/v2/cancellation` allows the executing party to send (T3). The Turn
-  continues, and the Runtime decides how to proceed without a decision.
-  Gnostic does not use `cancelled` here, because v2 ties that outcome to
-  `session/cancel`, and it does not select a reject option, because that would
-  invent a denial.
+  the v2 **`cancelled`** outcome (T3). The Turn continues, and the Runtime
+  decides how to proceed without a decision. Gnostic does not select a reject
+  option, because that would invent a denial.
+  - **Why the outcome, not error `-32800`.** `protocol/v2/cancellation` allows
+    the executing party to cancel one request internally and answer it with
+    error `-32800`, and this record originally decided that answer. The pinned
+    ACP v2 SDK turns a JSON-RPC error answer into a rejected request promise,
+    so the agent's Turn ends instead of continuing. The `cancelled` outcome is
+    the v2 answer a client already uses for a request it will not decide, and
+    it keeps the Turn alive. ADR 0021 §4 and the T3 row below carry the same
+    amendment.
 - **Shape.** Gnostic passes the v2 `title`, `subject`, and option IDs through
   unchanged.
 
@@ -244,7 +257,7 @@ Decided by the owner on 2026-10-15.
 | --- | --- | --- | --- |
 | T1 | Peers that speak only ACP v1 | **No v1 support at all.** Gnostic neither negotiates nor translates v1, in the core or at an edge adapter. A v1-only Runtime or editor is unsupported until it ships v2. Any bridge someone builds lives outside Gnostic and is not supported by it. | A removable v1 edge adapter (it would have to synthesize insertion and a weak `messageId`, and it weakens at-most-once for v1 peers). |
 | T2 | Releasing on a v2 preview | **0.5.0 ships ACP as an opt-in *v2 preview***, behind an explicit flag. The compatibility declaration states that the ACP surface is outside the 0.5.x stability promise. The Gnostic surfaces (Agent, Timeline, Workspace, the Turn envelope) stay inside it. | Holding 0.5.0 until ACP v2 is stable; shipping stable on a v1 adapter. |
-| T3 | Unanswered permission requests | **Answer with error -32800**, an internal cancellation of that request, and record `unavailable` (§4). | Selecting a reject option (a denial on the user's behalf); `cancelled` plus `session/cancel` (it stops the Turn). |
+| T3 | Unanswered permission requests | **Answer with the v2 `cancelled` outcome**, and record `unavailable` (§4). The answer ends that one request, never the Turn, and it selects no option. (Amended 2026-10-21: the answer was error `-32800`, which the pinned v2 SDK surfaces to the agent as a rejected request promise that ends the agent's Turn.) | Selecting a reject option (a denial on the user's behalf); `cancelled` plus `session/cancel` (it stops the Turn). |
 
 **What T1 means in practice.** Some Runtimes, and possibly every editor, speak
 only v1 today. Until they ship v2, Gnostic cannot run them, and `gnostic acp`

@@ -231,22 +231,34 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
 
     const messageId = "fixture-message-1";
-    await client.notify(acp.methods.client.session.update, {
-      sessionId: params.sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        messageId,
-        content: { type: "text", text: "fixture " },
-      },
-    });
-    await client.notify(acp.methods.client.session.update, {
-      sessionId: params.sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        messageId,
-        content: { type: "text", text: `reply: ${prompt}` },
-      },
-    });
+    if (prompt.includes("[fixture:agent-message]")) {
+      // A whole-message upsert replaces the accumulated text of its message.
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message",
+          messageId,
+          content: [{ type: "text", text: `upserted reply: ${prompt}` }],
+        },
+      });
+    } else {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId,
+          content: { type: "text", text: "fixture " },
+        },
+      });
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId,
+          content: { type: "text", text: `reply: ${prompt}` },
+        },
+      });
+    }
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
       update: {
@@ -275,9 +287,12 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     if (process.env.GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS) {
       setTimeout(() => process.exit(19), Number(process.env.GNOSTIC_ACP_FIXTURE_EXIT_AFTER_PROMPT_MS));
     }
+    const idleUpdate = prompt.includes("[fixture:idle-without-stop-reason]")
+      ? { sessionUpdate: "state_update", state: "idle" }
+      : { sessionUpdate: "state_update", state: "idle", stopReason };
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
-      update: { sessionUpdate: "state_update", state: "idle", stopReason },
+      update: idleUpdate,
     });
     return { messageId: userMessageId };
   });

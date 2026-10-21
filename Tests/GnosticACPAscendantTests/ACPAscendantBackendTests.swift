@@ -837,6 +837,47 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("a Turn ends when the agent reports an idle without a stop reason")
+    @MainActor
+    func idleWithoutStopReasonEndsTheTurn() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let backend = try fixtureBackend(timelines: [.init(id: timelineID, title: "Configured")], stateHome: stateHome.url)
+        let sink = RecordingUpdateSink()
+
+        // An omitted stop reason ends the Turn with an unspecified reason,
+        // which is neither success nor failure (ADR 0019 §2).
+        let result = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "[fixture:idle-without-stop-reason]"),
+            updates: sink
+        )
+
+        #expect(result == "fixture reply: [fixture:idle-without-stop-reason]")
+        #expect(await sink.updates.last?.kind == .completion)
+        await backend.shutdown()
+    }
+
+    @Test("a whole agent message upsert replaces the accumulated assistant text")
+    @MainActor
+    func wholeAgentMessageUpsertBecomesTheAssistantText() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let backend = try fixtureBackend(timelines: [.init(id: timelineID, title: "Configured")], stateHome: stateHome.url)
+        let sink = RecordingUpdateSink()
+
+        let result = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "[fixture:agent-message]"),
+            updates: sink
+        )
+
+        #expect(result == "upserted reply: [fixture:agent-message]")
+        let texts = await sink.updates.map(\.text).compactMap { $0 }
+        #expect(texts == ["upserted reply: [fixture:agent-message]"])
+        await backend.shutdown()
+    }
+
     @Test("prompt deadline exceeds the shorter protocol default")
     @MainActor
     func promptDeadlineIsSeparateFromProtocolDefault() async throws {

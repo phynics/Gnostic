@@ -159,6 +159,19 @@ public enum ACPStateUpdate: Codable, Sendable, Equatable {
         }
     }
 
+    /// Whether this update reports that no foreground work is active.
+    ///
+    /// An idle update ends the foreground work even when the agent reports no
+    /// stop reason, so a receiver must not wait for one.
+    public var isIdle: Bool {
+        if case .idle = self { return true }
+        return false
+    }
+
+    /// The stop reason of an idle update, when the agent reported one.
+    ///
+    /// ACP v2 allows an idle update without a stop reason. An omitted stop
+    /// reason means the agent is not reporting why the work stopped.
     public var idleStopReason: ACPStopReason? {
         guard case let .idle(stopReason, _) = self else { return nil }
         return stopReason

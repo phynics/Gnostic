@@ -366,17 +366,22 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             updateRouter.endTurn(sessionID: sessionID)
             if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
             if let streamError = outcome.error { throw streamError }
-            guard let stopReason = outcome.stopReason else {
+            guard outcome.idleReported else {
                 throw AscendantBackendError.terminal(.init(
                     code: "acpTurnStopped",
                     message: "ACP agent did not report an idle state for the Turn."
                 ))
             }
-            if stopReason == .cancelled { throw AscendantBackendError.cancelled }
-            if stopReason != .endTurn {
-                let message = "ACP agent stopped the Turn with reason '\(stopReason.wireValue)'."
-                throw AscendantBackendError.terminal(.init(code: "acpTurnStopped", message: message))
+            if let stopReason = outcome.stopReason {
+                if stopReason == .cancelled { throw AscendantBackendError.cancelled }
+                if stopReason != .endTurn {
+                    let message = "ACP agent stopped the Turn with reason '\(stopReason.wireValue)'."
+                    throw AscendantBackendError.terminal(.init(code: "acpTurnStopped", message: message))
+                }
             }
+            // An idle without a stop reason ends the Turn with an unspecified
+            // reason, which is neither success nor failure (ADR 0019 §2). The
+            // Turn completes with the text the agent reported.
             try await updates.append(.init(kind: .completion, terminal: true))
             return outcome.text
         } catch let error as AscendantBackendError {
@@ -1142,6 +1147,12 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 
     private struct ForwardOutcome: Sendable {
         var text: String
+        /// Whether the agent reported an idle state, which ends the Turn.
+        ///
+        /// An idle update ends the foreground work even when the agent
+        /// reports no stop reason, so the idle and its stop reason are
+        /// tracked separately.
+        var idleReported: Bool
         var stopReason: ACPStopReason?
         var error: (any Error)?
     }
@@ -1156,10 +1167,20 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         var seenToolCalls: Set<String> = []
         for await event in events {
             if await activeTurn.isTurnCancelled {
-                return ForwardOutcome(text: assistantText, stopReason: .cancelled, error: appendError)
+                return ForwardOutcome(
+                    text: assistantText,
+                    idleReported: true,
+                    stopReason: .cancelled,
+                    error: appendError
+                )
             }
-            if case let .stateUpdate(state) = event, let stopReason = state.idleStopReason {
-                return ForwardOutcome(text: assistantText, stopReason: stopReason, error: appendError)
+            if case let .stateUpdate(state) = event, state.isIdle {
+                return ForwardOutcome(
+                    text: assistantText,
+                    idleReported: true,
+                    stopReason: state.idleStopReason,
+                    error: appendError
+                )
             }
             guard appendError == nil else { continue }
             guard let update = backendUpdate(
@@ -1173,7 +1194,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 appendError = error
             }
         }
-        return ForwardOutcome(text: assistantText, stopReason: nil, error: appendError)
+        return ForwardOutcome(text: assistantText, idleReported: false, stopReason: nil, error: appendError)
     }
 
     private nonisolated static func backendUpdate(
@@ -1186,6 +1207,13 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             guard case let .text(text) = chunk.content else { return nil }
             assistantText += text.text
             return .init(kind: .assistantText, text: text.text)
+        case .agentMessage(let message):
+            // A whole-message update is an upsert: it replaces the text
+            // accumulated for that message, so it does not append.
+            let text = messageText(in: message.content)
+            guard !text.isEmpty else { return nil }
+            assistantText = text
+            return .init(kind: .assistantText, text: text)
         case .toolCallUpdate(let toolCall):
             let isInitial = seenToolCalls.insert(toolCall.toolCallId).inserted
             return .init(
@@ -1200,6 +1228,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         default:
             return nil
         }
+    }
+
+    /// The text of a whole message, with the text blocks concatenated.
+    private nonisolated static func messageText(in content: [ACPContentBlock]?) -> String {
+        guard let content else { return "" }
+        var text = ""
+        for block in content {
+            if case let .text(textContent) = block {
+                text += textContent.text
+            }
+        }
+        return text
     }
 
     private nonisolated static func toolStatus(

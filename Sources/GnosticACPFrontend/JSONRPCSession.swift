@@ -144,7 +144,7 @@ public actor JSONRPCSession {
             }
             if let verInt, verInt < 2 {
                 respondIfNeeded(to: request, error: JSONRPCErrorObject(
-                    code: -32000,
+                    code: ACPv2Protocol.ErrorCode.unsupportedProtocolVersion,
                     message: "ACP v1 is not supported. Gnostic requires ACP v2 or higher."
                 ))
                 return
