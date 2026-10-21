@@ -10,7 +10,7 @@ import Testing
 /// the body, so the two must agree.
 @Suite("Failure envelope status")
 struct FailureEnvelopeStatusTests {
-    private let validMajorOnly = #"{"protocolMajor":2}"#
+    private let validMajorOnly = #"{"protocolMajor":3}"#
 
     @Test("timeline.status reports an invalid payload as 400 in its body")
     func timelineStatusInvalidPayload() async throws {

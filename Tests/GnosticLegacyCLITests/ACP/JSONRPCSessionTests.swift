@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import PKContracts
 import Testing
 
@@ -116,6 +117,32 @@ struct JSONRPCSessionTests {
         let response = try #require(output.responses().last)
         #expect(response.id == .number(1))
         #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
+    }
+
+    @Test("initialize accepts ACP v2 and rejects an ACP v1 client")
+    func initializeVersionNegotiation() async throws {
+        let supported = JSONRPCOutputCapture()
+        let supportedSession = JSONRPCSession(handler: { _ in .dictionary([:]) }, output: supported.append)
+
+        await supportedSession.receive(frame(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}"#
+        ))
+        let supportedResponse = try #require(supported.responses().last)
+        let supportedResult = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(try #require(supportedResponse.result))
+        ) as? [String: Any]
+        #expect(supportedResult?["protocolVersion"] as? Int == 2)
+        #expect(await supportedSession.currentState() == .initialized)
+
+        let legacy = JSONRPCOutputCapture()
+        let legacySession = JSONRPCSession(handler: { _ in .dictionary([:]) }, output: legacy.append)
+
+        await legacySession.receive(frame(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}"#
+        ))
+        let legacyResponse = try #require(legacy.responses().last)
+        #expect(legacyResponse.error?.code == -32000)
+        #expect(await legacySession.currentState() == .awaitingInitialize)
     }
 
     @Test("finish waits for an in-flight request to unwind before reporting stopped")
