@@ -214,7 +214,7 @@ public enum DoctorLogic {
         let id = ascendant.id.uuidString.lowercased()
         let backendPath = "ascendants[\(id)].backend"
         var findings: [DoctorFinding] = []
-        let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
+        let configuration = ProviderBackendConfiguration(backend: ascendant.backend)
 
         guard let schema = composition.settingsSchema(for: ascendant.backend.kind) else {
             findings.append(
@@ -411,7 +411,7 @@ public enum DoctorLogic {
             )
         }
         if options.checkProvider {
-            let endpoints = manifest.ascendants.compactMap { PositronicBackendConfiguration(backend: $0.backend).endpoint }
+            let endpoints = manifest.ascendants.compactMap { ProviderBackendConfiguration(backend: $0.backend).endpoint }
             for endpoint in endpoints {
                 guard let url = URL(string: endpoint), let host = url.host else { continue }
                 let port = url.port ?? (url.scheme == "http" ? 80 : 443)

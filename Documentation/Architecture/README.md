@@ -113,6 +113,23 @@ dependency and imports none. A composition root installs the backend with
 `PositronicBackend.register(into:)`. ADR 0005 records the boundary and its
 fitness checks.
 
+`GnosticHost` is the shipped host composition. It registers the
+process-independent Letta and ACP backends and installs no provider-specific
+contribution, so the host process never links PositronicKit. The
+pre-firewall composition, which still installs the bundled Positronic backend,
+lives in the transitional `GnosticLegacyPositronicHost` target. The
+transitional `gnostic-legacy` executable keeps a copy of the command line
+that drives that composition; #611 deletes the target, the executable, and
+the copy.
+
+`Tests/GnosticCoreTests/PositronicKitFirewallTests.swift` enforces the
+firewall. It parses `Package.swift` and the Swift sources, fails when a target
+outside the transitional set declares or imports a PositronicKit product
+(including `PKContracts` and `PKTestSupport`), and fails when a shipped target
+reaches one through a dependency closure. The check also detects a seeded
+illegal declaration and a seeded illegal import, so the rule cannot pass
+because it stopped looking.
+
 `PositronicWorkspaceProjection` and `PositronicJSONValueBridge` are the only
 conversion points between Gnostic values and their PositronicKit equivalents.
 The projection converts Workspace references in both directions; the bridge

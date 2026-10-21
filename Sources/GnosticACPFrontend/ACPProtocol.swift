@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import PKContracts
+import GnosticProtocol
 
 /// The small stable ACP v1 surface implemented by `gnostic acp`.
 ///
@@ -16,8 +16,8 @@ public enum ACPProtocol {
 struct ACPPromptParameters: Codable, Sendable {
     let sessionID: String
     let prompt: [ACPPromptContent]
-    let mcpServers: [AnyCodable]?
-    let metadata: [String: AnyCodable]?
+    let mcpServers: [GnosticJSONValue]?
+    let metadata: [String: GnosticJSONValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
@@ -34,13 +34,13 @@ struct ACPPromptContent: Codable, Sendable {
 
 struct ACPSessionParameters: Codable, Sendable {
     let cwd: String
-    let mcpServers: [AnyCodable]?
+    let mcpServers: [GnosticJSONValue]?
 }
 
 struct ACPResumeParameters: Codable, Sendable {
     let sessionID: String
     let cwd: String
-    let mcpServers: [AnyCodable]?
+    let mcpServers: [GnosticJSONValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"

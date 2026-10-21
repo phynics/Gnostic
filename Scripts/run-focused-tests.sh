@@ -65,6 +65,13 @@ printf 'Using gnostic executable: %s\n' "$bin" | tee -a "$setup_log"
 export GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs
 export GNOSTIC_SERVE_BINARY="$bin"
 export GNOSTIC_CLI_BINARY="$bin"
+
+if [[ "$FILTER" == GnosticLegacyCLITests* ]]; then
+    swift build "${swift_flags[@]}" --product gnostic-legacy
+    GNOSTIC_CLI_BINARY="$(swift build "${swift_flags[@]}" --product gnostic-legacy --show-bin-path)/gnostic-legacy"
+    GNOSTIC_SERVE_BINARY="$GNOSTIC_CLI_BINARY"
+    export GNOSTIC_CLI_BINARY GNOSTIC_SERVE_BINARY
+fi
 export GNOSTIC_ACP_BINARY="$bin"
 export GNOSTIC_ACP_OFFICIAL_CLIENT=/workspace/Tests/Fixtures/OfficialACPClient/lifecycle.mjs
 export GNOSTIC_PI_ACP_CLIENT_FIXTURE=/workspace/Tests/Fixtures/PiACPClient/lifecycle.mjs

@@ -190,7 +190,7 @@ public enum ConfigConsoleLogic {
             registryName: registryEntry?.name,
             runnable: registryEntry?.runnable,
             owningIssue: registryEntry?.owningIssue,
-            installsContribution: module.contribution != nil,
+            installsContribution: module.installsContribution,
             requiresModelService: module.requiresModelService,
             keys: keys,
             warning: warning(module: module.name, entry: registryEntry)

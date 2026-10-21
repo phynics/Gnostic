@@ -29,6 +29,7 @@ let package = Package(
         .executable(name: "gnostic-acp-live-smoke", targets: ["GnosticACPLiveSmoke"]),
         .executable(name: "gnostic-soak-driver", targets: ["GnosticSoakDriver"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
+        .executable(name: "gnostic-legacy", targets: ["GnosticLegacyCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.7.0"),
@@ -76,6 +77,15 @@ let package = Package(
         ),
         .target(
             name: "GnosticHost",
+            dependencies: [
+                "GnosticACPAscendant",
+                "GnosticCore",
+                "GnosticKit",
+                "GnosticLettaBackend",
+            ]
+        ),
+        .target(
+            name: "GnosticLegacyPositronicHost",
             dependencies: [
                 "GnosticCore",
                 "GnosticPositronicBackend",
@@ -136,7 +146,7 @@ let package = Package(
             dependencies: [
                 "GnosticClient",
                 "GnosticCore",
-                .product(name: "PKContracts", package: "PositronicKit"),
+                "GnosticProtocol",
             ]
         ),
         .target(
@@ -260,12 +270,15 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "GnosticCoreTests",
+            name: "GnosticPositronicBackendTests",
             dependencies: [
                 "GnosticAscendantConformance",
                 "GnosticClient",
                 "GnosticCore",
+                "GnosticHost",
+                "GnosticLegacyPositronicHost",
                 "GnosticPositronicBackend",
+                "GnosticRunner",
                 "GnosticWorkspaceTestSupport",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
@@ -275,14 +288,23 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GnosticCoreTests",
+            dependencies: [
+                "GnosticAscendantConformance",
+                "GnosticClient",
+                "GnosticCore",
+                "GnosticWorkspaceTestSupport",
+                .product(name: "Axoloty", package: "Axoloty"),
+                .product(name: "AxolotyWire", package: "Axoloty"),
+            ]
+        ),
+        .testTarget(
             name: "GnosticClientTests",
             dependencies: [
                 "GnosticClient",
                 "GnosticCore",
-                "GnosticPositronicBackend",
                 "GnosticWorkspaceTestSupport",
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .testTarget(
@@ -344,21 +366,19 @@ let package = Package(
             dependencies: [
                 "GnosticCore",
                 "GnosticHost",
-                "GnosticPositronicBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
             ]
         ),
         .executableTarget(
             name: "GnosticACPLiveSmoke",
-            dependencies: ["GnosticACPAscendant", "GnosticCore", "GnosticPositronicBackend"]
+            dependencies: ["GnosticACPAscendant", "GnosticCore"]
         ),
         .executableTarget(
             name: "GnosticSoakDriver",
             dependencies: [
                 "GnosticClient",
                 "GnosticCore",
-                "GnosticPositronicBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -370,10 +390,8 @@ let package = Package(
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticLettaBackend",
-                "GnosticPositronicBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .executableTarget(
@@ -384,13 +402,24 @@ let package = Package(
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticKit",
+                "GnosticRLM",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Axoloty", package: "Axoloty"),
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticLegacyCLI",
+            dependencies: [
+                "GnosticACPFrontend",
+                "GnosticClient",
+                "GnosticCore",
+                "GnosticLegacyPositronicHost",
+                "GnosticKit",
                 "GnosticPositronicBackend",
                 "GnosticPositronicContext",
                 "GnosticRLM",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
-                .product(name: "PositronicKit", package: "PositronicKit"),
-                .product(name: "PKContracts", package: "PositronicKit"),
             ]
         ),
         .testTarget(
@@ -401,6 +430,23 @@ let package = Package(
                 "GnosticACPAscendant",
                 "GnosticCore",
                 "GnosticHost",
+                "GnosticKit",
+                "GnosticLettaBackend",
+                "GnosticLettaTestSupport",
+                "GnosticProtocol",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Axoloty", package: "Axoloty"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticLegacyCLITests",
+            dependencies: [
+                "GnosticACPFrontend",
+                "GnosticProtocol",
+                "GnosticLegacyCLI",
+                "GnosticACPAscendant",
+                "GnosticCore",
+                "GnosticLegacyPositronicHost",
                 "GnosticKit",
                 "GnosticLettaBackend",
                 "GnosticLettaTestSupport",

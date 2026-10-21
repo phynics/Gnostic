@@ -280,7 +280,7 @@ public struct CLIConfigurationStore: Sendable {
             llmAPIKey: nil
         )
         if let ascendant = manifest.ascendants.first(where: { $0.backend.kind == "positronic" }) {
-            let configuration = PositronicBackendConfiguration(backend: ascendant.backend)
+            let configuration = ProviderBackendConfiguration(backend: ascendant.backend)
             result.llmProvider = configuration.provider
             result.llmEndpoint = configuration.endpoint
             result.llmModel = configuration.model
