@@ -287,4 +287,117 @@ struct TimelineTurnCoordinatorTests {
             Issue.record("timelines array missing in encoded manifest")
         }
     }
+
+    @Test("Cancelling an active turn records cancelled and rejects the in-flight caller")
+    func cancellationRecordsCancelledOutcome() async throws {
+        let coordinator = TimelineTurnCoordinator()
+        let envelope = makeEnvelope(clientTurnID: "turn-cancel")
+        let started = AsyncStream<Void>.makeStream()
+
+        let task = Task {
+            try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
+                started.continuation.yield(())
+                try await Task.sleep(for: .seconds(30))
+                return "msg-never"
+            })
+        }
+
+        for await _ in started.stream { break }
+        #expect(await coordinator.cancel(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID))
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected turnCancelled error")
+        } catch let error as TimelineTurnError {
+            #expect(error == .turnCancelled)
+            #expect(error.jsonRPCErrorCode == -32800)
+        }
+
+        let replay = await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
+        #expect(replay?.terminalOutcome == .cancelled)
+
+        let retry = try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
+            Issue.record("Cancelled turn must not dispatch again")
+            return "msg-retry"
+        })
+        #expect(retry.replayed)
+        #expect(retry.terminalOutcome == .cancelled)
+    }
+
+    @Test("A terminal session update owns the returned terminal outcome")
+    func terminalUpdateOwnsOutcome() async throws {
+        let coordinator = TimelineTurnCoordinator()
+        let envelope = makeEnvelope(clientTurnID: "turn-terminal")
+
+        let result = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
+            await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID,
+                clientTurnID: envelope.clientTurnID,
+                stopReason: .endTurn
+            )
+            return "msg-terminal"
+        })
+
+        #expect(result.terminalOutcome == .completed)
+        #expect(result.messageID == "msg-terminal")
+    }
+
+    @Test("Streamed updates are forwarded once and preserved for replay")
+    func streamedUpdatesArePreserved() async throws {
+        let coordinator = TimelineTurnCoordinator()
+        let envelope = makeEnvelope(clientTurnID: "turn-stream")
+        let received = SafeCounter()
+        let update = TimelineTurnUpdate(
+            timelineID: envelope.timelineID,
+            clientTurnID: envelope.clientTurnID,
+            sequence: 1,
+            update: .stateUpdate(.idle(stopReason: .endTurn, meta: nil)),
+            terminal: true,
+            terminalOutcome: .completed
+        )
+
+        let result = try await coordinator.execute(
+            envelope: envelope,
+            promptDispatch: { _ in
+                await coordinator.recordUpdate(update)
+                return "msg-stream"
+            },
+            streamUpdates: { _ in await received.increment() }
+        )
+
+        #expect(await received.value() == 1)
+        #expect(result.terminalOutcome == .completed)
+        let replay = await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
+        #expect(replay?.updates == [update])
+    }
+
+    @Test("Provider returns the message ID confirmed by the runtime dispatcher")
+    func providerUsesRuntimeDispatcher() async throws {
+        let coordinator = TimelineTurnCoordinator()
+        let provider = TimelineTurnProvider(coordinator: coordinator, promptDispatcher: { envelope in
+            #expect(envelope.state == .pendingInsertion)
+            return "msg-confirmed"
+        })
+        let envelope = makeEnvelope(clientTurnID: "turn-provider")
+        let parameters = String(decoding: try JSONEncoder().encode(envelope), as: UTF8.self)
+
+        let outcome = try await provider.handle(
+            operation: TimelineTurnProvider.turnOperation,
+            parameters: parameters
+        )
+        guard case let .success(result, _) = outcome else {
+            Issue.record("Expected a successful timeline.turn result")
+            return
+        }
+        let decoded = try JSONDecoder().decode(TimelineTurnResult.self, from: Data(result.utf8))
+        #expect(decoded.messageID == "msg-confirmed")
+    }
+
+    @Test("Structured busy error data keeps retryable as a JSON boolean")
+    func structuredDataKeepsBooleanType() throws {
+        let data = try JSONEncoder().encode(TimelineTurnError.timelineBusy.structuredData)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["code"] as? String == "timelineBusy")
+        #expect(object["retryable"] as? Bool == true)
+    }
 }

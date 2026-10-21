@@ -56,24 +56,38 @@ public enum TimelineTurnError: Error, LocalizedError, Equatable, Sendable {
 
 /// Type-erased sendable value for structured error data.
 public struct AnySendable: Sendable, Codable, Equatable {
-    private let value: String
+    private enum Storage: Sendable, Equatable {
+        case string(String)
+        case bool(Bool)
+    }
+
+    private let storage: Storage
 
     public init(_ string: String) {
-        self.value = string
+        storage = .string(string)
     }
 
     public init(_ bool: Bool) {
-        self.value = bool ? "true" : "false"
+        storage = .bool(bool)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        self.value = try container.decode(String.self)
+        if let bool = try? container.decode(Bool.self) {
+            storage = .bool(bool)
+        } else {
+            storage = .string(try container.decode(String.self))
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        try container.encode(value)
+        switch storage {
+        case let .string(value):
+            try container.encode(value)
+        case let .bool(value):
+            try container.encode(value)
+        }
     }
 }
 
@@ -93,8 +107,12 @@ public actor TimelineTurnCoordinator {
     private struct ActiveTurn {
         let clientTurnID: String
         let admissionDigest: String
+        let sequence: Int
         var state: TimelineTurnLifecycleState
         var messageID: String?
+        var terminalOutcome: TimelineTurnTerminalOutcome?
+        var updates: [TimelineTurnUpdate]
+        var updateHandler: (@Sendable (TimelineTurnUpdate) async -> Void)?
         let task: Task<TimelineTurnResult, Error>
     }
 
@@ -183,35 +201,38 @@ public actor TimelineTurnCoordinator {
             } catch let error as TimelineTurnError where error == .insertionUnknown {
                 inFlightEnvelope.state = .insertionUnknown
                 inFlightEnvelope.terminalOutcome = .insertionUnknown
-                await coordinator.finishTurn(
-                    key: key,
-                    admissionDigest: envelope.admissionDigest,
-                    sequence: envelope.sequence,
-                    outcome: .insertionUnknown,
-                    messageID: nil,
-                    updates: []
-                )
+                await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
                 throw error
+            } catch is CancellationError {
+                // A cancelled insertion was explicitly cancelled by the host.
+                inFlightEnvelope.state = .cancelled
+                inFlightEnvelope.terminalOutcome = .cancelled
+                await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: nil)
+                throw TimelineTurnError.turnCancelled
             } catch {
                 // Ambiguous or transport failure before message confirmation enters insertionUnknown.
                 inFlightEnvelope.state = .insertionUnknown
                 inFlightEnvelope.terminalOutcome = .insertionUnknown
-                await coordinator.finishTurn(
-                    key: key,
-                    admissionDigest: envelope.admissionDigest,
-                    sequence: envelope.sequence,
-                    outcome: .insertionUnknown,
-                    messageID: nil,
-                    updates: []
-                )
+                await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
                 throw TimelineTurnError.insertionUnknown
+            }
+
+            // A cancellation may arrive while the insertion Call is in flight.
+            if Task.isCancelled {
+                inFlightEnvelope.state = .cancelled
+                inFlightEnvelope.terminalOutcome = .cancelled
+                await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
+                throw TimelineTurnError.turnCancelled
             }
 
             // Prompt confirmed and inserted. Turn is active.
             inFlightEnvelope.state = .active
 
-            // Normal completion with idle state and stop reason (or endedUnspecified).
-            let outcome: TimelineTurnTerminalOutcome = inFlightEnvelope.terminalOutcome ?? .endedUnspecified
+            // The session's idle update owns the terminal outcome. Fall back to
+            // the envelope or endedUnspecified when the session omits it.
+            let outcome = await coordinator.recordedOutcome(for: key)
+                ?? inFlightEnvelope.terminalOutcome
+                ?? .endedUnspecified
             let result = TimelineTurnResult(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
@@ -222,23 +243,19 @@ public actor TimelineTurnCoordinator {
                 protocolMajor: GnosticProtocol.currentMajor
             )
 
-            await coordinator.finishTurn(
-                key: key,
-                admissionDigest: envelope.admissionDigest,
-                sequence: envelope.sequence,
-                outcome: outcome,
-                messageID: messageID,
-                updates: []
-            )
-
+            await coordinator.finishTurn(key: key, outcome: outcome, messageID: messageID)
             return result
         }
 
         activeTurnsByTimeline[envelope.timelineID] = ActiveTurn(
             clientTurnID: envelope.clientTurnID,
             admissionDigest: envelope.admissionDigest,
+            sequence: envelope.sequence,
             state: .pendingInsertion,
             messageID: nil,
+            terminalOutcome: nil,
+            updates: [],
+            updateHandler: streamUpdates,
             task: task
         )
 
@@ -251,42 +268,50 @@ public actor TimelineTurnCoordinator {
     }
 
     /// Records completion of a turn in the ledger and clears active state.
+    ///
+    /// A completion that races with ``cancel(timelineID:clientTurnID:)`` finds
+    /// no active turn and must not overwrite the recorded cancellation.
     fileprivate func finishTurn(
         key: TurnKey,
-        admissionDigest: String,
-        sequence: Int,
         outcome: TimelineTurnTerminalOutcome,
-        messageID: String?,
-        updates: [TimelineTurnUpdate]
+        messageID: String?
     ) {
-        activeTurnsByTimeline.removeValue(forKey: key.timelineID)
+        guard let active = activeTurnsByTimeline.removeValue(forKey: key.timelineID),
+              active.clientTurnID == key.clientTurnID else { return }
         completedTurns[key] = CompletedTurn(
-            admissionDigest: admissionDigest,
-            sequence: sequence,
+            admissionDigest: active.admissionDigest,
+            sequence: active.sequence,
             terminalOutcome: outcome,
-            messageID: messageID,
-            updates: updates
+            messageID: messageID ?? active.messageID,
+            updates: active.updates
         )
     }
 
-    /// Records an update and resolves the turn when an idle state is reached.
+    /// Records a streamed update for replay and forwards it to the stream handler.
+    public func recordUpdate(_ update: TimelineTurnUpdate) async {
+        guard var active = activeTurnsByTimeline[update.timelineID],
+              active.clientTurnID == update.clientTurnID else { return }
+        active.updates.append(update)
+        if update.terminal {
+            active.terminalOutcome = update.terminalOutcome
+        }
+        let handler = active.updateHandler
+        activeTurnsByTimeline[update.timelineID] = active
+        await handler?(update)
+    }
+
+    /// Records an idle update's terminal outcome without completing the in-flight
+    /// dispatch. ``execute(envelope:promptDispatch:streamUpdates:)`` reads it when
+    /// the insertion Call returns.
     public func recordTerminalUpdate(
         timelineID: UUID,
         clientTurnID: String,
         stopReason: ACPStopReason?
     ) {
-        let key = TurnKey(timelineID: timelineID, clientTurnID: clientTurnID)
-        let outcome = TimelineTurnTerminalOutcome.from(stopReason: stopReason)
-        if let active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID {
-            activeTurnsByTimeline.removeValue(forKey: timelineID)
-            completedTurns[key] = CompletedTurn(
-                admissionDigest: active.admissionDigest,
-                sequence: 1,
-                terminalOutcome: outcome,
-                messageID: active.messageID,
-                updates: []
-            )
-        }
+        guard var active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else { return }
+        active.terminalOutcome = TimelineTurnTerminalOutcome.from(stopReason: stopReason)
+        active.state = .completed
+        activeTurnsByTimeline[timelineID] = active
     }
 
     /// Cancels an active turn on the Timeline if present.
@@ -299,12 +324,18 @@ public actor TimelineTurnCoordinator {
         let key = TurnKey(timelineID: timelineID, clientTurnID: clientTurnID)
         completedTurns[key] = CompletedTurn(
             admissionDigest: active.admissionDigest,
-            sequence: 1,
+            sequence: active.sequence,
             terminalOutcome: .cancelled,
             messageID: active.messageID,
-            updates: []
+            updates: active.updates
         )
         return true
+    }
+
+    private func recordedOutcome(for key: TurnKey) -> TimelineTurnTerminalOutcome? {
+        guard let active = activeTurnsByTimeline[key.timelineID],
+              active.clientTurnID == key.clientTurnID else { return nil }
+        return active.terminalOutcome
     }
 
     /// Replays updates for a previously recorded turn.

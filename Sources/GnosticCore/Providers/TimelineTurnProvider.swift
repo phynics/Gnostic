@@ -14,17 +14,21 @@ public struct TimelineTurnProvider: Sendable {
     public static let permissionRespondOperation = "me.atkn.gnostic.timeline.permission.respond"
     public static let permissionResponseChannel = "me.atkn.gnostic.timeline.permission.response"
 
-    public typealias TurnExecutor = @Sendable (TimelineTurnEnvelope) async throws -> TimelineTurnResult
-    public typealias TurnCancellation = @Sendable (TimelineTurnCancellationRequest) async -> Bool
+    /// Dispatches `session/prompt` to the session's Runtime and returns the
+    /// confirmed `messageId`. The provider must never synthesize this value.
+    public typealias PromptDispatcher = @Sendable (TimelineTurnEnvelope) async throws -> String
 
     private let coordinator: TimelineTurnCoordinator
+    private let promptDispatcher: PromptDispatcher
     private let isAvailable: @Sendable () async -> Bool
 
     public init(
         coordinator: TimelineTurnCoordinator,
+        promptDispatcher: @escaping PromptDispatcher,
         isAvailable: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.coordinator = coordinator
+        self.promptDispatcher = promptDispatcher
         self.isAvailable = isAvailable
     }
 
@@ -83,7 +87,7 @@ public struct TimelineTurnProvider: Sendable {
             do {
                 let result = try await coordinator.execute(
                     envelope: envelope,
-                    promptDispatch: { _ in "msg-\(UUID().uuidString.prefix(8).lowercased())" }
+                    promptDispatch: promptDispatcher
                 )
                 try GnosticProtocol.validate(result.protocolMajor)
                 return try .encoded(result, context: "timeline.turn result")
@@ -166,6 +170,17 @@ public struct TimelineTurnProvider: Sendable {
                 protocolMajor: GnosticProtocol.currentMajor
             )
             return try .encoded(result, context: "timeline.turn.cancel result")
+        }
+    }
+
+    @MainActor
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
+        try await GnosticCallHandling.register(
+            operations: [Self.turnOperation, Self.replayOperation, Self.cancelOperation],
+            on: communication,
+            context: context
+        ) { [self] operation, parameters in
+            try await handle(operation: operation, parameters: parameters)
         }
     }
 }

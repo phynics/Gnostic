@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticCore
+import GnosticProtocol
 import PKContracts
 
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
@@ -29,7 +30,7 @@ public actor JSONRPCSession {
     public init(handler: @escaping RequestHandler, output: @escaping Output) {
         self.init(handler: handler, output: output, initialize: {
             .dictionary([
-                "protocolVersion": .integer(2),
+                "protocolVersion": .integer(Int64(ACPProtocol.version)),
                 "capabilities": .dictionary(["cancellation": .boolean(true)]),
             ])
         })
@@ -133,21 +134,34 @@ public actor JSONRPCSession {
 
         do {
             var result = try await initializeHandler()
-            if case var .dictionary(dict) = result {
-                if let params = request.params,
-                   let data = try? JSONEncoder().encode(params),
-                   let paramsDict = try? JSONDecoder().decode([String: ACPValue].self, from: data),
-                   let clientVersion = paramsDict["protocolVersion"] {
-                    switch clientVersion {
-                    case let .int(i):
-                        dict["protocolVersion"] = AnyCodable(i)
-                    case let .string(s):
-                        dict["protocolVersion"] = AnyCodable(s)
-                    case let .double(d):
-                        dict["protocolVersion"] = AnyCodable(Int(d))
-                    default:
-                        break
+            if case var .dictionary(dict) = result,
+               let params = request.params,
+               let data = try? JSONEncoder().encode(params),
+               let paramsDict = try? JSONDecoder().decode([String: ACPValue].self, from: data),
+               let clientVersion = paramsDict["protocolVersion"] {
+                let requestedVersion: Int?
+                switch clientVersion {
+                case let .int(i):
+                    requestedVersion = Int(i)
+                case let .string(s):
+                    requestedVersion = Int(s)
+                case let .double(d):
+                    requestedVersion = Int(d)
+                default:
+                    requestedVersion = nil
+                }
+                if let requestedVersion {
+                    // The `gnostic acp` edge keeps the ACP v1 projection for
+                    // existing editor clients. Any version outside the
+                    // supported range is rejected rather than echoed.
+                    guard (1...ACPProtocol.version).contains(requestedVersion) else {
+                        respondIfNeeded(to: request, error: JSONRPCErrorObject(
+                            code: ACPv2Protocol.ErrorCode.unsupportedProtocolVersion,
+                            message: "Unsupported ACP protocol version \(requestedVersion)."
+                        ))
+                        return
                     }
+                    dict["protocolVersion"] = AnyCodable(Int64(requestedVersion))
                 }
                 result = .dictionary(dict)
             }

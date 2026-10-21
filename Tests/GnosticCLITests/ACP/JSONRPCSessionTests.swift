@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import PKContracts
 import Testing
 
@@ -116,6 +117,44 @@ struct JSONRPCSessionTests {
         let response = try #require(output.responses().last)
         #expect(response.id == .number(1))
         #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
+    }
+
+    @Test("initialize echoes a supported client version and rejects an unsupported one")
+    func initializeVersionNegotiation() async throws {
+        let supported = JSONRPCOutputCapture()
+        let supportedSession = JSONRPCSession(handler: { _ in .dictionary([:]) }, output: supported.append)
+
+        await supportedSession.receive(frame(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}"#
+        ))
+        let supportedResponse = try #require(supported.responses().last)
+        let supportedResult = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(try #require(supportedResponse.result))
+        ) as? [String: Any]
+        #expect(supportedResult?["protocolVersion"] as? Int == 2)
+
+        let legacy = JSONRPCOutputCapture()
+        let legacySession = JSONRPCSession(handler: { _ in .dictionary([:]) }, output: legacy.append)
+
+        await legacySession.receive(frame(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}"#
+        ))
+        let legacyResponse = try #require(legacy.responses().last)
+        let legacyResult = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(try #require(legacyResponse.result))
+        ) as? [String: Any]
+        #expect(legacyResult?["protocolVersion"] as? Int == 1)
+        #expect(await legacySession.currentState() == .initialized)
+
+        let unsupported = JSONRPCOutputCapture()
+        let unsupportedSession = JSONRPCSession(handler: { _ in .dictionary([:]) }, output: unsupported.append)
+
+        await unsupportedSession.receive(frame(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":9}}"#
+        ))
+        let unsupportedResponse = try #require(unsupported.responses().last)
+        #expect(unsupportedResponse.error?.code == ACPv2Protocol.ErrorCode.unsupportedProtocolVersion)
+        #expect(await unsupportedSession.currentState() == .awaitingInitialize)
     }
 
     @Test("finish waits for an in-flight request to unwind before reporting stopped")

@@ -31,7 +31,8 @@ struct NodeManifestTests {
         let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["schemaVersion"] as? Int == NodeManifest.currentSchemaVersion)
         #expect(object["llmProfiles"] == nil)
-        #expect(object["ascendants"] is [Any])
+        #expect(object["ascendants"] == nil)
+        #expect(object["runtimeInstances"] is [Any])
         #expect(!manifest.redactedDescription().contains("llm-secret"))
         #expect(!manifest.redactedDescription().contains("apiKey"))
     }

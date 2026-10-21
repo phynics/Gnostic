@@ -200,7 +200,6 @@ public struct NodeManifest: Codable, Equatable, Sendable {
             try container.encode(kind, forKey: .kind)
             try container.encode(title, forKey: .title)
             try container.encodeIfPresent(operatingAscendantID, forKey: .runtimeInstanceID)
-            try container.encodeIfPresent(operatingAscendantID, forKey: .operatingAscendantID)
             try container.encode(flags, forKey: .flags)
             try container.encode(attachments, forKey: .attachments)
         }
@@ -344,7 +343,6 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         try container.encode(broker, forKey: .broker)
         try container.encode(node, forKey: .node)
         try container.encode(ascendants, forKey: .runtimeInstances)
-        try container.encode(ascendants, forKey: .ascendants)
         try container.encode(timelines, forKey: .timelines)
         try container.encode(workspaces, forKey: .workspaces)
     }

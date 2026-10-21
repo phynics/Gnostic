@@ -58,4 +58,15 @@ public struct TimelinePermissionProvider: Sendable {
             return try .encoded(result, context: "timeline.permission.respond result")
         }
     }
+
+    @MainActor
+    public func register(on communication: CommunicationManager, context: CoatyObject? = nil) async throws -> [CallHandlerRegistration] {
+        try await GnosticCallHandling.register(
+            operations: [Self.responseOperation],
+            on: communication,
+            context: context
+        ) { [self] operation, parameters in
+            try await handle(operation: operation, parameters: parameters)
+        }
+    }
 }

@@ -120,7 +120,7 @@ struct ACPCommand: AsyncParsableCommand {
             )
             // Dynamic profile sources may emit only their executable profiles;
             // profile selection remains owned by pi-acp-client's trusted config.
-            let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: profiles)
+            let bundle = ACPProfileBundle(version: ACPProtocol.version, defaultProfile: nil, profiles: profiles)
             try cache.store(bundle, for: brokerKey)
             try writeProfiles(bundle)
         } catch {
