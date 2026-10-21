@@ -10,7 +10,8 @@ planted-obligation fixtures.
 The kit depends on `GnosticCore` only. It imports no backend.
 `CompositionArchitectureFitnessTests.kitDependencyBoundary` fails the build if
 `GnosticKit` gains a `PositronicKit`, `PKContracts`, module, or composition
-dependency, so P7 can extract Positronic from Core without touching the kit.
+dependency. The host no longer adapts an in-process Positronic model; live
+provider work must cross the standalone ACP Runtime process boundary.
 
 This chapter covers the contract a module implements. The RLM scenario
 (`Sources/GnosticCLI/Experiment/`) is the worked in-tree consumer.
@@ -26,9 +27,11 @@ A module contributes four things:
 | A **case loader** that freezes scenario text to an approved digest | `ExperimentScenarioCaseSet` |
 | A **run record** that names the Regime and its metrics | `ExperimentRunRecord` |
 
-The kit names none of your backend types. Bridge them at the composition layer,
-as [`GnosticHost/ExperimentModelAdapters.swift`](../../Sources/GnosticHost/ExperimentModelAdapters.swift)
-does for Positronic.
+The kit names none of your backend types. Provider-specific adapters belong
+behind the Runtime process boundary. The old in-process bridge remains only in
+the transitional target at
+[`GnosticLegacyPositronicHost/ExperimentModelAdapters.swift`](../../Sources/GnosticLegacyPositronicHost/ExperimentModelAdapters.swift)
+until issue #611 removes it.
 
 ## Scenarios and frozen cases
 
@@ -78,8 +81,8 @@ offline baseline.
 A live driver owns its backend glue. It builds the case prompt, runs the
 system under test, and maps the result onto an `ExperimentRunRecord`: outcome,
 failure category, answer, evidence, wall time, metrics, usage, and cost. The
-RLM driver (`ExperimentCommands.swift`) shows the shape: it runs the engine,
-meters the root and leaf model roles, and records a structured failure category.
+previous in-process RLM driver has moved to the transitional composition and is
+not available through the clean host until its ACP Runtime replacement lands.
 
 ## The model seam
 

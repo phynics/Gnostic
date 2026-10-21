@@ -9,6 +9,15 @@
       "issue": "https://github.com/phynics/Gnostic/issues/227",
       "owner": "phynics",
       "reconsiderWhen": "An accepted ADR defines the replacement for the Coaty object model, or the Gnostic*Object types stop inheriting CoatyObject. Retiring this surface is an architecture decision that needs its own ADR and epic, not incremental deletion."
+    },
+    {
+      "id": "GNO-EXC-0002",
+      "rule": "Only the standalone reference Runtime executable may depend on or import a PositronicKit product.",
+      "scope": "Package.swift targets GnosticPositronicBackend, GnosticPositronicAtlas, GnosticPositronicContext, GnosticPositronicBackendTests, GnosticPositronicAtlasTests, GnosticPositronicContextTests, GnosticLegacyPositronicHost, GnosticLegacyCLI, GnosticLegacyCLITests",
+      "rationale": "The pre-firewall host composition runs the bundled Positronic backend inside the host process. The firewall work in #604 moved that composition into an isolated transitional target and a transitional gnostic-legacy executable, and split the Positronic-dependent tests into their own test target, so the shipped host, core, protocol, client, kit, CLI, and frontend targets have no direct or transitive PositronicKit dependency. The transitional targets exist only to keep the pre-firewall composition and its tests working until #611 deletes them, and the firewall test at Tests/GnosticCoreTests/PositronicKitFirewallTests.swift names every one of them explicitly, so the allowance cannot grow silently.",
+      "issue": "https://github.com/phynics/Gnostic/issues/604",
+      "owner": "phynics",
+      "reconsiderWhen": "#611 deletes the transitional host composition, the transitional executable, and the Positronic backend family. When it lands, this exception is removed rather than renewed, and the firewall test allowance shrinks to the standalone reference Runtime that #609 adds."
     }
   ]
 }

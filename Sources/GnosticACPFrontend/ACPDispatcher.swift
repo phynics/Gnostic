@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import GnosticCore
-import PKContracts
 
 /// Translates ACP v2 requests into Gnostic's existing remote object and
 /// Timeline operations. ACP remains an adapter: no ACP identifiers are stored
@@ -36,7 +36,7 @@ final class ACPDispatcher: Sendable {
 
     private struct ActivePermissionRequest {
         let token: UUID
-        let task: Task<AnyCodable, Error>
+        let task: Task<GnosticJSONValue, Error>
     }
 
     private let client: RemoteTurnClient
@@ -44,8 +44,8 @@ final class ACPDispatcher: Sendable {
     private let requestedAscendantID: UUID?
     private let requestedProviderID: String?
     private let requestedNodeID: UUID?
-    private let publish: @Sendable (String, AnyCodable) -> Void
-    private let requestPermission: @Sendable (AnyCodable) async throws -> AnyCodable
+    private let publish: @Sendable (String, GnosticJSONValue) -> Void
+    private let requestPermission: @Sendable (GnosticJSONValue) async throws -> GnosticJSONValue
     private var ascendant: Ascendant?
     private var requestedPermissionIDs: Set<String> = []
     private var activePrompts: [String: ActivePrompt] = [:]
@@ -58,8 +58,8 @@ final class ACPDispatcher: Sendable {
         requestedAscendantID: UUID?,
         requestedProviderID: String? = nil,
         requestedNodeID: UUID? = nil,
-        publish: @escaping @Sendable (String, AnyCodable) -> Void,
-        requestPermission: @escaping @Sendable (AnyCodable) async throws -> AnyCodable
+        publish: @escaping @Sendable (String, GnosticJSONValue) -> Void,
+        requestPermission: @escaping @Sendable (GnosticJSONValue) async throws -> GnosticJSONValue
     ) {
         self.client = client
         self.registry = registry
@@ -70,7 +70,7 @@ final class ACPDispatcher: Sendable {
         self.requestPermission = requestPermission
     }
 
-    func initialize() async throws -> AnyCodable {
+    func initialize() async throws -> GnosticJSONValue {
         ascendant = try await resolveAscendant()
         return .dictionary([
             "protocolVersion": .integer(Int64(ACPProtocol.version)),
@@ -106,7 +106,7 @@ final class ACPDispatcher: Sendable {
         ])
     }
 
-    func handle(_ request: JSONRPCRequest) async throws -> AnyCodable {
+    func handle(_ request: JSONRPCRequest) async throws -> GnosticJSONValue {
         do {
             return try await route(request)
         } catch let error as RemoteTurnClientError {
@@ -120,7 +120,7 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func route(_ request: JSONRPCRequest) async throws -> AnyCodable {
+    private func route(_ request: JSONRPCRequest) async throws -> GnosticJSONValue {
         switch request.method {
         case "session/new":
             return try await newSession(request.params)
@@ -139,7 +139,7 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func newSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func newSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPSessionParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
@@ -166,7 +166,7 @@ final class ACPDispatcher: Sendable {
         ])
     }
 
-    private func resumeSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func resumeSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPResumeParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
@@ -181,12 +181,12 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func listSessions(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func listSessions(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPListParameters = try decode(params ?? .dictionary([:]))
         let cwd = try input.cwd.map { try canonicalCWD($0) }
         let selected = try await currentAscendant()
         let records = await registry.list(cwd: cwd)
-        var sessions: [AnyCodable] = []
+        var sessions: [GnosticJSONValue] = []
         var unresolved: [ACPSessionRecord] = []
         // Registry entries survive process restarts, but a deleted remote
         // Timeline must not be presented as resumable. A closed record or one
@@ -222,7 +222,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary(["sessions": .array(sessions)])
     }
 
-    private func closeSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func closeSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPCloseParameters = try decode(params)
         _ = try await requireSession(id: input.sessionID, cwd: nil)
         activePermissionRequests.removeValue(forKey: input.sessionID)?.task.cancel()
@@ -231,7 +231,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary([:])
     }
 
-    private func cancelSession(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func cancelSession(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPCloseParameters = try decode(params)
         _ = try await requireSession(id: input.sessionID, cwd: nil)
         guard let prompt = activePrompts[input.sessionID] else { return .dictionary([:]) }
@@ -254,7 +254,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary([:])
     }
 
-    private func prompt(_ params: AnyCodable?) async throws -> AnyCodable {
+    private func prompt(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPPromptParameters = try decode(params)
         defer { cancelledSessions.remove(input.sessionID) }
         guard let text = input.text else {
@@ -664,7 +664,7 @@ final class ACPDispatcher: Sendable {
     /// inspect. Report it alongside the timeline's actual attachment state so
     /// clients can distinguish an attached runtime Workspace from their local
     /// filesystem workspace.
-    private func sessionMetadata(cwd: String, status: TimelineStatus) -> [String: AnyCodable] {
+    private func sessionMetadata(cwd: String, status: TimelineStatus) -> [String: GnosticJSONValue] {
         [
             "gnosticCWD": .string(cwd),
             "gnosticWorkspaceAttachmentState": .string(
@@ -676,12 +676,12 @@ final class ACPDispatcher: Sendable {
         ]
     }
 
-    private func rejectMCP(_ servers: [AnyCodable]?) throws {
+    private func rejectMCP(_ servers: [GnosticJSONValue]?) throws {
         guard let servers, !servers.isEmpty else { return }
         throw JSONRPCMethodError.invalidParams("client-supplied MCP servers are not supported by gnostic acp yet")
     }
 
-    private func decode<T: Decodable>(_ params: AnyCodable?) throws -> T {
+    private func decode<T: Decodable>(_ params: GnosticJSONValue?) throws -> T {
         guard let params,
               let data = try? JSONEncoder().encode(params),
               let value = try? JSONDecoder().decode(T.self, from: data) else {

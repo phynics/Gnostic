@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import GnosticCore
-import PKContracts
 
 /// A single JSON-RPC session. It owns framing, lifecycle state, and request
 /// cancellation; the injected handler owns domain semantics.
@@ -13,8 +13,8 @@ public actor JSONRPCSession {
         case stopped
     }
 
-    public typealias RequestHandler = @Sendable (JSONRPCRequest) async throws -> AnyCodable
-    public typealias InitializeHandler = @Sendable () async throws -> AnyCodable
+    public typealias RequestHandler = @Sendable (JSONRPCRequest) async throws -> GnosticJSONValue
+    public typealias InitializeHandler = @Sendable () async throws -> GnosticJSONValue
     public typealias ResponseHandler = @Sendable (JSONRPCResponse) async -> Void
     public typealias Output = @Sendable (Data) -> Void
 
@@ -81,7 +81,7 @@ public actor JSONRPCSession {
 
     /// Emits a JSON-RPC notification without an id. ACP uses notifications for
     /// streamed session updates while the prompt request remains in flight.
-    public func sendNotification(method: String, params: AnyCodable? = nil) {
+    public func sendNotification(method: String, params: GnosticJSONValue? = nil) {
         let request = JSONRPCRequest(id: nil, method: method, params: params)
         guard let data = try? JSONEncoder().encode(request) else { return }
         notification(data + Data([0x0A]))
@@ -246,7 +246,7 @@ public actor JSONRPCSession {
         }
     }
 
-    private func respondIfNeeded(to request: JSONRPCRequest, result: AnyCodable) {
+    private func respondIfNeeded(to request: JSONRPCRequest, result: GnosticJSONValue) {
         guard let id = request.id else { return }
         emit(JSONRPCResponse(id: id, result: result))
     }
@@ -290,7 +290,7 @@ public actor JSONRPCSession {
         )
     }
 
-    private func identifier(from value: AnyCodable) -> JSONRPCIdentifier? {
+    private func identifier(from value: GnosticJSONValue) -> JSONRPCIdentifier? {
         switch value {
         case let .string(value): return .string(value)
         case let .integer(value): return .number(value)

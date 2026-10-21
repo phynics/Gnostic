@@ -4,36 +4,35 @@ import Axoloty
 import Foundation
 import GnosticCore
 import Testing
-import GnosticPositronicBackend
 
 @testable import GnosticRunner
 
 @Suite("Online runner runtime")
 struct OnlineRunnerTests {
-    @Test("online runtime starts, advertises its default workspace, and shuts down") @MainActor
+    @Test("online runtime starts and shuts down") @MainActor
     func onlineRuntimeStartsAndServes() async throws {
         let name = "online-runner-\(UUID().uuidString.prefix(8).lowercased())"
-        let configuration = try RunnerConfiguration.resolve(
-            flags: RunnerParsingFlags(host: "127.0.0.1", port: 1883, namespace: name),
-            environment: [:]
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: name),
+            node: .init(id: UUID()),
+            ascendants: [.init(
+                id: ascendantID,
+                name: "Letta",
+                defaultTimelineID: timelineID,
+                backend: .init(kind: "letta", settings: [
+                    "serverURL": .string("http://127.0.0.1:8283"),
+                    "model": .string("openai/test-model"),
+                ])
+            )],
+            timelines: [.init(id: timelineID, title: "Letta", operatingAscendantID: ascendantID)],
+            workspaces: []
         )
-        let runtime = try await RunnerRuntime(configuration: configuration)
-        let workspace = try #require(runtime.runtime.plan.workspaces.first)
-
-        let consumer = try OnlineRunnerConsumer(namespace: name)
-        defer { consumer.stop() }
-
-        do {
-            // Subscribe before the runtime starts so the canonical
-            // advertisements published during startup are observed.
-            let observed = try await consumer.observeAdvertised {
-                try await runtime.start()
-            }
-            #expect(observed.contains(workspace.id.uuidString.lowercased()))
-        } catch {
-            await runtime.shutdown()
-            throw error
-        }
+        let runtime = try await RunnerRuntime(plan: manifest.compileLaunchPlan())
+        try await runtime.start()
+        let snapshot = await runtime.runtime.snapshot()
+        #expect(snapshot.ascendantIDs == [ascendantID])
         await runtime.shutdown()
     }
 
