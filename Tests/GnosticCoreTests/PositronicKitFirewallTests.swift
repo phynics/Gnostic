@@ -31,10 +31,9 @@ struct PositronicKitFirewallTests {
     /// - `GnosticLegacy*` is the isolated transitional composition that #611
     ///   deletes.
     ///
-    /// The standalone reference Runtime executable that owns the only
-    /// permitted PositronicKit link arrives with #609. It has no name yet, so
-    /// it is not listed here. Adding it is a one-line change to this file, and
-    /// the allowance test below rejects a name that no target declares.
+    /// `GnosticPositronicRuntime` is the sole executable permitted to link
+    /// PositronicKit. It is intentionally explicit and removed if the runtime
+    /// boundary changes.
     private static let transitionalTargets: Set<String> = [
         "GnosticPositronicBackend",
         "GnosticPositronicAtlas",
@@ -45,6 +44,7 @@ struct PositronicKitFirewallTests {
         "GnosticLegacyPositronicHost",
         "GnosticLegacyCLI",
         "GnosticLegacyCLITests",
+        "GnosticPositronicRuntime",
     ]
 
     /// The shipped targets the issue names. Each one, and each of its test
@@ -58,6 +58,10 @@ struct PositronicKitFirewallTests {
         "GnosticCLI",
         "GnosticACPFrontend",
     ]
+
+    /// The standalone Runtime may depend on PositronicKit, but its local ACP
+    /// process must not link the Axoloty discovery/routing fabric.
+    private static let standaloneRuntimeTarget = "GnosticPositronicRuntime"
 
     @Test("no target outside the transitional set declares PositronicKit")
     func packageDeclarationsAreClean() throws {
@@ -80,6 +84,23 @@ struct PositronicKitFirewallTests {
         for violation in closureViolations(package: package) {
             Issue.record(Comment(rawValue: violation))
         }
+    }
+
+    @Test("the standalone Runtime uses ACP wire types without Axoloty")
+    func standaloneRuntimeClosureIsIsolated() throws {
+        let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let targets = try parseTargets(package)
+        let byName = Dictionary(uniqueKeysWithValues: targets.map { ($0.name, $0) })
+        let runtime = try #require(
+            byName[Self.standaloneRuntimeTarget],
+            "Package.swift has no standalone PositronicKit Runtime target."
+        )
+        let reachable = dependencyNames(from: runtime, byName: byName)
+        #expect(reachable.contains("GnosticACPWire"))
+        #expect(!reachable.contains("GnosticProtocol"))
+        #expect(!reachable.contains("Axoloty"))
+        #expect(!reachable.contains("AxolotyWire"))
+        #expect(!reachable.contains("AxolotyMQTT"))
     }
 
     @Test("no shipped source imports PositronicKit")
@@ -210,6 +231,18 @@ struct PositronicKitFirewallTests {
             }
         }
         return false
+    }
+
+    private func dependencyNames(from target: Target, byName: [String: Target]) -> Set<String> {
+        var seen: Set<String> = []
+        var queue = target.dependencies.map(dependencyName)
+        while let dependency = queue.popLast() {
+            guard let dependency, seen.insert(dependency).inserted else { continue }
+            if let dependencyTarget = byName[dependency] {
+                queue.append(contentsOf: dependencyTarget.dependencies.map(dependencyName))
+            }
+        }
+        return seen
     }
 
     // MARK: - Package parsing

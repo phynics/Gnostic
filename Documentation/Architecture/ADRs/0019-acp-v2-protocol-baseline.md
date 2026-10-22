@@ -234,11 +234,13 @@ switches.
 
 ### 8. A Gnostic-owned v2 wire model
 
-One ACP v2 wire model, owned by Gnostic and generated from or checked against
-the ACP JSON schema at the recorded revision (#572), replaces
-`aptove/swift-sdk`. It lives in a PositronicKit-free target. The `gnostic acp`
-frontend, the `acp-client` backend, and the harness agents (ADR 0017) all
-depend on it, which the firewall allows (ADR 0017 §7).
+One ACP v2 wire model, owned by Gnostic and checked against the ACP JSON schema
+at the recorded revision (#572), replaces `aptove/swift-sdk`. It lives in the
+Foundation-only `GnosticACPWire` target. `GnosticProtocol` re-exports its ACP
+declarations for host consumers. The standalone PositronicKit Runtime imports
+`GnosticACPWire` directly so its dependency closure does not include Axoloty.
+The `gnostic acp` frontend and the `acp-client` backend continue to use the
+re-export through `GnosticProtocol`.
 
 The model preserves unknown enum values that have a fallback, and `_`
 extensions. Removing the SDK is a dependency change with its own resolution

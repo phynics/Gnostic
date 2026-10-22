@@ -89,10 +89,13 @@ The package descriptions below describe the pre-v0.5 implementation. ADR 0021
 is the target contract. Issues #604 and #611 remove the transitional host
 composition and keep PositronicKit only in the standalone reference Runtime.
 
-`GnosticProtocol` is the backend-neutral wire boundary below `GnosticCore`. It
-depends only on Axoloty and `AxolotyWire`, carries no PositronicKit or kernel
-dependency, and `GnosticCore` re-exports it for source compatibility. ADR 0005
-records the boundary and its fitness checks.
+`GnosticACPWire` contains the Gnostic-owned ACP v2 JSON-RPC and operation types.
+It depends only on Foundation, so the standalone PositronicKit Runtime can use
+ACP without linking Axoloty. `GnosticProtocol` remains the Axoloty wire boundary
+below `GnosticCore`. It depends on Axoloty, `AxolotyWire`, and `GnosticACPWire`.
+It re-exports the ACP type names for existing consumers, and `GnosticCore`
+re-exports `GnosticProtocol` for source compatibility. ADRs 0005 and 0019 record
+the boundaries and their fitness checks.
 
 `GnosticClient` is the consumer SDK above `GnosticCore`. It holds the consumer
 session and the typed Turn, Timeline, Workspace, and Diagnostics clients. It

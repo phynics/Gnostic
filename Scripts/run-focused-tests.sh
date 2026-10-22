@@ -48,6 +48,7 @@ run_logged "$setup_log" "$timeout_seconds" npm ci --prefix Tests/Fixtures/Offici
 run_logged "$setup_log" "$timeout_seconds" npm ci --legacy-peer-deps --prefix Tests/Fixtures/PiACPClient --cache .build/npm-cache || exit $?
 run_logged "$setup_log" "$timeout_seconds" npm ci --prefix Tests/Fixtures/ACPAgent --cache .build/npm-cache || exit $?
 run_logged "$setup_log" "$timeout_seconds" swift build "${swift_flags[@]}" --product gnostic || exit $?
+run_logged "$setup_log" "$timeout_seconds" swift build "${swift_flags[@]}" --product gnostic-pk-runtime || exit $?
 
 bin_dir_status=0
 bin_dir=$(timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" swift build "${swift_flags[@]}" --show-bin-path 2>>"$setup_log") || bin_dir_status=$?
@@ -80,6 +81,12 @@ if [[ "$FILTER" == GnosticLegacyCLITests* ]]; then
     export GNOSTIC_LEGACY_CLI_BINARY="$legacy_bin"
 fi
 export GNOSTIC_ACP_BINARY="$bin"
+runtime_bin_dir=$(timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" swift build "${swift_flags[@]}" --product gnostic-pk-runtime --show-bin-path 2>>"$setup_log") || exit $?
+export GNOSTIC_PK_RUNTIME_BINARY="$runtime_bin_dir/gnostic-pk-runtime"
+if [[ ! -x "$GNOSTIC_PK_RUNTIME_BINARY" ]]; then
+    echo "Could not locate gnostic-pk-runtime at $GNOSTIC_PK_RUNTIME_BINARY; diagnostics: $setup_log" >&2
+    exit 1
+fi
 export GNOSTIC_ACP_OFFICIAL_CLIENT=/workspace/Tests/Fixtures/OfficialACPClient/lifecycle.mjs
 export GNOSTIC_PI_ACP_CLIENT_FIXTURE=/workspace/Tests/Fixtures/PiACPClient/lifecycle.mjs
 
