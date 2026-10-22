@@ -26,6 +26,7 @@ enum ACPUpdateRenderer {
         if update.carriesAssistantText, let text = update.text {
             payloads.append(.dictionary([
                 "sessionUpdate": .string("agent_message_chunk"),
+                "messageId": .string("acp:agent:\(turnID)"),
                 "content": .dictionary(["type": .string("text"), "text": .string(text)]),
                 "_meta": .dictionary(metadata),
             ]))
@@ -55,7 +56,7 @@ enum ACPUpdateRenderer {
         metadata: [String: GnosticJSONValue]
     ) -> GnosticJSONValue {
         var payload: [String: GnosticJSONValue] = [
-            "sessionUpdate": .string(initial ? "tool_call" : "tool_call_update"),
+            "sessionUpdate": .string("tool_call_update"),
             "toolCallId": .string(state.toolCallID),
             "status": .string(state.status),
             "_meta": .dictionary(metadata),

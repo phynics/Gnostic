@@ -340,7 +340,7 @@ enum WorkspaceClientFacadeBridge {
             ) { _ in
                 // The pre-6.1 PositronicKit `success` key: a valid Call result
                 // that the pinned `isSuccess` decoder must reject.
-                .success(result: #"{"protocolMajor":2,"success":true,"output":"x"}"#)
+                .success(result: #"{"protocolMajor":3,"success":true,"output":"x"}"#)
             }]
         case .timeout:
             return []

@@ -80,9 +80,9 @@ override the contracts below.
 - **§3, updates outside a Turn:** out-of-Turn updates belong to the open span.
   The Timeline journal stores them durably under §5, rather than only when an
   optional record is enabled.
-- **§4–§5, permissions and cancellation:** retained with the error `-32800`
-  rule for an unanswered permission request and the pre-insertion versus
-  post-insertion cancellation split.
+- **§4–§5, permissions and cancellation:** retained with the v2 `cancelled`
+  outcome for an unanswered permission request (amended 2026-10-21, see
+  ADR 0019 §4) and the pre-insertion versus post-insertion cancellation split.
 - **§6, MCP transports and roots:** the advertised MCP transport order remains.
   Project directories are not Workspace roots. Workspaces use gateway tools.
 - **§7, session baseline:** a Runtime must advertise the required ACP v2
@@ -92,7 +92,8 @@ override the contracts below.
 - **§9, in-process backend kinds:** superseded. v0.5 removes the in-process
   `positronic` and `letta` kinds.
 - **T1–T3:** retained. Gnostic rejects ACP v1, ships ACP v2 as an opt-in
-  preview, and answers an unanswered permission request with `-32800`.
+  preview, and answers an unanswered permission request with the v2
+  `cancelled` outcome.
 
 ### ADR 0020
 
@@ -238,8 +239,11 @@ After insertion, Gnostic uses `session/cancel`. The Turn ends on the next
 `idle` update.
 
 Every permission request gets a reply. If no client answers within the
-configured bound, Gnostic answers with JSON-RPC error `-32800` and records the
-decision as `unavailable`. It does not choose a denial option for the client.
+configured bound, Gnostic answers with the v2 `cancelled` outcome and records
+the decision as `unavailable`. It does not choose a denial option for the
+client. The answer ends that one request and never the Turn, because the
+pinned ACP v2 SDK rejects the agent's request promise when the client answers
+with a JSON-RPC error.
 
 ### Timeline journal
 

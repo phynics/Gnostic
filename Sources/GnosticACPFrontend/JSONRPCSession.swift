@@ -29,7 +29,7 @@ public actor JSONRPCSession {
     public init(handler: @escaping RequestHandler, output: @escaping Output) {
         self.init(handler: handler, output: output, initialize: {
             .dictionary([
-                "protocolVersion": .string("1"),
+                "protocolVersion": .integer(2),
                 "capabilities": .dictionary(["cancellation": .boolean(true)]),
             ])
         })
@@ -129,6 +129,26 @@ public actor JSONRPCSession {
         guard state == .awaitingInitialize else {
             respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "session is already initialized"))
             return
+        }
+        // Strict ACP v1 rejection (ADR 0019 T1): reject incoming v1 initialize cleanly
+        if let params = request.params,
+           let data = try? JSONEncoder().encode(params),
+           let dict = try? JSONDecoder().decode([String: ACPValue].self, from: data),
+           let version = dict["protocolVersion"] {
+            let verInt: Int?
+            switch version {
+            case let .int(i): verInt = Int(i)
+            case let .string(s): verInt = Int(s)
+            case let .double(d): verInt = Int(d)
+            default: verInt = nil
+            }
+            if let verInt, verInt < 2 {
+                respondIfNeeded(to: request, error: JSONRPCErrorObject(
+                    code: ACPv2Protocol.ErrorCode.unsupportedProtocolVersion,
+                    message: "ACP v1 is not supported. Gnostic requires ACP v2 or higher."
+                ))
+                return
+            }
         }
         do {
             let result = try await initializeHandler()

@@ -123,7 +123,7 @@ struct ACPProtocolTests {
             args: ["acp"],
             env: [:]
         )
-        let bundle = ACPProfileBundle(version: 1, defaultProfile: nil, profiles: [profile])
+        let bundle = ACPProfileBundle(version: ACPProfileBundle.currentVersion, defaultProfile: nil, profiles: [profile])
         let generatedAt = Date(timeIntervalSince1970: 10_000)
 
         try cache.store(bundle, for: key, generatedAt: generatedAt)
@@ -420,10 +420,14 @@ struct ACPProtocolTests {
             state: state
         ).dictionaryValue)
         #expect(params["sessionId"] == .string("session-1"))
-        #expect(params["toolCall"] == .dictionary([
-            "toolCallId": .string("call-1"),
-            "title": .string("Read file"),
-            "status": .string("pending"),
+        #expect(params["title"] == .string("Read file"))
+        #expect(params["subject"] == .dictionary([
+            "type": .string("tool_call"),
+            "toolCall": .dictionary([
+                "toolCallId": .string("call-1"),
+                "title": .string("Read file"),
+                "status": .string("pending"),
+            ]),
         ]))
         #expect(params["options"] == .array([
             .dictionary([

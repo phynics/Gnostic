@@ -1,26 +1,18 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import ACP
 import Foundation
+import GnosticProtocol
 
 /// Nonblocking ACP transport for a child process's stdin and stdout pipes.
-///
-/// `aptove/swift-sdk` 0.1.16's `StdioTransport.start()` waits for its read and
-/// write loops to finish. That blocks protocol initialization. This adapter
-/// starts both loops as tasks and returns once the transport is ready for
-/// protocol traffic. Re-evaluate this adapter when the SDK no longer blocks in
-/// `start()`.
-final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY: Transport state is lock-guarded, and teardown closes the single-reader/single-writer FileHandles before awaiting both tasks.
-    let state: AsyncStream<TransportState>
-    let messages: AsyncStream<JsonRpcMessage>
+final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAFETY: Transport state is lock-guarded, and teardown closes the single-reader/single-writer FileHandles before awaiting both tasks.
+    let messages: AsyncStream<ACPJSONRPCMessage>
 
-    private let stateContinuation: AsyncStream<TransportState>.Continuation
-    private let messageContinuation: AsyncStream<JsonRpcMessage>.Continuation
-    private let sendStream: AsyncStream<JsonRpcMessage>
-    private let sendContinuation: AsyncStream<JsonRpcMessage>.Continuation
+    private let messageContinuation: AsyncStream<ACPJSONRPCMessage>.Continuation
+    private let sendStream: AsyncStream<ACPJSONRPCMessage>
+    private let sendContinuation: AsyncStream<ACPJSONRPCMessage>.Continuation
     private let input: FileHandle
     private let output: FileHandle
-    private let onSessionUpdate: @Sendable (SessionId, SessionUpdate) -> Void
+    private let onSessionUpdate: @Sendable (String, ACPSessionUpdate) -> Void
     private let onFailure: @Sendable () -> Void
     private let lock = NSLock()
     private var started = false
@@ -32,28 +24,24 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (SessionId, SessionUpdate) -> Void,
+        onSessionUpdate: @escaping @Sendable (String, ACPSessionUpdate) -> Void,
         onFailure: @escaping @Sendable () -> Void
     ) {
         self.input = input
         self.output = output
         self.onSessionUpdate = onSessionUpdate
         self.onFailure = onFailure
-        (state, stateContinuation) = AsyncStream.makeStream()
         (messages, messageContinuation) = AsyncStream.makeStream()
         (sendStream, sendContinuation) = AsyncStream.makeStream()
-        stateContinuation.yield(.created)
     }
 
     func start() async throws {
-        stateContinuation.yield(.starting)
         let didStart = withLock {
             guard !started, !closed else { return false }
             started = true
-            let readerTask = Task.detached { [weak self, input, messageContinuation, stateContinuation, onSessionUpdate] in
+            let readerTask = Task.detached { [weak self, input, messageContinuation, onSessionUpdate] in
                 defer {
                     messageContinuation.finish()
-                    if self?.isClosed == false { stateContinuation.yield(.closing) }
                 }
                 do {
                     while !Task.isCancelled {
@@ -62,12 +50,12 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
                             return
                         }
                         guard let data = line.data(using: .utf8) else { continue }
-                        guard let message = try? JSONDecoder().decode(JsonRpcMessage.self, from: data) else { continue }
+                        guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: data) else { continue }
                         if case .notification(let notification) = message,
-                           notification.method == "session/update",
+                           notification.method == ACPv2Protocol.ClientMethod.sessionUpdate,
                            let params = notification.params,
                            let paramsData = try? JSONEncoder().encode(params),
-                           let sessionNotification = try? JSONDecoder().decode(SessionNotification.self, from: paramsData) {
+                           let sessionNotification = try? JSONDecoder().decode(ACPSessionNotification.self, from: paramsData) {
                             onSessionUpdate(sessionNotification.sessionId, sessionNotification.update)
                         }
                         messageContinuation.yield(message)
@@ -90,13 +78,12 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
             writer = writerTask
             return true
         }
-        guard didStart else { throw ProtocolError.transportClosed }
-        if !isClosed { stateContinuation.yield(.started) }
+        guard didStart else { throw ACPTransportError.transportClosed }
     }
 
-    func send(_ message: JsonRpcMessage) async throws {
+    func send(_ message: ACPJSONRPCMessage) async throws {
         let canSend = withLock { started && !closed }
-        guard canSend else { throw ProtocolError.transportClosed }
+        guard canSend else { throw ACPTransportError.transportClosed }
         sendContinuation.yield(message)
     }
 
@@ -118,8 +105,6 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
         if let reader { await reader.value }
         if let writer { await writer.value }
         messageContinuation.finish()
-        stateContinuation.yield(.closed)
-        stateContinuation.finish()
     }
 
     private var isClosed: Bool {
@@ -140,7 +125,6 @@ final class ACPProcessStdioTransport: Transport, @unchecked Sendable { // SAFETY
         try? input.close()
         try? output.close()
         messageContinuation.finish()
-        stateContinuation.yield(.closing)
         onFailure()
     }
 

@@ -36,7 +36,6 @@ let package = Package(
         .package(url: "https://github.com/phynics/PositronicKit.git", exact: "6.1.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.15.1"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
-        .package(url: "https://github.com/aptove/swift-sdk.git", exact: "0.1.16"),
     ],
     targets: [
         .target(
@@ -153,7 +152,7 @@ let package = Package(
             name: "GnosticACPAscendant",
             dependencies: [
                 "GnosticCore",
-                .product(name: "ACP", package: "swift-sdk"),
+                "GnosticProtocol",
             ]
         ),
         .testTarget(
@@ -277,6 +276,7 @@ let package = Package(
                 "GnosticCore",
                 "GnosticHost",
                 "GnosticLegacyPositronicHost",
+                "GnosticProtocol",
                 "GnosticPositronicBackend",
                 "GnosticRunner",
                 "GnosticWorkspaceTestSupport",

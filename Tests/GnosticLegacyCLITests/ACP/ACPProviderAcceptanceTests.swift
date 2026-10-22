@@ -191,8 +191,8 @@ struct ACPProviderAcceptanceTests {
         }
 
         try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("provider-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("provider-acceptance"), "version": .string("1")]),
         ])))
         var output = session.lines.stream.makeAsyncIterator()
         #expect(try await readResponse(from: &output).error == nil)
@@ -250,7 +250,11 @@ struct ACPProviderAcceptanceTests {
         ])))
         let prompted = try await readResponse(from: &output)
         #expect(prompted.error == nil)
-        #expect(prompted.result == .dictionary(["stopReason": .string("end_turn")]))
+        guard case let .dictionary(promptedResult)? = prompted.result else {
+            Issue.record("session/prompt returned no result")
+            return
+        }
+        #expect(promptedResult["messageId"] == .string("acp:user:provider-acceptance:turn-1"))
 
         try session.send(JSONRPCRequest(id: .number(6), method: "session/close", params: .dictionary([
             "sessionId": .string(sessionID)
@@ -282,8 +286,8 @@ struct ACPProviderAcceptanceTests {
             if mismatched.process.isRunning { mismatched.process.terminate() }
         }
         try mismatched.send(JSONRPCRequest(id: .number(9), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("provider-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("provider-acceptance"), "version": .string("1")]),
         ])))
         var mismatchedOutput = mismatched.lines.stream.makeAsyncIterator()
         #expect(try await readResponse(from: &mismatchedOutput).error == nil)
@@ -384,8 +388,8 @@ struct ACPProviderAcceptanceTests {
             if session.process.isRunning { session.process.terminate() }
         }
         try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("restart-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("restart-acceptance"), "version": .string("1")]),
         ])))
         var output = session.lines.stream.makeAsyncIterator()
         #expect(try await readResponse(from: &output).error == nil)
@@ -497,8 +501,8 @@ struct ACPProviderAcceptanceTests {
         }
 
         try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("legacy-migration"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("legacy-migration"), "version": .string("1")]),
         ])))
         var output = session.lines.stream.makeAsyncIterator()
         #expect(try await readResponse(from: &output).error == nil)
@@ -574,7 +578,11 @@ struct ACPProviderAcceptanceTests {
                 if let params = request.params { updates.append(params) }
             case .response(let response) where response.id == .number(4):
                 #expect(response.error == nil)
-                #expect(response.result == .dictionary(["stopReason": .string("end_turn")]))
+                guard case let .dictionary(result)? = response.result else {
+                    Issue.record("session/prompt returned no result")
+                    return
+                }
+                #expect(result["messageId"] == .string("acp:user:legacy-smoke:turn-1"))
                 promptCompleted = true
             default:
                 continue
@@ -610,7 +618,11 @@ struct ACPProviderAcceptanceTests {
                 session.input.fileHandleForWriting.write(try JSONEncoder().encode(response) + Data([0x0A]))
             case .response(let response) where response.id == .number(5):
                 #expect(response.error == nil)
-                #expect(response.result == .dictionary(["stopReason": .string("end_turn")]))
+                guard case let .dictionary(result)? = response.result else {
+                    Issue.record("session/prompt returned no result")
+                    return
+                }
+                #expect(result["messageId"] == .string("acp:user:legacy-smoke:turn-1"))
                 replayCompleted = true
             default:
                 continue
@@ -683,8 +695,8 @@ struct ACPProviderAcceptanceTests {
         defer { if creator.process.isRunning { creator.process.terminate() } }
         var creatorOutput = creator.lines.stream.makeAsyncIterator()
         try creator.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("orphan-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("orphan-acceptance"), "version": .string("1")]),
         ])))
         #expect(try await readResponse(from: &creatorOutput).error == nil)
 
@@ -727,8 +739,8 @@ struct ACPProviderAcceptanceTests {
         defer { if resumer.process.isRunning { resumer.process.terminate() } }
         var resumerOutput = resumer.lines.stream.makeAsyncIterator()
         try resumer.send(JSONRPCRequest(id: .number(5), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("orphan-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("orphan-acceptance"), "version": .string("1")]),
         ])))
         #expect(try await readResponse(from: &resumerOutput).error == nil)
 
@@ -823,8 +835,8 @@ struct ACPProviderAcceptanceTests {
         defer { if creator.process.isRunning { creator.process.terminate() } }
         var creatorOutput = creator.lines.stream.makeAsyncIterator()
         try creator.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("resume-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("resume-acceptance"), "version": .string("1")]),
         ])))
         #expect(try await readResponse(from: &creatorOutput).error == nil)
 
@@ -867,8 +879,8 @@ struct ACPProviderAcceptanceTests {
         defer { if resumer.process.isRunning { resumer.process.terminate() } }
         var resumerOutput = resumer.lines.stream.makeAsyncIterator()
         try resumer.send(JSONRPCRequest(id: .number(4), method: "initialize", params: .dictionary([
-            "protocolVersion": .number(1),
-            "clientInfo": .dictionary(["name": .string("resume-acceptance"), "version": .string("1")]),
+            "protocolVersion": .number(2),
+            "info": .dictionary(["name": .string("resume-acceptance"), "version": .string("1")]),
         ])))
         #expect(try await readResponse(from: &resumerOutput).error == nil)
 
@@ -1071,8 +1083,8 @@ private func openACPSession(
         if session.process.isRunning { session.process.terminate() }
     }
     try session.send(JSONRPCRequest(id: .number(1), method: "initialize", params: .dictionary([
-        "protocolVersion": .number(1),
-        "clientInfo": .dictionary(["name": .string("restart-acceptance"), "version": .string("1")]),
+        "protocolVersion": .number(2),
+        "info": .dictionary(["name": .string("restart-acceptance"), "version": .string("1")]),
     ])))
     var output = session.lines.stream.makeAsyncIterator()
     #expect(try await readResponse(from: &output).error == nil)

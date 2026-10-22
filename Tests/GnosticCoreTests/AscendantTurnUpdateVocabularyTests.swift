@@ -45,7 +45,7 @@ struct AscendantTurnUpdateVocabularyTests {
 
     @Test("an unknown wire kind decodes without becoming a known kind")
     func unknownKindStaysUnknown() throws {
-        let wire = #"{"protocolMajor":2,"sequence":1,"kind":"future_kind","toolStates":[],"permissionStates":[],"terminal":false}"#
+        let wire = #"{"protocolMajor":3,"sequence":1,"kind":"future_kind","toolStates":[],"permissionStates":[],"terminal":false}"#
         let decoded = try JSONDecoder().decode(AscendantTurnUpdate.self, from: Data(wire.utf8))
 
         #expect(decoded.kind == "future_kind")

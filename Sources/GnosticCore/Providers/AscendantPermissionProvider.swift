@@ -79,7 +79,7 @@ public struct AscendantPermissionProvider: Sendable {
         guard accepted else {
             return .failure(code: 409, reasonCode: "permissionCorrelationStale", message: "Permission correlation is stale or mismatched")
         }
-        return .success(result: #"{"protocolMajor":2,"accepted":true}"#)
+        return .success(result: "{\"protocolMajor\":\(GnosticProtocol.currentMajor),\"accepted\":true}")
     }
 
     @MainActor

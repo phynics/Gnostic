@@ -3,13 +3,13 @@
 import Foundation
 import GnosticProtocol
 
-/// The small stable ACP v1 surface implemented by `gnostic acp`.
+/// The small stable ACP v2 surface implemented by `gnostic acp`.
 ///
 /// The wire structs intentionally keep unknown ACP extension fields out of the
 /// Gnostic domain model. They are decoded at the adapter boundary and never
 /// become Timeline or Workspace state.
 public enum ACPProtocol {
-    public static let version = 1
+    public static let version = ACPv2Protocol.protocolVersion
     public static let turnIDMetadataKey = "dev.phynics.pi-acp-client/clientTurnID"
 }
 
@@ -79,6 +79,14 @@ public struct ACPProfile: Codable, Sendable {
 }
 
 public struct ACPProfileBundle: Codable, Sendable {
+    /// The profile bundle format version.
+    ///
+    /// The bundle is a profile-file format for the Pi client, not the ACP wire
+    /// protocol. Its version therefore moves independently of
+    /// `ACPProtocol.version`, and a cached bundle stays valid when the ACP
+    /// protocol version changes.
+    public static let currentVersion = 1
+
     public let version: Int
     public let defaultProfile: String?
     public let profiles: [ACPProfile]

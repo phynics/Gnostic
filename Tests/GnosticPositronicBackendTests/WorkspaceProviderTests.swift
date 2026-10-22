@@ -63,7 +63,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000003")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
+        {"protocolMajor":3,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Custom remote tool","parametersSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let kit = PKRuntime()
@@ -100,7 +100,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-000000000009")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote-authority","isAvailable":true,"tools":[]}
+        {"protocolMajor":3,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote-authority","isAvailable":true,"tools":[]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
 
@@ -133,7 +133,7 @@ struct WorkspaceProviderTests {
         let workspaceID = UUID(uuidString: "B31D0000-0000-4000-8000-00000000000A")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"protocolMajor":2,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[]}
+        {"protocolMajor":3,"objectId":"\(workspaceID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: workspaceID.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let kit = PKRuntime()
@@ -217,7 +217,7 @@ struct WorkspaceProviderTests {
             throw InjectedFailure()
         }
 
-        let malformed = try await provider.handle(parameters: #"{"protocolMajor":2}"#)
+        let malformed = try await provider.handle(parameters: #"{"protocolMajor":3}"#)
         let malformedFailure = try protocolFailure(from: malformed)
         #expect(malformedFailure.protocolMajor == GnosticProtocol.currentMajor)
 
@@ -271,7 +271,7 @@ struct WorkspaceProviderTests {
         let id = UUID(uuidString: "B31D0000-0000-4000-8000-000000000004")!
         let catalog = NetworkCatalog()
         let payload = """
-        {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+        {"protocolMajor":3,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
         """
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "remote", object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
         let called = InvocationRecorder()
@@ -524,7 +524,7 @@ private actor InvocationRecorder {
 private func availableWorkspaceReference(catalog: NetworkCatalog, providerID: String = "remote") async throws -> WorkspaceReference {
     let id = UUID()
     let payload = """
-    {"protocolMajor":2,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
+    {"protocolMajor":3,"objectId":"\(id.uuidString.lowercased())","coreType":"CoatyObject","objectType":"me.atkn.gnostic.Workspace","name":"Remote","uri":"workspace://remote","isAvailable":true,"tools":[{"id":"custom","name":"Custom","toolDescription":"Remote","parametersSchema":{},"requiresPermission":false}]}
     """
     await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(objectId: id.uuidString.lowercased(), coreType: .coatyObject, objectType: GnosticObjectType.workspace, name: "Remote", payload: payload)))
     return WorkspaceReference(

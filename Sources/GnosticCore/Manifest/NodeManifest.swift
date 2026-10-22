@@ -161,11 +161,16 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         public var kind: String
         public var title: String
         public var operatingAscendantID: UUID?
+        public var runtimeInstanceID: UUID? {
+            get { operatingAscendantID }
+            set { operatingAscendantID = newValue }
+        }
         public var flags: Set<String>
         public var attachments: [WorkspaceAttachment]
 
-        public init(id: UUID, title: String, kind: String = "timeline", operatingAscendantID: UUID? = nil, flags: Set<String> = [], attachments: [WorkspaceAttachment] = []) {
-            self.id = id; self.kind = kind; self.title = title; self.operatingAscendantID = operatingAscendantID
+        public init(id: UUID, title: String, kind: String = "timeline", operatingAscendantID: UUID? = nil, runtimeInstanceID: UUID? = nil, flags: Set<String> = [], attachments: [WorkspaceAttachment] = []) {
+            self.id = id; self.kind = kind; self.title = title
+            self.operatingAscendantID = runtimeInstanceID ?? operatingAscendantID
             self.flags = flags; self.attachments = attachments
         }
         public init(id: UUID, name: String, kind: String = "timeline", workspaceIDs: [UUID] = []) {
@@ -173,6 +178,31 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         }
         public var name: String { get { title } set { title = newValue } }
         public var workspaceIDs: [UUID] { get { attachments.map(\.workspaceID) } set { attachments = newValue.map(WorkspaceAttachment.local) } }
+
+        enum CodingKeys: String, CodingKey {
+            case id, kind, title, runtimeInstanceID, operatingAscendantID, flags, attachments
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "timeline"
+            title = try container.decode(String.self, forKey: .title)
+            operatingAscendantID = try container.decodeIfPresent(UUID.self, forKey: .runtimeInstanceID)
+                ?? container.decodeIfPresent(UUID.self, forKey: .operatingAscendantID)
+            flags = try container.decodeIfPresent(Set<String>.self, forKey: .flags) ?? []
+            attachments = try container.decodeIfPresent([WorkspaceAttachment].self, forKey: .attachments) ?? []
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(title, forKey: .title)
+            try container.encodeIfPresent(operatingAscendantID, forKey: .runtimeInstanceID)
+            try container.encode(flags, forKey: .flags)
+            try container.encode(attachments, forKey: .attachments)
+        }
     }
 
     public struct Workspace: Codable, Equatable, Sendable {
@@ -288,7 +318,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         var map = [node.id: node.kind]; for value in ascendants { map[value.id] = "ascendant" }; for value in timelines { map[value.id] = value.kind }; for value in workspaces { map[value.id] = value.kind }; return map
     }
 
-    enum CodingKeys: String, CodingKey { case schemaVersion, broker, node, ascendants, timelines, workspaces }
+    enum CodingKeys: String, CodingKey { case schemaVersion, broker, node, runtimeInstances, ascendants, timelines, workspaces }
 
     /// Decodes a current-schema manifest. Any other schema version is
     /// rejected; the pre-reset v1 migration was retired after 0.4.
@@ -300,7 +330,9 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         }
         broker = try container.decode(Broker.self, forKey: .broker)
         node = try container.decode(Node.self, forKey: .node)
-        ascendants = try container.decodeIfPresent([Ascendant].self, forKey: .ascendants) ?? []
+        ascendants = try container.decodeIfPresent([Ascendant].self, forKey: .runtimeInstances)
+            ?? container.decodeIfPresent([Ascendant].self, forKey: .ascendants)
+            ?? []
         timelines = try container.decodeIfPresent([Timeline].self, forKey: .timelines) ?? []
         workspaces = try container.decodeIfPresent([Workspace].self, forKey: .workspaces) ?? []
     }
@@ -310,7 +342,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
         try container.encode(broker, forKey: .broker)
         try container.encode(node, forKey: .node)
-        try container.encode(ascendants, forKey: .ascendants)
+        try container.encode(ascendants, forKey: .runtimeInstances)
         try container.encode(timelines, forKey: .timelines)
         try container.encode(workspaces, forKey: .workspaces)
     }
