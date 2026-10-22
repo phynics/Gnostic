@@ -167,20 +167,31 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         }
         public var flags: Set<String>
         public var attachments: [WorkspaceAttachment]
+        /// Where a Runtime session for this Timeline starts.
+        ///
+        /// A Project is separate from attached Workspaces. It supplies only the
+        /// ACP session `cwd`, never a gateway tool and never a sandbox claim.
+        public var project: Project?
 
-        public init(id: UUID, title: String, kind: String = "timeline", operatingAscendantID: UUID? = nil, runtimeInstanceID: UUID? = nil, flags: Set<String> = [], attachments: [WorkspaceAttachment] = []) {
+        public init(id: UUID, title: String, kind: String = "timeline", operatingAscendantID: UUID? = nil, runtimeInstanceID: UUID? = nil, flags: Set<String> = [], attachments: [WorkspaceAttachment] = [], project: Project? = nil) {
             self.id = id; self.kind = kind; self.title = title
             self.operatingAscendantID = runtimeInstanceID ?? operatingAscendantID
-            self.flags = flags; self.attachments = attachments
+            self.flags = flags; self.attachments = attachments; self.project = project
         }
-        public init(id: UUID, name: String, kind: String = "timeline", workspaceIDs: [UUID] = []) {
-            self.init(id: id, title: name, kind: kind, attachments: workspaceIDs.map(WorkspaceAttachment.local))
+        public init(id: UUID, name: String, kind: String = "timeline", workspaceIDs: [UUID] = [], project: Project? = nil) {
+            self.init(
+                id: id,
+                title: name,
+                kind: kind,
+                attachments: workspaceIDs.map(WorkspaceAttachment.local),
+                project: project
+            )
         }
         public var name: String { get { title } set { title = newValue } }
         public var workspaceIDs: [UUID] { get { attachments.map(\.workspaceID) } set { attachments = newValue.map(WorkspaceAttachment.local) } }
 
         enum CodingKeys: String, CodingKey {
-            case id, kind, title, runtimeInstanceID, operatingAscendantID, flags, attachments
+            case id, kind, title, runtimeInstanceID, operatingAscendantID, flags, attachments, project
         }
 
         public init(from decoder: Decoder) throws {
@@ -192,6 +203,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
                 ?? container.decodeIfPresent(UUID.self, forKey: .operatingAscendantID)
             flags = try container.decodeIfPresent(Set<String>.self, forKey: .flags) ?? []
             attachments = try container.decodeIfPresent([WorkspaceAttachment].self, forKey: .attachments) ?? []
+            project = try container.decodeIfPresent(Project.self, forKey: .project)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -202,6 +214,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
             try container.encodeIfPresent(operatingAscendantID, forKey: .runtimeInstanceID)
             try container.encode(flags, forKey: .flags)
             try container.encode(attachments, forKey: .attachments)
+            try container.encodeIfPresent(project, forKey: .project)
         }
     }
 
@@ -251,6 +264,9 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         }
         for timeline in timelines {
             guard timeline.kind == "timeline", !timeline.title.isEmpty else { throw NodeManifestError.invalidKind(kind: timeline.kind, objectID: timeline.id) }
+            if let project = timeline.project {
+                do { try project.validate() } catch { throw NodeManifestError.invalidProject(timeline.id) }
+            }
             if let operatorID = timeline.operatingAscendantID, !ascendants.contains(where: { $0.id == operatorID }) { throw NodeManifestError.missingReference(from: timeline.id, to: operatorID) }
             var attachmentIDs = Set<UUID>(); for attachment in timeline.attachments {
                 guard attachment.workspaceID.isVersion4 && attachment.workspaceID.isRFC4122Variant else { throw NodeManifestError.invalidUUID(attachment.workspaceID) }

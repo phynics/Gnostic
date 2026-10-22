@@ -31,6 +31,8 @@ struct ResourceCommandTests {
         #expect(!ConfigCommand.Ascendant.helpMessage().contains("llm-profile"))
         #expect(ConfigCommand.Timeline.helpMessage().contains("attach-workspace"))
         #expect(ConfigCommand.Timeline.helpMessage().contains("detach-workspace"))
+        #expect(ConfigCommand.Timeline.helpMessage().contains("project-local"))
+        #expect(ConfigCommand.Timeline.helpMessage().contains("project-scratch"))
     }
 
     @Test("generic profile and retired Positronic commands are not registered")
@@ -170,6 +172,41 @@ struct ResourceCommandTests {
         let updated = try store.loadManifest()
         #expect(updated.ascendants[0].backend.settings.isEmpty)
         #expect(updated.timelines.first { $0.id == secondaryTimeline.id }?.operatingAscendantID == nil)
+    }
+
+    @Test("Timeline configuration selects and clears Project placement")
+    func timelineProjectPlacementCommands() throws {
+        let folder = try TemporaryFolder()
+        let store = CLIConfigurationStore(baseDirectory: folder.url, environment: [:])
+        try ConfigCommandLogic.initialize(store: store)
+        let initial = try store.loadManifest()
+
+        try ConfigCommandLogic.addTimeline(
+            title: "Repository",
+            operatingAscendantID: initial.ascendants[0].id.uuidString,
+            project: .local("/work/repository"),
+            store: store
+        )
+        let timeline = try #require(try store.loadManifest().timelines.last)
+        #expect(timeline.project == .local("/work/repository"))
+
+        try ConfigCommandLogic.updateTimeline(
+            id: timeline.id.uuidString,
+            title: nil,
+            operatingAscendantID: nil,
+            project: .scratch,
+            store: store
+        )
+        #expect(try store.loadManifest().timelines.first { $0.id == timeline.id }?.project == .scratch)
+
+        try ConfigCommandLogic.updateTimeline(
+            id: timeline.id.uuidString,
+            title: nil,
+            operatingAscendantID: nil,
+            clearProject: true,
+            store: store
+        )
+        #expect(try store.loadManifest().timelines.first { $0.id == timeline.id }?.project == nil)
     }
 
     @Test("show JSON redacts both secret fields")

@@ -30,6 +30,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         .init(name: "command", summary: "Executable command used to start the ACP agent."),
         .init(name: "args", summary: "Command-line arguments encoded as a JSON string array."),
         .init(name: "cwd", summary: "Optional working directory for the ACP agent process."),
+        .init(name: "scratchRoot", summary: "Optional root directory for Gnostic-managed scratch Projects."),
         .init(name: "env", summary: "Optional JSON object of non-secret environment-variable strings."),
         .init(name: "displayName", summary: "Optional display name for the external ACP agent."),
     ], keyFamilies: [
@@ -47,7 +48,12 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private let protocolTimeoutSeconds: TimeInterval
     private let promptTimeoutSeconds: TimeInterval
     private let configuredTimelines: [NodeManifest.Timeline]
+    private let projectResolver: ProjectDirectoryResolver
+    private var projects: [UUID: Project]
     private var sessionIDs: [UUID: String]
+    private var sessionCwds: [UUID: String]
+    private var sessionProjectKinds: [UUID: Project.Kind]
+    private var sessionStartedAt: [UUID: Date]
     private var activeSessionIDs: Set<UUID> = []
     private let sessionMapURL: URL
 
@@ -121,18 +127,43 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         promptTimeoutSeconds: TimeInterval = 60 * 60
     ) throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
-        launchSpec = try Self.parse(configuration)
+        let parsedLaunchSpec = try Self.parse(configuration)
+        launchSpec = parsedLaunchSpec
+        let configuredScratchRoot = try Self.optionalStringSetting("scratchRoot", in: configuration.settings)
+        if let configuredScratchRoot,
+           (!configuredScratchRoot.hasPrefix("/") || configuredScratchRoot.contains("\0")) {
+            throw Self.invalidConfiguration("The ACP backend setting 'scratchRoot' must be an absolute directory path.")
+        }
+        projectResolver = ProjectDirectoryResolver(
+            scratchRoot: configuredScratchRoot.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        )
         self.configuration = configuration
         self.protocolTimeoutSeconds = protocolTimeoutSeconds
         self.promptTimeoutSeconds = promptTimeoutSeconds
         permissionService = services.permission
         self.configuredTimelines = configuredTimelines
+        projects = Dictionary(uniqueKeysWithValues: configuredTimelines.map { ($0.id, $0.project ?? .scratch) })
         sessionMapURL = Self.sessionMapURL(for: ascendant.id)
         let recoveredSessions = Self.loadSessionMap(at: sessionMapURL)
         let configuredTimelineIDs = Set(configuredTimelines.map(\.id))
         sessionIDs = recoveredSessions.reduce(into: [:]) { result, entry in
             guard configuredTimelineIDs.contains(entry.key) else { return }
             result[entry.key] = entry.value.sessionID
+        }
+        sessionCwds = recoveredSessions.reduce(into: [:]) { result, entry in
+            guard configuredTimelineIDs.contains(entry.key) else { return }
+            // Older session maps did not persist cwd. Preserve their original
+            // launch-directory binding rather than resuming them with a newly
+            // allocated scratch path.
+            result[entry.key] = entry.value.cwd ?? parsedLaunchSpec.workingDirectory ?? FileManager.default.currentDirectoryPath
+        }
+        sessionProjectKinds = recoveredSessions.reduce(into: [:]) { result, entry in
+            guard configuredTimelineIDs.contains(entry.key), let kind = entry.value.projectKind else { return }
+            result[entry.key] = kind
+        }
+        sessionStartedAt = recoveredSessions.reduce(into: [:]) { result, entry in
+            guard configuredTimelineIDs.contains(entry.key), let startedAt = entry.value.startedAt else { return }
+            result[entry.key] = startedAt
         }
 
         let now = Date()
@@ -176,6 +207,26 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw Self.invalidConfiguration("The ACP backend setting 'cwd' must name an existing directory.")
         }
+        if let configuredScratchRoot = try Self.optionalStringSetting("scratchRoot", in: configuration.settings) {
+            guard configuredScratchRoot.hasPrefix("/"), !configuredScratchRoot.contains("\0") else {
+                throw Self.invalidConfiguration("The ACP backend setting 'scratchRoot' must be an absolute directory path.")
+            }
+            let root = URL(fileURLWithPath: configuredScratchRoot, isDirectory: true).standardizedFileURL
+            var scratchRootIsDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: root.path, isDirectory: &scratchRootIsDirectory),
+               !scratchRootIsDirectory.boolValue {
+                throw Self.invalidConfiguration("The ACP backend setting 'scratchRoot' must name a directory.")
+            }
+        }
+        for timeline in configuredTimelines {
+            guard let project = timeline.project else { continue }
+            do {
+                try project.validate()
+                if project.kind == .local { _ = try projectResolver.resolve(project) }
+            } catch {
+                throw Self.invalidConfiguration("Timeline \(timeline.id.uuidString) has an invalid Project: \(error.localizedDescription)")
+            }
+        }
         do {
             _ = try resolvedExecutableURL(command: candidate.command, environment: Self.childEnvironment(from: candidate))
         } catch {
@@ -202,7 +253,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             var available: Set<String> = []
             for _ in 0..<Self.maximumSessionListPages {
                 let response = try await connection.listSessions(
-                    request: ACPListSessionsRequest(cwd: workingDirectory, cursor: cursor)
+                    // Sessions may have different Project directories. Listing
+                    // with the process launch cwd would hide local and scratch
+                    // Project sessions from startup hydration.
+                    request: ACPListSessionsRequest(cwd: nil, cursor: cursor)
                 )
                 available.formUnion(response.sessions.map { $0.sessionId })
                 guard let nextCursor = response.nextCursor,
@@ -229,6 +283,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     public func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
         do {
             let timeline = try await timelineRegistry.create(id: id, title: title)
+            projects[id] = .scratch
             try persistSessionMap()
             return timeline
         } catch {
@@ -256,6 +311,81 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         return renamed
     }
 
+    /// Changes the Project used by future Turns on a Timeline.
+    ///
+    /// If a Session already exists, Gnostic closes it when the Runtime supports
+    /// `session/close`, retires its binding, and opens a fresh ACP Session on
+    /// the next operation. The Timeline ID and its Gnostic history do not
+    /// change. The new Session makes no model-context continuity claim.
+    ///
+    /// - Parameters:
+    ///   - project: The new Project; `nil` selects a fresh scratch Project.
+    ///   - timelineID: The Timeline whose Project changes.
+    /// - Throws: When the Timeline is unknown, has an active Turn, or the local
+    ///   Project cannot be validated.
+    public func setProject(_ project: Project?, for timelineID: UUID) async throws {
+        guard timelineRegistry.contains(id: timelineID) else {
+            throw AscendantBackendError.timelineNotFound(timelineID)
+        }
+        guard activeTurns[timelineID] == nil else {
+            throw AscendantBackendError.terminal(.init(
+                code: "projectChangeDuringActiveTurn",
+                message: "The Project cannot change while a Turn is active."
+            ))
+        }
+        let nextProject = project ?? .scratch
+        do {
+            try nextProject.validate()
+            if nextProject.kind == .local { _ = try projectResolver.resolve(nextProject) }
+        } catch {
+            throw AscendantBackendError.invalidConfiguration(error.localizedDescription)
+        }
+        guard projects[timelineID] != nextProject else { return }
+
+        let oldCWD = sessionCwds[timelineID]
+        let oldKind = sessionProjectKinds[timelineID]
+        var oldSessionClosed = false
+        if let sessionID = sessionIDs[timelineID],
+           let connection,
+           sessionCapabilities?.supportsClose == true {
+            do {
+                _ = try await connection.closeSession(request: ACPCloseSessionRequest(sessionId: sessionID))
+                oldSessionClosed = true
+            } catch { /* A Project transition must not depend on best-effort close. */ }
+        }
+        sessionIDs.removeValue(forKey: timelineID)
+        sessionCwds.removeValue(forKey: timelineID)
+        sessionProjectKinds.removeValue(forKey: timelineID)
+        sessionStartedAt.removeValue(forKey: timelineID)
+        activeSessionIDs.remove(timelineID)
+        if oldSessionClosed, let oldCWD, oldKind == .scratch {
+            try? projectResolver.discard(.init(
+                kind: .scratch,
+                cwd: oldCWD,
+                scratchRoot: projectResolver.scratchRoot.standardizedFileURL.path
+            ))
+        }
+        projects[timelineID] = nextProject
+        try persistSessionMap()
+    }
+
+    /// Returns the active or most recently opened Session binding for a Timeline.
+    ///
+    /// - Parameter timelineID: The Timeline to inspect.
+    /// - Returns: Its Session binding, or `nil` before a Session is opened.
+    public func sessionBinding(for timelineID: UUID) -> ACPProjectSessionBinding? {
+        guard let sessionID = sessionIDs[timelineID],
+              let cwd = sessionCwds[timelineID],
+              let kind = sessionProjectKinds[timelineID] else { return nil }
+        return ACPProjectSessionBinding(
+            timelineID: timelineID,
+            sessionID: sessionID,
+            cwd: cwd,
+            projectKind: kind,
+            startedAt: sessionStartedAt[timelineID] ?? Date()
+        )
+    }
+
     // MARK: - Remote Timeline operations
 
     /// Ensures the ACP session the registry aligned to one Gnostic Timeline.
@@ -280,7 +410,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             } catch { /* Closing a removed Timeline is best effort, not a backend health failure. */ }
         }
         sessionIDs.removeValue(forKey: id)
+        let cwd = sessionCwds.removeValue(forKey: id)
+        let kind = sessionProjectKinds.removeValue(forKey: id)
+        sessionStartedAt.removeValue(forKey: id)
         activeSessionIDs.remove(id)
+        projects.removeValue(forKey: id)
+        if let cwd, kind == .scratch {
+            try? projectResolver.discard(.init(
+                kind: .scratch,
+                cwd: cwd,
+                scratchRoot: projectResolver.scratchRoot.standardizedFileURL.path
+            ))
+        }
     }
 
     /// Runs a prompt through the ACP session and forwards streamed updates.
@@ -586,7 +727,16 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     }
 
     private func requireSession(for timelineID: UUID, connection: ACPProtocolLayer) async throws -> String {
-        if let sessionID = sessionIDs[timelineID] {
+        let project = projects[timelineID] ?? .scratch
+        let desired = try resolvedProject(for: timelineID, project: project)
+
+        if let sessionID = sessionIDs[timelineID],
+           sessionCwds[timelineID] == desired.cwd {
+            if sessionProjectKinds[timelineID] != desired.kind || sessionStartedAt[timelineID] == nil {
+                sessionProjectKinds[timelineID] = desired.kind
+                sessionStartedAt[timelineID] = sessionStartedAt[timelineID] ?? Date()
+                try persistSessionMap()
+            }
             if activeSessionIDs.contains(timelineID) { return sessionID }
             guard sessionCapabilities?.supportsResume == true else {
                 throw AscendantBackendError.terminal(.init(
@@ -596,17 +746,97 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             }
             _ = try await connection.resumeSession(request: ACPResumeSessionRequest(
                 sessionId: sessionID,
-                cwd: workingDirectory,
+                cwd: desired.cwd,
                 mcpServers: []
             ))
             activeSessionIDs.insert(timelineID)
+            try persistSessionMap()
             return sessionID
         }
-        let response = try await connection.createSession(request: ACPNewSessionRequest(cwd: workingDirectory, mcpServers: []))
+
+        if sessionIDs[timelineID] != nil {
+            await closeAndRetireSession(for: timelineID, using: connection)
+        }
+        return try await createSession(for: timelineID, project: desired, using: connection)
+    }
+
+    private func resolvedProject(for timelineID: UUID, project: Project) throws -> ResolvedProject {
+        if project.kind == .scratch,
+           let storedCWD = sessionCwds[timelineID],
+           sessionProjectKinds[timelineID] != .local,
+           projectResolver.isUsableDirectory(storedCWD) {
+            // A scratch Session keeps its directory across Runtime restarts.
+            // Missing kind is an older record; preserve its original cwd once.
+            return ResolvedProject(
+                kind: .scratch,
+                cwd: storedCWD,
+                scratchRoot: projectResolver.isManagedScratchDirectory(storedCWD)
+                    ? projectResolver.scratchRoot.standardizedFileURL.path
+                    : nil
+            )
+        }
+        return try projectResolver.resolve(project)
+    }
+
+    private func createSession(
+        for timelineID: UUID,
+        project: ResolvedProject,
+        using connection: ACPProtocolLayer
+    ) async throws -> String {
+        let response: ACPNewSessionResponse
+        do {
+            response = try await connection.createSession(request: ACPNewSessionRequest(
+                cwd: project.cwd,
+                mcpServers: []
+            ))
+        } catch {
+            if project.isManagedScratch { try? projectResolver.discard(project) }
+            throw error
+        }
         sessionIDs[timelineID] = response.sessionId
+        sessionCwds[timelineID] = project.cwd
+        sessionProjectKinds[timelineID] = project.kind
+        sessionStartedAt[timelineID] = Date()
         activeSessionIDs.insert(timelineID)
-        try persistSessionMap()
+        do {
+            try persistSessionMap()
+        } catch {
+            // Do not retain an unrecorded Session mapping. The remote ACP
+            // session may remain until process cleanup, but this Timeline will
+            // not falsely resume it after a restart.
+            sessionIDs.removeValue(forKey: timelineID)
+            sessionCwds.removeValue(forKey: timelineID)
+            sessionProjectKinds.removeValue(forKey: timelineID)
+            sessionStartedAt.removeValue(forKey: timelineID)
+            activeSessionIDs.remove(timelineID)
+            if project.isManagedScratch { try? projectResolver.discard(project) }
+            throw error
+        }
         return response.sessionId
+    }
+
+    private func closeAndRetireSession(for timelineID: UUID, using connection: ACPProtocolLayer) async {
+        var sessionClosed = false
+        if let sessionID = sessionIDs[timelineID], sessionCapabilities?.supportsClose == true {
+            do {
+                _ = try await connection.closeSession(request: ACPCloseSessionRequest(sessionId: sessionID))
+                sessionClosed = true
+            }
+            catch { /* A cwd transition is independent of best-effort close. */ }
+        }
+        let cwd = sessionCwds.removeValue(forKey: timelineID)
+        let kind = sessionProjectKinds.removeValue(forKey: timelineID)
+        sessionIDs.removeValue(forKey: timelineID)
+        sessionStartedAt.removeValue(forKey: timelineID)
+        activeSessionIDs.remove(timelineID)
+        if sessionClosed, let cwd, kind == .scratch {
+            try? projectResolver.discard(.init(
+                kind: .scratch,
+                cwd: cwd,
+                scratchRoot: projectResolver.scratchRoot.standardizedFileURL.path
+            ))
+        }
+        try? persistSessionMap()
     }
 
     private func handlePermissionRequest(_ request: ACPJSONRPCRequest) async throws -> ACPJSONRPCResponse {
@@ -763,14 +993,21 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     /// Backfills configured Gnostic Timelines as an explicit startup-hydration
     /// step before intersecting them with an agent's advertised session list.
     private func ensureSessions(for timelineIDs: [UUID], using connection: ACPProtocolLayer) async throws {
-        for id in timelineIDs where sessionIDs[id] == nil {
-            let response = try await connection.createSession(request: ACPNewSessionRequest(
-                cwd: workingDirectory,
-                mcpServers: []
-            ))
-            sessionIDs[id] = response.sessionId
-            activeSessionIDs.insert(id)
-            try persistSessionMap()
+        for id in timelineIDs {
+            let project = projects[id] ?? .scratch
+            let resolved = try resolvedProject(for: id, project: project)
+            if sessionIDs[id] != nil, sessionCwds[id] == resolved.cwd {
+                if sessionProjectKinds[id] != resolved.kind || sessionStartedAt[id] == nil {
+                    sessionProjectKinds[id] = resolved.kind
+                    sessionStartedAt[id] = sessionStartedAt[id] ?? Date()
+                    try persistSessionMap()
+                }
+                continue
+            }
+            if sessionIDs[id] != nil {
+                await closeAndRetireSession(for: id, using: connection)
+            }
+            _ = try await createSession(for: id, project: resolved, using: connection)
         }
     }
 
@@ -872,6 +1109,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     }
 
     private func map(_ error: any Error, context: String) -> AscendantBackendError {
+        if let projectError = error as? ProjectPlacementError {
+            return .terminal(.init(
+                code: "projectUnavailable",
+                message: redact(projectError.localizedDescription)
+            ))
+        }
+        if let projectError = error as? ProjectValidationError {
+            return .terminal(.init(
+                code: "projectUnavailable",
+                message: redact(projectError.localizedDescription)
+            ))
+        }
         if let backendError = error as? AscendantBackendError {
             if case let .terminal(failure) = backendError {
                 return .terminal(.init(code: failure.code, message: redact(failure.message)))
@@ -986,7 +1235,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 title: timeline?.title ?? "Timeline",
                 createdAt: timeline?.createdAt ?? Date(),
                 updatedAt: timeline?.updatedAt ?? Date(),
-                isPrivate: timeline?.isPrivate ?? false
+                isPrivate: timeline?.isPrivate ?? false,
+                cwd: sessionCwds[id],
+                projectKind: sessionProjectKinds[id],
+                startedAt: sessionStartedAt[id]
             ))
         })
         let data = try JSONEncoder().encode(values)
@@ -1313,6 +1565,12 @@ private struct ACPStoredTimelineSession: Codable {
     let createdAt: Date
     let updatedAt: Date
     let isPrivate: Bool
+    /// Missing in pre-Project session maps.
+    let cwd: String?
+    /// Missing in pre-Project session maps.
+    let projectKind: Project.Kind?
+    /// Missing in pre-Project session maps.
+    let startedAt: Date?
 }
 
 
