@@ -339,7 +339,12 @@ private final class WorkspaceMCPHTTPServer {
     }
 
     private func bind() throws {
-        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #if canImport(Darwin)
+        let socketType = SOCK_STREAM
+        #elseif canImport(Glibc)
+        let socketType = Int32(SOCK_STREAM.rawValue)
+        #endif
+        let fd = socket(AF_INET, socketType, 0)
         guard fd >= 0 else { throw POSIXError(.EIO) }
         var address = sockaddr_in()
         address.sin_family = sa_family_t(AF_INET)
