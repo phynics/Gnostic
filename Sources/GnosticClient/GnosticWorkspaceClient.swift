@@ -74,7 +74,7 @@ public struct GnosticWorkspaceToolResult: Codable, Sendable, Equatable {
 ///
 /// ## Invocation
 ///
-/// ``invoke(workspaceID:toolID:arguments:providerID:)`` resolves the Workspace's
+/// ``invoke(timelineID:workspaceID:toolID:arguments:providerID:)`` resolves the Workspace's
 /// advertising provider and calls Gnostic's generic
 /// `me.atkn.gnostic.workspace.invoke` operation. It never falls back to a local
 /// filesystem path.
@@ -207,20 +207,25 @@ public final class GnosticWorkspaceClient {
     /// Invokes one advertised custom tool on a discovered Workspace.
     ///
     /// - Parameters:
+    ///   - timelineID: The active Timeline whose attachment authorizes the call.
     ///   - workspaceID: The discovered Workspace identifier.
     ///   - toolID: The advertised custom tool identifier.
     ///   - arguments: The tool arguments as Gnostic-owned JSON values.
+    ///   - permissionApproved: Whether the caller approved a permission-required tool.
     ///   - providerID: The expected Workspace provider, or `nil` to resolve it
     ///     from the session catalog.
     /// - Returns: The Gnostic-owned invocation result.
     /// - Throws: ``GnosticWorkspaceClientError`` when the Workspace cannot be
-    ///   resolved, the addressed provider does not own it, the provider does not
+    ///   resolved, the Timeline does not currently attach the Workspace, the
+    ///   addressed provider does not own it, the provider does not
     ///   advertise ``GnosticCapability/workspaceToolInvocation``, or the
     ///   invocation failed.
     public func invoke(
+        timelineID: UUID,
         workspaceID: UUID,
         toolID: String,
         arguments: [String: ManifestJSONValue] = [:],
+        permissionApproved: Bool = false,
         providerID: String? = nil
     ) async throws -> GnosticWorkspaceToolResult {
         let target = try await resolvedWorkspaceProvider(providerID, for: workspaceID)
@@ -230,6 +235,8 @@ public final class GnosticWorkspaceClient {
         return try await channel.call(
             GnosticWorkspaceProtocol.invocationOperation,
             request: WorkspaceInvocation(
+                timelineID: timelineID,
+                permissionApproved: permissionApproved,
                 workspaceID: workspaceID,
                 providerID: target,
                 toolID: toolID,

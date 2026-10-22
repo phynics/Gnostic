@@ -159,6 +159,10 @@ public final class NodeRuntime {
             ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
             ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
             workspaceReferences: { [weak self] in await self?.workspaceService.publicReferences() ?? [] },
+            workspaceAuthorization: { [weak self] timelineID, workspaceID in
+                guard let self else { return false }
+                return await self.authorizesWorkspace(workspaceID, forTimeline: timelineID)
+            },
             localWorkspaces: localWorkspaces,
             isAvailable: { [weak self] in self?.isRunning == true },
             operations: self
@@ -381,6 +385,14 @@ public final class NodeRuntime {
         let status = await registry.effectiveWorkspaceStatus(id: id)
             .map { GnosticWorkspaceEffectiveStatus(rawValue: $0.rawValue) ?? .unsupported }
         return WorkspaceReferenceProjection.networkReference(from: reference, effectiveStatus: status)
+    }
+
+    func authorizesWorkspace(_ workspaceID: UUID, forTimeline timelineID: UUID?) async -> Bool {
+        guard let timelineID else { return false }
+        if await registry.timeline(id: timelineID) != nil {
+            return await registry.attachmentIntent(for: timelineID).contains(where: { $0.workspaceID == workspaceID })
+        }
+        return await runtimeHost.resources.catalog.isWorkspaceAttached(workspaceID, to: timelineID)
     }
 
     public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {

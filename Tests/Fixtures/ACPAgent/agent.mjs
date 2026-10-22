@@ -37,7 +37,13 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
-      ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : { capabilities: { session: {} } }),
+      ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : {
+        capabilities: {
+          session: {
+            ...(process.env.GNOSTIC_ACP_FIXTURE_MCP === "1" ? { mcp: { http: {} } } : {}),
+          },
+        },
+      }),
       info: { name: "gnostic-deterministic-acp-fixture", version: "1" },
     };
   })
@@ -46,7 +52,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     do {
       sessionId = `fixture-session-${++sessionCounter}`;
     } while (sessions.has(sessionId));
-    sessions.set(sessionId, { cwd: params.cwd, title: "Gnostic fixture session" });
+    const session = { cwd: params.cwd, title: "Gnostic fixture session" };
+    if (params.mcpServers?.length) session.mcpServers = params.mcpServers;
+    sessions.set(sessionId, session);
     await saveSessions();
     return { sessionId };
   })
@@ -82,8 +90,13 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
     return { sessions: listedSessions };
   })
-  .onRequest(acp.methods.agent.session.resume, ({ params }) => {
+  .onRequest(acp.methods.agent.session.resume, async ({ params }) => {
     if (!sessions.has(params.sessionId)) throw new Error("unknown fixture session");
+    const session = sessions.get(params.sessionId);
+    if (params.mcpServers?.length) session.mcpServers = params.mcpServers;
+    else delete session.mcpServers;
+    sessions.set(params.sessionId, session);
+    await saveSessions();
     return {};
   })
   .onRequest(acp.methods.agent.session.close, async ({ params }) => {
@@ -119,6 +132,34 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
+    if (promptText.includes("[fixture:workspace-tool]")) {
+      const server = sessions.get(params.sessionId)?.mcpServers?.[0];
+      assert(server?.url && server.headers, "Gnostic did not provide an authenticated MCP server");
+      const protocolVersion = "2025-03-26";
+      const mcp = async (id, method, requestParams = {}) => {
+        const headers = {
+          "content-type": "application/json",
+          ...Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
+        };
+        if (method !== "initialize") headers["MCP-Protocol-Version"] = protocolVersion;
+        const response = await fetch(server.url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ jsonrpc: "2.0", id, method, params: requestParams }),
+        });
+        assert.equal(response.status, 200, `MCP ${method} returned HTTP ${response.status}`);
+        const message = await response.json();
+        assert.equal(message.error, undefined, `MCP ${method} failed: ${JSON.stringify(message.error)}`);
+        return message.result;
+      };
+      await mcp(1, "initialize", { protocolVersion, capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
+      const listed = await mcp(2, "tools/list");
+      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]") ? 0 : 1;
+      assert.equal(listed.tools.length, expectedToolCount, "tools/list must reflect current Timeline attachments");
+      if (listed.tools.length > 0) {
+        await mcp(3, "tools/call", { name: listed.tools[0].name, arguments: { query: "fixture" } });
+      }
+    }
     const userMessageId = "fixture-user-1";
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,

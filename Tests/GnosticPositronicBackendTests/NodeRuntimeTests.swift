@@ -209,7 +209,11 @@ struct NodeRuntimeTests {
             location: .runtime,
             tools: [.custom(.init(id: EchoWorkspace.toolID, name: "Echo", description: "Echoes."))]
         )
-        let provider = MultiplexedWorkspaceProvider(workspaces: [workspaceID: SentinelWorkspace(reference: reference)], workspaceStatus: { _ in .available })
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspaceID: SentinelWorkspace(reference: reference)],
+            workspaceStatus: { _ in .available },
+            isAttached: { _, _ in true }
+        )
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
 
@@ -237,7 +241,8 @@ struct NodeRuntimeTests {
         )
         let provider = MultiplexedWorkspaceProvider(
             workspaces: [workspaceID: CancellationWorkspace(reference: reference)],
-            workspaceStatus: { _ in .available }
+            workspaceStatus: { _ in .available },
+            isAttached: { _, _ in true }
         )
         let invocation = WorkspaceInvocation(workspaceID: workspaceID, toolID: EchoWorkspace.toolID, arguments: [:])
         let payload = String(decoding: try JSONEncoder().encode(invocation), as: UTF8.self)
@@ -864,10 +869,11 @@ struct NodeRuntimeTests {
         let gate = LifecycleGate()
         let namespace = "node-runtime-advertisement-lifecycle"
         let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000149")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000151")!
         let manifest = try makeManifest(
             namespace: namespace,
             ascendantID: "A21D0000-0000-4000-8000-000000000150",
-            timelineID: "A21D0000-0000-4000-8000-000000000151",
+            timelineID: timelineID.uuidString,
             workspaceIDs: [workspaceID.uuidString]
         )
         var adapters = NodeRuntimeAdapters.bundled
@@ -881,6 +887,7 @@ struct NodeRuntimeTests {
         await gate.waitUntilOpened()
 
         let payload = try JSONEncoder().encode(WorkspaceInvocation(
+            timelineID: timelineID,
             workspaceID: workspaceID,
             toolID: EchoWorkspace.toolID,
             arguments: ["value": .string("during-advertisement")]

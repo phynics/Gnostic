@@ -16,16 +16,22 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
     public var id: UUID { reference.id }
 
     private let catalog: NetworkCatalog
+    private let timelineID: UUID?
+    private let permissionApproved: Bool
     private let invokeRemote: @Sendable (WorkspaceInvocation) async throws -> ToolResult
 
     /// Creates a remote workspace proxy with its unary invocation transport.
     public init(
         reference: WorkspaceReference,
         catalog: NetworkCatalog,
+        timelineID: UUID? = nil,
+        permissionApproved: Bool = false,
         invoke: @escaping @Sendable (WorkspaceInvocation) async throws -> ToolResult
     ) {
         self.reference = reference
         self.catalog = catalog
+        self.timelineID = timelineID
+        self.permissionApproved = permissionApproved
         invokeRemote = invoke
     }
 
@@ -35,9 +41,11 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
         reference: WorkspaceReference,
         catalog: NetworkCatalog,
         communication: CommunicationManager,
-        timeout: Duration = .seconds(10)
+        timeout: Duration = .seconds(10),
+        timelineID: UUID? = nil,
+        permissionApproved: Bool = false
     ) {
-        self.init(reference: reference, catalog: catalog) { invocation in
+        self.init(reference: reference, catalog: catalog, timelineID: timelineID, permissionApproved: permissionApproved) { invocation in
             try await invokeWorkspace(invocation, communication: communication, timeout: timeout)
         }
     }
@@ -61,7 +69,7 @@ public struct AxolotyWorkspace: WorkspaceToolProvider, WorkspaceFileProvider, Se
             throw WorkspaceError.toolExecutionNotSupported
         }
         do {
-            return try await invokeRemote(WorkspaceInvocation(workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters.mapValues(PositronicJSONValueBridge.manifestValue)))
+            return try await invokeRemote(WorkspaceInvocation(timelineID: timelineID, permissionApproved: permissionApproved, workspaceID: self.id, providerID: providerID, toolID: id, arguments: parameters.mapValues(PositronicJSONValueBridge.manifestValue)))
         } catch is CancellationError {
             throw CancellationError()
         } catch {

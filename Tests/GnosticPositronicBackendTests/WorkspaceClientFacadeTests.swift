@@ -51,6 +51,7 @@ struct WorkspaceClientFacadeTests {
             #expect(attached.first?.timelineID == fixture.timelineID)
 
             let result = try await client.invoke(
+                timelineID: fixture.timelineID,
                 workspaceID: fixture.workspaceID,
                 toolID: "workspace_echo",
                 arguments: ["value": .string("hello")]
@@ -81,7 +82,7 @@ struct WorkspaceClientFacadeTests {
             try await session.discover()
             let client = try session.workspaceClient(timeout: .seconds(2))
 
-            let result = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+            let result = try await client.invoke(timelineID: fixture.timelineID, workspaceID: fixture.workspaceID, toolID: "workspace_echo")
             #expect(!result.isSuccess)
             #expect(result.error == "boom")
         }
@@ -199,7 +200,7 @@ struct WorkspaceClientFacadeTests {
 
             await #expect(throws: GnosticWorkspaceClientError
                 .callFailed(reasonCode: "workspaceInvocationFailed", statusCode: 500, retryable: false)) {
-                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+                _ = try await client.invoke(timelineID: fixture.timelineID, workspaceID: fixture.workspaceID, toolID: "workspace_echo")
             }
         }
     }
@@ -221,7 +222,7 @@ struct WorkspaceClientFacadeTests {
 
             await #expect(throws: GnosticWorkspaceClientError
                 .callFailed(reasonCode: "invalidResponse", statusCode: 502, retryable: false)) {
-                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+                _ = try await client.invoke(timelineID: fixture.timelineID, workspaceID: fixture.workspaceID, toolID: "workspace_echo")
             }
         }
     }
@@ -243,7 +244,7 @@ struct WorkspaceClientFacadeTests {
 
             await #expect(throws: GnosticWorkspaceClientError
                 .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true)) {
-                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+                _ = try await client.invoke(timelineID: fixture.timelineID, workspaceID: fixture.workspaceID, toolID: "workspace_echo")
             }
         }
     }
@@ -314,7 +315,7 @@ struct WorkspaceClientFacadeTests {
                 try await client.attach(workspaceID: fixture.workspaceID, to: fixture.timelineID, approved: true)
             }
             await #expect(throws: GnosticWorkspaceClientError.workspaceAmbiguous(fixture.workspaceID)) {
-                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+                _ = try await client.invoke(timelineID: fixture.timelineID, workspaceID: fixture.workspaceID, toolID: "workspace_echo")
             }
         }
     }
@@ -381,7 +382,7 @@ struct WorkspaceClientFacadeTests {
 
             await #expect(throws: GnosticWorkspaceClientError
                 .missingCapability(GnosticCapability.workspaceToolInvocation)) {
-                _ = try await client.invoke(workspaceID: fixture.workspaceID, toolID: "workspace_echo")
+                _ = try await client.invoke(timelineID: fixture.timelineID, workspaceID: fixture.workspaceID, toolID: "workspace_echo")
             }
         }
     }
@@ -403,7 +404,7 @@ struct WorkspaceClientFacadeTests {
             }
 
             do {
-                _ = try await client.invoke(workspaceID: unknown, toolID: "workspace_echo")
+                _ = try await client.invoke(timelineID: UUID(), workspaceID: unknown, toolID: "workspace_echo")
                 Issue.record("an undiscovered workspace was invoked")
             } catch let error as GnosticWorkspaceClientError {
                 #expect(error == .workspaceUnavailable(unknown))
