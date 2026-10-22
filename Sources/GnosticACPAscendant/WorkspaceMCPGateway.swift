@@ -287,7 +287,15 @@ private final class WorkspaceMCPHTTPServer {
     }
 
     private func handle(_ payload: HTTPRequest) async -> HTTPReply {
-        guard payload.method == "POST", payload.path == "/mcp" else { return HTTPReply(status: 404, body: Data()) }
+        guard payload.path == "/mcp" else { return HTTPReply(status: 404, body: Data()) }
+        guard payload.method == "POST" else { return HTTPReply(status: 405, body: Data()) }
+        guard payload.headers["content-type"]?.lowercased().hasPrefix("application/json") == true else {
+            return HTTPReply(status: 415, body: Data())
+        }
+        guard let accept = payload.headers["accept"]?.lowercased(),
+              accept.contains("application/json"), accept.contains("text/event-stream") else {
+            return HTTPReply(status: 406, body: Data())
+        }
         guard payload.headers["authorization"] == "Bearer \(token)" else { return HTTPReply(status: 401, body: Data()) }
         guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: payload.body) else {
             return HTTPReply(status: 400, body: Data())
@@ -415,6 +423,9 @@ private final class WorkspaceMCPHTTPServer {
         case 400: "Bad Request"
         case 401: "Unauthorized"
         case 404: "Not Found"
+        case 405: "Method Not Allowed"
+        case 406: "Not Acceptable"
+        case 415: "Unsupported Media Type"
         default: "Internal Server Error"
         }
         var header = "HTTP/1.1 \(reply.status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(reply.body.count)\r\nConnection: close\r\n"

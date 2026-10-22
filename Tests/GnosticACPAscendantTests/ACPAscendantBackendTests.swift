@@ -353,6 +353,7 @@ struct ACPAscendantBackendTests {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         if method != "initialize" { request.setValue("2025-03-26", forHTTPHeaderField: "MCP-Protocol-Version") }
         if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
         request.httpBody = try JSONEncoder().encode(ACPJSONRPCRequest(id: .string("test"), method: method, params: .object(params)))

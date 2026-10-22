@@ -139,6 +139,7 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       const mcp = async (id, method, requestParams = {}) => {
         const headers = {
           "content-type": "application/json",
+          accept: "application/json, text/event-stream",
           ...Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
         };
         if (method !== "initialize") headers["MCP-Protocol-Version"] = protocolVersion;
