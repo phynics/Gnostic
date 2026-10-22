@@ -68,6 +68,17 @@ struct MultiplexedWorkspaceProviderTests {
         #expect(workspace.invocationCount == 0)
     }
 
+    @Test("a Workspace that becomes unhealthy after listing fails closed")
+    func rejectsWorkspaceHealthChange() async throws {
+        let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
+        let registry = try registry(for: workspace)
+        let provider = provider(for: workspace, registry: registry)
+        workspace.beforeListing = { workspace.isHealthy = false }
+
+        try expectFailure(try await provider.handle(parameters: payload(for: workspace)), code: 409, reason: "workspaceUnavailable")
+        #expect(workspace.invocationCount == 0)
+    }
+
     @Test("availability is checked again after tool enumeration suspends")
     func rejectsStatusChangeDuringListing() async throws {
         let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
@@ -86,7 +97,10 @@ struct MultiplexedWorkspaceProviderTests {
     func rejectsStoppedNode() async throws {
         let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
         let provider = MultiplexedWorkspaceProvider(
-            workspaces: [workspace.reference.id: workspace], workspaceStatus: { _ in .available }, isAvailable: { false }
+            workspaces: [workspace.reference.id: workspace],
+            workspaceStatus: { _ in .available },
+            isAttached: { _, _ in true },
+            isAvailable: { false }
         )
 
         try expectFailure(try await provider.handle(parameters: payload(for: workspace)), code: 503, reason: "notRunning")
@@ -128,12 +142,17 @@ struct MultiplexedWorkspaceProviderTests {
     private func provider(for workspace: WorkspaceInvocationTestWorkspace, registry: NodeRegistry) -> MultiplexedWorkspaceProvider {
         MultiplexedWorkspaceProvider(
             workspaces: [workspace.reference.id: workspace],
-            workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) }
+            workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) },
+            isAttached: { _, _ in true }
         )
     }
 
-    private func payload(for workspace: WorkspaceInvocationTestWorkspace, toolID: String = "allowed") throws -> String {
-        String(decoding: try JSONEncoder().encode(WorkspaceInvocation(workspaceID: workspace.reference.id, toolID: toolID)), as: UTF8.self)
+    private func payload(for workspace: WorkspaceInvocationTestWorkspace, toolID: String = "allowed", permissionApproved: Bool = true) throws -> String {
+        String(decoding: try JSONEncoder().encode(WorkspaceInvocation(
+            permissionApproved: permissionApproved,
+            workspaceID: workspace.reference.id,
+            toolID: toolID
+        )), as: UTF8.self)
     }
 
     private func query(workspaceID: UUID, page: Any? = nil) throws -> QueryEventSnapshot {

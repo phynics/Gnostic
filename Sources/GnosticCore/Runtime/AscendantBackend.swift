@@ -231,6 +231,10 @@ public struct BackendWorkspaceReference: Sendable, Equatable {
 
 /// A request to invoke one tool on one attached Workspace.
 public struct BackendWorkspaceInvocation: Sendable, Equatable {
+    /// The active Timeline authorizing this invocation, when supplied by the MCP gateway.
+    public let timelineID: UUID?
+    /// Whether the gateway approved a permission-required tool call.
+    public let permissionApproved: Bool
     /// The Workspace that owns the tool.
     public let workspaceID: UUID
     /// The advertised tool identifier.
@@ -239,7 +243,9 @@ public struct BackendWorkspaceInvocation: Sendable, Equatable {
     public let arguments: [String: ManifestJSONValue]
 
     /// Creates a Workspace tool invocation.
-    public init(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue] = [:]) {
+    public init(timelineID: UUID? = nil, permissionApproved: Bool = false, workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue] = [:]) {
+        self.timelineID = timelineID
+        self.permissionApproved = permissionApproved
         self.workspaceID = workspaceID
         self.toolID = toolID
         self.arguments = arguments

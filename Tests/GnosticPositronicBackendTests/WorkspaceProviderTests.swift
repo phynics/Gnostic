@@ -205,6 +205,63 @@ struct WorkspaceProviderTests {
         #expect(result.output == "found")
     }
 
+    @Test("provider rejects a call when the Timeline no longer attaches its Workspace")
+    @MainActor
+    func providerRejectsUnattachedTimelineInvocation() async throws {
+        let timelineID = UUID()
+        let workspaceID = UUID()
+        let provider = makeWorkspaceInvocationProvider(
+            workspaceID: workspaceID,
+            tools: [GnosticWorkspaceToolDefinition(id: "custom", name: "Custom", description: "Remote")],
+            isAttached: { requestedTimelineID, requestedWorkspaceID in
+                requestedTimelineID == timelineID && requestedWorkspaceID == workspaceID
+            }
+        ) { _, _ in
+            Issue.record("An unattached Workspace invocation must not reach its provider.")
+            return .success("unexpected")
+        }
+        let payload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(timelineID: UUID(), workspaceID: workspaceID, toolID: "custom")
+        ), as: UTF8.self)
+
+        let response = try await provider.handle(parameters: payload)
+        let failure = try protocolFailure(from: response)
+        #expect(failure.reasonCode == "workspaceNotAttached")
+    }
+
+    @Test("provider refuses permission-required tools without a gateway approval")
+    @MainActor
+    func providerRejectsUnapprovedPermissionRequiredTool() async throws {
+        let timelineID = UUID()
+        let workspaceID = UUID()
+        let provider = makeWorkspaceInvocationProvider(
+            workspaceID: workspaceID,
+            tools: [GnosticWorkspaceToolDefinition(
+                id: "mutate",
+                name: "Mutate",
+                description: "Changes records",
+                requiresPermission: true
+            )],
+            isAttached: { requestedTimelineID, requestedWorkspaceID in
+                requestedTimelineID == timelineID && requestedWorkspaceID == workspaceID
+            }
+        ) { _, _ in .success("mutated") }
+
+        let payload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(timelineID: timelineID, workspaceID: workspaceID, toolID: "mutate")
+        ), as: UTF8.self)
+        let failure = try protocolFailure(from: await provider.handle(parameters: payload))
+        #expect(failure.reasonCode == "workspacePermissionRequired")
+
+        let approvedPayload = String(decoding: try JSONEncoder().encode(
+            WorkspaceInvocation(timelineID: timelineID, permissionApproved: true, workspaceID: workspaceID, toolID: "mutate")
+        ), as: UTF8.self)
+        guard case .success = try await provider.handle(parameters: approvedPayload) else {
+            Issue.record("an approved permission grant should allow dispatch")
+            return
+        }
+    }
+
     @Test("provider wraps malformed and executor failures in protocol envelopes")
     @MainActor
     func providerHandleFailuresCarryProtocolMajor() async throws {

@@ -15,6 +15,7 @@ public actor MultiplexedWorkspaceProvider {
 
     private let workspaces: [UUID: any LocalWorkspace]
     private let workspaceStatus: @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?
+    private let isAttached: @Sendable (UUID?, UUID) async -> Bool
     private let isAvailable: @Sendable () async -> Bool
 
     /// Creates the handler with the host's authoritative Workspace status lookup.
@@ -22,10 +23,12 @@ public actor MultiplexedWorkspaceProvider {
     public init(
         workspaces: [UUID: any LocalWorkspace],
         workspaceStatus: @escaping @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?,
+        isAttached: @escaping @Sendable (UUID?, UUID) async -> Bool = { _, _ in false },
         isAvailable: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.workspaces = workspaces
         self.workspaceStatus = workspaceStatus
+        self.isAttached = isAttached
         self.isAvailable = isAvailable
     }
 
@@ -42,13 +45,22 @@ public actor MultiplexedWorkspaceProvider {
             guard let workspace = workspaces[invocation.workspaceID] else {
                 throw WorkspaceServiceError.workspaceNotFound
             }
+            guard await isAttached(invocation.timelineID, invocation.workspaceID) else {
+                return .failure(code: 403, reasonCode: "workspaceNotAttached", message: "The Workspace is not attached to the active Timeline.")
+            }
             try await requireAvailable(workspaceID: invocation.workspaceID)
             let tools = try await workspace.listTools()
-            guard tools.contains(where: { $0.id == invocation.toolID }) else {
+            guard let tool = tools.first(where: { $0.id == invocation.toolID }) else {
                 return .failure(code: 403, reasonCode: "workspaceToolNotAdvertised", message: "The Workspace does not advertise this tool.")
+            }
+            guard !tool.requiresPermission || invocation.permissionApproved else {
+                return .failure(code: 403, reasonCode: "workspacePermissionRequired", message: "The Workspace tool requires an approved permission decision.")
             }
             // Tool enumeration can suspend while the host changes availability.
             try await requireAvailable(workspaceID: invocation.workspaceID)
+            guard await isAttached(invocation.timelineID, invocation.workspaceID) else {
+                return .failure(code: 403, reasonCode: "workspaceNotAttached", message: "The Workspace is not attached to the active Timeline.")
+            }
             try Task.checkCancellation()
             let result = try await workspace.executeTool(id: invocation.toolID, parameters: invocation.arguments)
             return .success(result: try Self.encodeResult(result))
@@ -64,6 +76,10 @@ public actor MultiplexedWorkspaceProvider {
         let status = await workspaceStatus(workspaceID)
         guard status == .available else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status == .unsupported ? .unsupported : .unavailable)
+        }
+        if let workspace = workspaces[workspaceID],
+           await MainActor.run(body: { (workspace as? any LocalWorkspaceHealth)?.isHealthy == false }) {
+            throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
         }
     }
 

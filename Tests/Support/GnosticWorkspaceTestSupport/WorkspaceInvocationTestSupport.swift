@@ -9,9 +9,10 @@ import GnosticCore
 /// This target is test-only support shared by `GnosticCoreTests` and
 /// `GnosticClientTests`, so its surface is public to those test targets.
 @MainActor
-public final class WorkspaceInvocationTestWorkspace: LocalWorkspace {
+public final class WorkspaceInvocationTestWorkspace: LocalWorkspace, LocalWorkspaceHealth {
     public let reference: BackendWorkspaceReference
     public var tools: [BackendWorkspaceTool]
+    public var isHealthy = true
     public var beforeListing: (@MainActor @Sendable () async throws -> Void)?
     public private(set) var invocationCount = 0
     private let execute: @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
@@ -47,8 +48,13 @@ public final class WorkspaceInvocationTestWorkspace: LocalWorkspace {
 public func makeWorkspaceInvocationProvider(
     workspaceID: UUID,
     tools: [GnosticWorkspaceToolDefinition],
+    isAttached: @escaping @Sendable (UUID?, UUID) async -> Bool = { _, _ in true },
     execute: @escaping @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
 ) -> MultiplexedWorkspaceProvider {
     let workspace = WorkspaceInvocationTestWorkspace(id: workspaceID, tools: tools, execute: execute)
-    return MultiplexedWorkspaceProvider(workspaces: [workspaceID: workspace], workspaceStatus: { _ in .available })
+    return MultiplexedWorkspaceProvider(
+        workspaces: [workspaceID: workspace],
+        workspaceStatus: { _ in .available },
+        isAttached: isAttached
+    )
 }

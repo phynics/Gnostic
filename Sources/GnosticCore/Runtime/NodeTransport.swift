@@ -43,6 +43,7 @@ public final class NodeTransport {
     private let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
+    private let workspaceAuthorization: @MainActor @Sendable (UUID?, UUID) async -> Bool
     private let workspaceProvider: MultiplexedWorkspaceProvider?
     private let scope: RuntimeEffectScope
     private let registrationScope: RuntimeEffectScope
@@ -62,6 +63,7 @@ public final class NodeTransport {
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
+        workspaceAuthorization: @escaping @MainActor @Sendable (UUID?, UUID) async -> Bool = { _, _ in false },
         localWorkspaces: [UUID: any LocalWorkspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         operations: any NodeOperations,
@@ -74,9 +76,11 @@ public final class NodeTransport {
         self.ascendantIdentities = ascendantIdentities
         self.ascendantHealth = ascendantHealth
         self.workspaceReferences = workspaceReferences
+        self.workspaceAuthorization = workspaceAuthorization
         workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(
             workspaces: localWorkspaces,
             workspaceStatus: { id in await registry?.effectiveWorkspaceStatus(id: id) },
+            isAttached: { timelineID, workspaceID in await workspaceAuthorization(timelineID, workspaceID) },
             isAvailable: { await isAvailable() }
         )
         self.isAvailable = isAvailable

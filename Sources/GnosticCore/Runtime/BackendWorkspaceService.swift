@@ -128,9 +128,16 @@ final class GnosticWorkspaceBackendService: WorkspaceReferenceUpdating, Ascendan
 
     func reference(id: UUID) async -> BackendWorkspaceReference? {
         if let reference = references[id] {
-            let status: BackendWorkspaceStatus = localWorkspaces[id] != nil
-                ? .available
-                : await networkStatus(id: id)
+            let status: BackendWorkspaceStatus
+            if let localWorkspace = localWorkspaces[id] {
+                if (localWorkspace as? any LocalWorkspaceHealth)?.isHealthy == false {
+                    status = .unavailable
+                } else {
+                    status = reference.status
+                }
+            } else {
+                status = await networkStatus(id: id)
+            }
             return BackendWorkspaceReference(
                 id: reference.id,
                 uri: reference.uri,

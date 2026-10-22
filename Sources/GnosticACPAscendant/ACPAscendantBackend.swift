@@ -13,8 +13,11 @@ import Glibc
 ///
 /// This target owns the ACP client process, sessions, and private Timeline map.
 @MainActor
-public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation {
-    public nonisolated var capabilities: AscendantBackendOptionalSurfaces { .turnCancellation }
+public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation, AscendantBackendWorkspaceCapability {
+    private nonisolated let hasWorkspaceService: Bool
+    public nonisolated var capabilities: AscendantBackendOptionalSurfaces {
+        hasWorkspaceService ? .turnCancellation.union(.workspace) : .turnCancellation
+    }
     // Expected page counts are single-digit; this abusive-cursor guard truncates sessions beyond 100 pages.
     private static let maximumSessionListPages = 100
 
@@ -56,6 +59,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private var sessionStartedAt: [UUID: Date]
     private var activeSessionIDs: Set<UUID> = []
     private let sessionMapURL: URL
+    private var workspaceGateways: [UUID: WorkspaceMCPGateway] = [:]
 
     /// Shared Gnostic Timeline bookkeeping. This backend supplies only the
     /// remote ACP session operations.
@@ -88,6 +92,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private var isShuttingDown = false
     private var sessionCapabilities: ACPAgentSessionCapabilities?
     private let permissionService: any AscendantBackendPermissionService
+    private let workspaceService: (any AscendantBackendWorkspaceService)?
     // The backend contract serializes Turns per Timeline; one active entry per Timeline is intentional.
     private var activeTurns: [UUID: ACPActiveTurn] = [:]
     private let updateRouter = ACPUpdateRouter()
@@ -98,7 +103,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     /// - Parameters:
     ///   - ascendant: The manifest Ascendant served by this backend.
     ///   - configuration: The backend-owned configuration envelope.
-    ///   - services: Host services. ACP owns its tool execution.
+    ///   - services: Host-provided Workspace and permission services.
     ///   - timelines: Timelines assigned to this Ascendant in the manifest.
     /// - Throws: ``AscendantBackendError/invalidConfiguration(_:)`` when the
     ///   envelope or launch settings are invalid.
@@ -141,6 +146,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         self.protocolTimeoutSeconds = protocolTimeoutSeconds
         self.promptTimeoutSeconds = promptTimeoutSeconds
         permissionService = services.permission
+        workspaceService = services.workspace
+        hasWorkspaceService = services.workspace != nil
         self.configuredTimelines = configuredTimelines
         projects = Dictionary(uniqueKeysWithValues: configuredTimelines.map { ($0.id, $0.project ?? .scratch) })
         sessionMapURL = Self.sessionMapURL(for: ascendant.id)
@@ -166,6 +173,17 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             result[entry.key] = startedAt
         }
 
+        var interoperability: Set<String> = [
+            AscendantInteroperabilityCapability.textTurn.rawValue,
+            AscendantInteroperabilityCapability.streamedUpdates.rawValue,
+            AscendantInteroperabilityCapability.cancellation.rawValue,
+            AscendantInteroperabilityCapability.permissionMediation.rawValue,
+            AscendantInteroperabilityCapability.timelineManagement.rawValue,
+        ]
+        if services.workspace != nil {
+            interoperability.insert(AscendantInteroperabilityCapability.workspaceAttachment.rawValue)
+            interoperability.insert(AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue)
+        }
         let now = Date()
         identity = AscendantBackendIdentity(
             id: ascendant.id,
@@ -177,13 +195,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             createdAt: now,
             updatedAt: now,
             capabilities: .init(
-                interoperability: Set([
-                    AscendantInteroperabilityCapability.textTurn.rawValue,
-                    AscendantInteroperabilityCapability.streamedUpdates.rawValue,
-                    AscendantInteroperabilityCapability.cancellation.rawValue,
-                    AscendantInteroperabilityCapability.permissionMediation.rawValue,
-                    AscendantInteroperabilityCapability.timelineManagement.rawValue,
-                ]),
+                interoperability: interoperability,
                 backendKind: Self.kind,
                 backendVersion: "0.1.16"
             )
@@ -293,6 +305,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 
     /// Closes its ACP session when the agent advertises session/close.
     public func removeTimeline(id: UUID) async {
+        workspaceGateways.removeValue(forKey: id)?.stop()
         await timelineRegistry.remove(id: id)
         try? persistSessionMap()
     }
@@ -309,6 +322,49 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         let renamed = try await timelineRegistry.rename(id: id, title: title)
         try persistSessionMap()
         return renamed
+    }
+
+    /// Adds an attached Workspace to the Timeline's live MCP tool catalog.
+    ///
+    /// - Parameters:
+    ///   - reference: The available Workspace supplied by the host.
+    ///   - timelineID: The Timeline that receives the Workspace.
+    /// - Throws: When the Timeline is unknown or the Workspace is unavailable.
+    public func attachWorkspace(_ reference: BackendWorkspaceReference, to timelineID: UUID) async throws {
+        guard timelineRegistry.contains(id: timelineID) else {
+            throw AscendantBackendError.timelineNotFound(timelineID)
+        }
+        guard reference.status == .available else {
+            throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
+        }
+        try timelineRegistry.attachWorkspace(reference.id, to: timelineID)
+    }
+
+    /// Removes a Workspace from a Timeline's live MCP tool catalog.
+    ///
+    /// - Parameters:
+    ///   - workspaceID: The Workspace to remove.
+    ///   - timelineID: The Timeline that loses the Workspace.
+    /// - Throws: When the Timeline is unknown.
+    public func detachWorkspace(_ workspaceID: UUID, from timelineID: UUID) async throws {
+        guard timelineRegistry.contains(id: timelineID) else {
+            throw AscendantBackendError.timelineNotFound(timelineID)
+        }
+        timelineRegistry.detachWorkspace(workspaceID, from: timelineID)
+    }
+
+    /// Lists the tool identifiers currently available on a Timeline.
+    ///
+    /// - Parameter timelineID: The Timeline to inspect.
+    /// - Returns: The attached Workspaces' currently available tool identifiers.
+    public func enabledToolIDs(for timelineID: UUID) async -> [String] {
+        guard timelineRegistry.contains(id: timelineID), let workspaceService else { return [] }
+        var toolIDs: Set<String> = []
+        for workspaceID in timelineRegistry.attachedWorkspaceIDs(for: timelineID) {
+            guard let reference = await workspaceService.reference(id: workspaceID), reference.status == .available else { continue }
+            toolIDs.formUnion(reference.tools.map(\.id))
+        }
+        return toolIDs.sorted()
     }
 
     /// Changes the Project used by future Turns on a Timeline.
@@ -353,6 +409,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 oldSessionClosed = true
             } catch { /* A Project transition must not depend on best-effort close. */ }
         }
+        workspaceGateways.removeValue(forKey: timelineID)?.stop()
         sessionIDs.removeValue(forKey: timelineID)
         sessionCwds.removeValue(forKey: timelineID)
         sessionProjectKinds.removeValue(forKey: timelineID)
@@ -576,6 +633,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         connection = nil
         await transport?.close()
         transport = nil
+        for gateway in workspaceGateways.values { gateway.stop() }
+        workspaceGateways.removeAll()
         process = nil
         processGroupID = nil
         processLeaderWasReaped = false
@@ -747,7 +806,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             _ = try await connection.resumeSession(request: ACPResumeSessionRequest(
                 sessionId: sessionID,
                 cwd: desired.cwd,
-                mcpServers: []
+                mcpServers: try mcpServers(for: timelineID)
             ))
             activeSessionIDs.insert(timelineID)
             try persistSessionMap()
@@ -787,7 +846,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         do {
             response = try await connection.createSession(request: ACPNewSessionRequest(
                 cwd: project.cwd,
-                mcpServers: []
+                mcpServers: try mcpServers(for: timelineID)
             ))
         } catch {
             if project.isManagedScratch { try? projectResolver.discard(project) }
@@ -815,7 +874,30 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         return response.sessionId
     }
 
+    private func mcpServers(for timelineID: UUID) throws -> [ACPMcpServer] {
+        guard sessionCapabilities?.mcp?.http != nil,
+              let workspaceService else { return [] }
+        let gateway: WorkspaceMCPGateway
+        if let existing = workspaceGateways[timelineID] {
+            gateway = existing
+        } else {
+            gateway = WorkspaceMCPGateway(
+                timelineID: timelineID,
+                timelineRegistry: timelineRegistry,
+                workspaceService: workspaceService,
+                permissionService: permissionService,
+                activeTurn: { [weak self] id in
+                    guard let turn = self?.activeTurns[id] else { return nil }
+                    return (turn.clientTurnID, turn.sessionID)
+                }
+            )
+            workspaceGateways[timelineID] = gateway
+        }
+        return [try gateway.start()]
+    }
+
     private func closeAndRetireSession(for timelineID: UUID, using connection: ACPProtocolLayer) async {
+        workspaceGateways.removeValue(forKey: timelineID)?.stop()
         var sessionClosed = false
         if let sessionID = sessionIDs[timelineID], sessionCapabilities?.supportsClose == true {
             do {

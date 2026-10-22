@@ -1,6 +1,9 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import GnosticACPAscendant
 import GnosticAscendantConformance
 import GnosticCore
@@ -24,6 +27,25 @@ struct ACPAscendantBackendTests {
         func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
             requests.append(request)
             return decision
+        }
+    }
+
+    @MainActor
+    private final class GatewayWorkspaceService: AscendantBackendWorkspaceService {
+        var workspaceReference: BackendWorkspaceReference
+        private(set) var invocations: [BackendWorkspaceInvocation] = []
+
+        init(workspaceReference: BackendWorkspaceReference) {
+            self.workspaceReference = workspaceReference
+        }
+
+        func reference(id: UUID) async -> BackendWorkspaceReference? {
+            id == workspaceReference.id ? workspaceReference : nil
+        }
+
+        func invoke(_ invocation: BackendWorkspaceInvocation) async throws -> BackendWorkspaceResult {
+            invocations.append(invocation)
+            return .success("workspace result")
         }
     }
 
@@ -74,6 +96,7 @@ struct ACPAscendantBackendTests {
         timelines: [NodeManifest.Timeline] = [],
         ascendantID: UUID = UUID(),
         permission: any AscendantBackendPermissionService = AscendantBackendServices.empty.permission,
+        workspace: (any AscendantBackendWorkspaceService)? = nil,
         protocolTimeoutSeconds: TimeInterval = 30,
         promptTimeoutSeconds: TimeInterval = 60 * 60
     ) throws -> ACPAscendantBackend {
@@ -86,7 +109,7 @@ struct ACPAscendantBackendTests {
         return try ACPAscendantBackend(
             ascendant: ascendant,
             configuration: ascendant.backend,
-            services: AscendantBackendServices(permission: permission),
+            services: AscendantBackendServices(workspace: workspace, permission: permission),
             timelines: timelines,
             protocolTimeoutSeconds: protocolTimeoutSeconds,
             promptTimeoutSeconds: promptTimeoutSeconds
@@ -109,6 +132,234 @@ struct ACPAscendantBackendTests {
         #expect(backend.launchSpec.workingDirectory == "/workspace/project")
         #expect(backend.launchSpec.environment == ["MODE": "safe", "TOKEN_HINT": "not-secret"])
         #expect(backend.launchSpec.displayName == "OpenCode")
+    }
+
+    @Test("MCP gateway lists attached tools and rechecks status before each call")
+    @MainActor
+    func mcpGatewayRechecksStatusAtInvocation() async throws {
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let workspaceID = UUID()
+        let tool = BackendWorkspaceTool(
+            id: "search",
+            name: "Search",
+            description: "Search workspace records",
+            parametersSchema: .object(["type": .string("object"), "properties": .object(["query": .object(["type": .string("string")])])]),
+            requiresPermission: true
+        )
+        let workspaceService = GatewayWorkspaceService(workspaceReference: BackendWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://gateway-test",
+            status: .available,
+            tools: [tool]
+        ))
+        let timelineRegistry = AscendantTimelineRegistry(
+            ascendantID: ascendantID,
+            privateTimelineID: timelineID,
+            configured: [.init(
+                id: timelineID,
+                title: "Gateway test",
+                operatingAscendantID: ascendantID,
+                attachments: [.local(workspaceID)]
+            )],
+            remote: .init(ensure: { _, _ in }, rename: { _, _ in }, delete: { _ in })
+        )
+        let permission = RecordingPermissionService(decision: .approved)
+        let gateway = WorkspaceMCPGateway(
+            timelineID: timelineID,
+            timelineRegistry: timelineRegistry,
+            workspaceService: workspaceService,
+            permissionService: permission,
+            activeTurn: { _ in ("turn-1", "session-1") }
+        )
+        guard case let .http(_, endpoint, headers, _ ) = try gateway.start(),
+              let endpointURL = URL(string: endpoint),
+              let token = headers?.first(where: { $0.name == "Authorization" })?.value else {
+            Issue.record("The gateway must return an authenticated HTTP MCP endpoint.")
+            return
+        }
+        defer { gateway.stop() }
+
+        let listResponse = try await mcpRequest(
+            url: endpointURL,
+            authorization: token,
+            method: "tools/list",
+            params: [:]
+        )
+        #expect(listResponse.response.statusCode == 200)
+        guard case let .object(listResult)? = listResponse.message?.result,
+              case let .array(listedTools)? = listResult["tools"],
+              case let .object(listedTool)? = listedTools.first,
+              case let .string(toolName)? = listedTool["name"] else {
+            Issue.record("tools/list must return the attached Workspace tool.")
+            return
+        }
+
+        let missingAuthorization = try await mcpRequest(
+            url: endpointURL,
+            authorization: nil,
+            method: "tools/list",
+            params: [:]
+        )
+        #expect(missingAuthorization.response.statusCode == 401)
+
+        let unattachedWorkspaceID = UUID()
+        let unattachedCall = try await mcpRequest(
+            url: endpointURL,
+            authorization: token,
+            method: "tools/call",
+            params: ["name": .string("workspace_\(unattachedWorkspaceID.uuidString.lowercased().replacingOccurrences(of: "-", with: ""))__search"), "arguments": .object([:])]
+        )
+        #expect(unattachedCall.message?.error?.code == -32003)
+        #expect(workspaceService.invocations.isEmpty)
+
+        let successfulCall = try await mcpRequest(
+            url: endpointURL,
+            authorization: token,
+            method: "tools/call",
+            params: ["name": .string(toolName), "arguments": .object(["query": .string("needle")])]
+        )
+        #expect(successfulCall.response.statusCode == 200)
+        #expect(successfulCall.message?.error == nil)
+        #expect(workspaceService.invocations == [BackendWorkspaceInvocation(
+            timelineID: timelineID,
+            permissionApproved: true,
+            workspaceID: workspaceID,
+            toolID: "search",
+            arguments: ["query": .string("needle")]
+        )])
+        #expect(await permission.requests.count == 1)
+
+        timelineRegistry.detachWorkspace(workspaceID, from: timelineID)
+        let detachedCall = try await mcpRequest(
+            url: endpointURL,
+            authorization: token,
+            method: "tools/call",
+            params: ["name": .string(toolName), "arguments": .object([:])]
+        )
+        #expect(detachedCall.message?.error?.code == -32003)
+        #expect(workspaceService.invocations.count == 1)
+        try timelineRegistry.attachWorkspace(workspaceID, to: timelineID)
+
+        workspaceService.workspaceReference = BackendWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://gateway-test",
+            status: .unavailable,
+            tools: [tool]
+        )
+        let staleCall = try await mcpRequest(
+            url: endpointURL,
+            authorization: token,
+            method: "tools/call",
+            params: ["name": .string(toolName), "arguments": .object([:])]
+        )
+        #expect(staleCall.response.statusCode == 200)
+        #expect(staleCall.message?.error?.code == -32003)
+        #expect(workspaceService.invocations.count == 1)
+    }
+
+    @Test("ACP sessions receive the live MCP gateway for attached Workspaces")
+    @MainActor
+    func acpSessionInvokesAttachedWorkspaceThroughMCP() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let workspaceID = UUID()
+        let definition = BackendWorkspaceTool(id: "search", name: "Search", description: "Search records")
+        let workspaceService = GatewayWorkspaceService(workspaceReference: BackendWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://mcp-integration",
+            status: .available,
+            tools: [definition]
+        ))
+        let timeline = NodeManifest.Timeline(
+            id: timelineID,
+            title: "Workspace MCP",
+            attachments: [.local(workspaceID)]
+        )
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, mcpGateway: true),
+            timelines: [timeline],
+            workspace: workspaceService
+        )
+        defer { Task { await backend.shutdown() } }
+
+        _ = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "[fixture:workspace-tool]"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(workspaceService.invocations.count == 1)
+        #expect(workspaceService.invocations.first?.workspaceID == workspaceID)
+        #expect(workspaceService.invocations.first?.toolID == "search")
+
+        let localProject = stateHome.url.appendingPathComponent("repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: localProject, withIntermediateDirectories: false)
+        try await backend.setProject(.local(localProject.path), for: timelineID)
+        _ = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "[fixture:workspace-tool]"),
+            updates: RecordingUpdateSink()
+        )
+        #expect(workspaceService.invocations.count == 2)
+    }
+
+    @Test("an active ACP Session sees Workspace attachments added and removed at runtime")
+    @MainActor
+    func acpSessionReflectsRuntimeWorkspaceAttachmentChanges() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let workspaceID = UUID()
+        let definition = BackendWorkspaceTool(id: "search", name: "Search", description: "Search records")
+        let reference = BackendWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://dynamic-mcp",
+            status: .available,
+            tools: [definition]
+        )
+        let workspaceService = GatewayWorkspaceService(workspaceReference: reference)
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Dynamic Workspace")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, mcpGateway: true),
+            timelines: [timeline],
+            workspace: workspaceService
+        )
+        defer { Task { await backend.shutdown() } }
+
+        _ = try await backend.runTurn(.init(timelineID: timelineID, message: "start"), updates: RecordingUpdateSink())
+        let workspaceCapability = try backend.requireCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self)
+        try await workspaceCapability.attachWorkspace(reference, to: timelineID)
+        _ = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "[fixture:workspace-tool]"),
+            updates: RecordingUpdateSink()
+        )
+        #expect(workspaceService.invocations.count == 1)
+
+        try await workspaceCapability.detachWorkspace(workspaceID, from: timelineID)
+        _ = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "[fixture:workspace-tool-empty]"),
+            updates: RecordingUpdateSink()
+        )
+        #expect(workspaceService.invocations.count == 1)
+    }
+
+    @MainActor
+    private func mcpRequest(
+        url: URL,
+        authorization: String?,
+        method: String,
+        params: [String: ACPValue]
+    ) async throws -> (response: HTTPURLResponse, message: ACPJSONRPCResponse?) {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        if method != "initialize" { request.setValue("2025-03-26", forHTTPHeaderField: "MCP-Protocol-Version") }
+        if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
+        request.httpBody = try JSONEncoder().encode(ACPJSONRPCRequest(id: .string("test"), method: method, params: .object(params)))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        return (httpResponse, try? JSONDecoder().decode(ACPJSONRPCResponse.self, from: data))
     }
 
     @Test("local Project cwd is passed to ACP session/new")
@@ -1389,6 +1640,15 @@ struct ACPAscendantBackendTests {
         try await fixture.suite().checkCapabilityDeclarationAgrees()
     }
 
+    @Test("conformance: Workspace attachment is projected")
+    @MainActor
+    func conformanceWorkspaceAttachmentProjects() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let fixture = conformanceFixture(stateHome: stateHome.url, signal: AscendantConformanceTurnSignal())
+        try await fixture.suite().checkWorkspaceAttachmentProjects()
+    }
+
     @Test("conformance: Timeline lifecycle")
     @MainActor
     func conformanceTimelineLifecycle() async throws {
@@ -1443,13 +1703,14 @@ struct ACPAscendantBackendTests {
         try await fixture.suite().checkHealthQuarantineAndReplay()
     }
 
-    /// The ACP backend does not implement ``AscendantBackendWorkspaceCapability``:
-    /// recorded as an exception in #452.
+    /// The ACP backend implements the Workspace capability through the Gnostic gateway.
     @MainActor
     private func conformanceFixture(stateHome: URL, signal: AscendantConformanceTurnSignal) -> AscendantConformanceFixture {
-        AscendantConformanceFixture(
+        let workspace = AscendantConformanceWorkspaceService()
+        return AscendantConformanceFixture(
             kind: ACPAscendantBackend.kind,
-            surfaces: [.scopedCancellation, .terminalUpdate],
+            surfaces: [.scopedCancellation, .terminalUpdate, .workspaceAttachment],
+            workspaceService: workspace,
             expectedReply: { "fixture reply: \($0)" },
             awaitTurnStarted: { _ = await signal.waitUntilStarted() },
             makeBackend: { ascendant, timelines in
@@ -1465,7 +1726,7 @@ struct ACPAscendantBackendTests {
                 return try ACPAscendantBackend(
                     ascendant: configured,
                     configuration: configured.backend,
-                    services: AscendantBackendServices(permission: AscendantConformancePermissionService()),
+                    services: AscendantBackendServices(workspace: workspace, permission: AscendantConformancePermissionService()),
                     timelines: timelines
                 )
             }
@@ -1535,6 +1796,7 @@ struct ACPAscendantBackendTests {
     private func fixtureSettings(
         stateHome: URL,
         supportsList: Bool = true,
+        mcpGateway: Bool = false,
         paginatedListMode: String? = nil,
         listExitAfter: Int? = nil,
         listRequestFile: URL? = nil,
@@ -1566,6 +1828,7 @@ struct ACPAscendantBackendTests {
                 .path
         let statePath = stateHome.appendingPathComponent("agent-sessions.json").path
         var fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": statePath]
+        if mcpGateway { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_MCP"] = "1" }
         if !supportsList { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_NO_LIST"] = "1" }
         if let paginatedListMode { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PAGINATED_LIST"] = paginatedListMode }
         if let listExitAfter { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_LIST_EXIT_AFTER"] = String(listExitAfter) }

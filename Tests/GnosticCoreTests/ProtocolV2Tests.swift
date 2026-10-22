@@ -245,4 +245,27 @@ struct ProtocolV2Tests {
         #expect(entries.count == 1)
         #expect(entries.first?.protocolMajor == GnosticProtocol.currentMajor)
     }
+
+    @Test("remote Workspace authorization requires a current compatible Timeline attachment")
+    func catalogAuthorizesOnlyAdvertisedTimelineAttachments() async throws {
+        let ownerTimelineID = UUID()
+        let workspaceID = UUID()
+        let payload = """
+        {"protocolMajor":3,"objectId":"\(ownerTimelineID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"\(GnosticObjectType.timeline)","name":"Remote timeline","title":"Remote timeline","isArchived":false,"attachedWorkspaceIDs":["\(workspaceID.uuidString.lowercased())"]}
+        """
+        let catalog = NetworkCatalog()
+        let snapshot = CoatyObjectSnapshot(
+            objectId: ownerTimelineID.uuidString.lowercased(),
+            coreType: .coatyObject,
+            objectType: GnosticObjectType.timeline,
+            name: "Remote timeline",
+            payload: payload
+        )
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "timeline-owner", object: snapshot))
+
+        #expect(await catalog.isWorkspaceAttached(workspaceID, to: ownerTimelineID))
+        #expect(!(await catalog.isWorkspaceAttached(UUID(), to: ownerTimelineID)))
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "timeline-owner", objectIds: [ownerTimelineID.uuidString]))
+        #expect(!(await catalog.isWorkspaceAttached(workspaceID, to: ownerTimelineID)))
+    }
 }

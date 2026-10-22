@@ -196,12 +196,15 @@ gateway (ADR 0021).
 ## Gnostic gateway
 
 The Gnostic gateway is the MCP server Gnostic passes to a Session. It serves the
-tools of the Workspaces attached to that Timeline, plus the network tools, and
-reaches remote Workspaces over Axoloty. The Workspace-owning Node checks
-effective status, permission, and tool membership on every call (ADR 0021). The
-gateway uses MCP-over-ACP, HTTP, or stdio, in that order, as the Runtime
-advertises them (ADR 0019). Its stdio form is a `gnostic` bridge process with a
-per-Session token (ADR 0020).
+tools of the Workspaces attached to that Timeline and routes remote Workspace
+calls over Axoloty. The gateway checks Timeline attachment and permission for
+each call. The Workspace-owning Node checks the current Timeline attachment,
+effective status, and tool membership before it invokes the provider (ADR 0021).
+Transport selection follows the MCP-over-ACP, HTTP, then stdio order in ADR 0019
+and uses only a transport the Runtime advertises. The ACP backend currently
+provides an authenticated loopback HTTP server when the Runtime advertises
+HTTP; it sends the endpoint and a per-Session bearer token in the ACP MCP server
+configuration.
 
 ## Attachment intent
 

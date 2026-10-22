@@ -44,7 +44,14 @@ public final class AxolotyNetworkWorkspaceInvoker: NetworkWorkspaceInvoking {
             throw WorkspaceServiceError.connectionFailed
         }
         let reference = try PositronicWorkspaceProjection.reference(from: descriptor)
-        let proxy = AxolotyWorkspace(reference: reference, catalog: catalog, communication: communication, timeout: timeout)
+        let proxy = AxolotyWorkspace(
+            reference: reference,
+            catalog: catalog,
+            communication: communication,
+            timeout: timeout,
+            timelineID: invocation.timelineID,
+            permissionApproved: invocation.permissionApproved
+        )
         let result = try await proxy.executeTool(
             id: invocation.toolID,
             parameters: invocation.arguments.mapValues(PositronicJSONValueBridge.anyCodable)
