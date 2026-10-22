@@ -550,6 +550,25 @@ The wrapper forwards the `GNOSTIC_*` variables the CLI reads: `GNOSTIC_CONFIG`,
 directories; the wrapper rejects any other path with a diagnostic instead of
 silently dropping it.
 
+## Choose a Timeline Project
+
+Set a Timeline's Project independently from its attached Workspaces. A local
+Project makes the Runtime session start in the selected repository directory;
+a scratch Project gets a new owner-only temporary directory for its Session.
+
+```sh
+gnostic config timeline add "Repository" --project-local /work/repository
+gnostic config timeline update <timeline-id> --project-scratch
+```
+
+You can also set `project` in the Timeline manifest to
+`{"kind":"local","path":"/work/repository"}` or `{"kind":"scratch"}`.
+Changing the Project `cwd` opens a new ACP Session on the same Timeline. Gnostic
+reports no guarantee that the new Session retained prior model reasoning.
+Neither placement is a filesystem sandbox: the Runtime can access paths
+permitted to its operating-system user. Workspace tools remain MCP-gateway
+mediated regardless of Project placement.
+
 ## Run the local ACP stack
 
 Start an isolated stack for manual testing with pi-acp-client:

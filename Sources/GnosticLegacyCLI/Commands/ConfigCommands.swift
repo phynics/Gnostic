@@ -348,6 +348,8 @@ struct ConfigCommand: AsyncParsableCommand {
             attached. Network attachments carry a URI and resolve lazily.
 
               gnostic config timeline add "Notes"
+              gnostic config timeline add "Repository" --project-local /work/repository
+              gnostic config timeline update <timeline-id> --project-scratch
               gnostic config timeline attach-workspace <timeline-id> <workspace-id>
               gnostic config timeline detach-workspace <timeline-id> <workspace-id>
             """,
@@ -363,14 +365,22 @@ struct ConfigCommand: AsyncParsableCommand {
             var title: String?
             @Option(name: .customLong("operating-ascendant"), help: "Existing Ascendant UUID.")
             var operatingAscendant: String?
+            @Option(name: .customLong("project-local"), help: "Use this absolute local directory as the Runtime Session cwd.")
+            var projectLocal: String?
+            @Flag(name: .customLong("project-scratch"), help: "Use a clean Gnostic-managed scratch directory for the Runtime Session.")
+            var projectScratch = false
             @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
             var dryRun = false
 
             func run() async throws {
+                if projectLocal != nil && projectScratch {
+                    throw ValidationError("Use either --project-local or --project-scratch, not both.")
+                }
                 let store = configOptions.store()
                 try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
                     try ConfigCommandLogic.addTimeline(
                         title: title ?? titleArgument, operatingAscendantID: operatingAscendant,
+                        project: projectLocal.map(Project.local) ?? (projectScratch ? .scratch : nil),
                         store: target, writeOutput: dryRun ? { _ in } : { print($0) }
                     )
                 }
@@ -388,6 +398,12 @@ struct ConfigCommand: AsyncParsableCommand {
             var operatingAscendant: String?
             @Flag(name: .customLong("clear-operating-ascendant"), help: "Leave this Timeline without an operating Ascendant.")
             var clearOperatingAscendant = false
+            @Option(name: .customLong("project-local"), help: "Set the local Project directory used as the Runtime Session cwd.")
+            var projectLocal: String?
+            @Flag(name: .customLong("project-scratch"), help: "Set the Project to a clean Gnostic-managed scratch directory.")
+            var projectScratch = false
+            @Flag(name: .customLong("clear-project"), help: "Remove the configured Project; the Runtime will use scratch placement.")
+            var clearProject = false
             @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
             var dryRun = false
 
@@ -395,11 +411,16 @@ struct ConfigCommand: AsyncParsableCommand {
                 if operatingAscendant != nil && clearOperatingAscendant {
                     throw ValidationError("Use either --operating-ascendant or --clear-operating-ascendant, not both.")
                 }
+                if [projectLocal != nil, projectScratch, clearProject].filter({ $0 }).count > 1 {
+                    throw ValidationError("Use only one of --project-local, --project-scratch, or --clear-project.")
+                }
                 let store = configOptions.store()
                 try ConfigConsoleLogic.applyMutation(store: store, dryRun: dryRun) { target in
                     try ConfigCommandLogic.updateTimeline(
                         id: id, title: title, operatingAscendantID: operatingAscendant,
                         clearOperatingAscendant: clearOperatingAscendant,
+                        project: projectLocal.map(Project.local) ?? (projectScratch ? .scratch : nil),
+                        clearProject: clearProject,
                         store: target
                     )
                 }
@@ -795,13 +816,13 @@ public enum ConfigCommandLogic {
         }
     }
 
-    public static func addTimeline(title: String?, operatingAscendantID: String?, store: CLIConfigurationStore, writeOutput: (String) -> Void = { print($0) }) throws {
+    public static func addTimeline(title: String?, operatingAscendantID: String?, project: Project? = nil, store: CLIConfigurationStore, writeOutput: (String) -> Void = { print($0) }) throws {
         guard let title, !title.isEmpty else { throw CLIConfigurationError.invalidArgument("A Timeline title is required.") }
         let timelineID = UUID.makeVersion4()
         let ascendantID = try operatingAscendantID.map { try parseID($0, kind: "ascendant") }
         _ = try store.mutateManifest { manifest in
             if let ascendantID, !manifest.ascendants.contains(where: { $0.id == ascendantID }) { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID) }
-            manifest.timelines.append(.init(id: timelineID, title: title, operatingAscendantID: ascendantID))
+            manifest.timelines.append(.init(id: timelineID, title: title, operatingAscendantID: ascendantID, project: project))
         }
         printID("Added timeline", timelineID, writeOutput: writeOutput)
     }
@@ -811,6 +832,8 @@ public enum ConfigCommandLogic {
         title: String?,
         operatingAscendantID: String?,
         clearOperatingAscendant: Bool = false,
+        project: Project? = nil,
+        clearProject: Bool = false,
         store: CLIConfigurationStore
     ) throws {
         let timelineID = try parseID(id, kind: "timeline")
@@ -823,6 +846,11 @@ public enum ConfigCommandLogic {
             } else if operatingAscendantID != nil {
                 guard let ascendantID, manifest.ascendants.contains(where: { $0.id == ascendantID }) else { throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: ascendantID ?? UUID()) }
                 manifest.timelines[index].operatingAscendantID = ascendantID
+            }
+            if clearProject {
+                manifest.timelines[index].project = nil
+            } else if let project {
+                manifest.timelines[index].project = project
             }
         }
     }

@@ -459,6 +459,9 @@ public enum ConfigConsoleLogic {
         case let .invalidAttachment(id):
             path = "timelines[\(id.uuidString.lowercased())].attachments"
             hint = "Detach and reattach the Workspace, or set a non-empty URI for a network attachment."
+        case let .invalidProject(id):
+            path = "timelines[\(id.uuidString.lowercased())].project"
+            hint = "Use a local Project with an absolute path, or a scratch Project without a path."
         case let .duplicateID(id):
             path = id.uuidString.lowercased()
             hint = "Give every Node, Ascendant, Timeline, and Workspace a unique UUID."

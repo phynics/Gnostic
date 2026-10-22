@@ -200,7 +200,7 @@ struct BackendCompositionTests {
         #expect(lettaSchema?.secretNames == ["apiKey"])
 
         let acpSchema = composition.settingsSchema(for: "acp-client")
-        #expect(acpSchema?.settingNames == ["command", "args", "cwd", "env", "displayName"])
+        #expect(acpSchema?.settingNames == ["command", "args", "cwd", "scratchRoot", "env", "displayName"])
         #expect(acpSchema?.secretNames == [])
     }
 

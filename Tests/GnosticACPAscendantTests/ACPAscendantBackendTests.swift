@@ -111,6 +111,106 @@ struct ACPAscendantBackendTests {
         #expect(backend.launchSpec.displayName == "OpenCode")
     }
 
+    @Test("local Project cwd is passed to ACP session/new")
+    @MainActor
+    func localProjectCWDIsUsedForSession() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let projectURL = stateHome.url.appendingPathComponent("repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: false)
+        let timelineID = UUID()
+        let timeline = NodeManifest.Timeline(
+            id: timelineID,
+            title: "Local repository",
+            project: .local(projectURL.path)
+        )
+        let backend = try fixtureBackend(timelines: [timeline], stateHome: stateHome.url)
+        defer { Task { await backend.shutdown() } }
+
+        _ = try await backend.runTurn(.init(timelineID: timelineID, message: "inspect repository"), updates: RecordingUpdateSink())
+        let binding = try #require(backend.sessionBinding(for: timelineID))
+        #expect(binding.timelineID == timelineID)
+        #expect(binding.projectKind == .local)
+        #expect(binding.cwd == projectURL.standardizedFileURL.path)
+        #expect(!binding.contextContinuityGuaranteed)
+
+        let remoteData = try Data(contentsOf: stateHome.url.appendingPathComponent("agent-sessions.json"))
+        let remoteSessions = try #require(JSONSerialization.jsonObject(with: remoteData) as? [String: [String: String]])
+        #expect(remoteSessions[binding.sessionID]?["cwd"] == projectURL.standardizedFileURL.path)
+        await backend.shutdown()
+    }
+
+    @Test("scratch Project is isolated and a cwd transition opens a new Session on the same Timeline")
+    @MainActor
+    func scratchProjectTransitionsToLocalSession() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let scratchRoot = stateHome.url.appendingPathComponent("scratch", isDirectory: true)
+        let projectURL = stateHome.url.appendingPathComponent("checkout", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: false)
+        let timelineID = UUID()
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Transition", project: .scratch)
+        var settings = try fixtureSettings(stateHome: stateHome.url)
+        settings["scratchRoot"] = .string(scratchRoot.path)
+        let backend = try backend(settings: settings, timelines: [timeline])
+        defer { Task { await backend.shutdown() } }
+
+        _ = try await backend.runTurn(.init(timelineID: timelineID, message: "start in scratch"), updates: RecordingUpdateSink())
+        let scratchBinding = try #require(backend.sessionBinding(for: timelineID))
+        #expect(scratchBinding.projectKind == .scratch)
+        #expect(FileManager.default.fileExists(atPath: scratchBinding.cwd))
+        #expect(scratchBinding.cwd.hasPrefix(scratchRoot.path + "/"))
+
+        try await backend.setProject(.local(projectURL.path), for: timelineID)
+        #expect(backend.sessionBinding(for: timelineID) == nil)
+        #expect(!FileManager.default.fileExists(atPath: scratchBinding.cwd))
+
+        _ = try await backend.runTurn(.init(timelineID: timelineID, message: "continue in checkout"), updates: RecordingUpdateSink())
+        let localBinding = try #require(backend.sessionBinding(for: timelineID))
+        #expect(localBinding.timelineID == timelineID)
+        #expect(localBinding.projectKind == .local)
+        #expect(localBinding.cwd == projectURL.standardizedFileURL.path)
+        #expect(localBinding.sessionID != scratchBinding.sessionID)
+        #expect(!localBinding.contextContinuityGuaranteed)
+        await backend.shutdown()
+    }
+
+    @Test("changing a configured Project cwd across restart replaces the Session on the same Timeline")
+    @MainActor
+    func configuredProjectCWDChangeCreatesSessionAfterRestart() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let firstDirectory = stateHome.url.appendingPathComponent("first", isDirectory: true)
+        let nextDirectory = stateHome.url.appendingPathComponent("next", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstDirectory, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: nextDirectory, withIntermediateDirectories: false)
+        let timelineID = UUID()
+        let ascendantID = UUID()
+        let firstTimeline = NodeManifest.Timeline(id: timelineID, title: "Restart", project: .local(firstDirectory.path))
+        let firstBackend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url),
+            timelines: [firstTimeline],
+            ascendantID: ascendantID
+        )
+        _ = try await firstBackend.runTurn(.init(timelineID: timelineID, message: "before change"), updates: RecordingUpdateSink())
+        let previousBinding = try #require(firstBackend.sessionBinding(for: timelineID))
+        await firstBackend.shutdown()
+
+        let nextTimeline = NodeManifest.Timeline(id: timelineID, title: "Restart", project: .local(nextDirectory.path))
+        let nextBackend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url),
+            timelines: [nextTimeline],
+            ascendantID: ascendantID
+        )
+        _ = try await nextBackend.operatedTimelines()
+        let nextBinding = try #require(nextBackend.sessionBinding(for: timelineID))
+        #expect(nextBinding.timelineID == timelineID)
+        #expect(nextBinding.startedAt != previousBinding.startedAt)
+        #expect(nextBinding.cwd == nextDirectory.standardizedFileURL.path)
+        #expect(nextBinding.projectKind == .local)
+        await nextBackend.shutdown()
+    }
+
     @Test("plain and secret per-variable values map to the launch environment")
     @MainActor
     func perVariableEnvironmentValuesAreCombined() throws {
