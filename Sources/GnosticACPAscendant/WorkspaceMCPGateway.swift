@@ -21,6 +21,7 @@ final class WorkspaceMCPGateway {
     private let timelineID: UUID
     private let timelineRegistry: AscendantTimelineRegistry
     private let workspaceService: any AscendantBackendWorkspaceService
+    private let timelineJournalRecorder: TimelineJournalRecorder?
     private let permissionService: any AscendantBackendPermissionService
     private let activeTurn: @MainActor (UUID) -> (clientTurnID: String, sessionID: String)?
     private var server: WorkspaceMCPHTTPServer?
@@ -30,12 +31,14 @@ final class WorkspaceMCPGateway {
         timelineRegistry: AscendantTimelineRegistry,
         workspaceService: any AscendantBackendWorkspaceService,
         permissionService: any AscendantBackendPermissionService,
+        timelineJournalRecorder: TimelineJournalRecorder? = nil,
         activeTurn: @escaping @MainActor (UUID) -> (clientTurnID: String, sessionID: String)?
     ) {
         self.timelineID = timelineID
         self.timelineRegistry = timelineRegistry
         self.workspaceService = workspaceService
         self.permissionService = permissionService
+        self.timelineJournalRecorder = timelineJournalRecorder
         self.activeTurn = activeTurn
     }
 
@@ -116,13 +119,30 @@ final class WorkspaceMCPGateway {
             guard let turn = activeTurn(timelineID) else {
                 return error(request.id, code: -32003, "Workspace tool requires an active, approved Turn.")
             }
-            let decision = await permissionService.requestApproval(for: BackendPermissionRequest(
+            let permissionRequest = BackendPermissionRequest(
                 timelineID: timelineID,
                 clientTurnID: turn.clientTurnID,
                 toolCallID: "mcp-\(UUID().uuidString.lowercased())",
                 title: "Run Workspace tool \(tool.definition.name)"
-            ))
-            guard decision == .approved else {
+            )
+            let decision = await permissionService.requestApproval(for: permissionRequest)
+            let value: String
+            switch decision {
+            case .approved: value = "approved"
+            case .denied: value = "denied"
+            case .unavailable: value = "unavailable"
+            }
+            do {
+                try await timelineJournalRecorder?.appendPermissionDecision(
+                    timelineID: timelineID, clientTurnID: turn.clientTurnID,
+                    correlationID: permissionRequest.correlationID, decision: value, approved: decision.isApproved
+                )
+            } catch {
+                return self.error(request.id, code: -32003, "Workspace permission could not be committed.")
+            }
+            guard decision == .approved,
+                  let current = activeTurn(timelineID), current.clientTurnID == turn.clientTurnID,
+                  current.sessionID == turn.sessionID else {
                 return error(request.id, code: -32003, "Workspace tool permission was not approved.")
             }
             permissionApproved = true

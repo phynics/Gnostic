@@ -85,12 +85,17 @@ public actor NodeRegistry {
     private var timelineMetadata: [UUID: (kind: String, flags: Set<String>)]
     private var backendRevisions: [UUID: UInt64]
     private var backendLeases: [UUID: UUID]
+    private let timelineJournals: TimelineJournalStore?
+    private var timelineMutationLocks: Set<UUID> = []
+    private var timelineMutationWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     private var lifecycleGeneration: UInt64 = 0
 
     public init(
         plan: NodeLaunchPlan,
         operatedTimelines: [AscendantRuntimeTimeline],
-        backendLeases: [UUID: UUID] = [:]
+        backendLeases: [UUID: UUID] = [:],
+        timelineJournals: TimelineJournalStore? = nil,
+        timelineJournalProjections: [UUID: TimelineJournalTimelineProjection] = [:]
     ) throws {
         nodeID = plan.nodeID
         configuredAscendantIDs = plan.ascendants.map(\.id)
@@ -101,6 +106,7 @@ public actor NodeRegistry {
         timelineMetadata = [:]
         backendRevisions = [:]
         self.backendLeases = backendLeases
+        self.timelineJournals = timelineJournals
         var intents: [UUID: [NodeManifest.WorkspaceAttachment]] = [:]
         for timeline in plan.timelines {
             intents[timeline.id] = timeline.attachments
@@ -117,6 +123,26 @@ public actor NodeRegistry {
                 throw NodeRuntimeError.missingTimeline(timeline.id)
             }
         }
+
+        // Restore Runtime-created Timeline projections from the owning Node's
+        // journal. Backend-private persistence is not needed to recover their
+        // Gnostic identity or attachment intent.
+        for (timelineID, projection) in timelineJournalProjections where projected[timelineID] == nil {
+            guard let runtimeInstanceID = projection.runtimeInstanceID,
+                  ascendantIDs.contains(runtimeInstanceID) else { continue }
+            let attachments = try projection.attachments.map(Self.manifestAttachment(from:))
+            attachmentIntents[timelineID] = attachments
+            projected[timelineID] = AscendantRuntimeTimeline(
+                id: timelineID,
+                title: projection.title,
+                attachedWorkspaceIDs: attachments.map(\.workspaceID),
+                ascendantID: runtimeInstanceID,
+                isArchived: false,
+                isPrivate: false,
+                createdAt: projection.createdAt,
+                updatedAt: projection.updatedAt
+            )
+        }
         let configuredOperatedIDs = Set(plan.timelines.filter { $0.operatingAscendantID != nil }.map(\.id))
         guard configuredOperatedIDs.isSubset(of: Set(projected.keys)) else {
             let missing = configuredOperatedIDs.subtracting(projected.keys).first!
@@ -131,19 +157,39 @@ public actor NodeRegistry {
                 guard value.attachedAscendantID == operatorID else {
                     throw NodeRuntimeError.unknownAscendant(value.attachedAscendantID ?? operatorID)
                 }
+                let journalState = timelineJournalProjections[configuration.id]
+                if let recordedRuntimeID = journalState?.runtimeInstanceID, recordedRuntimeID != operatorID {
+                    throw NodeRuntimeError.unknownAscendant(recordedRuntimeID)
+                }
+                let attachments = try journalState?.attachments.map(Self.manifestAttachment(from:))
+                    ?? configuration.attachments
+                attachmentIntents[configuration.id] = attachments
                 timeline = .init(
                     id: value.id,
-                    title: value.title,
-                    attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID),
+                    title: journalState?.title ?? value.title,
+                    attachedWorkspaceIDs: attachments.map(\.workspaceID),
                     ascendantID: value.ascendantID,
                     isArchived: value.isArchived,
                     isPrivate: value.isPrivate,
-                    createdAt: value.createdAt,
-                    updatedAt: value.updatedAt
+                    createdAt: journalState?.createdAt ?? value.createdAt,
+                    updatedAt: journalState?.updatedAt ?? value.updatedAt
                 )
             } else {
+                let journalState = timelineJournalProjections[configuration.id]
+                let attachments = try journalState?.attachments.map(Self.manifestAttachment(from:))
+                    ?? configuration.attachments
                 let now = Date()
-                timeline = .init(id: configuration.id, title: configuration.title, attachedWorkspaceIDs: configuration.attachments.map(\.workspaceID), attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+                attachmentIntents[configuration.id] = attachments
+                timeline = .init(
+                    id: configuration.id,
+                    title: journalState?.title ?? configuration.title,
+                    attachedWorkspaceIDs: attachments.map(\.workspaceID),
+                    attachedAscendantID: nil,
+                    isArchived: false,
+                    isPrivate: false,
+                    createdAt: journalState?.createdAt ?? now,
+                    updatedAt: journalState?.updatedAt ?? now
+                )
             }
             timelines[configuration.id] = .init(timeline: timeline, operatorID: configuration.operatingAscendantID, provenance: .configured)
         }
@@ -155,21 +201,26 @@ public actor NodeRegistry {
             guard let operatorID = value.ascendantID, ascendantIDs.contains(operatorID) else {
                 throw NodeRuntimeError.unknownAscendant(value.ascendantID ?? id)
             }
+            let journalState = timelineJournalProjections[id]
+            if let recordedRuntimeID = journalState?.runtimeInstanceID, recordedRuntimeID != operatorID {
+                throw NodeRuntimeError.unknownAscendant(recordedRuntimeID)
+            }
+            let attachments = try journalState?.attachments.map(Self.manifestAttachment(from:)) ?? []
+            attachmentIntents[id] = attachments
             timelines[id] = .init(
                 timeline: .init(
                     id: value.id,
-                    title: value.title,
-                    attachedWorkspaceIDs: [],
+                    title: journalState?.title ?? value.title,
+                    attachedWorkspaceIDs: attachments.map(\.workspaceID),
                     ascendantID: value.ascendantID,
                     isArchived: value.isArchived,
                     isPrivate: value.isPrivate,
-                    createdAt: value.createdAt,
-                    updatedAt: value.updatedAt
+                    createdAt: journalState?.createdAt ?? value.createdAt,
+                    updatedAt: journalState?.updatedAt ?? value.updatedAt
                 ),
                 operatorID: operatorID,
                 provenance: .runtime
             )
-            attachmentIntents[id] = []
             timelineMetadata[id] = ("timeline", [])
             backendRevisions[operatorID] = backendRevisions[operatorID] ?? 0
         }
@@ -249,11 +300,17 @@ public actor NodeRegistry {
         _ timeline: AscendantRuntimeTimeline,
         ascendantID: UUID,
         backendLease: UUID? = nil
-    ) throws -> TimelineRecord {
+    ) async throws -> TimelineRecord {
         try requireBackendLease(backendLease, for: ascendantID)
         guard ascendantIDs.contains(ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
+        await acquireTimelineMutation(timeline.id)
+        defer { releaseTimelineMutation(timeline.id) }
+        try requireBackendLease(backendLease, for: ascendantID)
         guard timelines[timeline.id] == nil else { throw NodeRuntimeError.missingTimeline(timeline.id) }
         guard timeline.attachedAscendantID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? ascendantID) }
+        try await appendJournalEvents(timelineID: timeline.id, payloads: [
+            .timelineCreated(title: timeline.title, runtimeInstanceID: ascendantID, attachments: [])
+        ])
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: .runtime)
         timelines[timeline.id] = record
         attachmentIntents[timeline.id] = []
@@ -267,9 +324,9 @@ public actor NodeRegistry {
         ascendantID: UUID,
         backendLease: UUID?,
         generation: UInt64
-    ) throws -> TimelineRecord {
+    ) async throws -> TimelineRecord {
         guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-        return try registerRuntimeTimeline(timeline, ascendantID: ascendantID, backendLease: backendLease)
+        return try await registerRuntimeTimeline(timeline, ascendantID: ascendantID, backendLease: backendLease)
     }
 
     /// Atomically verifies backend ownership and commits one Timeline plus its
@@ -281,13 +338,31 @@ public actor NodeRegistry {
         backendLease: UUID?,
         upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
         removingWorkspaceID: UUID? = nil
-    ) throws -> TimelineRecord {
+    ) async throws -> TimelineRecord {
+        try requireBackendLease(backendLease, for: ascendantID)
+        await acquireTimelineMutation(timeline.id)
+        defer { releaseTimelineMutation(timeline.id) }
         try requireBackendLease(backendLease, for: ascendantID)
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
         guard current.operatorID == ascendantID,
               timeline.attachedAscendantID == ascendantID else {
             throw NodeRuntimeError.noOperatingAscendant(timeline.id)
         }
+        var events: [TimelineJournalPayload] = []
+        if current.timeline.title != timeline.title {
+            events.append(.timelineRenamed(title: timeline.title))
+        }
+        if let attachment {
+            events.append(.workspaceAttached(
+                workspaceID: attachment.workspaceID,
+                uri: attachment.uri ?? "",
+                scope: attachment.scope
+            ))
+        }
+        if let removingWorkspaceID {
+            events.append(.workspaceDetached(workspaceID: removingWorkspaceID))
+        }
+        try await appendJournalEvents(timelineID: timeline.id, payloads: events)
         let record = TimelineRecord(timeline: timeline, operatorID: ascendantID, provenance: current.provenance)
         timelines[timeline.id] = record
         if let attachment {
@@ -310,9 +385,9 @@ public actor NodeRegistry {
         generation: UInt64,
         upserting attachment: NodeManifest.WorkspaceAttachment? = nil,
         removingWorkspaceID: UUID? = nil
-    ) throws -> TimelineRecord {
+    ) async throws -> TimelineRecord {
         guard lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-        return try commitBackendTimeline(
+        return try await commitBackendTimeline(
             timeline,
             ascendantID: ascendantID,
             backendLease: backendLease,
@@ -330,8 +405,13 @@ public actor NodeRegistry {
         _ timeline: AscendantRuntimeTimeline,
         projecting: @MainActor @Sendable (TimelineRecord) throws -> Void
     ) async throws -> TimelineRecord {
+        await acquireTimelineMutation(timeline.id)
+        defer { releaseTimelineMutation(timeline.id) }
         guard let previous = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
         guard timeline.attachedAscendantID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
+        if previous.timeline.title != timeline.title {
+            try await appendJournalEvents(timelineID: timeline.id, payloads: [.timelineRenamed(title: timeline.title)])
+        }
         let record = TimelineRecord(timeline: timeline, operatorID: previous.operatorID, provenance: previous.provenance)
         timelines[timeline.id] = record
         do {
@@ -356,8 +436,17 @@ public actor NodeRegistry {
 
     /// Adds or replaces one Workspace attachment intent after a backend has
     /// accepted the corresponding operation.
-    public func upsertAttachmentIntent(_ attachment: NodeManifest.WorkspaceAttachment, for timelineID: UUID) {
+    public func upsertAttachmentIntent(_ attachment: NodeManifest.WorkspaceAttachment, for timelineID: UUID) async throws {
+        await acquireTimelineMutation(timelineID)
+        defer { releaseTimelineMutation(timelineID) }
         guard timelines[timelineID] != nil else { return }
+        try await appendJournalEvents(timelineID: timelineID, payloads: [
+            .workspaceAttached(
+                workspaceID: attachment.workspaceID,
+                uri: attachment.uri ?? "",
+                scope: attachment.scope
+            )
+        ])
         var intents = attachmentIntents[timelineID] ?? []
         intents.removeAll { $0.workspaceID == attachment.workspaceID }
         intents.append(attachment)
@@ -367,8 +456,12 @@ public actor NodeRegistry {
 
     /// Removes one Workspace attachment intent after a backend has accepted a
     /// detach operation.
-    public func removeAttachmentIntent(workspaceID: UUID, from timelineID: UUID) {
+    public func removeAttachmentIntent(workspaceID: UUID, from timelineID: UUID) async throws {
+        await acquireTimelineMutation(timelineID)
+        defer { releaseTimelineMutation(timelineID) }
         guard timelines[timelineID] != nil else { return }
+        guard attachmentIntents[timelineID]?.contains(where: { $0.workspaceID == workspaceID }) == true else { return }
+        try await appendJournalEvents(timelineID: timelineID, payloads: [.workspaceDetached(workspaceID: workspaceID)])
         attachmentIntents[timelineID, default: []].removeAll { $0.workspaceID == workspaceID }
         if let ascendantID = timelines[timelineID]?.operatorID { bumpRevision(for: ascendantID) }
     }
@@ -457,6 +550,50 @@ public actor NodeRegistry {
 
     private func sortedTimelineRecords() -> [TimelineRecord] {
         timelines.values.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func appendJournalEvents(timelineID: UUID, payloads: [TimelineJournalPayload]) async throws {
+        guard !payloads.isEmpty, let timelineJournals else { return }
+        let journal = try await timelineJournals.journal(for: timelineID)
+        for payload in payloads {
+            try await journal.append(payload)
+        }
+    }
+
+    private func acquireTimelineMutation(_ timelineID: UUID) async {
+        guard timelineMutationLocks.contains(timelineID) else {
+            timelineMutationLocks.insert(timelineID)
+            return
+        }
+        await withCheckedContinuation { continuation in
+            timelineMutationWaiters[timelineID, default: []].append(continuation)
+        }
+    }
+
+    private func releaseTimelineMutation(_ timelineID: UUID) {
+        if var waiters = timelineMutationWaiters[timelineID], !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            if waiters.isEmpty {
+                timelineMutationWaiters.removeValue(forKey: timelineID)
+            } else {
+                timelineMutationWaiters[timelineID] = waiters
+            }
+            next.resume()
+        } else {
+            timelineMutationLocks.remove(timelineID)
+        }
+    }
+
+    private static func manifestAttachment(
+        from attachment: TimelineJournalWorkspaceAttachment
+    ) throws -> NodeManifest.WorkspaceAttachment {
+        if attachment.scope == .network {
+            guard let uri = attachment.uri, !uri.isEmpty else {
+                throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
+            }
+            return .network(attachment.workspaceID, uri: uri)
+        }
+        return .local(attachment.workspaceID)
     }
 
     private func bumpRevision(for ascendantID: UUID) {

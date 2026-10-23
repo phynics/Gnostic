@@ -55,6 +55,37 @@ struct RunnerParsingTests {
         #expect(flagsWin.namespace == "flag-ns")
     }
 
+    @Test("state-home flags override GNOSTIC_STATE_HOME")
+    func stateHomePrecedence() throws {
+        let environmentValue = try RunnerConfiguration.resolve(
+            flags: RunnerParsingFlags(host: nil, port: nil, namespace: nil),
+            environment: ["GNOSTIC_STATE_HOME": "/env/gnostic-state"]
+        )
+        #expect(environmentValue.stateHome?.path == "/env/gnostic-state")
+
+        let flagValue = try RunnerConfiguration.resolve(
+            flags: RunnerParsingFlags(host: nil, port: nil, namespace: nil, stateHome: "/flag/gnostic-state"),
+            environment: ["GNOSTIC_STATE_HOME": "/env/gnostic-state"]
+        )
+        #expect(flagValue.stateHome?.path == "/flag/gnostic-state")
+        #expect(try RunnerConfiguration.resolve(
+            flags: RunnerParsingFlags(host: nil, port: nil, namespace: nil),
+            environment: [:]
+        ).stateHome == nil)
+    }
+
+    @Test("runner runtime rejects missing durable state")
+    @MainActor
+    func runnerRequiresStateHome() async throws {
+        let configuration = try RunnerConfiguration.resolve(
+            flags: RunnerParsingFlags(host: nil, port: nil, namespace: nil),
+            environment: [:]
+        )
+        await #expect(throws: RunnerParsingError.self) {
+            try await RunnerRuntime(configuration: configuration)
+        }
+    }
+
     @Test("invalid environment port produces a structured error")
     func invalidEnvironmentPortFails() throws {
         #expect(throws: RunnerParsingError.self) {

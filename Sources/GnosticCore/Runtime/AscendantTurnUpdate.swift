@@ -47,6 +47,8 @@ public enum AscendantPermissionStatus: String, Codable, Sendable, Equatable, Cas
     case selected
     /// The client denied the request.
     case denied
+    /// The host could not commit or mediate the permission decision.
+    case unavailable
     /// The host withdrew the request because the connection was lost.
     case connectionLost = "connection_lost"
 }

@@ -15,6 +15,9 @@ struct GnosticRunner: AsyncParsableCommand {
     @Option(name: .customLong("config"), help: "Path to the node manifest (overrides GNOSTIC_CONFIG).")
     var configPath: String?
 
+    @Option(name: .customLong("state-home"), help: "Directory for durable Timeline journals (overrides GNOSTIC_STATE_HOME).")
+    var stateHome: String?
+
     @Option(help: "MQTT broker host (defaults to GNOSTIC_HOST or 127.0.0.1).")
     var host: String?
 
@@ -27,7 +30,7 @@ struct GnosticRunner: AsyncParsableCommand {
     @MainActor
     func run() async throws {
         let configuration = try RunnerConfiguration.resolve(
-            flags: RunnerParsingFlags(host: host, port: port, namespace: namespace, config: configPath),
+            flags: RunnerParsingFlags(host: host, port: port, namespace: namespace, config: configPath, stateHome: stateHome),
             environment: ProcessInfo.processInfo.environment
         )
         let runtime = try await RunnerRuntime(configuration: configuration)

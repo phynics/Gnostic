@@ -12,6 +12,8 @@ public enum RunnerParsingError: Error, Sendable, LocalizedError {
 
     /// The manifest exists but cannot be read or decoded.
     case malformedManifest(String)
+    /// Durable Timeline journals need an explicit state home.
+    case missingStateHome
 
     /// A stable, human-readable description of the failure.
     public var errorDescription: String? {
@@ -22,6 +24,8 @@ public enum RunnerParsingError: Error, Sendable, LocalizedError {
             "No configuration manifest exists at '\(path)'. Run `gnostic config init` or omit --config."
         case let .malformedManifest(path):
             "The configuration manifest at '\(path)' is not a valid Gnostic manifest."
+        case .missingStateHome:
+            "Timeline durability requires GNOSTIC_STATE_HOME or --state-home."
         }
     }
 
@@ -31,6 +35,7 @@ public enum RunnerParsingError: Error, Sendable, LocalizedError {
         case .invalidPort: "invalidPort"
         case .missingManifest: "missingManifest"
         case .malformedManifest: "malformedManifest"
+        case .missingStateHome: "missingStateHome"
         }
     }
 }
@@ -41,6 +46,7 @@ public struct RunnerConfiguration: Sendable {
     public let port: Int
     public let namespace: String
     public let configPath: String?
+    public let stateHome: URL?
 
     /// Resolves flags (highest priority), then environment, then defaults.
     ///
@@ -62,6 +68,9 @@ public struct RunnerConfiguration: Sendable {
             ?? "gnostic"
         let configPath = flags.config
             ?? environment["GNOSTIC_CONFIG"].flatMap { $0.isEmpty ? nil : $0 }
+        let stateHomePath = flags.stateHome.flatMap { $0.isEmpty ? nil : $0 }
+            ?? environment["GNOSTIC_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+        let stateHome = stateHomePath.map { URL(fileURLWithPath: $0, isDirectory: true) }
 
         let port: Int
         if let flag = flags.port {
@@ -82,7 +91,8 @@ public struct RunnerConfiguration: Sendable {
             host: host,
             port: port,
             namespace: namespace,
-            configPath: configPath
+            configPath: configPath,
+            stateHome: stateHome
         )
     }
 
@@ -133,11 +143,19 @@ public struct RunnerParsingFlags: Sendable {
     public var port: Int?
     public var namespace: String?
     public var config: String?
+    public var stateHome: String?
 
-    public init(host: String? = nil, port: Int? = nil, namespace: String? = nil, config: String? = nil) {
+    public init(
+        host: String? = nil,
+        port: Int? = nil,
+        namespace: String? = nil,
+        config: String? = nil,
+        stateHome: String? = nil
+    ) {
         self.host = host
         self.port = port
         self.namespace = namespace
         self.config = config
+        self.stateHome = stateHome
     }
 }

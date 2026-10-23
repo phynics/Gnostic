@@ -9,6 +9,7 @@ public enum TimelineTurnError: Error, LocalizedError, Equatable, Sendable {
     case conflictingPayload(clientTurnID: String)
     case insertionUnknown
     case turnCancelled
+    case journalUnavailable(String)
     case failed(code: String, message: String)
 
     public var errorDescription: String? {
@@ -21,6 +22,8 @@ public enum TimelineTurnError: Error, LocalizedError, Equatable, Sendable {
             return "Prompt dispatch response lost or ambiguous; turn entered insertionUnknown"
         case .turnCancelled:
             return "Timeline turn was cancelled"
+        case let .journalUnavailable(reason):
+            return "Timeline journal is unavailable: \(reason)"
         case let .failed(code, message):
             return "\(code): \(message)"
         }
@@ -36,6 +39,8 @@ public enum TimelineTurnError: Error, LocalizedError, Equatable, Sendable {
             return -32000
         case .turnCancelled:
             return -32800
+        case .journalUnavailable:
+            return -32603
         case .failed:
             return -32603
         }
@@ -122,7 +127,7 @@ public actor TimelineTurnCoordinator {
         let sequence: Int
         let terminalOutcome: TimelineTurnTerminalOutcome
         let messageID: String?
-        let updates: [TimelineTurnUpdate]
+        var updates: [TimelineTurnUpdate]
     }
 
     private struct RecordedPermissionDecision: Sendable {
@@ -134,8 +139,16 @@ public actor TimelineTurnCoordinator {
     private var activeTurnsByTimeline: [UUID: ActiveTurn] = [:]
     private var completedTurns: [TurnKey: CompletedTurn] = [:]
     private var recordedPermissions: [String: RecordedPermissionDecision] = [:]
+    private var recoveryTasks: [UUID: Task<TimelineJournal, Error>] = [:]
+    private var recoveredTimelines: Set<UUID> = []
+    private var terminalizingTurns: Set<TurnKey> = []
+    private var admissionLocks: Set<UUID> = []
+    private var admissionWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    private let journals: TimelineJournalStore
 
-    public init() {}
+    public init(journals: TimelineJournalStore) {
+        self.journals = journals
+    }
 
     /// Executes a Timeline-owned Turn within the single-active-turn contract.
     ///
@@ -155,6 +168,12 @@ public actor TimelineTurnCoordinator {
         streamUpdates: (@Sendable (TimelineTurnUpdate) async -> Void)? = nil
     ) async throws -> TimelineTurnResult {
         try GnosticProtocol.validate(envelope.protocolMajor)
+        await acquireAdmissionLock(for: envelope.timelineID)
+        var holdsAdmissionLock = true
+        defer {
+            if holdsAdmissionLock { releaseAdmissionLock(for: envelope.timelineID) }
+        }
+        let journal = try await recoverTimelineIfNeeded(envelope.timelineID)
 
         let key = TurnKey(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
 
@@ -163,7 +182,10 @@ public actor TimelineTurnCoordinator {
             if active.clientTurnID == envelope.clientTurnID {
                 if active.admissionDigest == envelope.admissionDigest {
                     // Idempotent retry of active turn: await and return existing outcome without duplicate prompt.
-                    return try await active.task.value
+                    let task = active.task
+                    releaseAdmissionLock(for: envelope.timelineID)
+                    holdsAdmissionLock = false
+                    return try await task.value
                 } else {
                     // Conflicting prompt payload under identical clientTurnID.
                     throw TimelineTurnError.conflictingPayload(clientTurnID: envelope.clientTurnID)
@@ -193,7 +215,17 @@ public actor TimelineTurnCoordinator {
             }
         }
 
-        // 3. Admitted: dispatch session/prompt within insertion lifecycle.
+        // Commit admission before `session/prompt`. If this append fails, the
+        // Runtime must not observe the prompt.
+        try await append(.turnAdmitted(
+            clientTurnID: envelope.clientTurnID,
+            admissionDigest: envelope.admissionDigest,
+            turnSequence: envelope.sequence,
+            acpVersionTag: envelope.acpVersionTag,
+            prompt: envelope.prompt
+        ), to: journal)
+
+        // Admitted: dispatch session/prompt within insertion lifecycle.
         // The terminal stream carries the outcome that ends the Turn.
         let (terminalStream, terminalContinuation) = AsyncStream<TimelineTurnTerminalOutcome>.makeStream()
         let coordinator = self
@@ -210,21 +242,21 @@ public actor TimelineTurnCoordinator {
                 inFlightEnvelope.state = .insertionUnknown
                 inFlightEnvelope.terminalOutcome = .insertionUnknown
                 terminalContinuation.finish()
-                await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
+                try await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
                 throw error
             } catch is CancellationError {
                 // A cancelled insertion was explicitly cancelled by the host.
                 inFlightEnvelope.state = .cancelled
                 inFlightEnvelope.terminalOutcome = .cancelled
                 terminalContinuation.finish()
-                await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: nil)
+                try await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: nil)
                 throw TimelineTurnError.turnCancelled
             } catch {
                 // Ambiguous or transport failure before message confirmation enters insertionUnknown.
                 inFlightEnvelope.state = .insertionUnknown
                 inFlightEnvelope.terminalOutcome = .insertionUnknown
                 terminalContinuation.finish()
-                await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
+                try await coordinator.finishTurn(key: key, outcome: .insertionUnknown, messageID: nil)
                 throw TimelineTurnError.insertionUnknown
             }
 
@@ -233,7 +265,7 @@ public actor TimelineTurnCoordinator {
                 inFlightEnvelope.state = .cancelled
                 inFlightEnvelope.terminalOutcome = .cancelled
                 terminalContinuation.finish()
-                await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
+                try await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
                 throw TimelineTurnError.turnCancelled
             }
 
@@ -255,7 +287,7 @@ public actor TimelineTurnCoordinator {
             if outcome == .cancelled {
                 // The Turn was cancelled while it was active.
                 inFlightEnvelope.state = .cancelled
-                await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
+                try await coordinator.finishTurn(key: key, outcome: .cancelled, messageID: messageID)
                 throw TimelineTurnError.turnCancelled
             }
             let result = TimelineTurnResult(
@@ -268,7 +300,7 @@ public actor TimelineTurnCoordinator {
                 protocolMajor: GnosticProtocol.currentMajor
             )
 
-            await coordinator.finishTurn(key: key, outcome: outcome, messageID: messageID)
+            try await coordinator.finishTurn(key: key, outcome: outcome, messageID: messageID)
             return result
         }
 
@@ -284,11 +316,15 @@ public actor TimelineTurnCoordinator {
             terminalContinuation: terminalContinuation,
             task: task
         )
+        releaseAdmissionLock(for: envelope.timelineID)
+        holdsAdmissionLock = false
 
         do {
             return try await task.value
         } catch {
-            activeTurnsByTimeline.removeValue(forKey: envelope.timelineID)
+            if activeTurnsByTimeline[envelope.timelineID]?.clientTurnID == envelope.clientTurnID {
+                activeTurnsByTimeline.removeValue(forKey: envelope.timelineID)
+            }
             terminalContinuation.finish()
             throw error
         }
@@ -302,15 +338,28 @@ public actor TimelineTurnCoordinator {
         key: TurnKey,
         outcome: TimelineTurnTerminalOutcome,
         messageID: String?
-    ) {
-        guard let active = activeTurnsByTimeline.removeValue(forKey: key.timelineID),
+    ) async throws {
+        guard let active = activeTurnsByTimeline[key.timelineID],
               active.clientTurnID == key.clientTurnID else { return }
+        guard terminalizingTurns.insert(key).inserted else {
+            throw TimelineTurnError.turnCancelled
+        }
+        defer { terminalizingTurns.remove(key) }
+        let journal = try await journal(for: key.timelineID)
+        try await append(.turnCompleted(
+            clientTurnID: key.clientTurnID,
+            outcome: outcome,
+            messageID: messageID ?? active.messageID
+        ), to: journal)
+        guard let completedActive = activeTurnsByTimeline[key.timelineID],
+              completedActive.clientTurnID == key.clientTurnID else { return }
+        activeTurnsByTimeline.removeValue(forKey: key.timelineID)
         completedTurns[key] = CompletedTurn(
-            admissionDigest: active.admissionDigest,
-            sequence: active.sequence,
+            admissionDigest: completedActive.admissionDigest,
+            sequence: completedActive.sequence,
             terminalOutcome: outcome,
-            messageID: messageID ?? active.messageID,
-            updates: active.updates
+            messageID: messageID ?? completedActive.messageID,
+            updates: completedActive.updates
         )
     }
 
@@ -318,9 +367,18 @@ public actor TimelineTurnCoordinator {
     ///
     /// A terminal update ends the Turn: it owns the terminal outcome and
     /// releases the awaiting ``execute(envelope:promptDispatch:streamUpdates:)``.
-    public func recordUpdate(_ update: TimelineTurnUpdate) async {
+    public func recordUpdate(_ update: TimelineTurnUpdate, sessionID: String = "") async throws {
+        let journal = try await journal(for: update.timelineID)
+        try await append(.acpUpdate(sessionID: sessionID, update: update), to: journal)
         guard var active = activeTurnsByTimeline[update.timelineID],
-              active.clientTurnID == update.clientTurnID else { return }
+              active.clientTurnID == update.clientTurnID else {
+            let key = TurnKey(timelineID: update.timelineID, clientTurnID: update.clientTurnID)
+            if var completed = completedTurns[key] {
+                completed.updates.append(update)
+                completedTurns[key] = completed
+            }
+            return
+        }
         active.updates.append(update)
         if update.terminal {
             active.terminalOutcome = update.terminalOutcome
@@ -341,7 +399,7 @@ public actor TimelineTurnCoordinator {
         timelineID: UUID,
         clientTurnID: String,
         stopReason: ACPStopReason?
-    ) {
+    ) async throws {
         guard var active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else { return }
         let outcome = TimelineTurnTerminalOutcome.from(stopReason: stopReason)
         active.terminalOutcome = outcome
@@ -352,28 +410,48 @@ public actor TimelineTurnCoordinator {
     }
 
     /// Cancels an active turn on the Timeline if present.
-    public func cancel(timelineID: UUID, clientTurnID: String) -> Bool {
-        guard var active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else {
+    public func cancel(timelineID: UUID, clientTurnID: String) async throws -> Bool {
+        await acquireAdmissionLock(for: timelineID)
+        defer { releaseAdmissionLock(for: timelineID) }
+        guard let active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else {
             return false
         }
-        active.task.cancel()
-        active.state = .cancelled
-        active.terminalContinuation?.yield(.cancelled)
-        active.terminalContinuation = nil
-        activeTurnsByTimeline.removeValue(forKey: timelineID)
         let key = TurnKey(timelineID: timelineID, clientTurnID: clientTurnID)
+        guard terminalizingTurns.insert(key).inserted else { return false }
+        defer { terminalizingTurns.remove(key) }
+        let journal = try await journal(for: timelineID)
+        try await append(.turnCompleted(
+            clientTurnID: clientTurnID,
+            outcome: .cancelled,
+            messageID: active.messageID
+        ), to: journal)
+        let journalUpdates = (try? await journal.replay())?.compactMap { record -> TimelineTurnUpdate? in
+            guard case let .acpUpdate(_, update) = record.payload,
+                  update.timelineID == timelineID,
+                  update.clientTurnID == clientTurnID else { return nil }
+            return update
+        }
+        let current = activeTurnsByTimeline[timelineID].flatMap {
+            $0.clientTurnID == clientTurnID ? $0 : nil
+        }
+        let latest = current ?? active
+        latest.task.cancel()
+        current?.terminalContinuation?.yield(.cancelled)
+        current?.terminalContinuation?.finish()
+        activeTurnsByTimeline.removeValue(forKey: timelineID)
         completedTurns[key] = CompletedTurn(
-            admissionDigest: active.admissionDigest,
-            sequence: active.sequence,
+            admissionDigest: latest.admissionDigest,
+            sequence: latest.sequence,
             terminalOutcome: .cancelled,
-            messageID: active.messageID,
-            updates: active.updates
+            messageID: latest.messageID,
+            updates: journalUpdates ?? latest.updates
         )
         return true
     }
 
     /// Replays updates for a previously recorded turn.
-    public func replay(timelineID: UUID, clientTurnID: String) -> TimelineTurnReplay? {
+    public func replay(timelineID: UUID, clientTurnID: String) async throws -> TimelineTurnReplay? {
+        _ = try await recoverTimelineIfNeeded(timelineID)
         let key = TurnKey(timelineID: timelineID, clientTurnID: clientTurnID)
         guard let completed = completedTurns[key] else { return nil }
         return TimelineTurnReplay(
@@ -395,6 +473,7 @@ public actor TimelineTurnCoordinator {
         clientPrompt: @Sendable @escaping (TimelinePermissionRequest) async throws -> TimelinePermissionResponse
     ) async throws -> TimelinePermissionResponse {
         try GnosticProtocol.validate(request.protocolMajor)
+        let journal = try await recoverTimelineIfNeeded(request.timelineID)
 
         // If previously recorded, replay preserves recorded decision and never prompts again.
         if let existing = recordedPermissions[request.correlationID] {
@@ -409,8 +488,9 @@ public actor TimelineTurnCoordinator {
         }
 
         // Wait for client prompt within timeout bound.
+        let response: TimelinePermissionResponse
         do {
-            let response = try await withThrowingTaskGroup(of: TimelinePermissionResponse.self) { group in
+            response = try await withThrowingTaskGroup(of: TimelinePermissionResponse.self) { group in
                 group.addTask {
                     try await clientPrompt(request)
                 }
@@ -422,15 +502,14 @@ public actor TimelineTurnCoordinator {
                 group.cancelAll()
                 return first
             }
-
-            recordedPermissions[request.correlationID] = RecordedPermissionDecision(
-                decision: response.decision ?? (response.approved ? "approved" : "denied"),
-                approved: response.approved,
-                recordedAt: Date()
-            )
-            return response
         } catch {
             // Unanswered within timeout bound: record decision as unavailable.
+            try await append(.permissionDecision(
+                correlationID: request.correlationID,
+                clientTurnID: request.clientTurnID,
+                decision: "unavailable",
+                approved: false
+            ), to: journal)
             recordedPermissions[request.correlationID] = RecordedPermissionDecision(
                 decision: "unavailable",
                 approved: false,
@@ -438,6 +517,125 @@ public actor TimelineTurnCoordinator {
             )
             // Error code -32800 (requestCancelled).
             throw ACPError.requestCancelled("Permission request timed out; decision recorded as unavailable")
+        }
+
+        let decision = response.decision ?? (response.approved ? "approved" : "denied")
+        try await append(.permissionDecision(
+            correlationID: request.correlationID,
+            clientTurnID: request.clientTurnID,
+            decision: decision,
+            approved: response.approved
+        ), to: journal)
+        recordedPermissions[request.correlationID] = RecordedPermissionDecision(
+            decision: decision,
+            approved: response.approved,
+            recordedAt: Date()
+        )
+        return response
+    }
+
+    private func recoverTimelineIfNeeded(_ timelineID: UUID) async throws -> TimelineJournal {
+        if let pending = recoveryTasks[timelineID] { return try await pending.value }
+        let task = Task { try await self.recoverTimeline(timelineID) }
+        recoveryTasks[timelineID] = task
+        defer { recoveryTasks.removeValue(forKey: timelineID) }
+        return try await task.value
+    }
+
+    private func recoverTimeline(_ timelineID: UUID) async throws -> TimelineJournal {
+        let journal = try await journal(for: timelineID)
+        guard !recoveredTimelines.contains(timelineID) else { return journal }
+
+        let records: [TimelineJournalRecord]
+        do {
+            records = try await journal.replay()
+        } catch {
+            recoveredTimelines.remove(timelineID)
+            throw TimelineTurnError.journalUnavailable(error.localizedDescription)
+        }
+
+        var admissions: [String: (digest: String, sequence: Int)] = [:]
+        var updates: [String: [TimelineTurnUpdate]] = [:]
+        // An idle notification does not confirm prompt insertion. Only an
+        // explicit committed completion resolves a recovered admission.
+        var outcomes: [String: (outcome: TimelineTurnTerminalOutcome, messageID: String?)] = [:]
+        for record in records {
+            switch record.payload {
+            case let .turnAdmitted(clientTurnID, admissionDigest, turnSequence, _, _):
+                if let prior = admissions[clientTurnID], prior.digest != admissionDigest {
+                    recoveredTimelines.remove(timelineID)
+                    throw TimelineTurnError.journalUnavailable(
+                        "conflicting durable admission for clientTurnID '\(clientTurnID)'"
+                    )
+                }
+                admissions[clientTurnID] = (admissionDigest, turnSequence)
+            case let .acpUpdate(_, update) where update.timelineID == timelineID:
+                updates[update.clientTurnID, default: []].append(update)
+            case let .turnCompleted(clientTurnID, outcome, messageID):
+                outcomes[clientTurnID] = (outcome, messageID)
+            case let .permissionDecision(correlationID, _, decision, approved):
+                recordedPermissions[correlationID] = RecordedPermissionDecision(
+                    decision: decision,
+                    approved: approved,
+                    recordedAt: record.timestamp
+                )
+            default:
+                break
+            }
+        }
+
+        for (clientTurnID, admission) in admissions {
+            let key = TurnKey(timelineID: timelineID, clientTurnID: clientTurnID)
+            let terminal = outcomes[clientTurnID]
+            completedTurns[key] = CompletedTurn(
+                admissionDigest: admission.digest,
+                sequence: admission.sequence,
+                terminalOutcome: terminal?.outcome ?? .insertionUnknown,
+                messageID: terminal?.messageID,
+                updates: updates[clientTurnID] ?? []
+            )
+        }
+        recoveredTimelines.insert(timelineID)
+        return journal
+    }
+
+    private func journal(for timelineID: UUID) async throws -> TimelineJournal {
+        do {
+            return try await journals.journal(for: timelineID)
+        } catch {
+            throw TimelineTurnError.journalUnavailable(error.localizedDescription)
+        }
+    }
+
+    private func append(_ payload: TimelineJournalPayload, to journal: TimelineJournal) async throws {
+        do {
+            try await journal.append(payload)
+        } catch {
+            throw TimelineTurnError.journalUnavailable(error.localizedDescription)
+        }
+    }
+
+    private func acquireAdmissionLock(for timelineID: UUID) async {
+        guard admissionLocks.contains(timelineID) else {
+            admissionLocks.insert(timelineID)
+            return
+        }
+        await withCheckedContinuation { continuation in
+            admissionWaiters[timelineID, default: []].append(continuation)
+        }
+    }
+
+    private func releaseAdmissionLock(for timelineID: UUID) {
+        if var waiters = admissionWaiters[timelineID], !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            if waiters.isEmpty {
+                admissionWaiters.removeValue(forKey: timelineID)
+            } else {
+                admissionWaiters[timelineID] = waiters
+            }
+            next.resume()
+        } else {
+            admissionLocks.remove(timelineID)
         }
     }
 }

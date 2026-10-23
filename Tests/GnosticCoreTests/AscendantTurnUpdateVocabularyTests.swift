@@ -69,7 +69,7 @@ struct AscendantTurnUpdateVocabularyTests {
             "completed", "failed", "in_progress", "pending",
         ])
         #expect(AscendantPermissionStatus.allCases.map(\.rawValue).sorted() == [
-            "connection_lost", "denied", "pending", "selected",
+            "connection_lost", "denied", "pending", "selected", "unavailable",
         ])
         #expect(AscendantToolState(toolCallID: "t", status: .inProgress).status == "in_progress")
         #expect(AscendantPermissionState(

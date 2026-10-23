@@ -8,6 +8,8 @@ public enum EventLogError: Swift.Error, Sendable, Equatable, LocalizedError {
     case malformedRecord
     /// A record's checksum does not match its bytes.
     case checksumMismatch
+    /// A newline-terminated record is invalid, so recovery cannot discard it.
+    case committedCorruption(reason: String, validByteCount: Int)
     /// The log file could not be created.
     case cannotOpenFile(path: String)
 
@@ -17,6 +19,8 @@ public enum EventLogError: Swift.Error, Sendable, Equatable, LocalizedError {
             "the event log record is not framed correctly"
         case .checksumMismatch:
             "the event log record failed its checksum"
+        case let .committedCorruption(reason, validByteCount):
+            "the event log contains committed corruption after byte \(validByteCount): \(reason)"
         case .cannotOpenFile(let path):
             "the event log file could not be created at \(path)"
         }
@@ -92,9 +96,9 @@ public struct EventLogScan<Payload: Codable & Sendable & Equatable>: Sendable, E
 /// `append` writes the frame, flushes it, and returns. It opens, writes, and
 /// closes the file per call, so the value is `Sendable` and safe to hold from
 /// any actor. `recover` verifies each record. Because the format is
-/// append-only and self-framing, a crash can only tear the final record, so
-/// recovery treats the first unreadable record as a torn tail, returns every
-/// valid record before it, and truncates the file to the valid prefix.
+/// append-only and self-framing, a missing final newline identifies an
+/// uncommitted torn tail. A newline-terminated invalid record is committed
+/// corruption and recovery refuses to discard it.
 ///
 /// The log owns no Gnostic types. Any layer that can define a `Codable`
 /// payload can persist through this shared interface.
@@ -192,11 +196,19 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
 
     /// Reads every valid record, in append order.
     ///
-    /// A torn or corrupt tail is truncated so it cannot accumulate. Recovery
-    /// uses the same decode walk as ``scan()`` so the two cannot diverge.
+    /// An uncommitted torn tail is truncated so it cannot accumulate. A
+    /// newline-terminated corrupt record throws and leaves the file unchanged.
+    /// Recovery uses the same decode walk as ``scan()`` so the two cannot
+    /// diverge.
     public func recover() throws -> [EventLogEnvelope<Payload>] {
         let scan = try scan()
         if let tail = scan.tail {
+            guard tail.kind == .torn else {
+                throw EventLogError.committedCorruption(
+                    reason: tail.reason,
+                    validByteCount: tail.validByteCount
+                )
+            }
             try truncate(to: tail.validByteCount)
         }
         return scan.records
@@ -223,9 +235,8 @@ public struct AppendOnlyEventLog<Payload: Codable & Sendable & Equatable>: Senda
                 validByteCount = data.distance(from: data.startIndex, to: data.index(after: newline))
                 cursor = data.index(after: newline)
             } catch {
-                let isFinalLine = data.index(after: newline) >= data.endIndex
                 tail = EventLogTail(
-                    kind: isFinalLine ? .torn : .corrupt,
+                    kind: .corrupt,
                     reason: Self.reason(for: error),
                     validByteCount: validByteCount,
                     totalByteCount: data.count

@@ -63,7 +63,10 @@ struct AscendantPermissionCoordinatorTests {
 
     @Test("a correlated permission response is single-use and replayable")
     func correlatedResponse() async throws {
-        let updates = AscendantTurnUpdateStore()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let updates = AscendantTurnUpdateStore(timelineJournals: journals)
         let coordinator = AscendantPermissionCoordinator(updates: updates)
         let timelineID = UUID()
         let request = BackendPermissionRequest(
@@ -87,6 +90,13 @@ struct AscendantPermissionCoordinatorTests {
             approved: true
         ))
         #expect(await decision.value == .approved)
+        let journal = try await journals.journal(for: timelineID)
+        #expect(try await journal.replay().contains { record in
+            if case let .permissionDecision(correlationID, clientTurnID, decision, approved) = record.payload {
+                return correlationID == "permission-1" && clientTurnID == "turn-1" && decision == "approved" && approved
+            }
+            return false
+        })
         #expect(!(await coordinator.respond(
             correlationID: "permission-1",
             timelineID: timelineID,

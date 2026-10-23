@@ -186,8 +186,8 @@ struct FileTimelineRuntimeRepositoryTests {
         #expect(second.isDurable)
     }
 
-    @Test("a torn tail costs at most the final mutation")
-    func tornTail() async throws {
+    @Test("a committed corrupt record stops recovery without truncating the file")
+    func committedCorruptionStopsRecovery() async throws {
         let url = makeURL()
         let fixture = makeTurnFixture()
         let first = try await FileTimelineRuntimeRepository(fileURL: url)
@@ -196,9 +196,18 @@ struct FileTimelineRuntimeRepositoryTests {
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("deadbeef 123 not-json\n".utf8))
         try handle.close()
+        let corruptSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
 
-        let second = try await FileTimelineRuntimeRepository(fileURL: url)
-        #expect(try await second.fetchTimeline(id: fixture.timelineID) != nil)
+        var rejectedCommittedCorruption = false
+        do {
+            _ = try await FileTimelineRuntimeRepository(fileURL: url)
+        } catch let error as EventLogError {
+            if case .committedCorruption = error { rejectedCommittedCorruption = true }
+        }
+        #expect(rejectedCommittedCorruption)
+        let recoveredSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
+        #expect(recoveredSize == corruptSize)
+        #expect(corruptSize != nil)
     }
 
     @Test("deleting a timeline cascades across replay")

@@ -31,6 +31,24 @@ struct ACPAscendantBackendTests {
         }
     }
 
+    private actor JournalFailingPermissionService: AscendantBackendPermissionService {
+        let journal: TimelineJournal
+        private(set) var injectedFailure = false
+
+        init(journal: TimelineJournal) { self.journal = journal }
+
+        func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
+            do {
+                let url = await journal.fileURL
+                try FileManager.default.removeItem(at: url)
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+                do { try await journal.append(.timelineRenamed(title: "write fault")) }
+                catch { injectedFailure = true }
+            } catch { return .unavailable(reason: "faultInjectionFailed") }
+            return .approved
+        }
+    }
+
     @MainActor
     private final class GatewayWorkspaceService: AscendantBackendWorkspaceService {
         var workspaceReference: BackendWorkspaceReference
@@ -98,6 +116,7 @@ struct ACPAscendantBackendTests {
         ascendantID: UUID = UUID(),
         permission: any AscendantBackendPermissionService = AscendantBackendServices.empty.permission,
         workspace: (any AscendantBackendWorkspaceService)? = nil,
+        optionalCapabilities: [any AscendantBackendOptionalCapability] = [],
         protocolTimeoutSeconds: TimeInterval = 30,
         promptTimeoutSeconds: TimeInterval = 60 * 60
     ) throws -> ACPAscendantBackend {
@@ -110,11 +129,238 @@ struct ACPAscendantBackendTests {
         return try ACPAscendantBackend(
             ascendant: ascendant,
             configuration: ascendant.backend,
-            services: AscendantBackendServices(workspace: workspace, permission: permission),
+            services: AscendantBackendServices(
+                workspace: workspace,
+                permission: permission,
+                optionalCapabilities: optionalCapabilities
+            ),
             timelines: timelines,
             protocolTimeoutSeconds: protocolTimeoutSeconds,
             promptTimeoutSeconds: promptTimeoutSeconds
         )
+    }
+
+    @Test("raw ACP updates preserve unknown kinds and _meta in the Timeline journal")
+    @MainActor
+    func rawACPUpdatesReachTimelineJournal() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let nodeID = UUID()
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-raw-journal-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: runtimeID, name: "Journal fixture", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Journaled ACP", operatingAscendantID: runtimeID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        _ = try await runtime.turn(.init(
+            message: "[fixture:unknown-update]",
+            timelineID: timelineID,
+            clientTurnID: "raw-acp"
+        ))
+        await runtime.shutdown()
+
+        let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory)
+        let records = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan()
+            .records
+            .map(\.payload)
+        #expect(records.contains { record in
+            if case let .timelineCreated(title, runtimeInstanceID, _) = record.payload {
+                return title == "Journaled ACP" && runtimeInstanceID == runtimeID
+            }
+            return false
+        })
+        #expect(records.contains { record in
+            if case let .turnAdmitted(clientTurnID, _, _, _, _) = record.payload {
+                return clientTurnID == "raw-acp"
+            }
+            return false
+        })
+        #expect(records.contains { record in
+            if case let .sessionTransition(_, recordedRuntimeID, state, projectKind, cwd) = record.payload {
+                return recordedRuntimeID == runtimeID && state == .live && projectKind != nil && !cwd.isEmpty
+            }
+            return false
+        })
+        let rawUpdate = try #require(records.first { record in
+            if case let .acpUpdate(_, update) = record.payload {
+                return update.clientTurnID == "raw-acp" && update.update.updateKind == "vendor_future_update"
+            }
+            return false
+        })
+        guard case let .acpUpdate(_, turnUpdate) = rawUpdate.payload,
+              case let .other(kind, fields) = turnUpdate.update else {
+            Issue.record("Expected the unknown ACP update to remain a raw extensible update")
+            return
+        }
+        #expect(kind == "vendor_future_update")
+        #expect(fields["_meta"] == .object(["trace_id": .string("fixture-raw-meta")]))
+        #expect(fields["extension"] == .object(["phase": .string("fixture")]))
+    }
+
+    @Test("runtime Timeline genesis is journaled before its ACP Session")
+    @MainActor
+    func runtimeTimelineGenesisPrecedesSession() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let nodeID = UUID()
+        let runtimeID = UUID()
+        let configuredTimelineID = UUID()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-genesis-order-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(
+                id: runtimeID,
+                name: "Genesis fixture",
+                defaultTimelineID: configuredTimelineID,
+                backend: .init(
+                    kind: ACPAscendantBackend.kind,
+                    settings: try fixtureSettings(stateHome: stateHome.url)
+                )
+            )],
+            timelines: [.init(
+                id: configuredTimelineID,
+                title: "Configured",
+                operatingAscendantID: runtimeID
+            )]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, configuration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: configuration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let created = try await runtime.createTimeline(title: "Created", ascendantID: runtimeID)
+        _ = try await runtime.turn(.init(
+            message: "first Turn",
+            timelineID: created.timelineID,
+            clientTurnID: "first-runtime-turn"
+        ))
+        await runtime.shutdown()
+
+        let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let fileURL = TimelineJournalStore.fileURL(for: created.timelineID, in: nodeJournalDirectory)
+        let payloads = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan()
+            .records
+            .map(\.payload.payload)
+        let genesisIndex = try #require(payloads.firstIndex { if case .timelineCreated = $0 { return true }; return false })
+        let sessionIndex = try #require(payloads.firstIndex { if case .sessionTransition = $0 { return true }; return false })
+        #expect(genesisIndex < sessionIndex)
+    }
+
+    @Test("journaled Timeline identity survives when the ACP Runtime no longer lists its Session")
+    @MainActor
+    func journalRestoresTimelineWithoutRuntimeSession() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let nodeID = UUID()
+        let runtimeID = UUID()
+        let configuredTimelineID = UUID()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-timeline-recovery-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(
+                id: runtimeID,
+                name: "Recovery fixture",
+                defaultTimelineID: configuredTimelineID,
+                backend: .init(
+                    kind: ACPAscendantBackend.kind,
+                    settings: try fixtureSettings(stateHome: stateHome.url)
+                )
+            )],
+            timelines: [.init(
+                id: configuredTimelineID,
+                title: "Configured",
+                operatingAscendantID: runtimeID
+            )]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, configuration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: configuration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let firstRuntime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await firstRuntime.start()
+        defer { Task { @MainActor in await firstRuntime.shutdown() } }
+
+        let created = try await firstRuntime.createTimeline(title: "Runtime Timeline", ascendantID: runtimeID)
+        _ = try await firstRuntime.turn(.init(
+            message: "persist a Runtime Session",
+            timelineID: created.timelineID,
+            clientTurnID: "runtime-session"
+        ))
+        await firstRuntime.shutdown()
+
+        try FileManager.default.removeItem(at: stateHome.url.appendingPathComponent("agent-sessions.json"))
+        let restartedRuntime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        defer { Task { @MainActor in await restartedRuntime.shutdown() } }
+
+        try await restartedRuntime.start()
+        let snapshot = await restartedRuntime.snapshot()
+        #expect(snapshot.timelineIDs.contains(configuredTimelineID))
+        #expect(snapshot.timelineIDs.contains(created.timelineID))
+        #expect(await restartedRuntime.timeline(id: created.timelineID)?.title == "Runtime Timeline")
+        await restartedRuntime.shutdown()
     }
 
     @Test("configuration maps command, JSON args/env, cwd, and display name to a launch spec")
@@ -233,6 +479,56 @@ struct ACPAscendantBackendTests {
         #expect(decoded.launchFingerprint == instance.launchFingerprint)
         #expect(decoded.rawCapabilities == instance.rawCapabilities)
         await backend.shutdown()
+    }
+
+    @Test("a failed permission journal write prevents Workspace tool invocation")
+    @MainActor
+    func gatewayPermissionJournalFailurePreventsInvocation() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let workspaceID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        let journal = try await store.journal(for: timelineID)
+        let updates = AscendantTurnUpdateStore(timelineJournals: store)
+        let permission = AscendantPermissionCoordinator(updates: updates)
+        let workspace = GatewayWorkspaceService(workspaceReference: BackendWorkspaceReference(
+            id: workspaceID, uri: "workspace://journal-fault", status: .available,
+            tools: [.init(id: "write", name: "Write", description: "Write", parametersSchema: .object([:]), requiresPermission: true)]
+        ))
+        let registry = AscendantTimelineRegistry(
+            ascendantID: runtimeID, privateTimelineID: timelineID,
+            configured: [.init(id: timelineID, title: "Gateway", operatingAscendantID: runtimeID, attachments: [.local(workspaceID)])],
+            remote: .init(ensure: { _, _ in }, rename: { _, _ in }, delete: { _ in })
+        )
+        let gateway = WorkspaceMCPGateway(
+            timelineID: timelineID, timelineRegistry: registry, workspaceService: workspace,
+            permissionService: permission, activeTurn: { _ in ("gateway-turn", "session") }
+        )
+        guard case let .http(_, endpoint, headers, _) = try gateway.start(),
+              let url = URL(string: endpoint), let token = headers?.first(where: { $0.name == "Authorization" })?.value else {
+            Issue.record("Missing gateway endpoint"); return
+        }
+        defer { gateway.stop() }
+        let tool = "workspace_\(workspaceID.uuidString.lowercased().replacingOccurrences(of: "-", with: ""))__write"
+        let call = Task { try await mcpRequest(url: url, authorization: token, method: "tools/call", params: ["name": .string(tool)]) }
+        for _ in 0..<100 {
+            if (try? await updates.replay(timelineID: timelineID, clientTurnID: "gateway-turn").updates.contains {
+                $0.permissionState?.status == "pending"
+            }) == true { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let replay = try await updates.replay(timelineID: timelineID, clientTurnID: "gateway-turn")
+        let correlation = try #require(replay.updates.compactMap(\.permissionState?.correlationID).first)
+        let journalURL = await journal.fileURL
+        try FileManager.default.removeItem(at: journalURL)
+        try FileManager.default.createDirectory(at: journalURL, withIntermediateDirectories: false)
+        #expect(!(await permission.respond(correlationID: correlation, timelineID: timelineID, clientTurnID: "gateway-turn", approved: true)))
+        let response = try await call.value
+        #expect(response.message?.error != nil)
+        #expect(workspace.invocations.isEmpty)
+        #expect(try await updates.replay(timelineID: timelineID, clientTurnID: "gateway-turn").updates.allSatisfy { $0.permissionState?.status != "selected" })
     }
 
     @Test("MCP gateway lists attached tools and rechecks status before each call")
@@ -698,6 +994,162 @@ struct ACPAscendantBackendTests {
         await nextBackend.shutdown()
     }
 
+    @Test("journal recovery respects a changed configured Project")
+    @MainActor
+    func journalRecoveryRespectsConfiguredProject() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let first = stateHome.url.appendingPathComponent("first")
+        let next = stateHome.url.appendingPathComponent("next")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: next, withIntermediateDirectories: true)
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind, settings: try fixtureSettings(stateHome: stateHome.url)
+        )
+        var manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "project-journal-\(UUID().uuidString)"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: runtimeID, name: "Project fixture", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Project", operatingAscendantID: runtimeID, project: .local(first.path))]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: ACPAscendantBackend.kind, settings: ACPAscendantBackend.settingsSchema) {
+            ascendant, configuration, services, timelines in
+            try ACPAscendantBackend(ascendant: ascendant, configuration: configuration, services: services, timelines: timelines)
+        }
+        let directory = stateHome.url.appendingPathComponent("journals")
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: directory)
+        try await runtime.start()
+        _ = try await runtime.turn(.init(message: "first", timelineID: timelineID, clientTurnID: "first"))
+        await runtime.shutdown()
+        manifest.timelines[0].project = .local(next.path)
+        let restarted = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: directory)
+        try await restarted.start()
+        _ = try await restarted.turn(.init(message: "next", timelineID: timelineID, clientTurnID: "next"))
+        await restarted.shutdown()
+        let store = TimelineJournalStore(directoryURL: directory.appendingPathComponent(manifest.node.id.uuidString.lowercased()))
+        let projection = try #require(try await store.timelineProjection(for: timelineID))
+        #expect(projection.latestSession?.cwd == next.standardizedFileURL.path)
+    }
+
+    @Test("a Project change retires the journal binding before the next Turn")
+    @MainActor
+    func projectChangeRetiresJournalBinding() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        try await store.ensureTimelineCreated(timelineID: timelineID, title: "Project", runtimeInstanceID: runtimeID, attachments: [])
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Project")
+        let instance = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url), timelines: [timeline], ascendantID: runtimeID,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
+        )
+        _ = try await instance.runTurn(.init(timelineID: timelineID, message: "first", clientTurnID: "first"), updates: RecordingUpdateSink())
+        #expect(try await store.timelineProjection(for: timelineID)?.latestSession != nil)
+        let next = stateHome.url.appendingPathComponent("next")
+        try FileManager.default.createDirectory(at: next, withIntermediateDirectories: true)
+        try await instance.setProject(.local(next.path), for: timelineID)
+        #expect(try await store.timelineProjection(for: timelineID)?.latestSession == nil)
+        #expect(try await store.timelineProjection(for: timelineID)?.project == .local(next.path))
+        await instance.shutdown()
+        let restarted = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url), timelines: [timeline], ascendantID: runtimeID,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
+        )
+        _ = try await restarted.operatedTimelines()
+        #expect(restarted.sessionBinding(for: timelineID)?.cwd == next.standardizedFileURL.path)
+        await restarted.shutdown()
+    }
+
+    @Test("an update adjacent to a new Session response is committed after its binding", arguments: ["before", "after"])
+    @MainActor
+    func immediateSessionUpdateWaitsForBinding(_ order: String) async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        try await store.ensureTimelineCreated(timelineID: timelineID, title: "Immediate", runtimeInstanceID: runtimeID, attachments: [])
+        var settings = try fixtureSettings(stateHome: stateHome.url)
+        settings["env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE"] = .string(order)
+        let instance = try backend(
+            settings: settings, timelines: [.init(id: timelineID, title: "Immediate")], ascendantID: runtimeID,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
+        )
+        _ = try await instance.operatedTimelines()
+        let journal = try await store.journal(for: timelineID)
+        let records = try await journal.replay()
+        let transition = try #require(records.firstIndex { if case .sessionTransition = $0.payload { return true }; return false })
+        let update = try #require(records.firstIndex {
+            if case let .rawACPUpdate(_, _, update) = $0.payload,
+               case .other(sessionUpdate: "fixture_session_opened", fields: _) = update { return true }
+            return false
+        })
+        #expect(transition < update)
+        _ = try await instance.runTurn(.init(timelineID: timelineID, message: "still healthy", clientTurnID: "healthy"), updates: RecordingUpdateSink())
+        await instance.shutdown()
+    }
+
+    @Test("Timeline journal restores the ACP Session when the backend session map is missing")
+    @MainActor
+    func journalRestoresSessionWithoutBackendMap() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let ascendantID = UUID()
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Journal recovery")
+        let firstBackend = try fixtureBackend(
+            timelines: [timeline],
+            ascendantID: ascendantID,
+            stateHome: stateHome.url
+        )
+        _ = try await firstBackend.runTurn(
+            .init(timelineID: timelineID, message: "before restart"),
+            updates: RecordingUpdateSink()
+        )
+        let previousBinding = try #require(firstBackend.sessionBinding(for: timelineID))
+        await firstBackend.shutdown()
+
+        let journalStore = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("timeline-journals"))
+        try await journalStore.ensureTimelineCreated(
+            timelineID: timelineID,
+            title: timeline.title,
+            runtimeInstanceID: ascendantID,
+            attachments: []
+        )
+        let journal = try await journalStore.journal(for: timelineID)
+        try await journal.append(.sessionTransition(
+            sessionID: previousBinding.sessionID,
+            runtimeInstanceID: ascendantID,
+            state: .live,
+            projectKind: previousBinding.projectKind,
+            cwd: previousBinding.cwd
+        ))
+        let journalRecorder = TimelineJournalRecorder(journals: journalStore)
+        let journalSession = try #require(try await journalRecorder.sessionProjection(for: timelineID))
+
+        let sessionMapURL = stateHome.url.appendingPathComponent("\(ascendantID.uuidString).json")
+        try FileManager.default.removeItem(at: sessionMapURL)
+        let restartedBackend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url),
+            timelines: [timeline],
+            ascendantID: ascendantID,
+            optionalCapabilities: [journalRecorder]
+        )
+        defer { Task { await restartedBackend.shutdown() } }
+
+        _ = try await restartedBackend.operatedTimelines()
+        let recoveredBinding = try #require(restartedBackend.sessionBinding(for: timelineID))
+        #expect(recoveredBinding.sessionID == previousBinding.sessionID)
+        #expect(recoveredBinding.cwd == previousBinding.cwd)
+        #expect(recoveredBinding.startedAt == journalSession.startedAt)
+        await restartedBackend.shutdown()
+    }
+
     @Test("plain and secret per-variable values map to the launch environment")
     @MainActor
     func perVariableEnvironmentValuesAreCombined() throws {
@@ -1123,7 +1575,7 @@ struct ACPAscendantBackendTests {
             broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-crash-\(UUID().uuidString.lowercased())"),
             node: .init(id: UUID()),
             ascendants: [.init(id: ascendantID, name: "Crash fixture", defaultTimelineID: timelineID, backend: configuration)],
-            timelines: [.init(id: timelineID, title: "Crash recovery", operatingAscendantID: ascendantID)]
+            timelines: [.init(id: timelineID, title: "Crash recovery", operatingAscendantID: ascendantID, project: .local(stateHome.url.path))]
         )
         let factoryCount = BackendFactoryCount()
         var adapters = NodeRuntimeAdapters.default
@@ -1139,7 +1591,10 @@ struct ACPAscendantBackendTests {
                 timelines: timelines
             )
         }
-        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals")
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: journalDirectory
+        )
         try await runtime.start()
 
         do {
@@ -1160,6 +1615,16 @@ struct ACPAscendantBackendTests {
         #expect(await runtime.backendHealth(for: ascendantID) == .healthy)
         #expect(runtime.runtimeInstanceObject(for: ascendantID)?.health == .healthy)
         await runtime.shutdown()
+        let store = TimelineJournalStore(directoryURL: journalDirectory.appendingPathComponent(manifest.node.id.uuidString.lowercased()))
+        let journal = try await store.journal(for: timelineID)
+        #expect(await journal.timelineProjection()?.latestSession?.cwd == stateHome.url.standardizedFileURL.path)
+        let records = try await journal.replay()
+        #expect(records.contains { record in
+            if case let .acpUpdate(_, update) = record.payload {
+                return update.clientTurnID == "after-crash"
+            }
+            return false
+        })
     }
 
     @Test("runtime-created Timeline does not prevent NodeRuntime restart")
@@ -1510,11 +1975,13 @@ struct ACPAscendantBackendTests {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
         let timelineID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
         let permission = RecordingPermissionService(decision: .approved)
         let backend = try backend(
             settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true),
             timelines: [.init(id: timelineID, title: "Configured")],
-            permission: permission
+            permission: permission,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
         )
 
         let response = try await backend.runTurn(
@@ -1529,7 +1996,45 @@ struct ACPAscendantBackendTests {
         #expect(requests.first?.clientTurnID == "approve-once")
         #expect(requests.first?.toolCallID == "fixture-permission-tool")
         #expect(requests.first?.title == "Inspect fixture input")
+        let journal = try await store.journal(for: timelineID)
+        let records = try await journal.replay()
+        let decisionIndex = records.firstIndex { record in
+            if case let .permissionDecision(_, clientTurnID, decision, approved) = record.payload {
+                return clientTurnID == "approve-once" && decision == "approved" && approved
+            }
+            return false
+        }
+        #expect(decisionIndex != nil)
         await backend.shutdown()
+    }
+
+    @Test("ACP cancels approval when its Timeline journal becomes unwritable")
+    @MainActor
+    func permissionFailsClosedWhenJournalQuarantines() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        let journal = try await store.journal(for: timelineID)
+        let permission = JournalFailingPermissionService(journal: journal)
+        let resultFile = stateHome.url.appendingPathComponent("permission-result.json")
+        let instance = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url, permissionPrompt: true, permissionOutcome: "cancelled",
+                permissionResultFile: resultFile
+            ),
+            timelines: [.init(id: timelineID, title: "Permission")], permission: permission,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
+        )
+        do {
+            _ = try await instance.runTurn(
+                .init(timelineID: timelineID, message: "fail closed", clientTurnID: "fail-closed"), updates: RecordingUpdateSink()
+            )
+        } catch { /* The quarantined journal also rejects subsequent ACP updates. */ }
+        #expect(await permission.injectedFailure)
+        let outcome = try String(contentsOf: resultFile, encoding: .utf8)
+        #expect(outcome == #"{"outcome":"cancelled"}"#)
+        await instance.shutdown()
     }
 
     @Test("fixture permission denial maps to the advertised reject-once option")
@@ -2049,6 +2554,7 @@ struct ACPAscendantBackendTests {
         failClose: Bool = false,
         permissionPrompt: Bool = false,
         permissionOutcome: String = "selected:allow-once",
+        permissionResultFile: URL? = nil,
         unsupportedPermissionOptions: Bool = false,
         claudePermissionOptions: Bool = false,
         requiredAbsentEnvironmentKey: String? = nil,
@@ -2086,6 +2592,7 @@ struct ACPAscendantBackendTests {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION"] = "1"
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME"] = permissionOutcome
         }
+        if let permissionResultFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE"] = permissionResultFile.path }
         if unsupportedPermissionOptions { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_UNSUPPORTED"] = "1" }
         if claudePermissionOptions { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PERMISSION_CLAUDE"] = "1" }
         if let requiredAbsentEnvironmentKey {

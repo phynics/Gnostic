@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticProtocol
 import Testing
 
 @testable import GnosticCore
@@ -32,6 +33,61 @@ struct AscendantTurnUpdateStoreJournalTests {
         #expect(replay.updates.map(\.text) == ["hi", "hi"])
         #expect(replay.terminal)
         #expect(!replay.conflict)
+    }
+
+    @Test("identified Turn admission reaches the Timeline journal before the ledger returns it")
+    func admissionIsCommittedToTimelineJournal() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("turn-admission-timeline-journal-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let timelineID = UUID()
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let store = AscendantTurnUpdateStore(timelineJournals: journals)
+        let clientTurnID = try await store.validatedClientTurnID("turn-admission")
+        let result = try await store.admit(
+            timelineID: timelineID,
+            clientTurnID: clientTurnID,
+            message: "prompt digest source"
+        )
+        #expect(result == .new)
+
+        let journal = try await journals.journal(for: timelineID)
+        let records = try await journal.replay()
+        let admission = try #require(records.first { record in
+            if case let .turnAdmitted(id, _, _, _, _) = record.payload { return id == "turn-admission" }
+            return false
+        })
+        guard case let .turnAdmitted(_, digest, _, acpVersionTag, prompt) = admission.payload else {
+            Issue.record("Expected the Timeline admission event")
+            return
+        }
+        #expect(prompt == [.text(ACPTextContent(text: "prompt digest source"))])
+        #expect(acpVersionTag == "legacy-text-v1")
+        #expect(digest == TimelineTurnEnvelope.computeAdmissionDigest(
+            prompt: [.text(ACPTextContent(text: "prompt digest source"))],
+            acpVersionTag: "legacy-text-v1"
+        ))
+        try await store.recordOutcome(
+            timelineID: timelineID,
+            clientTurnID: clientTurnID,
+            outcome: .succeeded(text: "answer")
+        )
+        #expect(try await journal.replay().contains { record in
+            if case let .turnCompleted(id, outcome, _) = record.payload {
+                return id == "turn-admission" && outcome == .completed
+            }
+            return false
+        })
+
+        let restarted = AscendantTurnUpdateStore(
+            timelineJournals: TimelineJournalStore(directoryURL: directory)
+        )
+        let restartedID = try await restarted.validatedClientTurnID("turn-admission")
+        #expect(try await restarted.admit(
+            timelineID: timelineID,
+            clientTurnID: restartedID,
+            message: "prompt digest source"
+        ) == .unavailable)
     }
 
     @Test("recovery preserves compaction")
@@ -180,7 +236,7 @@ struct AscendantTurnUpdateStoreJournalTests {
         try await writer.enableDurability(at: url)
         let writerID = try await writer.validatedClientTurnID("admit-1")
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
-        await writer.recordOutcome(timelineID: timelineID, clientTurnID: writerID, outcome: .succeeded(text: "done"))
+        try await writer.recordOutcome(timelineID: timelineID, clientTurnID: writerID, outcome: .succeeded(text: "done"))
 
         let reader = AscendantTurnUpdateStore()
         try await reader.enableDurability(at: url)
@@ -214,7 +270,7 @@ struct AscendantTurnUpdateStoreJournalTests {
         try await writer.enableDurability(at: url)
         let writerID = try await writer.validatedClientTurnID("admit-3")
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
-        await writer.recordOutcome(
+        try await writer.recordOutcome(
             timelineID: timelineID,
             clientTurnID: writerID,
             outcome: .failed(.failed(timelineID: timelineID, clientTurnID: "admit-3", detail: "boom"))
@@ -234,7 +290,7 @@ struct AscendantTurnUpdateStoreJournalTests {
         try await writer.enableDurability(at: url)
         let writerID = try await writer.validatedClientTurnID("admit-4")
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
-        await writer.recordOutcome(
+        try await writer.recordOutcome(
             timelineID: timelineID,
             clientTurnID: writerID,
             outcome: .succeeded(text: String(repeating: "a", count: 2_000))
@@ -255,9 +311,9 @@ struct AscendantTurnUpdateStoreJournalTests {
         let firstID = try await writer.validatedClientTurnID("evict-a")
         let secondID = try await writer.validatedClientTurnID("evict-b")
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: firstID, message: "a") == .new)
-        await writer.recordOutcome(timelineID: timelineID, clientTurnID: firstID, outcome: .succeeded(text: "a-done"))
+        try await writer.recordOutcome(timelineID: timelineID, clientTurnID: firstID, outcome: .succeeded(text: "a-done"))
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: secondID, message: "b") == .new)
-        await writer.recordOutcome(timelineID: timelineID, clientTurnID: secondID, outcome: .succeeded(text: "b-done"))
+        try await writer.recordOutcome(timelineID: timelineID, clientTurnID: secondID, outcome: .succeeded(text: "b-done"))
 
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: firstID, message: "a") == .unavailable)
 

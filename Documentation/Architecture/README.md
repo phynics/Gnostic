@@ -30,6 +30,9 @@ whether its decision is delivered or remains a target.
 19. [ADR 0020 — Timeline-first primitives: no Agent, Session records, Projects, and Runtime kinds](ADRs/0020-timeline-first-primitives.md) — Timeline-first identity, Session records, and Node-scoped Runtime instances. ADR 0021 replaces scratch-only placement and special-Node Native Runtimes with local or scratch Projects and ACP v2 stdio processes. It also makes the Timeline journal durable and fixes one owning Node per Timeline.
 20. [ADR 0021 — Gnostic v0.5 architecture reconciliation](ADRs/0021-gnostic-v0-5-architecture-reconciliation.md) — binding v0.5 contract for durable Timeline authority, the ACP v2 stdio Runtime boundary, single-active-Turn admission, local or scratch Projects, gateway Workspaces, and release and migration scope. It supersedes or amends the conflicting sections of ADRs 0017–0020. Delivery is tracked by [#640](https://github.com/phynics/Gnostic/issues/640), [Epic #602](https://github.com/phynics/Gnostic/issues/602), and [Epic #551](https://github.com/phynics/Gnostic/issues/551).
 
+The [Timeline journal format reference](Timeline-Journal-Format.md) documents
+the versioned JSON-lines record, replay epochs, and recovery rules in ADR 0021 §5.
+
 The Timeline-bound backend session document that was published on
 `codex/timeline-bound-backend-sessions` also used the number 0006. That branch
 document is historical and is not an accepted architecture decision. [ADR 0007

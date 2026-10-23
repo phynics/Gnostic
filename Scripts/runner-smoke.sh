@@ -144,6 +144,7 @@ cat > "$scratch/letta.json" <<'JSON'
 JSON
 
 run_until_online "Letta backend" \
+    env GNOSTIC_STATE_HOME="$scratch/state" \
     "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-letta --config "$scratch/letta.json"
 
 echo "Gnostic runner smoke passed"

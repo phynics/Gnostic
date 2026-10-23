@@ -29,7 +29,13 @@ struct OnlineRunnerTests {
             timelines: [.init(id: timelineID, title: "Letta", operatingAscendantID: ascendantID)],
             workspaces: []
         )
-        let runtime = try await RunnerRuntime(plan: manifest.compileLaunchPlan())
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("online-runner-state", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtime = try await RunnerRuntime(
+            plan: manifest.compileLaunchPlan(),
+            timelineJournalDirectory: stateDirectory
+        )
         try await runtime.start()
         let snapshot = await runtime.runtime.snapshot()
         #expect(snapshot.ascendantIDs == [ascendantID])
@@ -58,7 +64,13 @@ struct OnlineRunnerTests {
 
         // The Letta kind is registered only in GnosticHost's composition. The
         // runner accepts this manifest because it composes through it.
-        let runtime = try await RunnerRuntime(plan: manifest.compileLaunchPlan())
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("online-runner-letta-state", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtime = try await RunnerRuntime(
+            plan: manifest.compileLaunchPlan(),
+            timelineJournalDirectory: stateDirectory
+        )
         do {
             try await runtime.start()
             let snapshot = await runtime.runtime.snapshot()

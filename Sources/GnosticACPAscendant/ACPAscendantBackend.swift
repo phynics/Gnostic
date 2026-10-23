@@ -52,12 +52,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private let promptTimeoutSeconds: TimeInterval
     private let configuredTimelines: [NodeManifest.Timeline]
     private let projectResolver: ProjectDirectoryResolver
+    private let explicitProjectIDs: Set<UUID>
     private var projects: [UUID: Project]
     private var sessionIDs: [UUID: String]
+    private var pendingSessionCreations = 0
+    private var bindingTimelineIDsBySessionID: [String: UUID] = [:]
+    private var pendingSessionUpdates: [String: [ACPSessionUpdate]] = [:]
+    private var timelineIDsBySessionID: [String: UUID]
     private var sessionCwds: [UUID: String]
     private var sessionProjectKinds: [UUID: Project.Kind]
     private var sessionStartedAt: [UUID: Date]
     private var activeSessionIDs: Set<UUID> = []
+    private var journalSessionBindingsRestored = false
     private let sessionMapURL: URL
     private var workspaceGateways: [UUID: WorkspaceMCPGateway] = [:]
 
@@ -68,7 +74,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         privateTimelineID: identity.privateTimelineID,
         configured: configuredTimelines,
         remote: .init(
-            ensure: { [weak self] id, title in _ = try await self?.ensureTimelineRemote(id: id, title: title) },
+            // A Gnostic Timeline is not an ACP Session. The first Turn creates
+            // the remote Session after NodeRegistry has committed Timeline genesis.
+            ensure: { _, _ in },
             rename: { [weak self] id, title in _ = try await self?.renameTimelineRemote(id: id, title: title) },
             delete: { [weak self] id in _ = await self?.deleteTimelineRemote(id: id) }
         )
@@ -94,6 +102,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     public private(set) var runtimeInstanceObject: GnosticRuntimeInstanceObject?
     private let permissionService: any AscendantBackendPermissionService
     private let workspaceService: (any AscendantBackendWorkspaceService)?
+    private let timelineJournalRecorder: TimelineJournalRecorder?
     // The backend contract serializes Turns per Timeline; one active entry per Timeline is intentional.
     private var activeTurns: [UUID: ACPActiveTurn] = [:]
     private let updateRouter = ACPUpdateRouter()
@@ -148,16 +157,26 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         self.promptTimeoutSeconds = promptTimeoutSeconds
         permissionService = services.permission
         workspaceService = services.workspace
+        timelineJournalRecorder = services.capability(TimelineJournalRecorder.self)
         hasWorkspaceService = services.workspace != nil
         self.configuredTimelines = configuredTimelines
+        explicitProjectIDs = Set(configuredTimelines.filter { $0.project != nil }.map(\.id))
         projects = Dictionary(uniqueKeysWithValues: configuredTimelines.map { ($0.id, $0.project ?? .scratch) })
         sessionMapURL = Self.sessionMapURL(for: ascendant.id)
-        let recoveredSessions = Self.loadSessionMap(at: sessionMapURL)
+        let recoveredSessions = timelineJournalRecorder == nil ? Self.loadSessionMap(at: sessionMapURL) : [:]
         let configuredTimelineIDs = Set(configuredTimelines.map(\.id))
         sessionIDs = recoveredSessions.reduce(into: [:]) { result, entry in
             guard configuredTimelineIDs.contains(entry.key) else { return }
             result[entry.key] = entry.value.sessionID
         }
+        var timelineIDsBySessionID: [String: UUID] = [:]
+        for (timelineID, session) in recoveredSessions where configuredTimelineIDs.contains(timelineID) {
+            if let otherTimelineID = timelineIDsBySessionID[session.sessionID], otherTimelineID != timelineID {
+                throw Self.invalidConfiguration("A recovered ACP Session ID belongs to more than one Timeline.")
+            }
+            timelineIDsBySessionID[session.sessionID] = timelineID
+        }
+        self.timelineIDsBySessionID = timelineIDsBySessionID
         sessionCwds = recoveredSessions.reduce(into: [:]) { result, entry in
             guard configuredTimelineIDs.contains(entry.key) else { return }
             // Older session maps did not persist cwd. Preserve their original
@@ -253,13 +272,14 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
         do {
             let connection = try await requireConnection()
+            let timelineIDs = timelineRegistry.operatedTimelines().map(\.id)
+            try await restoreSessionBindingsFromJournal(for: timelineIDs)
             guard sessionCapabilities?.supportsList == true else {
                 return timelineRegistry.operatedTimelines()
             }
             // NodeRuntime uses this call during startup hydration. Seed the
             // session map here so the advertised session-list intersection can
             // include configured Gnostic Timelines on the first startup.
-            let timelineIDs = timelineRegistry.operatedTimelines().map(\.id)
             try await ensureSessions(for: timelineIDs, using: connection)
             var cursor: String?
             var seenCursors: Set<String> = []
@@ -287,7 +307,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
     }
 
-    /// Creates an ACP session and adopts the Gnostic-created Timeline ID.
+    /// Creates the Gnostic Timeline projection; its ACP Session opens on the first Turn.
     ///
     /// - Parameters:
     ///   - id: The Gnostic-owned Timeline identifier to adopt.
@@ -399,6 +419,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
         guard projects[timelineID] != nextProject else { return }
 
+        try await timelineJournalRecorder?.appendProjectChange(timelineID: timelineID, project: nextProject)
         let oldCWD = sessionCwds[timelineID]
         let oldKind = sessionProjectKinds[timelineID]
         var oldSessionClosed = false
@@ -445,12 +466,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     }
 
     // MARK: - Remote Timeline operations
-
-    /// Ensures the ACP session the registry aligned to one Gnostic Timeline.
-    private func ensureTimelineRemote(id: UUID, title _: String) async throws {
-        let connection = try await requireConnection()
-        _ = try await requireSession(for: id, connection: connection)
-    }
 
     /// ACP sessions carry no remote title; the Gnostic projection is
     /// authoritative.
@@ -724,7 +739,12 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             let processTransport = ACPProcessStdioTransport(
                 input: output.fileHandleForReading,
                 output: input.fileHandleForWriting,
-                onSessionUpdate: { [updateRouter] sessionID, update in updateRouter.enqueue(sessionID: sessionID, update) },
+                onSessionUpdate: { [weak self, updateRouter] sessionID, update in
+                    guard let self else { return }
+                    if try await self.recordRawSessionUpdate(sessionID: sessionID, update: update) {
+                        updateRouter.enqueue(sessionID: sessionID, update)
+                    }
+                },
                 onFailure: { [weak self] in
                     Task { @MainActor [weak self] in
                         self?.lifecycleFailure = AscendantBackendLifecycleFailure(
@@ -834,15 +854,71 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 cwd: desired.cwd,
                 mcpServers: try mcpServers(for: timelineID)
             ))
+            try await timelineJournalRecorder?.appendSessionTransition(
+                timelineID: timelineID,
+                sessionID: sessionID,
+                runtimeInstanceID: identity.id,
+                state: .live,
+                projectKind: desired.kind,
+                cwd: desired.cwd
+            )
             activeSessionIDs.insert(timelineID)
             try persistSessionMap()
             return sessionID
         }
 
         if sessionIDs[timelineID] != nil {
-            await closeAndRetireSession(for: timelineID, using: connection)
+            try await closeAndRetireSession(for: timelineID, using: connection)
         }
         return try await createSession(for: timelineID, project: desired, using: connection)
+    }
+
+    private func recordRawSessionUpdate(sessionID: String, update: ACPSessionUpdate) async throws -> Bool {
+        guard timelineJournalRecorder != nil else { return true }
+        if bindingTimelineIDsBySessionID[sessionID] != nil ||
+            (timelineIDsBySessionID[sessionID] == nil && pendingSessionCreations > 0) {
+            let queuedCount = pendingSessionUpdates.values.reduce(0) { $0 + $1.count }
+            guard queuedCount < 1_024 else {
+                throw TimelineJournalError.invalidPayload("Too many ACP updates arrived before a Session binding")
+            }
+            pendingSessionUpdates[sessionID, default: []].append(update)
+            return false
+        }
+        try await recordBoundSessionUpdate(sessionID: sessionID, update: update)
+        return true
+    }
+
+    private func recordBoundSessionUpdate(sessionID: String, update: ACPSessionUpdate) async throws {
+        guard let timelineJournalRecorder else { return }
+        guard let timelineID = timelineIDsBySessionID[sessionID] else {
+            throw TimelineJournalError.invalidPayload("ACP update references an unknown or duplicate Session ID")
+        }
+        if let activeTurn = activeTurns[timelineID], activeTurn.sessionID == sessionID {
+            let terminalOutcome: TimelineTurnTerminalOutcome?
+            if case let .stateUpdate(state) = update, state.isIdle {
+                terminalOutcome = .from(stopReason: state.idleStopReason)
+            } else {
+                terminalOutcome = nil
+            }
+            try await timelineJournalRecorder.appendTurnUpdate(
+                sessionID: sessionID,
+                update: TimelineTurnUpdate(
+                    timelineID: timelineID,
+                    clientTurnID: activeTurn.clientTurnID,
+                    sequence: activeTurn.nextTimelineUpdateSequence(),
+                    update: update,
+                    terminal: terminalOutcome != nil,
+                    terminalOutcome: terminalOutcome
+                )
+            )
+        } else {
+            try await timelineJournalRecorder.appendRawACPUpdate(
+                timelineID: timelineID,
+                sessionID: sessionID,
+                clientTurnID: nil,
+                update: update
+            )
+        }
     }
 
     private func resolvedProject(for timelineID: UUID, project: Project) throws -> ResolvedProject {
@@ -868,6 +944,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         project: ResolvedProject,
         using connection: ACPProtocolLayer
     ) async throws -> String {
+        pendingSessionCreations += 1
+        defer { pendingSessionCreations -= 1 }
         let response: ACPNewSessionResponse
         do {
             response = try await connection.createSession(request: ACPNewSessionRequest(
@@ -878,7 +956,37 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             if project.isManagedScratch { try? projectResolver.discard(project) }
             throw error
         }
+        if let existingTimelineID = timelineIDsBySessionID[response.sessionId] ?? bindingTimelineIDsBySessionID[response.sessionId],
+           existingTimelineID != timelineID {
+            if sessionCapabilities?.supportsClose == true {
+                _ = try? await connection.closeSession(request: ACPCloseSessionRequest(sessionId: response.sessionId))
+            }
+            if project.isManagedScratch { try? projectResolver.discard(project) }
+            throw Self.invalidConfiguration("An ACP Session ID cannot serve more than one Timeline.")
+        }
+        bindingTimelineIDsBySessionID[response.sessionId] = timelineID
+        defer {
+            bindingTimelineIDsBySessionID.removeValue(forKey: response.sessionId)
+            pendingSessionUpdates.removeValue(forKey: response.sessionId)
+        }
+        do {
+            try await timelineJournalRecorder?.appendSessionTransition(
+                timelineID: timelineID,
+                sessionID: response.sessionId,
+                runtimeInstanceID: identity.id,
+                state: .live,
+                projectKind: project.kind,
+                cwd: project.cwd
+            )
+        } catch {
+            if sessionCapabilities?.supportsClose == true {
+                _ = try? await connection.closeSession(request: ACPCloseSessionRequest(sessionId: response.sessionId))
+            }
+            if project.isManagedScratch { try? projectResolver.discard(project) }
+            throw error
+        }
         sessionIDs[timelineID] = response.sessionId
+        timelineIDsBySessionID[response.sessionId] = timelineID
         sessionCwds[timelineID] = project.cwd
         sessionProjectKinds[timelineID] = project.kind
         sessionStartedAt[timelineID] = Date()
@@ -897,6 +1005,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             if project.isManagedScratch { try? projectResolver.discard(project) }
             throw error
         }
+        // The transport can read adjacent response/update frames while this
+        // actor awaits the durable transition. Drain those updates in order
+        // before allowing new updates to bypass the binding queue.
+        while let queued = pendingSessionUpdates.removeValue(forKey: response.sessionId) {
+            for update in queued {
+                try await recordBoundSessionUpdate(sessionID: response.sessionId, update: update)
+                updateRouter.enqueue(sessionID: response.sessionId, update)
+            }
+        }
+        if pendingSessionCreations == 1 && !pendingSessionUpdates.isEmpty {
+            throw TimelineJournalError.invalidPayload("ACP update references an unknown Session ID")
+        }
         return response.sessionId
     }
 
@@ -912,6 +1032,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 timelineRegistry: timelineRegistry,
                 workspaceService: workspaceService,
                 permissionService: permissionService,
+                timelineJournalRecorder: timelineJournalRecorder,
                 activeTurn: { [weak self] id in
                     guard let turn = self?.activeTurns[id] else { return nil }
                     return (turn.clientTurnID, turn.sessionID)
@@ -922,15 +1043,26 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         return [try gateway.start()]
     }
 
-    private func closeAndRetireSession(for timelineID: UUID, using connection: ACPProtocolLayer) async {
+    private func closeAndRetireSession(for timelineID: UUID, using connection: ACPProtocolLayer) async throws {
         workspaceGateways.removeValue(forKey: timelineID)?.stop()
         var sessionClosed = false
-        if let sessionID = sessionIDs[timelineID], sessionCapabilities?.supportsClose == true {
+        let sessionID = sessionIDs[timelineID]
+        if let sessionID, sessionCapabilities?.supportsClose == true {
             do {
                 _ = try await connection.closeSession(request: ACPCloseSessionRequest(sessionId: sessionID))
                 sessionClosed = true
             }
             catch { /* A cwd transition is independent of best-effort close. */ }
+        }
+        if let sessionID, let cwd = sessionCwds[timelineID] {
+            try await timelineJournalRecorder?.appendSessionTransition(
+                timelineID: timelineID,
+                sessionID: sessionID,
+                runtimeInstanceID: identity.id,
+                state: sessionClosed ? .lost : (sessionCapabilities?.supportsResume == true ? .resumable : .ambiguous),
+                projectKind: sessionProjectKinds[timelineID],
+                cwd: cwd
+            )
         }
         let cwd = sessionCwds.removeValue(forKey: timelineID)
         let kind = sessionProjectKinds.removeValue(forKey: timelineID)
@@ -1001,6 +1133,24 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         )
         let decision = await activeTurn.requestPermission {
             await permissionService.requestApproval(for: backendPermissionRequest)
+        }
+        guard !activeTurn.isCancelled else {
+            return try Self.permissionResponse(for: .cancelled, requestId: request.id)
+        }
+        let recordedDecision: String
+        switch decision {
+        case .approved: recordedDecision = "approved"
+        case .denied: recordedDecision = "denied"
+        case .unavailable: recordedDecision = "unavailable"
+        }
+        do {
+            try await timelineJournalRecorder?.appendPermissionDecision(
+                timelineID: timelineID, clientTurnID: activeTurn.clientTurnID,
+                correlationID: backendPermissionRequest.correlationID,
+                decision: recordedDecision, approved: decision.isApproved
+            )
+        } catch {
+            return try Self.permissionResponse(for: .cancelled, requestId: request.id)
         }
         guard !activeTurn.isCancelled else {
             return try Self.permissionResponse(for: .cancelled, requestId: request.id)
@@ -1113,10 +1263,46 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 continue
             }
             if sessionIDs[id] != nil {
-                await closeAndRetireSession(for: id, using: connection)
+                try? await closeAndRetireSession(for: id, using: connection)
             }
             _ = try await createSession(for: id, project: resolved, using: connection)
         }
+    }
+
+    private func restoreSessionBindingsFromJournal(for timelineIDs: [UUID]) async throws {
+        guard !journalSessionBindingsRestored,
+              let timelineJournalRecorder else { return }
+
+        var restored: [(timelineID: UUID, projection: TimelineJournalSessionProjection)] = []
+        var sessionOwners: [String: UUID] = [:]
+        for timelineID in timelineIDs {
+            guard let timeline = try await timelineJournalRecorder.timelineProjection(for: timelineID) else { continue }
+            if !explicitProjectIDs.contains(timelineID), let project = timeline.project {
+                projects[timelineID] = project
+            }
+            guard let projection = timeline.latestSession else { continue }
+            guard projection.runtimeInstanceID == identity.id else {
+                throw Self.invalidConfiguration(
+                    "The Timeline journal Session for \(timelineID.uuidString) belongs to another Runtime instance."
+                )
+            }
+            guard projection.state != .lost else { continue }
+            if let otherTimelineID = sessionOwners[projection.sessionID], otherTimelineID != timelineID {
+                throw Self.invalidConfiguration("A journaled ACP Session ID belongs to more than one Timeline.")
+            }
+            sessionOwners[projection.sessionID] = timelineID
+            restored.append((timelineID, projection))
+        }
+
+        for (timelineID, projection) in restored {
+            sessionIDs[timelineID] = projection.sessionID
+            timelineIDsBySessionID[projection.sessionID] = timelineID
+            sessionCwds[timelineID] = projection.cwd
+            sessionProjectKinds[timelineID] = projection.projectKind ?? (projects[timelineID] ?? .scratch).kind
+            sessionStartedAt[timelineID] = projection.startedAt
+            activeSessionIDs.remove(timelineID)
+        }
+        journalSessionBindingsRestored = true
     }
 
     private func stopProcess(_ process: Process, processGroupID: pid_t?) async {
@@ -1350,6 +1536,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     }
 
     private func persistSessionMap() throws {
+        guard timelineJournalRecorder == nil else { return }
         try FileManager.default.createDirectory(at: sessionMapURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let values = Dictionary(uniqueKeysWithValues: sessionIDs.map { id, sessionID in
             let timeline = timelineRegistry.projection(id: id)
@@ -1641,6 +1828,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 private final class ACPActiveTurn {
     let clientTurnID: String
     let sessionID: String
+    private var timelineUpdateSequence = 0
     var isCancelled = false
     var isTurnCancelled = false
     private var permissionContinuations: [UUID: CheckedContinuation<AscendantPermissionDecision, Never>] = [:]
@@ -1649,6 +1837,11 @@ private final class ACPActiveTurn {
     init(clientTurnID: String, sessionID: String) {
         self.clientTurnID = clientTurnID
         self.sessionID = sessionID
+    }
+
+    func nextTimelineUpdateSequence() -> Int {
+        timelineUpdateSequence += 1
+        return timelineUpdateSequence
     }
 
     func cancelTurn() {

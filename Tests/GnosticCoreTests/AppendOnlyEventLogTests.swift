@@ -68,7 +68,7 @@ struct AppendOnlyEventLogTests {
         #expect(try fileSize(url) == validSize)
     }
 
-    @Test("recovery stops at the first corrupt record and truncates the rest")
+    @Test("recovery refuses to truncate a corrupt committed record")
     func corruptMiddleRecordStopsRecovery() throws {
         let url = makeURL()
         let log = AppendOnlyEventLog<Record>(fileURL: url)
@@ -80,10 +80,17 @@ struct AppendOnlyEventLogTests {
         try handle.close()
         // A valid record after the corrupt one is not recovered.
         try log.append(Record(id: 3, message: "three"))
+        let corruptSize = try fileSize(url)
 
-        let recovered = try log.recover()
-        #expect(recovered.map(\.payload) == [Record(id: 1, message: "one")])
-        #expect(try fileSize(url) == validSize)
+        var recoveryFailed = false
+        do {
+            _ = try log.recover()
+        } catch {
+            recoveryFailed = true
+        }
+        #expect(recoveryFailed)
+        #expect(try fileSize(url) == corruptSize)
+        #expect(corruptSize > validSize)
     }
 
     @Test("appending after recovery resumes at the end of the file")
@@ -188,6 +195,33 @@ struct AppendOnlyEventLogTests {
         #expect(scan.tail?.kind == .corrupt)
         #expect(scan.tail?.validByteCount == Int(validSize))
         #expect(try fileSize(url) == scannedSize)
+    }
+
+    @Test("a complete corrupt final frame is committed damage and is never truncated")
+    func completeCorruptFinalFrameIsCommittedDamage() throws {
+        let url = makeURL()
+        let log = AppendOnlyEventLog<Record>(fileURL: url)
+        try log.append(Record(id: 1, message: "one"))
+        let validSize = try fileSize(url)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("0000000000000000 1700000000000 {\"id\":2,\"message\":\"two\"}\n".utf8))
+        try handle.close()
+        let corruptSize = try fileSize(url)
+
+        let scan = try log.scan()
+        #expect(scan.records.map(\.payload) == [Record(id: 1, message: "one")])
+        #expect(scan.tail?.kind == .corrupt)
+
+        var recoveryFailed = false
+        do {
+            _ = try log.recover()
+        } catch {
+            recoveryFailed = true
+        }
+        #expect(recoveryFailed)
+        #expect(try fileSize(url) == corruptSize)
+        #expect(corruptSize > validSize)
     }
 
     @Test("a scan of a missing file reports nothing and creates nothing")
