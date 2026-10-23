@@ -39,6 +39,18 @@ test "$status" -eq 0
 ! printf '%s\n' "$help" | grep -F -- "--scenario"
 
 pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d
+broker_ready=0
+for attempt in {1..50}; do
+    if mosquitto_pub -h 127.0.0.1 -t "gnostic/runner-smoke/readiness-$$" -m ready >/dev/null 2>&1; then
+        broker_ready=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$broker_ready" -ne 1 ]; then
+    printf 'Mosquitto did not accept connections for runner smoke.\n' >&2
+    exit 1
+fi
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT INT TERM

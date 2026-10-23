@@ -18,6 +18,18 @@ test "$(chibi-scheme -p '(+ 2 3)')" = "5"
 bash /workspace/Scripts/test-rlm-limit-exec.sh /usr/local/bin/gnostic-rlm-limit-exec
 test -w /workspace/.swiftpm-cache
 mosquitto -c /etc/mosquitto/gnostic.conf -d
+broker_ready=0
+for attempt in {1..50}; do
+    if mosquitto_pub -h 127.0.0.1 -t gnostic/smoke/readiness -m ready >/dev/null 2>&1; then
+        broker_ready=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$broker_ready" -ne 1 ]; then
+    printf 'Mosquitto did not accept connections after launch.\n' >&2
+    exit 1
+fi
 smoke_output=$(mktemp)
 trap 'rm -f "$smoke_output"' EXIT INT TERM
 mosquitto_pub -h 127.0.0.1 -t gnostic/smoke -m ready -r
