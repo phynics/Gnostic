@@ -74,6 +74,12 @@ for attempt in {1..50}; do
     sleep 0.1
 done
 if [ "$broker_ready" -ne 1 ]; then
+    id >&2
+    command -v mosquitto >&2
+    ls -ld /tmp "$scratch" "$mosquitto_config" >&2 || true
+    if [ -r "$mosquitto_config" ]; then
+        printf 'Broker config is readable by the smoke process.\n' >&2
+    fi
     if [ -f "$mosquitto_log" ]; then
         while IFS= read -r line; do printf '%s\n' "$line" >&2; done <"$mosquitto_log"
     fi

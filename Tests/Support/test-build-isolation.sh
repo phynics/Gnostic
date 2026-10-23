@@ -108,7 +108,13 @@ run_lock_pair() {
         /^start / { if (active) exit 1; active = 1 }
         /^end / { if (!active) exit 1; active = 0 }
         END { if (active) exit 1 }
-    ' "$event_file" || fail "$backend same-directory commands never overlap"
+    ' "$event_file" || {
+        fail "$backend same-directory commands never overlap"
+        for diagnostic in "$event_file" "$event_file.1.log" "$event_file.2.log"; do
+            printf 'Lock diagnostic: %s\n' "$diagnostic" >&2
+            cat "$diagnostic" >&2
+        done
+    }
 }
 
 test_build_locks_serialize_shared_and_allow_distinct_directories() {
