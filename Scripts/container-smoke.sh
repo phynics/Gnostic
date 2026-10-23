@@ -17,21 +17,30 @@ chibi-scheme -V | grep -F "chibi-scheme 0.12"
 test "$(chibi-scheme -p '(+ 2 3)')" = "5"
 bash /workspace/Scripts/test-rlm-limit-exec.sh /usr/local/bin/gnostic-rlm-limit-exec
 test -w /workspace/.swiftpm-cache
-mosquitto -c /etc/mosquitto/gnostic.conf -d
+mosquitto_log=$(mktemp)
+smoke_output=$(mktemp)
+mosquitto -c /etc/mosquitto/gnostic.conf >"$mosquitto_log" 2>&1 &
+mosquitto_pid=$!
+cleanup() {
+    kill "$mosquitto_pid" 2>/dev/null || true
+    wait "$mosquitto_pid" 2>/dev/null || true
+    rm -f "$smoke_output" "$mosquitto_log"
+}
+trap cleanup EXIT INT TERM
 broker_ready=0
 for attempt in {1..50}; do
     if mosquitto_pub -h 127.0.0.1 -t gnostic/smoke/readiness -m ready >/dev/null 2>&1; then
         broker_ready=1
         break
     fi
+    if ! kill -0 "$mosquitto_pid" 2>/dev/null; then break; fi
     sleep 0.1
 done
 if [ "$broker_ready" -ne 1 ]; then
+    while IFS= read -r line; do printf '%s\n' "$line" >&2; done <"$mosquitto_log"
     printf 'Mosquitto did not accept connections after launch.\n' >&2
     exit 1
 fi
-smoke_output=$(mktemp)
-trap 'rm -f "$smoke_output"' EXIT INT TERM
 mosquitto_pub -h 127.0.0.1 -t gnostic/smoke -m ready -r
 mosquitto_sub -h 127.0.0.1 -t gnostic/smoke -C 1 -W 5 >"$smoke_output"
 mosquitto_pub -h 127.0.0.1 -t gnostic/smoke -n -r
