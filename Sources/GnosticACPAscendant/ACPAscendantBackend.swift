@@ -70,7 +70,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         privateTimelineID: identity.privateTimelineID,
         configured: configuredTimelines,
         remote: .init(
-            ensure: { [weak self] id, title in _ = try await self?.ensureTimelineRemote(id: id, title: title) },
+            // A Gnostic Timeline is not an ACP Session. The first Turn creates
+            // the remote Session after NodeRegistry has committed Timeline genesis.
+            ensure: { _, _ in },
             rename: { [weak self] id, title in _ = try await self?.renameTimelineRemote(id: id, title: title) },
             delete: { [weak self] id in _ = await self?.deleteTimelineRemote(id: id) }
         )
@@ -300,7 +302,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
     }
 
-    /// Creates an ACP session and adopts the Gnostic-created Timeline ID.
+    /// Creates the Gnostic Timeline projection; its ACP Session opens on the first Turn.
     ///
     /// - Parameters:
     ///   - id: The Gnostic-owned Timeline identifier to adopt.
@@ -458,12 +460,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     }
 
     // MARK: - Remote Timeline operations
-
-    /// Ensures the ACP session the registry aligned to one Gnostic Timeline.
-    private func ensureTimelineRemote(id: UUID, title _: String) async throws {
-        let connection = try await requireConnection()
-        _ = try await requireSession(for: id, connection: connection)
-    }
 
     /// ACP sessions carry no remote title; the Gnostic projection is
     /// authoritative.

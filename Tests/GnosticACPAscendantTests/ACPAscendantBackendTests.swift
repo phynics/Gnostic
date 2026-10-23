@@ -208,6 +208,143 @@ struct ACPAscendantBackendTests {
         #expect(fields["extension"] == .object(["phase": .string("fixture")]))
     }
 
+    @Test("runtime Timeline genesis is journaled before its ACP Session")
+    @MainActor
+    func runtimeTimelineGenesisPrecedesSession() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let nodeID = UUID()
+        let runtimeID = UUID()
+        let configuredTimelineID = UUID()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-genesis-order-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(
+                id: runtimeID,
+                name: "Genesis fixture",
+                defaultTimelineID: configuredTimelineID,
+                backend: .init(
+                    kind: ACPAscendantBackend.kind,
+                    settings: try fixtureSettings(stateHome: stateHome.url)
+                )
+            )],
+            timelines: [.init(
+                id: configuredTimelineID,
+                title: "Configured",
+                operatingAscendantID: runtimeID
+            )]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, configuration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: configuration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let created = try await runtime.createTimeline(title: "Created", ascendantID: runtimeID)
+        _ = try await runtime.turn(.init(
+            message: "first Turn",
+            timelineID: created.timelineID,
+            clientTurnID: "first-runtime-turn"
+        ))
+        await runtime.shutdown()
+
+        let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let fileURL = TimelineJournalStore.fileURL(for: created.timelineID, in: nodeJournalDirectory)
+        let payloads = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan()
+            .records
+            .map(\.payload.payload)
+        let genesisIndex = try #require(payloads.firstIndex { if case .timelineCreated = $0 { return true }; return false })
+        let sessionIndex = try #require(payloads.firstIndex { if case .sessionTransition = $0 { return true }; return false })
+        #expect(genesisIndex < sessionIndex)
+    }
+
+    @Test("journaled Timeline identity survives when the ACP Runtime no longer lists its Session")
+    @MainActor
+    func journalRestoresTimelineWithoutRuntimeSession() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let nodeID = UUID()
+        let runtimeID = UUID()
+        let configuredTimelineID = UUID()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-timeline-recovery-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(
+                id: runtimeID,
+                name: "Recovery fixture",
+                defaultTimelineID: configuredTimelineID,
+                backend: .init(
+                    kind: ACPAscendantBackend.kind,
+                    settings: try fixtureSettings(stateHome: stateHome.url)
+                )
+            )],
+            timelines: [.init(
+                id: configuredTimelineID,
+                title: "Configured",
+                operatingAscendantID: runtimeID
+            )]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, configuration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: configuration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let firstRuntime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await firstRuntime.start()
+        defer { Task { @MainActor in await firstRuntime.shutdown() } }
+
+        let created = try await firstRuntime.createTimeline(title: "Runtime Timeline", ascendantID: runtimeID)
+        _ = try await firstRuntime.turn(.init(
+            message: "persist a Runtime Session",
+            timelineID: created.timelineID,
+            clientTurnID: "runtime-session"
+        ))
+        await firstRuntime.shutdown()
+
+        try FileManager.default.removeItem(at: stateHome.url.appendingPathComponent("agent-sessions.json"))
+        let restartedRuntime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        defer { Task { @MainActor in await restartedRuntime.shutdown() } }
+
+        try await restartedRuntime.start()
+        let snapshot = await restartedRuntime.snapshot()
+        #expect(snapshot.timelineIDs.contains(configuredTimelineID))
+        #expect(snapshot.timelineIDs.contains(created.timelineID))
+        #expect(await restartedRuntime.timeline(id: created.timelineID)?.title == "Runtime Timeline")
+        await restartedRuntime.shutdown()
+    }
+
     @Test("configuration maps command, JSON args/env, cwd, and display name to a launch spec")
     @MainActor
     func configurationBuildsLaunchSpec() throws {
