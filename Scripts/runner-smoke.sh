@@ -58,8 +58,9 @@ if ! mosquitto_pub -h 127.0.0.1 -t "$readiness_topic" -m ready >/dev/null 2>&1; 
         'listener 1883 127.0.0.1' \
         'allow_anonymous true' \
         'persistence false' \
-        "pid_file $scratch/mosquitto.pid" \
         'log_dest stderr' >"$mosquitto_config"
+    chmod 755 "$scratch"
+    chmod 644 "$mosquitto_config"
     mosquitto -c "$mosquitto_config" >"$mosquitto_log" 2>&1 &
     mosquitto_pid=$!
 fi

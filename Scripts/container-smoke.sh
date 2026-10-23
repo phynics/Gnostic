@@ -26,8 +26,9 @@ printf '%s\n' \
     'listener 1883 127.0.0.1' \
     'allow_anonymous true' \
     'persistence false' \
-    "pid_file $smoke_dir/mosquitto.pid" \
     'log_dest stderr' >"$mosquitto_config"
+chmod 755 "$smoke_dir"
+chmod 644 "$mosquitto_config"
 mosquitto -c "$mosquitto_config" >"$mosquitto_log" 2>&1 &
 mosquitto_pid=$!
 cleanup() {
