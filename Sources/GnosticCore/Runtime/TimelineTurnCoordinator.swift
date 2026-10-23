@@ -139,6 +139,7 @@ public actor TimelineTurnCoordinator {
     private var activeTurnsByTimeline: [UUID: ActiveTurn] = [:]
     private var completedTurns: [TurnKey: CompletedTurn] = [:]
     private var recordedPermissions: [String: RecordedPermissionDecision] = [:]
+    private var recoveryTasks: [UUID: Task<TimelineJournal, Error>] = [:]
     private var recoveredTimelines: Set<UUID> = []
     private var terminalizingTurns: Set<TurnKey> = []
     private var admissionLocks: Set<UUID> = []
@@ -321,7 +322,9 @@ public actor TimelineTurnCoordinator {
         do {
             return try await task.value
         } catch {
-            activeTurnsByTimeline.removeValue(forKey: envelope.timelineID)
+            if activeTurnsByTimeline[envelope.timelineID]?.clientTurnID == envelope.clientTurnID {
+                activeTurnsByTimeline.removeValue(forKey: envelope.timelineID)
+            }
             terminalContinuation.finish()
             throw error
         }
@@ -408,6 +411,8 @@ public actor TimelineTurnCoordinator {
 
     /// Cancels an active turn on the Timeline if present.
     public func cancel(timelineID: UUID, clientTurnID: String) async throws -> Bool {
+        await acquireAdmissionLock(for: timelineID)
+        defer { releaseAdmissionLock(for: timelineID) }
         guard let active = activeTurnsByTimeline[timelineID], active.clientTurnID == clientTurnID else {
             return false
         }
@@ -420,6 +425,12 @@ public actor TimelineTurnCoordinator {
             outcome: .cancelled,
             messageID: active.messageID
         ), to: journal)
+        let journalUpdates = (try? await journal.replay())?.compactMap { record -> TimelineTurnUpdate? in
+            guard case let .acpUpdate(_, update) = record.payload,
+                  update.timelineID == timelineID,
+                  update.clientTurnID == clientTurnID else { return nil }
+            return update
+        }
         let current = activeTurnsByTimeline[timelineID].flatMap {
             $0.clientTurnID == clientTurnID ? $0 : nil
         }
@@ -428,18 +439,12 @@ public actor TimelineTurnCoordinator {
         current?.terminalContinuation?.yield(.cancelled)
         current?.terminalContinuation?.finish()
         activeTurnsByTimeline.removeValue(forKey: timelineID)
-        let journalUpdates = (try? await journal.replay())?.compactMap { record -> TimelineTurnUpdate? in
-            guard case let .acpUpdate(_, update) = record.payload,
-                  update.timelineID == timelineID,
-                  update.clientTurnID == clientTurnID else { return nil }
-            return update
-        } ?? latest.updates
         completedTurns[key] = CompletedTurn(
             admissionDigest: latest.admissionDigest,
             sequence: latest.sequence,
             terminalOutcome: .cancelled,
             messageID: latest.messageID,
-            updates: journalUpdates
+            updates: journalUpdates ?? latest.updates
         )
         return true
     }
@@ -530,8 +535,16 @@ public actor TimelineTurnCoordinator {
     }
 
     private func recoverTimelineIfNeeded(_ timelineID: UUID) async throws -> TimelineJournal {
+        if let pending = recoveryTasks[timelineID] { return try await pending.value }
+        let task = Task { try await self.recoverTimeline(timelineID) }
+        recoveryTasks[timelineID] = task
+        defer { recoveryTasks.removeValue(forKey: timelineID) }
+        return try await task.value
+    }
+
+    private func recoverTimeline(_ timelineID: UUID) async throws -> TimelineJournal {
         let journal = try await journal(for: timelineID)
-        guard recoveredTimelines.insert(timelineID).inserted else { return journal }
+        guard !recoveredTimelines.contains(timelineID) else { return journal }
 
         let records: [TimelineJournalRecord]
         do {
@@ -543,6 +556,8 @@ public actor TimelineTurnCoordinator {
 
         var admissions: [String: (digest: String, sequence: Int)] = [:]
         var updates: [String: [TimelineTurnUpdate]] = [:]
+        // An idle notification does not confirm prompt insertion. Only an
+        // explicit committed completion resolves a recovered admission.
         var outcomes: [String: (outcome: TimelineTurnTerminalOutcome, messageID: String?)] = [:]
         for record in records {
             switch record.payload {
@@ -556,9 +571,6 @@ public actor TimelineTurnCoordinator {
                 admissions[clientTurnID] = (admissionDigest, turnSequence)
             case let .acpUpdate(_, update) where update.timelineID == timelineID:
                 updates[update.clientTurnID, default: []].append(update)
-                if update.terminal, let outcome = update.terminalOutcome {
-                    outcomes[update.clientTurnID] = (outcome, nil)
-                }
             case let .turnCompleted(clientTurnID, outcome, messageID):
                 outcomes[clientTurnID] = (outcome, messageID)
             case let .permissionDecision(correlationID, _, decision, approved):
@@ -583,6 +595,7 @@ public actor TimelineTurnCoordinator {
                 updates: updates[clientTurnID] ?? []
             )
         }
+        recoveredTimelines.insert(timelineID)
         return journal
     }
 

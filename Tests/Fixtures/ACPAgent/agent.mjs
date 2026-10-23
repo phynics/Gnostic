@@ -271,6 +271,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
               { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
             ],
       });
+      if (process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE) {
+        await writeFile(process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE, JSON.stringify(permission.outcome));
+      }
       const outcome = process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME ?? "selected:allow-once";
       if (outcome.startsWith("selected:")) {
         assert.deepEqual(permission.outcome, { outcome: "selected", optionId: outcome.slice("selected:".length) });
@@ -353,8 +356,27 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     return { messageId: userMessageId };
   });
 
+const fixtureOutput = process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE
+  ? new Writable({
+      write(chunk, encoding, callback) {
+        const message = JSON.parse(chunk.toString().trim());
+        if (message.result?.sessionId) {
+          const update = {
+            jsonrpc: "2.0", method: "session/update",
+            params: { sessionId: message.result.sessionId, update: { sessionUpdate: "fixture_session_opened", _meta: { adjacent: true } } },
+          };
+          const notification = Buffer.from(JSON.stringify(update) + "\n");
+          const frames = process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE === "before"
+            ? [notification, Buffer.from(chunk)] : [Buffer.from(chunk), notification];
+          process.stdout.write(Buffer.concat(frames), callback);
+        } else {
+          process.stdout.write(chunk, callback);
+        }
+      },
+    })
+  : process.stdout;
 const stream = acp.ndJsonStream(
-  Writable.toWeb(process.stdout),
+  Writable.toWeb(fixtureOutput),
   Readable.toWeb(process.stdin),
 );
 app.connect(stream);

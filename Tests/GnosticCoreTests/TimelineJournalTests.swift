@@ -185,6 +185,12 @@ struct TimelineJournalTests {
         )
         try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: url).append(record)
 
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("uncommitted-suffix".utf8))
+        try handle.close()
+        let original = try Data(contentsOf: url)
+
         var rejection: TimelineJournalError?
         do {
             _ = try TimelineJournal(fileURL: url, timelineID: timelineID)
@@ -195,6 +201,29 @@ struct TimelineJournalTests {
             actual: TimelineJournalRecord.currentFormatVersion + 1,
             supported: TimelineJournalRecord.currentFormatVersion
         ))
+        #expect(try Data(contentsOf: url) == original)
+    }
+
+    @Test("semantic corruption with a torn suffix preserves the entire source")
+    func corruptPrefixPreservesTornSuffix() async throws {
+        let timelineID = UUID()
+        let url = makeURL()
+        let log = AppendOnlyEventLog<TimelineJournalRecord>(fileURL: url)
+        try log.append(TimelineJournalRecord(
+            timelineID: timelineID, replayEpoch: UUID(), sequence: 7, timestamp: Date(), causalSpanID: nil,
+            payload: .replayEpochStarted(previousEpoch: nil, afterSequence: 0)
+        ))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("partial".utf8))
+        try handle.close()
+        let original = try Data(contentsOf: url)
+        let journal = try TimelineJournal(fileURL: url, timelineID: timelineID)
+        guard case .quarantined = await journal.status() else {
+            Issue.record("Expected corrupt committed sequence to quarantine the journal")
+            return
+        }
+        #expect(try Data(contentsOf: url) == original)
     }
 
     @Test("a Turn admission digest must match its stored prompt blocks")

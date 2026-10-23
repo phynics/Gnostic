@@ -48,12 +48,29 @@ Timeline in a Node.
 ## Event payloads
 
 The payload records Timeline creation and rename, Workspace attachment changes,
-Session transitions, Turn admission and completion, permission decisions, and
-ACP updates. A Session transition stores the session ID, Runtime instance ID,
+Session transitions, Project changes, Turn admission and completion, permission
+decisions, and ACP updates. A Session transition stores the session ID, Runtime instance ID,
 state, Project kind, and exact `cwd`. A Turn admission stores its canonical
 prompt digest, ACP version tag, content blocks, Turn sequence, and
 `clientTurnID`. An ACP update stores the `ACPSessionUpdate` value as received.
 That value keeps `_meta` and unknown update kinds.
+
+A `projectChanged` event stores the desired `Project` and retires the latest
+Session projection before the old Session is closed. Recovery uses this desired
+placement when no explicit Project is configured. An explicit manifest Project
+takes precedence, so changing its directory starts a new Session on the same
+Timeline.
+
+The shared permission coordinator syncs decisions before publishing
+selection or releasing approval. ACP replies and Workspace gateway dispatch
+check the same idempotent decision record. A failed journal write cancels the
+permission request and prevents Workspace tool invocation.
+
+Session updates received while a new Session binding is being committed are
+queued, then synced and forwarded in receipt order after the Session transition.
+An idle update alone does not confirm prompt insertion. Without a committed
+completion, recovery retains `insertionUnknown` and never dispatches that
+admission again.
 
 The Turn event log remains a separate digest-only ledger. It does not replace
 the Timeline journal or contain conversation content.
@@ -64,7 +81,9 @@ The newline commits a record. If the final frame has no newline, recovery
 truncates that uncommitted tail to the previous valid frame. A newline-terminated
 frame with an invalid checksum or record quarantines the Timeline. Gnostic keeps
 the file unchanged, reports the valid sequence and reason, and rejects later
-writes. A reader rejects an unknown `formatVersion`.
+writes. A reader rejects an unknown `formatVersion`. Committed records are
+validated before any torn suffix is truncated, so an unsupported or quarantined
+journal remains byte-for-byte unchanged.
 
 `replay(after:)` accepts a cursor only when its sequence and replay epoch match
 one committed record. It rejects a cursor from a different epoch. Sequence

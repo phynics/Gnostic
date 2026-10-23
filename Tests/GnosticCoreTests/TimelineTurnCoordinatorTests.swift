@@ -243,6 +243,94 @@ struct TimelineTurnCoordinatorTests {
         #expect(!(await duplicateDispatch.get()))
     }
 
+    @Test("concurrent replay and retry share recovery without another dispatch")
+    func concurrentReplayAndRetryShareRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TimelineJournalStore(directoryURL: directory)
+        let coordinator = TimelineTurnCoordinator(journals: store)
+        for _ in 0..<32 {
+            let envelope = makeEnvelope()
+            let journal = try await store.journal(for: envelope.timelineID)
+            try await journal.append(.turnAdmitted(
+                clientTurnID: envelope.clientTurnID, admissionDigest: envelope.admissionDigest,
+                turnSequence: envelope.sequence, acpVersionTag: envelope.acpVersionTag, prompt: envelope.prompt
+            ))
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    _ = try await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
+                }
+                group.addTask {
+                    let result = try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
+                        Issue.record("Recovery dispatched an already admitted Turn")
+                        try await coordinator.recordTerminalUpdate(
+                            timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID, stopReason: .endTurn
+                        )
+                        return "duplicate"
+                    })
+                    #expect(result.replayed)
+                    #expect(result.terminalOutcome == .insertionUnknown)
+                }
+                try await group.waitForAll()
+            }
+        }
+    }
+
+    @Test("idle without a committed prompt acknowledgement remains insertionUnknown after restart")
+    func idleWithoutAcknowledgementRemainsUnknown() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TimelineJournalStore(directoryURL: directory)
+        let envelope = makeEnvelope()
+        let journal = try await store.journal(for: envelope.timelineID)
+        try await journal.append(.turnAdmitted(
+            clientTurnID: envelope.clientTurnID, admissionDigest: envelope.admissionDigest,
+            turnSequence: envelope.sequence, acpVersionTag: envelope.acpVersionTag, prompt: envelope.prompt
+        ))
+        try await journal.append(.acpUpdate(sessionID: "session", update: TimelineTurnUpdate(
+            timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID, sequence: 1,
+            update: .stateUpdate(.idle(stopReason: .endTurn, meta: nil)), terminal: true, terminalOutcome: .completed
+        )))
+        let restarted = TimelineTurnCoordinator(journals: store)
+        let result = try await restarted.execute(envelope: envelope, promptDispatch: { _ in
+            Issue.record("An uncertain admission was dispatched again")
+            return "duplicate"
+        })
+        #expect(result.replayed)
+        #expect(result.messageID == nil)
+        #expect(result.terminalOutcome == .insertionUnknown)
+    }
+
+    @Test("late terminal updates cannot replace committed completion on restart")
+    func lateTerminalPreservesCommittedOutcome() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TimelineJournalStore(directoryURL: directory)
+        let coordinator = TimelineTurnCoordinator(journals: store)
+        let envelope = makeEnvelope()
+        _ = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
+            try await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID, stopReason: .endTurn
+            )
+            return "committed-message"
+        })
+        try await coordinator.recordUpdate(TimelineTurnUpdate(
+            timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID, sequence: 2,
+            update: .stateUpdate(.idle(stopReason: .cancelled, meta: nil)),
+            terminal: true, terminalOutcome: .cancelled
+        ))
+        let restarted = TimelineTurnCoordinator(journals: store)
+        let replay = try await restarted.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
+        #expect(replay?.terminalOutcome == .completed)
+        let result = try await restarted.execute(envelope: envelope, promptDispatch: { _ in
+            Issue.record("A completed Turn was dispatched again")
+            return "duplicate"
+        })
+        #expect(result.messageID == "committed-message")
+        #expect(result.terminalOutcome == .completed)
+        #expect(replay?.updates.count == 1)
+    }
+
     @Test("an ACP update is durable before the stream handler forwards it")
     func acpUpdateIsDurableBeforeForwarding() async throws {
         let directory = FileManager.default.temporaryDirectory

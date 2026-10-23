@@ -446,6 +446,23 @@ public actor AscendantTurnUpdateStore {
         appendTerminalUpdate(timelineID: timelineID, clientTurnID: clientTurnID, outcome: outcome)
     }
 
+    /// Commits permission before the coordinator publishes or releases it.
+    internal func recordPermissionDecision(
+        request: BackendPermissionRequest, decision: AscendantPermissionDecision
+    ) async throws {
+        guard let timelineJournals else { return }
+        let value: String
+        switch decision {
+        case .approved: value = "approved"
+        case .denied: value = "denied"
+        case .unavailable: value = "unavailable"
+        }
+        try await TimelineJournalRecorder(journals: timelineJournals).appendPermissionDecision(
+            timelineID: request.timelineID, clientTurnID: request.clientTurnID,
+            correlationID: request.correlationID, decision: value, approved: decision.isApproved
+        )
+    }
+
     private static func timelineOutcome(_ outcome: TurnTerminalOutcome) -> TimelineTurnTerminalOutcome {
         switch outcome {
         case .succeeded:

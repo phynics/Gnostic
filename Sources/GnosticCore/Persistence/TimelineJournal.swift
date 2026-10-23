@@ -15,6 +15,7 @@ public enum TimelineJournalPayload: Codable, Sendable, Equatable {
         attachments: [TimelineJournalWorkspaceAttachment]
     )
     case timelineRenamed(title: String)
+    case projectChanged(project: Project)
     case workspaceAttached(workspaceID: UUID, uri: String, scope: NodeManifest.AttachmentScope)
     case workspaceDetached(workspaceID: UUID)
     case sessionTransition(
@@ -138,6 +139,8 @@ public struct TimelineJournalTimelineProjection: Sendable, Equatable {
     public let attachments: [TimelineJournalWorkspaceAttachment]
     public let createdAt: Date
     public let updatedAt: Date
+    /// Desired placement, retained even between Project change and Session creation.
+    public let project: Project?
     public let latestSession: TimelineJournalSessionProjection?
 
     public init(
@@ -147,7 +150,8 @@ public struct TimelineJournalTimelineProjection: Sendable, Equatable {
         attachments: [TimelineJournalWorkspaceAttachment],
         createdAt: Date,
         updatedAt: Date,
-        latestSession: TimelineJournalSessionProjection?
+        latestSession: TimelineJournalSessionProjection?,
+        project: Project? = nil
     ) {
         self.timelineID = timelineID
         self.title = title
@@ -156,6 +160,7 @@ public struct TimelineJournalTimelineProjection: Sendable, Equatable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.latestSession = latestSession
+        self.project = project
     }
 }
 
@@ -251,10 +256,15 @@ public actor TimelineJournal {
     public init(fileURL: URL, timelineID: UUID) throws {
         let log = AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
         let scan = try log.scan()
-        var recovered = scan.records.map(\.payload)
-        var availability: TimelineJournalAvailability = .writable
+        // Validate the committed prefix before changing any bytes. An unknown
+        // format or corrupt sequence must preserve even its uncommitted suffix.
+        let validation = try Self.validate(scan.records.map(\.payload), timelineID: timelineID)
+        var recovered = validation.validRecords
+        var availability: TimelineJournalAvailability = validation.diagnostic.map {
+            .quarantined($0)
+        } ?? .writable
 
-        if let tail = scan.tail {
+        if let tail = scan.tail, availability == .writable {
             if tail.kind == .corrupt {
                 availability = .quarantined(TimelineJournalDiagnostic(
                     timelineID: timelineID,
@@ -262,14 +272,8 @@ public actor TimelineJournal {
                     reason: tail.reason
                 ))
             } else {
-                recovered = try log.recover().map(\.payload)
+                _ = try log.recover()
             }
-        }
-
-        let validation = try Self.validate(recovered, timelineID: timelineID)
-        recovered = validation.validRecords
-        if let diagnostic = validation.diagnostic, availability == .writable {
-            availability = .quarantined(diagnostic)
         }
 
         if availability == .writable {
@@ -314,6 +318,7 @@ public actor TimelineJournal {
         var attachmentOrder: [UUID] = []
         var createdAt: Date?
         var updatedAt: Date?
+        var project: Project?
         var latestSession: TimelineJournalSessionProjection?
 
         for record in records {
@@ -329,6 +334,9 @@ public actor TimelineJournal {
                 }
                 createdAt = record.timestamp
                 updatedAt = record.timestamp
+            case let .projectChanged(nextProject):
+                project = nextProject
+                latestSession = nil
             case let .timelineRenamed(newTitle):
                 title = newTitle
                 updatedAt = record.timestamp
@@ -345,6 +353,9 @@ public actor TimelineJournal {
                 attachmentOrder.removeAll { $0 == workspaceID }
                 updatedAt = record.timestamp
             case let .sessionTransition(sessionID, runtimeID, state, projectKind, cwd):
+                if let projectKind {
+                    project = projectKind == .local ? .local(cwd) : .scratch
+                }
                 let startedAt: Date
                 if let previousSession = latestSession, previousSession.sessionID == sessionID {
                     startedAt = previousSession.startedAt
@@ -373,7 +384,8 @@ public actor TimelineJournal {
             attachments: attachmentOrder.compactMap { attachments[$0] },
             createdAt: createdAt,
             updatedAt: updatedAt,
-            latestSession: latestSession
+            latestSession: latestSession,
+            project: project
         )
     }
 
@@ -425,6 +437,32 @@ public actor TimelineJournal {
         }
         records.append(record)
         return record
+    }
+
+    // Permission adapters and the shared coordinator may observe the same
+    // decision. Commit it once within this journal's serialized writer.
+    func recordPermissionDecision(
+        correlationID: String, clientTurnID: String, decision: String, approved: Bool
+    ) throws {
+        let payload = TimelineJournalPayload.permissionDecision(
+            correlationID: correlationID, clientTurnID: clientTurnID, decision: decision, approved: approved
+        )
+        if let prior = records.last(where: {
+            if case let .permissionDecision(correlation, turn, _, _) = $0.payload {
+                return correlation == correlationID && turn == clientTurnID
+            }
+            return false
+        }) {
+            guard prior.payload == payload else {
+                throw TimelineJournalError.invalidPayload("Permission decision conflicts with its committed value")
+            }
+            // A duplicate must still fail closed if the journal was quarantined.
+            guard case .writable = availability else {
+                throw TimelineJournalError.quarantined("journal is not writable")
+            }
+            return
+        }
+        try append(payload)
     }
 
     /// Returns committed events after `cursor`, in logical append order.
@@ -577,6 +615,9 @@ public actor TimelineJournal {
         case let .timelineCreated(title, _, attachments):
             if title.isEmpty { return "Timeline title is empty" }
             if !attachments.allSatisfy(isValid) { return "Timeline creation has an invalid Workspace attachment" }
+        case let .projectChanged(project):
+            do { try project.validate() }
+            catch { return "Project change is invalid: \(error.localizedDescription)" }
         case let .timelineRenamed(title):
             if title.isEmpty { return "Timeline title is empty" }
         case let .workspaceAttached(_, uri, scope):
@@ -787,6 +828,27 @@ public struct TimelineJournalRecorder: AscendantBackendOptionalCapability, Senda
             projectKind: projectKind,
             cwd: cwd
         ))
+    }
+
+    /// Commits desired placement and retires the old Session projection.
+    public func appendProjectChange(timelineID: UUID, project: Project) async throws {
+        let journal = try await journals.journal(for: timelineID)
+        try await journal.append(.projectChanged(project: project))
+    }
+
+    /// Commits a permission decision before replying to the Runtime.
+    public func appendPermissionDecision(
+        timelineID: UUID, clientTurnID: String, correlationID: String, decision: String, approved: Bool
+    ) async throws {
+        let journal = try await journals.journal(for: timelineID)
+        try await journal.recordPermissionDecision(
+            correlationID: correlationID, clientTurnID: clientTurnID, decision: decision, approved: approved
+        )
+    }
+
+    /// Reads desired placement and Session state from the authoritative journal.
+    public func timelineProjection(for timelineID: UUID) async throws -> TimelineJournalTimelineProjection? {
+        try await journals.timelineProjection(for: timelineID)
     }
 
     /// Reads the latest Session binding from the authoritative Timeline journal.

@@ -185,7 +185,7 @@ struct NodeAssembly {
                         kind: "timeline",
                         operatingAscendantID: ascendant.id,
                         attachments: try Self.manifestAttachments(from: projection.attachments),
-                        project: Self.replayedProject(projection.latestSession) ?? .scratch
+                        project: projection.project ?? .scratch
                     ))
                 }
                 let lease = UUID.makeVersion4()
@@ -249,6 +249,7 @@ struct NodeAssembly {
                 projectionRelay: projectionRelay,
                 backendWorkspaceCapability: workspaceCapability,
                 backendTimelineCapabilities: timelineStoreCapabilities,
+                timelineJournalRecorder: timelineJournals.map(TimelineJournalRecorder.init(journals:)),
                 ascendantAdapters: instances,
                 backendIdentities: identities,
                 backendSpecs: specs,
@@ -291,20 +292,8 @@ struct NodeAssembly {
             operatingAscendantID: configuration.operatingAscendantID,
             flags: configuration.flags,
             attachments: try manifestAttachments(from: projection.attachments),
-            project: replayedProject(projection.latestSession) ?? configuration.project
+            project: configuration.project ?? projection.project
         )
-    }
-
-    private static func replayedProject(
-        _ session: TimelineJournalSessionProjection?
-    ) -> Project? {
-        guard let session, let projectKind = session.projectKind else { return nil }
-        switch projectKind {
-        case .local:
-            return .local(session.cwd)
-        case .scratch:
-            return .scratch
-        }
     }
 
     private static func manifestAttachments(

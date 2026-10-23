@@ -65,6 +65,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private let permissionCoordinator: AscendantPermissionCoordinator
     private let projectionRelay: NodeProjectionRelay
     private let backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?
+    private let timelineJournalRecorder: TimelineJournalRecorder?
     private let backendTimelineCapabilities: [UUID: any AscendantBackendOptionalCapability]
     private var backendWorkspaceAttachment: ((UUID, UUID, UUID, UUID) async throws -> Void)?
 
@@ -90,6 +91,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         projectionRelay: NodeProjectionRelay,
         backendWorkspaceCapability: BackendWorkspaceDiscoveryCapability?,
         backendTimelineCapabilities: [UUID: any AscendantBackendOptionalCapability] = [:],
+        timelineJournalRecorder: TimelineJournalRecorder? = nil,
         ascendantAdapters: [UUID: any AscendantBackend],
         backendIdentities: [AscendantBackendIdentity],
         backendSpecs: [UUID: BackendSpec],
@@ -106,6 +108,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         self.projectionRelay = projectionRelay
         self.backendWorkspaceCapability = backendWorkspaceCapability
         self.backendTimelineCapabilities = backendTimelineCapabilities
+        self.timelineJournalRecorder = timelineJournalRecorder
         self.ascendantAdapters = ascendantAdapters
         self.backendIdentities = backendIdentities
         self.backendSpecs = backendSpecs
@@ -316,6 +319,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
                 if let timelineCapability = self.backendTimelineCapabilities[ascendantID] {
                     optionalCapabilities.append(timelineCapability)
                 }
+                if let recorder = self.timelineJournalRecorder { optionalCapabilities.append(recorder) }
                 let services = AscendantBackendServices(
                     workspace: self.backendWorkspaceService,
                     permission: self.permissionCoordinator,

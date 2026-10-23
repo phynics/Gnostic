@@ -84,6 +84,20 @@ public actor AscendantPermissionCoordinator {
               value.request.timelineID == timelineID,
               value.request.clientTurnID == responseClientTurnID.rawValue else { return false }
         pending[correlationID] = nil
+        do {
+            try await updates.recordPermissionDecision(request: value.request, decision: approved ? .approved : .denied)
+        } catch {
+            await append(value.request, clientTurnID: value.clientTurnID, status: .unavailable)
+            await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
+            value.continuation.yield(.unavailable(reason: "journalUnavailable"))
+            value.continuation.finish()
+            return false
+        }
+        guard acceptingResponses else {
+            value.continuation.yield(.unavailable(reason: "permissionMediationStopped"))
+            value.continuation.finish()
+            return false
+        }
         await append(value.request, clientTurnID: value.clientTurnID, status: approved ? .selected : .denied)
         await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
         value.continuation.yield(approved ? .approved : .denied)
@@ -96,6 +110,7 @@ public actor AscendantPermissionCoordinator {
         let values = Array(pending.values)
         pending.removeAll()
         for value in values {
+            try? await updates.recordPermissionDecision(request: value.request, decision: .unavailable(reason: reason.rawValue))
             await append(value.request, clientTurnID: value.clientTurnID, status: reason)
             await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
             value.continuation.yield(.unavailable(reason: reason.rawValue))
