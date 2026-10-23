@@ -17,14 +17,23 @@ chibi-scheme -V | grep -F "chibi-scheme 0.12"
 test "$(chibi-scheme -p '(+ 2 3)')" = "5"
 bash /workspace/Scripts/test-rlm-limit-exec.sh /usr/local/bin/gnostic-rlm-limit-exec
 test -w /workspace/.swiftpm-cache
-mosquitto_log=$(mktemp)
-smoke_output=$(mktemp)
-mosquitto -c /etc/mosquitto/gnostic.conf >"$mosquitto_log" 2>&1 &
+smoke_dir=$(mktemp -d)
+smoke_output="$smoke_dir/output"
+mosquitto_log="$smoke_dir/mosquitto.log"
+mosquitto_config="$smoke_dir/mosquitto.conf"
+printf '%s\n' \
+    'per_listener_settings true' \
+    'listener 1883 127.0.0.1' \
+    'allow_anonymous true' \
+    'persistence false' \
+    "pid_file $smoke_dir/mosquitto.pid" \
+    'log_dest stderr' >"$mosquitto_config"
+mosquitto -c "$mosquitto_config" >"$mosquitto_log" 2>&1 &
 mosquitto_pid=$!
 cleanup() {
     kill "$mosquitto_pid" 2>/dev/null || true
     wait "$mosquitto_pid" 2>/dev/null || true
-    rm -f "$smoke_output" "$mosquitto_log"
+    rm -rf "$smoke_dir"
 }
 trap cleanup EXIT INT TERM
 broker_ready=0

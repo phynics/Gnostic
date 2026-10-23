@@ -40,6 +40,7 @@ test "$status" -eq 0
 
 scratch=$(mktemp -d)
 mosquitto_log="$scratch/mosquitto.log"
+mosquitto_config="$scratch/mosquitto.conf"
 mosquitto_pid=
 cleanup() {
     if [ -n "$mosquitto_pid" ]; then
@@ -52,7 +53,14 @@ trap cleanup EXIT INT TERM
 
 readiness_topic="gnostic/runner-smoke/readiness-$$"
 if ! mosquitto_pub -h 127.0.0.1 -t "$readiness_topic" -m ready >/dev/null 2>&1; then
-    mosquitto -c /etc/mosquitto/gnostic.conf >"$mosquitto_log" 2>&1 &
+    printf '%s\n' \
+        'per_listener_settings true' \
+        'listener 1883 127.0.0.1' \
+        'allow_anonymous true' \
+        'persistence false' \
+        "pid_file $scratch/mosquitto.pid" \
+        'log_dest stderr' >"$mosquitto_config"
+    mosquitto -c "$mosquitto_config" >"$mosquitto_log" 2>&1 &
     mosquitto_pid=$!
 fi
 broker_ready=0
