@@ -255,6 +255,7 @@ case $1 in
         exit 0
         ;;
     test)
+        printf 'GNOSTIC_PK_RUNTIME_BINARY=%s\n' "${GNOSTIC_PK_RUNTIME_BINARY:-}" >> "$FAKE_SWIFT_ENV"
         case ${FAKE_SWIFT_MODE:-success} in
             unmatched) echo 'Test run with 0 tests'; exit 0 ;;
             failure) echo 'fixture failure'; exit 42 ;;
@@ -274,14 +275,17 @@ exit 0
 PGREP
     mkdir -p "$work/bin"
     printf '#!/bin/sh\nexit 0\n' >"$work/bin/gnostic"
-    chmod +x "$bin/timeout" "$bin/swift" "$bin/npm" "$bin/pgrep" "$work/bin/gnostic"
+    printf '#!/bin/sh\nexit 0\n' >"$work/bin/gnostic-pk-runtime"
+    chmod +x "$bin/timeout" "$bin/swift" "$bin/npm" "$bin/pgrep" "$work/bin/gnostic" "$work/bin/gnostic-pk-runtime"
     run_capture "$fixture_dir/focused-success.log" env PATH="$bin:$PATH" FAKE_SWIFT_ARGS="$fixture_dir/swift-args" \
-        FAKE_SWIFT_BIN_DIR="$work/bin" \
+        FAKE_SWIFT_ENV="$fixture_dir/swift-env" FAKE_SWIFT_BIN_DIR="$work/bin" \
         FILTER=GnosticSomeTests N=2 TEST_TIMEOUT=30 SWIFT_FLAGS='--cache-path /workspace/.swiftpm-cache -Xswiftc -warnings-as-errors' \
         bash -c 'cd "$1" && bash "$2"' sh "$work" "$focused_script"
     assert_status 0 "$run_status" "focused and repeat test run succeeds"
     assert_contains "Test run with 1 test" "$work/.testing/focused-GnosticSomeTests-1.log" "focused test captures diagnostics"
     assert_contains "-warnings-as-errors" "$fixture_dir/swift-args" "focused tests preserve strict compiler flags"
+    assert_contains "--product gnostic-pk-runtime" "$fixture_dir/swift-args" "focused runner builds the Runtime executable"
+    assert_contains "GNOSTIC_PK_RUNTIME_BINARY=$work/bin/gnostic-pk-runtime" "$fixture_dir/swift-env" "focused tests receive the Runtime executable path"
     [ "$(awk '$1 == "test" { count++ } END { print count + 0 }' "$fixture_dir/swift-args")" = 2 ] || fail "repeat command executes exactly N runs"
     assert_contains "--skip-build" "$fixture_dir/swift-args" "repeat command reuses the first build"
 

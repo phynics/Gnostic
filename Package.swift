@@ -9,6 +9,7 @@ let package = Package(
         .iOS("26.0"),
     ],
     products: [
+        .library(name: "GnosticACPWire", targets: ["GnosticACPWire"]),
         .library(name: "GnosticProtocol", targets: ["GnosticProtocol"]),
         .library(name: "GnosticCore", targets: ["GnosticCore"]),
         .library(name: "GnosticPositronicBackend", targets: ["GnosticPositronicBackend"]),
@@ -30,6 +31,7 @@ let package = Package(
         .executable(name: "gnostic-soak-driver", targets: ["GnosticSoakDriver"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
         .executable(name: "gnostic-legacy", targets: ["GnosticLegacyCLI"]),
+        .executable(name: "gnostic-pk-runtime", targets: ["GnosticPositronicRuntime"]),
     ],
     dependencies: [
         .package(url: "https://github.com/phynics/Axoloty.git", exact: "0.7.0"),
@@ -39,8 +41,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "GnosticACPWire",
+            path: "Sources/GnosticACPWire"
+        ),
+        .target(
             name: "GnosticProtocol",
             dependencies: [
+                "GnosticACPWire",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyWire", package: "Axoloty"),
             ]
@@ -299,6 +306,11 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GnosticPositronicRuntimeTests",
+            dependencies: ["GnosticACPWire"],
+            path: "Tests/GnosticPositronicRuntimeTests"
+        ),
+        .testTarget(
             name: "GnosticClientTests",
             dependencies: [
                 "GnosticClient",
@@ -373,6 +385,15 @@ let package = Package(
         .executableTarget(
             name: "GnosticACPLiveSmoke",
             dependencies: ["GnosticACPAscendant", "GnosticCore"]
+        ),
+        .executableTarget(
+            name: "GnosticPositronicRuntime",
+            dependencies: [
+                "GnosticACPWire",
+                .product(name: "PositronicKit", package: "PositronicKit"),
+                .product(name: "PKContracts", package: "PositronicKit"),
+                .product(name: "PKOpenAIProvider", package: "PositronicKit"),
+            ]
         ),
         .executableTarget(
             name: "GnosticSoakDriver",

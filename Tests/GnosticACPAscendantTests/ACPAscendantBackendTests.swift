@@ -359,6 +359,133 @@ struct ACPAscendantBackendTests {
         #expect(workspaceService.invocations.count == 1)
     }
 
+    @Test(
+        "standalone Positronic Runtime calls the live Gnostic MCP gateway across processes",
+        .timeLimit(.minutes(1)),
+        .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_PK_RUNTIME_BINARY"] != nil,
+                 "GNOSTIC_PK_RUNTIME_BINARY is not set")
+    )
+    @MainActor
+    func standaloneRuntimeCallsGnosticGateway() async throws {
+        let runtimeBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_PK_RUNTIME_BINARY"])
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let workspaceID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000609"))
+        let workspaceService = GatewayWorkspaceService(workspaceReference: BackendWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://standalone-runtime-integration",
+            status: .available,
+            tools: [BackendWorkspaceTool(
+                id: "search",
+                name: "Search",
+                description: "Search records",
+                parametersSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object(["query": .object(["type": .string("string")])]),
+                ])
+            )]
+        ))
+        let timelineRegistry = AscendantTimelineRegistry(
+            ascendantID: ascendantID,
+            privateTimelineID: timelineID,
+            configured: [.init(
+                id: timelineID,
+                title: "Standalone Runtime integration",
+                operatingAscendantID: ascendantID,
+                attachments: [.local(workspaceID)]
+            )],
+            remote: .init(ensure: { _, _ in }, rename: { _, _ in }, delete: { _ in })
+        )
+        let gateway = WorkspaceMCPGateway(
+            timelineID: timelineID,
+            timelineRegistry: timelineRegistry,
+            workspaceService: workspaceService,
+            permissionService: AscendantBackendServices.empty.permission,
+            activeTurn: { _ in nil }
+        )
+        let mcpServer = try gateway.start()
+        defer { gateway.stop() }
+
+        let toolName = "workspace_\(workspaceID.uuidString.lowercased().replacingOccurrences(of: "-", with: ""))__search"
+        let runtimeStateDirectory = stateHome.url.appendingPathComponent("runtime-state", isDirectory: true)
+        let client = try RuntimeACPSubprocessClient(
+            executableURL: URL(fileURLWithPath: runtimeBinary),
+            environment: [
+                "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin",
+                "HOME": ProcessInfo.processInfo.environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path,
+                "GNOSTIC_PK_SCRIPTED": "1",
+                "GNOSTIC_PK_STATE_DIR": runtimeStateDirectory.path,
+                "GNOSTIC_PK_FIXTURE_TOOL_NAME": toolName,
+            ]
+        )
+        defer { Task { await client.terminate() } }
+
+        try await client.send(ACPJSONRPCRequest(
+            id: .int(1),
+            method: ACPv2Protocol.AgentMethod.initialize,
+            params: try acpValue(ACPInitializeRequest(info: ACPImplementation(name: "Gnostic gateway test", version: "1")))
+        ))
+        let initialized = try await client.response(id: 1)
+        #expect(initialized.error == nil)
+
+        try await client.send(ACPJSONRPCRequest(
+            id: .int(2),
+            method: ACPv2Protocol.AgentMethod.sessionNew,
+            params: try acpValue(ACPNewSessionRequest(cwd: "/tmp", mcpServers: [mcpServer]))
+        ))
+        let created = try await client.response(id: 2)
+        let session = try decode(ACPNewSessionResponse.self, from: #require(created.result))
+
+        try await client.send(ACPJSONRPCRequest(
+            id: .int(3),
+            method: ACPv2Protocol.AgentMethod.sessionPrompt,
+            params: try acpValue(ACPPromptRequest(
+                sessionId: session.sessionId,
+                prompt: [.text(ACPTextContent(text: "[fixture:gateway-tool]"))]
+            ))
+        ))
+        let prompted = try await client.response(id: 3)
+        #expect(prompted.error == nil)
+
+        var assistantText = ""
+        var becameIdle = false
+        while !becameIdle {
+            let notification = try await client.notification()
+            #expect(notification.method == ACPv2Protocol.ClientMethod.sessionUpdate)
+            let update = try decode(ACPSessionNotification.self, from: #require(notification.params))
+            #expect(update.sessionId == session.sessionId)
+            switch update.update {
+            case let .agentMessageChunk(chunk):
+                if case let .text(text) = chunk.content { assistantText += text.text }
+            case let .stateUpdate(state):
+                becameIdle = state.isIdle
+            default:
+                break
+            }
+        }
+
+        #expect(assistantText.contains("workspace result"))
+        #expect(workspaceService.invocations == [BackendWorkspaceInvocation(
+            timelineID: timelineID,
+            permissionApproved: false,
+            workspaceID: workspaceID,
+            toolID: "search",
+            arguments: ["query": .string("fixture")]
+        )])
+
+        try await client.send(ACPJSONRPCRequest(
+            id: .int(4),
+            method: ACPv2Protocol.AgentMethod.sessionClose,
+            params: try acpValue(ACPCloseSessionRequest(sessionId: session.sessionId))
+        ))
+        let closed = try await client.response(id: 4)
+        #expect(closed.error == nil)
+        await client.finish()
+    }
+
     @Test("ACP sessions receive the live MCP gateway for attached Workspaces")
     @MainActor
     func acpSessionInvokesAttachedWorkspaceThroughMCP() async throws {
@@ -461,6 +588,14 @@ struct ACPAscendantBackendTests {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         return (httpResponse, try? JSONDecoder().decode(ACPJSONRPCResponse.self, from: data))
+    }
+
+    private func acpValue<T: Encodable>(_ value: T) throws -> ACPValue {
+        try JSONDecoder().decode(ACPValue.self, from: JSONEncoder().encode(value))
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from value: ACPValue) throws -> T {
+        try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
     }
 
     @Test("local Project cwd is passed to ACP session/new")
@@ -2036,4 +2171,89 @@ struct ACPAscendantBackendTests {
             updates.append(update)
         }
     }
+}
+
+private actor RuntimeACPSubprocessClient {
+    private let process: Process
+    private let input: FileHandle
+    private let output: FileHandle
+    private var pending: [ACPJSONRPCMessage] = []
+
+    init(executableURL: URL, environment: [String: String]) throws {
+        let process = Process()
+        process.executableURL = executableURL
+        process.environment = environment
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        self.process = process
+        input = inputPipe.fileHandleForWriting
+        output = outputPipe.fileHandleForReading
+    }
+
+    func send<T: Encodable>(_ value: T) throws {
+        var data = try JSONEncoder().encode(value)
+        data.append(0x0A)
+        try input.write(contentsOf: data)
+    }
+
+    func response(id: Int) throws -> ACPJSONRPCResponse {
+        while true {
+            if let index = pending.firstIndex(where: { message in
+                if case let .response(response) = message { return response.id == .int(id) }
+                return false
+            }), case let .response(response) = pending.remove(at: index) {
+                return response
+            }
+            let message = try readMessage()
+            if case let .response(response) = message, response.id == .int(id) { return response }
+            pending.append(message)
+        }
+    }
+
+    func notification() throws -> ACPJSONRPCNotification {
+        if let index = pending.firstIndex(where: { if case .notification = $0 { return true }; return false }),
+           case let .notification(notification) = pending.remove(at: index) {
+            return notification
+        }
+        while true {
+            let message = try readMessage()
+            if case let .notification(notification) = message { return notification }
+            pending.append(message)
+        }
+    }
+
+    func finish() {
+        try? input.close()
+        process.waitUntilExit()
+        try? output.close()
+    }
+
+    func terminate() {
+        try? input.close()
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        try? output.close()
+    }
+
+    func terminationStatus() -> Int32 { process.terminationStatus }
+
+    private func readMessage() throws -> ACPJSONRPCMessage {
+        var bytes = Data()
+        while true {
+            guard let byte = try output.read(upToCount: 1), !byte.isEmpty else {
+                throw RuntimeACPSubprocessClientError.endOfFile
+            }
+            if byte[0] == 0x0A { break }
+            bytes.append(byte)
+        }
+        return try JSONDecoder().decode(ACPJSONRPCMessage.self, from: bytes)
+    }
+}
+
+private enum RuntimeACPSubprocessClientError: Error {
+    case endOfFile
 }

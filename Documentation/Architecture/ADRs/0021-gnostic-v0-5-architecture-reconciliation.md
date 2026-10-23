@@ -196,7 +196,8 @@ that Node.
 The standalone PositronicKit 7 reference Runtime is an independent executable.
 It does not link the Gnostic host or join Axoloty. It has no MQTT connection.
 The Gnostic Node owns its process lifecycle and passes the Gnostic gateway as
-an MCP server. The Runtime uses the shared Gnostic ACP v2 wire model.
+an MCP server. The Runtime imports the shared Gnostic ACP v2 wire model from
+`GnosticACPWire`. It does not link `GnosticProtocol` or Axoloty.
 
 PositronicKit stays out of every host target and its transitive dependency
 closure. Only the standalone reference Runtime executable may depend on
