@@ -25,7 +25,8 @@ permissions:
 jobs:
   verify:
     name: validation matrix
-    runs-on: ubuntu-latest
+    # Match the Noble development image instead of following OS migrations.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -88,7 +89,7 @@ jobs:
 
   smoke:
     name: smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
