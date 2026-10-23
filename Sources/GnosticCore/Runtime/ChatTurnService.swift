@@ -47,6 +47,11 @@ public final class TurnService {
         } else {
             validatedClientTurnID = nil
         }
+        if await updates.requiresDurableTimelineAdmission, validatedClientTurnID == nil {
+            throw NodeRuntimeError.turnFailed(
+                "An identified clientTurnID is required for durable Timeline admission."
+            )
+        }
         let sink = BackendTurnUpdateSink(store: updates, request: turnRequest, clientTurnID: validatedClientTurnID)
         return try await coordinator.execute(
             turnRequest,

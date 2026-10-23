@@ -129,6 +129,13 @@ public struct TimelineTurnProvider: Sendable {
                         message: "Timeline turn was cancelled",
                         retryable: false
                     )
+                case let .journalUnavailable(reason):
+                    return .failure(
+                        code: -32603,
+                        reasonCode: "timelineJournalUnavailable",
+                        message: "Timeline journal is unavailable: \(reason)",
+                        retryable: true
+                    )
                 case let .failed(code, message):
                     return .failure(code: 500, reasonCode: code, message: message, retryable: false)
                 }
@@ -150,7 +157,7 @@ public struct TimelineTurnProvider: Sendable {
         case let .rejected(failure):
             return failure
         case let .value(request):
-            guard let replay = await coordinator.replay(timelineID: request.timelineID, clientTurnID: request.clientTurnID) else {
+            guard let replay = try await coordinator.replay(timelineID: request.timelineID, clientTurnID: request.clientTurnID) else {
                 return .failure(code: 404, reasonCode: "turnNotFound", message: "No turn found to replay.")
             }
             try GnosticProtocol.validate(replay.protocolMajor)
@@ -170,7 +177,7 @@ public struct TimelineTurnProvider: Sendable {
         case let .rejected(failure):
             return failure
         case let .value(request):
-            let cancelled = await coordinator.cancel(timelineID: request.timelineID, clientTurnID: request.clientTurnID)
+            let cancelled = try await coordinator.cancel(timelineID: request.timelineID, clientTurnID: request.clientTurnID)
             let result = TimelineTurnCancellationResult(
                 timelineID: request.timelineID,
                 clientTurnID: request.clientTurnID,

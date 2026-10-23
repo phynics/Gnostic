@@ -112,8 +112,10 @@ public actor AscendantTurnUpdateStore {
     /// The journal is compacted once its on-disk size exceeds this bound.
     /// Zero or less disables compaction.
     private let maxJournalBytes: Int
+    private let timelineJournals: TimelineJournalStore?
     private var entries: [Key: Entry] = [:]
     private var entryOrder: [Key] = []
+    private var persistingOutcomes: Set<Key> = []
     private var journal: DurableReplayJournal<TurnEventRecord>?
     private let completedCapacity: Int
     private let identityCapacity: Int
@@ -144,6 +146,7 @@ public actor AscendantTurnUpdateStore {
     internal var admissionCapacities: (identities: Int, completed: Int) {
         (identityCapacity, completedCapacity)
     }
+    internal var requiresDurableTimelineAdmission: Bool { timelineJournals != nil }
     private let eventStream: AsyncStream<Event>
     private let eventContinuation: AsyncStream<Event>.Continuation
 
@@ -154,7 +157,8 @@ public actor AscendantTurnUpdateStore {
         eventBufferCapacity: Int = 256,
         maxJournalBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
         completedCapacity: Int = 256,
-        identityCapacity: Int = AscendantTurnUpdateStore.defaultIdentityCapacity
+        identityCapacity: Int = AscendantTurnUpdateStore.defaultIdentityCapacity,
+        timelineJournals: TimelineJournalStore? = nil
     ) {
         // Compacted replay needs room for both a snapshot and the newest (often
         // terminal) update.
@@ -163,6 +167,7 @@ public actor AscendantTurnUpdateStore {
         self.maxEntries = max(1, maxEntries)
         self.eventBufferCapacity = max(1, eventBufferCapacity)
         self.maxJournalBytes = max(0, maxJournalBytes)
+        self.timelineJournals = timelineJournals
         self.completedCapacity = max(1, completedCapacity)
         self.identityCapacity = max(1, identityCapacity)
         (eventStream, eventContinuation) = AsyncStream<Event>.makeStream(
@@ -356,7 +361,7 @@ public actor AscendantTurnUpdateStore {
     /// ``TurnLedgerAdmission/new`` means the identity was journaled as started and the
     /// caller may run the backend. Every other case answers the request without
     /// running the backend, so an admitted identity never reruns.
-    internal func admit(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String) throws -> TurnLedgerAdmission {
+    internal func admit(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String) async throws -> TurnLedgerAdmission {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         let digest = Self.messageDigest(message)
         if let admitted = identityDigests[key] {
@@ -367,6 +372,32 @@ public actor AscendantTurnUpdateStore {
         // An entry without an admitted identity came from a non-admitted path.
         // Admission never adopts it, so it fails closed.
         guard entries[key] == nil else { return .unavailable }
+        if let timelineJournals {
+            let journal = try await timelineJournals.journal(for: timelineID)
+            let records = try await journal.replay()
+            let prior = records.first { record in
+                guard record.timelineID == timelineID else { return false }
+                if case let .turnAdmitted(clientTurnID, _, _, _, _) = record.payload {
+                    return clientTurnID == key.clientTurnID
+                }
+                return false
+            }
+            if let prior,
+               case let .turnAdmitted(_, admissionDigest, _, _, _) = prior.payload {
+                let canonicalDigest = Self.timelineAdmissionDigest(message)
+                return admissionDigest == canonicalDigest ? .unavailable : .conflict
+            }
+            // The owning Timeline journal commits admission before the
+            // bounded replay ledger. Failure or a crash after this point can
+            // lose availability, but can never dispatch an unjournaled Turn.
+            try await journal.append(.turnAdmitted(
+                clientTurnID: key.clientTurnID,
+                admissionDigest: Self.timelineAdmissionDigest(message),
+                turnSequence: 1,
+                acpVersionTag: "legacy-text-v1",
+                prompt: Self.timelineAdmissionPrompt(message)
+            ))
+        }
         try insert(key: key, timelineID: timelineID, messageDigest: digest, recovered: false)
         return .new
     }
@@ -380,8 +411,23 @@ public actor AscendantTurnUpdateStore {
     /// arms. The append is idempotent because ``append`` returns the retained
     /// terminal update once an entry holds one, so a terminal the backend already
     /// emitted is never duplicated.
-    internal func recordOutcome(timelineID: UUID, clientTurnID: ValidatedClientTurnID, outcome: TurnTerminalOutcome) {
+    internal func recordOutcome(
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID,
+        outcome: TurnTerminalOutcome
+    ) async throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        guard entries[key]?.outcome == nil,
+              persistingOutcomes.insert(key).inserted else { return }
+        defer { persistingOutcomes.remove(key) }
+        if let timelineJournals {
+            let journal = try await timelineJournals.journal(for: timelineID)
+            try await journal.append(.turnCompleted(
+                clientTurnID: clientTurnID.rawValue,
+                outcome: Self.timelineOutcome(outcome),
+                messageID: nil
+            ))
+        }
         guard var entry = entries[key], entry.outcome == nil else { return }
         entry.outcome = .live(outcome)
         entry.terminal = true
@@ -398,6 +444,15 @@ public actor AscendantTurnUpdateStore {
             event: .outcome(Self.journalOutcome(outcome))
         ))
         appendTerminalUpdate(timelineID: timelineID, clientTurnID: clientTurnID, outcome: outcome)
+    }
+
+    private static func timelineOutcome(_ outcome: TurnTerminalOutcome) -> TimelineTurnTerminalOutcome {
+        switch outcome {
+        case .succeeded:
+            .completed
+        case let .failed(error):
+            if case .cancelled = error { .cancelled } else { .failed }
+        }
     }
 
     /// Appends the bounded update a committed outcome replays as. A capacity
@@ -872,5 +927,16 @@ public actor AscendantTurnUpdateStore {
             digest &*= 1_099_511_628_211
         }
         return digest
+    }
+
+    private static func timelineAdmissionDigest(_ message: String) -> String {
+        TimelineTurnEnvelope.computeAdmissionDigest(
+            prompt: timelineAdmissionPrompt(message),
+            acpVersionTag: "legacy-text-v1"
+        )
+    }
+
+    private static func timelineAdmissionPrompt(_ message: String) -> [ACPContentBlock] {
+        [.text(ACPTextContent(text: message))]
     }
 }

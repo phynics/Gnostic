@@ -26,6 +26,7 @@ public final class NodeRuntime {
     private let turnCoordinator: AscendantTurnCoordinator
     private let turnUpdates: AscendantTurnUpdateStore
     private let permissionCoordinator: AscendantPermissionCoordinator
+    private let timelineJournals: TimelineJournalStore?
     private let projectionRelay = NodeProjectionRelay()
     private lazy var workspaceDiscovery = AxolotyWorkspaceDiscovery(
         catalog: runtimeHost.resources.catalog,
@@ -63,7 +64,8 @@ public final class NodeRuntime {
         adapters: NodeRuntimeAdapters = .default,
         turnLogURL: URL? = nil,
         turnLogMaxBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
-        timelineStoreDirectory: URL? = nil
+        timelineStoreDirectory: URL? = nil,
+        timelineJournalDirectory: URL? = nil
     ) async throws {
         try await self.init(
             plan: plan,
@@ -71,7 +73,8 @@ public final class NodeRuntime {
             retirementPolicy: .live,
             turnLogURL: turnLogURL,
             turnLogMaxBytes: turnLogMaxBytes,
-            timelineStoreDirectory: timelineStoreDirectory
+            timelineStoreDirectory: timelineStoreDirectory,
+            timelineJournalDirectory: timelineJournalDirectory
         )
     }
 
@@ -81,7 +84,8 @@ public final class NodeRuntime {
         retirementPolicy: BackendRetirementPolicy,
         turnLogURL: URL? = nil,
         turnLogMaxBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
-        timelineStoreDirectory: URL? = nil
+        timelineStoreDirectory: URL? = nil,
+        timelineJournalDirectory: URL? = nil
     ) async throws {
         try NodeAssembly.validate(plan, adapters: adapters)
         self.plan = plan
@@ -89,9 +93,18 @@ public final class NodeRuntime {
         port = plan.broker.port
         namespace = plan.broker.namespace
         self.adapters = adapters
+        let nodeJournalDirectory = timelineJournalDirectory?.appendingPathComponent(
+            plan.nodeID.uuidString.lowercased(),
+            isDirectory: true
+        )
+        let timelineJournals = nodeJournalDirectory.map(TimelineJournalStore.init(directoryURL:))
+        self.timelineJournals = timelineJournals
         let coordinator = RuntimeLifecycleCoordinator()
         let retirementSupervisor = BackendRetirementSupervisor(policy: retirementPolicy)
-        let updates = AscendantTurnUpdateStore(maxJournalBytes: turnLogMaxBytes)
+        let updates = AscendantTurnUpdateStore(
+            maxJournalBytes: turnLogMaxBytes,
+            timelineJournals: timelineJournals
+        )
         if let turnLogURL {
             try await updates.enableDurability(at: turnLogURL)
         }
@@ -123,7 +136,8 @@ public final class NodeRuntime {
                 lifetime: runtimeHost.lifetime,
                 projectionRelay: projectionRelay,
                 retirementSupervisor: retirementSupervisor,
-                runtimeTimelineDirectory: timelineStoreDirectory
+                runtimeTimelineDirectory: timelineStoreDirectory,
+                timelineJournals: timelineJournals
             )
             registry = products.registry
             backendSupervisor = products.supervisor
@@ -387,6 +401,19 @@ public final class NodeRuntime {
 
     public func timeline(id: UUID) async -> AscendantRuntimeTimeline? {
         await registry.timeline(id: id)?.timeline
+    }
+
+    /// Returns the write/read status and any quarantine diagnostic for a
+    /// Timeline's authoritative journal.
+    public func timelineJournalStatus(for timelineID: UUID) async throws -> TimelineJournalAvailability {
+        guard await registry.timeline(id: timelineID) != nil else {
+            throw NodeRuntimeError.missingTimeline(timelineID)
+        }
+        guard let timelineJournals else {
+            throw TimelineJournalError.quarantined("no durable Timeline journal directory is configured")
+        }
+        let journal = try await timelineJournals.journal(for: timelineID)
+        return await journal.status()
     }
 
     /// Returns the Ascendant selected to operate a timeline, including

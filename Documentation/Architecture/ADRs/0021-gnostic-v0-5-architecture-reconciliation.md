@@ -273,6 +273,9 @@ committed prefix quarantines the Timeline as read-only and reports a diagnostic;
 the Node does not skip the bad event or continue appending. Replay epochs expose
 divergent or stale replay instead of merging it silently.
 
+The [Timeline journal format reference](../Timeline-Journal-Format.md) defines
+the v1 frame, storage path, checksum, and schema migration rules.
+
 An owner Node without a writable journal cannot admit a Timeline in v0.5. It
 does not silently replace the authoritative journal with in-memory state.
 

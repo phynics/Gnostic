@@ -640,15 +640,11 @@ struct ACPProviderAcceptanceTests {
         session.process.waitUntilExit()
     }
 
-    /// ADR 0008's interim orphaned-session behavior, end to end.
-    ///
-    /// A runtime Timeline is process-scoped, so killing `gnostic serve`
-    /// destroys it while the durable ACP session record survives. The restarted
-    /// Node advertises the same Ascendant under a new provider identity (#247),
-    /// which is exactly the case where a binding error used to hide the real
-    /// cause.
+    /// A runtime-created Timeline and its ACP Session mapping survive a serve
+    /// restart. The configured test provider is unavailable, so the prompt
+    /// reaches the backend and returns `turnFailed` instead of `timelineUnavailable`.
     @Test(
-        "a serve restart orphans an ACP session with a structured timelineUnavailable",
+        "a serve restart restores a runtime-created Timeline for ACP Session resume",
         .timeLimit(.minutes(2)),
         .enabled(if: ACPAvailability.hasServeCapableCLI, ACPAvailability.serveCLISkipReason)
     )
@@ -679,7 +675,12 @@ struct ACPProviderAcceptanceTests {
         environment["GNOSTIC_STATE_HOME"] = stateHome.path
 
         let cwd = "/tmp/acp-orphan-acceptance"
-        let firstServe = try launchServe(binary: binary, configURL: configURL, namespace: namespace)
+        let firstServe = try launchServe(
+            binary: binary,
+            configURL: configURL,
+            namespace: namespace,
+            environment: environment
+        )
         defer { firstServe.kill() }
         try await firstServe.waitUntilOnline()
 
@@ -723,7 +724,12 @@ struct ACPProviderAcceptanceTests {
         creator.process.waitUntilExit()
 
         firstServe.kill()
-        let secondServe = try launchServe(binary: binary, configURL: configURL, namespace: namespace)
+        let secondServe = try launchServe(
+            binary: binary,
+            configURL: configURL,
+            namespace: namespace,
+            environment: environment
+        )
         defer { secondServe.kill() }
         try await secondServe.waitUntilOnline()
 
@@ -750,8 +756,7 @@ struct ACPProviderAcceptanceTests {
             "mcpServers": .array([]),
         ])))
         let resumed = try await readResponse(from: &resumerOutput)
-        #expect(resumed.error?.code == JSONRPCErrorCode.invalidState.rawValue)
-        #expect(resumed.error?.data == .dictionary(["gnosticCode": .string("timelineUnavailable")]))
+        #expect(resumed.error == nil)
 
         try resumer.send(JSONRPCRequest(id: .number(7), method: "session/prompt", params: .dictionary([
             "sessionId": .string(sessionID),
@@ -760,23 +765,25 @@ struct ACPProviderAcceptanceTests {
             "_meta": .dictionary([ACPProtocol.turnIDMetadataKey: .string("orphan-acceptance:turn-1")]),
         ])))
         let prompted = try await readResponse(from: &resumerOutput)
-        #expect(prompted.error?.code == JSONRPCErrorCode.invalidState.rawValue)
-        #expect(prompted.error?.data == .dictionary(["gnosticCode": .string("timelineUnavailable")]))
+        #expect(
+            prompted.error?.message.contains("turnFailed") == true,
+            Comment(rawValue: "error=\(String(describing: prompted.error))\n\((try? String(contentsOf: secondServe.logURL, encoding: .utf8)) ?? "")")
+        )
 
         try resumer.send(JSONRPCRequest(id: .number(8), method: "session/list", params: .dictionary([
             "cwd": .string(cwd),
         ])))
-        #expect(!listedSessionIDs(in: try await readResponse(from: &resumerOutput)).contains(sessionID))
+        #expect(listedSessionIDs(in: try await readResponse(from: &resumerOutput)).contains(sessionID))
 
         try resumer.send(JSONRPCRequest(id: .number(9), method: "shutdown"))
         #expect(try await readResponse(from: &resumerOutput).error == nil)
         resumer.input.fileHandleForWriting.closeFile()
         resumer.process.waitUntilExit()
 
-        // The record stays on disk for diagnostics and is marked ended.
+        // The resumed Session remains recorded for diagnostics.
         let registry = ACPSessionRegistry(url: stateHome.appendingPathComponent("acp-sessions-v1.json"))
         let record = try #require(await registry.record(id: sessionID))
-        #expect(record.closedAt != nil)
+        #expect(record.closedAt == nil)
         #expect(record.cwd == cwd)
     }
 
@@ -958,9 +965,7 @@ private func launchServe(
         "serve", "--config", configURL.path,
         "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
     ]
-    // A caller that opts into a durable state home must pass the same
-    // environment the ACP child sees; without one, serve keeps its inherited
-    // environment and the in-memory default.
+    // Serve and its ACP child share the same durable state home.
     if let environment {
         process.environment = environment
     }

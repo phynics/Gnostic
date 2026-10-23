@@ -77,7 +77,7 @@ struct AscendantTurnUpdateStoreTests {
         let timelineID = UUID()
         let clientTurnID = try await store.validatedClientTurnID("recorded-success")
         _ = try await store.admit(timelineID: timelineID, clientTurnID: clientTurnID, message: "hello")
-        await store.recordOutcome(timelineID: timelineID, clientTurnID: clientTurnID, outcome: .succeeded(text: "done"))
+        try await store.recordOutcome(timelineID: timelineID, clientTurnID: clientTurnID, outcome: .succeeded(text: "done"))
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "recorded-success")
         #expect(replay.updates.map(\.kind) == [
@@ -94,7 +94,7 @@ struct AscendantTurnUpdateStoreTests {
         let timelineID = UUID()
         let clientTurnID = try await store.validatedClientTurnID("recorded-cancel")
         _ = try await store.admit(timelineID: timelineID, clientTurnID: clientTurnID, message: "hello")
-        await store.recordOutcome(
+        try await store.recordOutcome(
             timelineID: timelineID,
             clientTurnID: clientTurnID,
             outcome: .failed(.cancelled(timelineID: timelineID, clientTurnID: "recorded-cancel"))
@@ -128,7 +128,7 @@ struct AscendantTurnUpdateStoreTests {
             text: "done",
             terminal: true
         )
-        await store.recordOutcome(timelineID: timelineID, clientTurnID: clientTurnID, outcome: .succeeded(text: "done"))
+        try await store.recordOutcome(timelineID: timelineID, clientTurnID: clientTurnID, outcome: .succeeded(text: "done"))
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "streamed-terminal")
         #expect(replay.updates.map(\.kind) == [

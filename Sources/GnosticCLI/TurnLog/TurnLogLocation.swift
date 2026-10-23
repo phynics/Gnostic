@@ -7,8 +7,7 @@ import Foundation
 /// `gnostic serve` and `gnostic turn-log` share this type so the writer and the
 /// read-only viewer resolve the same files. An explicit `--turn-log` names a
 /// file and implies its parent directory as the state home. Otherwise
-/// `GNOSTIC_STATE_HOME` opts in, and an unset state directory leaves the
-/// process-scoped default in place.
+/// `GNOSTIC_STATE_HOME` opts in unless the operator supplies `--turn-log`.
 struct TurnLogLocation: Sendable {
     /// The explicit `--turn-log` value, if the operator gave one.
     let turnLogPath: String?
@@ -43,5 +42,13 @@ struct TurnLogLocation: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
         stateHome(environment: environment)?.appendingPathComponent("timelines", isDirectory: true)
+    }
+
+    /// The authoritative per-Timeline journal directory, or `nil` when the
+    /// operator has not configured durable state.
+    func timelineJournalDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        stateHome(environment: environment)?.appendingPathComponent("timeline-journals", isDirectory: true)
     }
 }

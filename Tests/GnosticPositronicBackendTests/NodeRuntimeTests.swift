@@ -38,6 +38,75 @@ struct NodeRuntimeTests {
         #expect(created.title == "Scratch")
     }
 
+    @Test("NodeRuntime opens its durable Timeline journal before admitting a Turn")
+    @MainActor
+    func runtimeUsesTimelineJournalForAdmission() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000221")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000222")!
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000223")!
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-runtime-timeline-journal"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "fixture")],
+            timelines: [.init(id: timelineID, title: "Durable timeline", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.bundled
+        adapters.ascendants.registerBackend(kind: "fixture") { ascendant, _, _, timelines in
+            FixtureAscendantBackend(ascendant: ascendant, timelines: timelines)
+        }
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("node-runtime-timeline-journal", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: stateDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let result = try await runtime.turn(.init(
+            message: "hello",
+            timelineID: timelineID,
+            clientTurnID: "journaled-runtime-turn"
+        ))
+        #expect(result.text == "fixture: hello")
+        let renamed = try await runtime.renameTimeline(
+            TimelineUpdateRequest(timelineID: timelineID, title: "Renamed from journal")
+        )
+        #expect(renamed.title == "Renamed from journal")
+        await runtime.shutdown()
+
+        let restarted = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: stateDirectory
+        )
+        try await restarted.start()
+        #expect(try await restarted.listTimelines().first?.title == "Renamed from journal")
+        await restarted.shutdown()
+
+        let timelineDirectory = stateDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: timelineDirectory)
+        let records = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan()
+            .records
+            .map(\.payload)
+        #expect(records.contains { record in
+            if case let .timelineCreated(title, runtimeInstanceID, _) = record.payload {
+                return title == "Durable timeline" && runtimeInstanceID == ascendantID
+            }
+            return false
+        })
+        #expect(records.contains { record in
+            if case let .turnAdmitted(clientTurnID, _, _, _, _) = record.payload {
+                return clientTurnID == "journaled-runtime-turn"
+            }
+            return false
+        })
+        #expect(try await runtime.timelineJournalStatus(for: timelineID) == .writable)
+    }
+
     @Test("node shutdown asks each Ascendant adapter to cancel provider work")
     @MainActor
     func customAdapterOwnsTurnCancellation() async throws {

@@ -24,7 +24,11 @@ final class RunnerRuntime {
 
     /// Composes and hosts the manifest in `configuration`.
     convenience init(configuration: RunnerConfiguration) async throws {
-        try await self.init(plan: configuration.resolvedManifest().compileLaunchPlan())
+        guard let stateHome = configuration.stateHome else { throw RunnerParsingError.missingStateHome }
+        try await self.init(
+            plan: configuration.resolvedManifest().compileLaunchPlan(),
+            timelineJournalDirectory: stateHome.appendingPathComponent("timeline-journals", isDirectory: true)
+        )
     }
 
     /// Composes and hosts an already-compiled launch plan.
@@ -33,9 +37,17 @@ final class RunnerRuntime {
     ///   - plan: The validated Node launch plan to materialize.
     ///   - composition: The backend composition to install. Defaults to the
     ///     shared `GnosticHost` composition.
-    init(plan: NodeLaunchPlan, composition: BackendComposition? = nil) async throws {
+    init(
+        plan: NodeLaunchPlan,
+        composition: BackendComposition? = nil,
+        timelineJournalDirectory: URL
+    ) async throws {
         let composition = composition ?? Self.composition
-        runtime = try await NodeRuntime(plan: plan, adapters: composition.makeAdapters(for: plan.ascendants))
+        runtime = try await NodeRuntime(
+            plan: plan,
+            adapters: composition.makeAdapters(for: plan.ascendants),
+            timelineJournalDirectory: timelineJournalDirectory
+        )
     }
 
     /// Starts the hosted Node and advertises its canonical objects.

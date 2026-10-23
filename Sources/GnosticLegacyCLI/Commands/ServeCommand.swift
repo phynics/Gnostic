@@ -76,6 +76,12 @@ struct ServeCommand: AsyncParsableCommand {
         turnLogLocation.timelineStoreDirectory(environment: environment)
     }
 
+    func resolveTimelineJournalDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        turnLogLocation.timelineJournalDirectory(environment: environment)
+    }
+
     /// Runs the serve process until interrupted.
     @MainActor
     func run() async throws {
@@ -89,6 +95,9 @@ struct ServeCommand: AsyncParsableCommand {
                 configuration: store.effectiveConfiguration(for:),
                 overrides: .init(host: host, port: port, namespace: namespace, approvalMode: approveMode, logLevel: logLevel)
             )
+            guard let timelineJournalDirectory = resolveTimelineJournalDirectory() else {
+                throw ValidationError("Timeline durability requires GNOSTIC_STATE_HOME or an explicit --turn-log path.")
+            }
 
             // Configure SwiftLog from the validated, effective launch plan.
             let level = Logger.Level(rawValue: plan.node.logLevel) ?? .info
@@ -104,7 +113,8 @@ struct ServeCommand: AsyncParsableCommand {
                 adapters: adapters,
                 turnLogURL: resolveTurnLogURL(),
                 turnLogMaxBytes: resolveTurnLogMaxBytes(),
-                timelineStoreDirectory: resolveTimelineStoreDirectory()
+                timelineStoreDirectory: resolveTimelineStoreDirectory(),
+                timelineJournalDirectory: timelineJournalDirectory
             )
             do {
                 guard try await start(runtime: runtime, until: terminationMonitor) else { return }

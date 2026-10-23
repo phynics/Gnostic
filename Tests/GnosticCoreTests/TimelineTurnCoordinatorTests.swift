@@ -43,6 +43,13 @@ struct TimelineTurnCoordinatorTests {
         )
     }
 
+    private func makeCoordinator() -> TimelineTurnCoordinator {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("timeline-turn-coordinator-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        return TimelineTurnCoordinator(journals: TimelineJournalStore(directoryURL: directory))
+    }
+
     @Test("Prompt blocks and admission digest are computed canonically")
     func canonicalAdmissionDigest() {
         let envelope1 = makeEnvelope(text: "Test canonical digest")
@@ -53,11 +60,11 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Successful turn execution returns confirmed message ID and terminal outcome")
     func successfulTurnExecution() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope()
 
         let result = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
-            await coordinator.recordTerminalUpdate(
+            try await coordinator.recordTerminalUpdate(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
                 stopReason: .endTurn
@@ -75,7 +82,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("A turn stays active until the session emits its terminal update")
     func turnStaysActiveUntilTerminalUpdate() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope(clientTurnID: "turn-active")
         let inserted = AsyncStream<Void>.makeStream()
 
@@ -99,7 +106,7 @@ struct TimelineTurnCoordinatorTests {
             #expect(error == .timelineBusy)
         }
 
-        await coordinator.recordTerminalUpdate(
+        try await coordinator.recordTerminalUpdate(
             timelineID: envelope.timelineID,
             clientTurnID: envelope.clientTurnID,
             stopReason: .endTurn
@@ -111,7 +118,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Concurrent distinct turn on active timeline receives pre-insertion timelineBusy error (-32001)")
     func concurrentTurnReceivesTimelineBusyError() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let timelineID = UUID()
         let envelope1 = makeEnvelope(timelineID: timelineID, clientTurnID: "turn-1", text: "First turn")
         let envelope2 = makeEnvelope(timelineID: timelineID, clientTurnID: "turn-2", text: "Second turn")
@@ -123,7 +130,7 @@ struct TimelineTurnCoordinatorTests {
             try await coordinator.execute(envelope: envelope1, promptDispatch: { envelope in
                 dispatchStarted.continuation.yield(())
                 try await Task.sleep(for: .milliseconds(200))
-                await coordinator.recordTerminalUpdate(
+                try await coordinator.recordTerminalUpdate(
                     timelineID: envelope.timelineID,
                     clientTurnID: envelope.clientTurnID,
                     stopReason: .endTurn
@@ -160,13 +167,13 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Identical clientTurnID retry recovers existing turn state idempotently without duplicate prompt")
     func idempotentRetryRecovery() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope()
 
         let counter = SafeCounter()
         let result1 = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
             await counter.increment()
-            await coordinator.recordTerminalUpdate(
+            try await coordinator.recordTerminalUpdate(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
                 stopReason: .endTurn
@@ -191,14 +198,114 @@ struct TimelineTurnCoordinatorTests {
         #expect(result2.terminalOutcome == result1.terminalOutcome)
     }
 
+    @Test("admission is durable before prompt dispatch and a restart never dispatches it twice")
+    func durableAdmissionPrecedesPromptAndSurvivesRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("timeline-turn-admission-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let timelineID = UUID()
+        let envelope = makeEnvelope(timelineID: timelineID, clientTurnID: "durable-turn")
+        let store = TimelineJournalStore(directoryURL: directory)
+        let journal = try await store.journal(for: timelineID)
+        let coordinator = TimelineTurnCoordinator(journals: store)
+        let dispatchSawAdmission = SafeFlag()
+
+        _ = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
+            let records = try await journal.replay()
+            let admitted = records.contains { record in
+                if case let .turnAdmitted(clientTurnID, digest, _, _, prompt) = record.payload {
+                    return clientTurnID == envelope.clientTurnID
+                        && digest == envelope.admissionDigest
+                        && prompt == envelope.prompt
+                }
+                return false
+            }
+            await dispatchSawAdmission.setTrue()
+            #expect(admitted)
+            try await coordinator.recordTerminalUpdate(
+                timelineID: envelope.timelineID,
+                clientTurnID: envelope.clientTurnID,
+                stopReason: .endTurn
+            )
+            return "message-durable"
+        })
+        #expect(await dispatchSawAdmission.get())
+
+        let restarted = TimelineTurnCoordinator(journals: TimelineJournalStore(directoryURL: directory))
+        let duplicateDispatch = SafeFlag()
+        let replayed = try await restarted.execute(envelope: envelope, promptDispatch: { _ in
+            await duplicateDispatch.setTrue()
+            return "duplicate-message"
+        })
+        #expect(replayed.replayed)
+        #expect(replayed.messageID == "message-durable")
+        #expect(replayed.terminalOutcome == .completed)
+        #expect(!(await duplicateDispatch.get()))
+    }
+
+    @Test("an ACP update is durable before the stream handler forwards it")
+    func acpUpdateIsDurableBeforeForwarding() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("timeline-turn-update-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let timelineID = UUID()
+        let store = TimelineJournalStore(directoryURL: directory)
+        let journal = try await store.journal(for: timelineID)
+        let coordinator = TimelineTurnCoordinator(journals: store)
+        let envelope = makeEnvelope(timelineID: timelineID, clientTurnID: "raw-update")
+        let observedDurableUpdate = SafeFlag()
+        let update = TimelineTurnUpdate(
+            timelineID: timelineID,
+            clientTurnID: envelope.clientTurnID,
+            sequence: 1,
+            update: .other(
+                sessionUpdate: "future_update",
+                fields: ["_meta": .object(["source": .string("runtime")])]
+            ),
+            terminal: true,
+            terminalOutcome: .completed
+        )
+
+        _ = try await coordinator.execute(
+            envelope: envelope,
+            promptDispatch: { _ in
+                try await coordinator.recordUpdate(update, sessionID: "session-raw")
+                return "message-raw"
+            },
+            streamUpdates: { forwarded in
+                let records = try? await journal.replay()
+                let durable = records?.contains { record in
+                    record.payload == .acpUpdate(sessionID: "session-raw", update: forwarded)
+                } == true
+                if durable { await observedDurableUpdate.setTrue() }
+            }
+        )
+        #expect(await observedDurableUpdate.get())
+
+        let records = try await journal.replay()
+        #expect(records.contains { $0.payload == .acpUpdate(sessionID: "session-raw", update: update) })
+
+        let restarted = TimelineTurnCoordinator(journals: TimelineJournalStore(directoryURL: directory))
+        let duplicateDispatch = SafeFlag()
+        let replayed = try await restarted.execute(envelope: envelope, promptDispatch: { _ in
+            await duplicateDispatch.setTrue()
+            return "must-not-dispatch"
+        })
+        #expect(replayed.replayed)
+        #expect(replayed.terminalOutcome == .completed)
+        #expect(!(await duplicateDispatch.get()))
+        let replay = try await restarted.replay(timelineID: timelineID, clientTurnID: envelope.clientTurnID)
+        #expect(replay?.updates == [update])
+    }
+
     @Test("Conflicting payload under identical clientTurnID is rejected")
     func conflictingPayloadUnderIdenticalClientTurnID() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let timelineID = UUID()
         let envelope1 = makeEnvelope(timelineID: timelineID, clientTurnID: "turn-shared", text: "Original message")
 
         _ = try await coordinator.execute(envelope: envelope1, promptDispatch: { envelope in
-            await coordinator.recordTerminalUpdate(
+            try await coordinator.recordTerminalUpdate(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
                 stopReason: .endTurn
@@ -223,7 +330,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Lost prompt response enters insertionUnknown without unsafe retries")
     func lostPromptResponseEntersInsertionUnknown() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope()
 
         do {
@@ -248,7 +355,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Unanswered permission request returns -32800 and records decision as unavailable; replay preserves decision")
     func permissionTimeoutMediation() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let timelineID = UUID()
         let correlationID = "perm-correl-\(UUID().uuidString)"
         let request = TimelinePermissionRequest(
@@ -348,7 +455,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Cancelling an active turn records cancelled and rejects the in-flight caller")
     func cancellationRecordsCancelledOutcome() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope(clientTurnID: "turn-cancel")
         let started = AsyncStream<Void>.makeStream()
 
@@ -361,7 +468,7 @@ struct TimelineTurnCoordinatorTests {
         }
 
         for await _ in started.stream { break }
-        #expect(await coordinator.cancel(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID))
+        #expect(try await coordinator.cancel(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID))
 
         do {
             _ = try await task.value
@@ -371,7 +478,7 @@ struct TimelineTurnCoordinatorTests {
             #expect(error.jsonRPCErrorCode == -32800)
         }
 
-        let replay = await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
+        let replay = try await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
         #expect(replay?.terminalOutcome == .cancelled)
 
         let retry = try await coordinator.execute(envelope: envelope, promptDispatch: { _ in
@@ -384,11 +491,11 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("A terminal session update owns the returned terminal outcome")
     func terminalUpdateOwnsOutcome() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope(clientTurnID: "turn-terminal")
 
         let result = try await coordinator.execute(envelope: envelope, promptDispatch: { envelope in
-            await coordinator.recordTerminalUpdate(
+            try await coordinator.recordTerminalUpdate(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
                 stopReason: .endTurn
@@ -402,7 +509,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Streamed updates are forwarded once and preserved for replay")
     func streamedUpdatesArePreserved() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let envelope = makeEnvelope(clientTurnID: "turn-stream")
         let received = SafeCounter()
         let update = TimelineTurnUpdate(
@@ -417,7 +524,7 @@ struct TimelineTurnCoordinatorTests {
         let result = try await coordinator.execute(
             envelope: envelope,
             promptDispatch: { _ in
-                await coordinator.recordUpdate(update)
+                try await coordinator.recordUpdate(update)
                 return "msg-stream"
             },
             streamUpdates: { _ in await received.increment() }
@@ -425,16 +532,16 @@ struct TimelineTurnCoordinatorTests {
 
         #expect(await received.value() == 1)
         #expect(result.terminalOutcome == .completed)
-        let replay = await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
+        let replay = try await coordinator.replay(timelineID: envelope.timelineID, clientTurnID: envelope.clientTurnID)
         #expect(replay?.updates == [update])
     }
 
     @Test("Provider returns the message ID confirmed by the runtime dispatcher")
     func providerUsesRuntimeDispatcher() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let provider = TimelineTurnProvider(coordinator: coordinator, promptDispatcher: { envelope in
             #expect(envelope.state == .pendingInsertion)
-            await coordinator.recordTerminalUpdate(
+            try await coordinator.recordTerminalUpdate(
                 timelineID: envelope.timelineID,
                 clientTurnID: envelope.clientTurnID,
                 stopReason: .endTurn
@@ -459,7 +566,7 @@ struct TimelineTurnCoordinatorTests {
 
     @Test("Provider publishes streamed turn updates to the update channel publisher")
     func providerPublishesStreamedUpdates() async throws {
-        let coordinator = TimelineTurnCoordinator()
+        let coordinator = makeCoordinator()
         let update = TimelineTurnUpdate(
             timelineID: UUID(),
             clientTurnID: "turn-publish",
@@ -469,7 +576,7 @@ struct TimelineTurnCoordinatorTests {
             terminalOutcome: .completed
         )
         let provider = TimelineTurnProvider(coordinator: coordinator, promptDispatcher: { envelope in
-            await coordinator.recordUpdate(
+                try await coordinator.recordUpdate(
                 TimelineTurnUpdate(
                     timelineID: envelope.timelineID,
                     clientTurnID: envelope.clientTurnID,

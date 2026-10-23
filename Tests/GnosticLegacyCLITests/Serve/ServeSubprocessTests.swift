@@ -165,6 +165,9 @@ struct ServeSubprocessTests {
             "serve", "--config", configStore.path().path,
             "--host", "127.0.0.1", "--port", String(port), "--namespace", namespace,
         ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path
+        process.environment = environment
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-serve-\(UUID().uuidString).log")
         #expect(FileManager.default.createFile(atPath: logURL.path, contents: nil))

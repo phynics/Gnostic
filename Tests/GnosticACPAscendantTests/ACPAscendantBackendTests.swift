@@ -98,6 +98,7 @@ struct ACPAscendantBackendTests {
         ascendantID: UUID = UUID(),
         permission: any AscendantBackendPermissionService = AscendantBackendServices.empty.permission,
         workspace: (any AscendantBackendWorkspaceService)? = nil,
+        optionalCapabilities: [any AscendantBackendOptionalCapability] = [],
         protocolTimeoutSeconds: TimeInterval = 30,
         promptTimeoutSeconds: TimeInterval = 60 * 60
     ) throws -> ACPAscendantBackend {
@@ -110,11 +111,101 @@ struct ACPAscendantBackendTests {
         return try ACPAscendantBackend(
             ascendant: ascendant,
             configuration: ascendant.backend,
-            services: AscendantBackendServices(workspace: workspace, permission: permission),
+            services: AscendantBackendServices(
+                workspace: workspace,
+                permission: permission,
+                optionalCapabilities: optionalCapabilities
+            ),
             timelines: timelines,
             protocolTimeoutSeconds: protocolTimeoutSeconds,
             promptTimeoutSeconds: promptTimeoutSeconds
         )
+    }
+
+    @Test("raw ACP updates preserve unknown kinds and _meta in the Timeline journal")
+    @MainActor
+    func rawACPUpdatesReachTimelineJournal() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let nodeID = UUID()
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-raw-journal-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: runtimeID, name: "Journal fixture", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Journaled ACP", operatingAscendantID: runtimeID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        _ = try await runtime.turn(.init(
+            message: "[fixture:unknown-update]",
+            timelineID: timelineID,
+            clientTurnID: "raw-acp"
+        ))
+        await runtime.shutdown()
+
+        let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory)
+        let records = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan()
+            .records
+            .map(\.payload)
+        #expect(records.contains { record in
+            if case let .timelineCreated(title, runtimeInstanceID, _) = record.payload {
+                return title == "Journaled ACP" && runtimeInstanceID == runtimeID
+            }
+            return false
+        })
+        #expect(records.contains { record in
+            if case let .turnAdmitted(clientTurnID, _, _, _, _) = record.payload {
+                return clientTurnID == "raw-acp"
+            }
+            return false
+        })
+        #expect(records.contains { record in
+            if case let .sessionTransition(_, recordedRuntimeID, state, projectKind, cwd) = record.payload {
+                return recordedRuntimeID == runtimeID && state == .live && projectKind != nil && !cwd.isEmpty
+            }
+            return false
+        })
+        let rawUpdate = try #require(records.first { record in
+            if case let .acpUpdate(_, update) = record.payload {
+                return update.clientTurnID == "raw-acp" && update.update.updateKind == "vendor_future_update"
+            }
+            return false
+        })
+        guard case let .acpUpdate(_, turnUpdate) = rawUpdate.payload,
+              case let .other(kind, fields) = turnUpdate.update else {
+            Issue.record("Expected the unknown ACP update to remain a raw extensible update")
+            return
+        }
+        #expect(kind == "vendor_future_update")
+        #expect(fields["_meta"] == .object(["trace_id": .string("fixture-raw-meta")]))
+        #expect(fields["extension"] == .object(["phase": .string("fixture")]))
     }
 
     @Test("configuration maps command, JSON args/env, cwd, and display name to a launch spec")
@@ -696,6 +787,62 @@ struct ACPAscendantBackendTests {
         #expect(nextBinding.cwd == nextDirectory.standardizedFileURL.path)
         #expect(nextBinding.projectKind == .local)
         await nextBackend.shutdown()
+    }
+
+    @Test("Timeline journal restores the ACP Session when the backend session map is missing")
+    @MainActor
+    func journalRestoresSessionWithoutBackendMap() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let ascendantID = UUID()
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Journal recovery")
+        let firstBackend = try fixtureBackend(
+            timelines: [timeline],
+            ascendantID: ascendantID,
+            stateHome: stateHome.url
+        )
+        _ = try await firstBackend.runTurn(
+            .init(timelineID: timelineID, message: "before restart"),
+            updates: RecordingUpdateSink()
+        )
+        let previousBinding = try #require(firstBackend.sessionBinding(for: timelineID))
+        await firstBackend.shutdown()
+
+        let journalStore = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("timeline-journals"))
+        try await journalStore.ensureTimelineCreated(
+            timelineID: timelineID,
+            title: timeline.title,
+            runtimeInstanceID: ascendantID,
+            attachments: []
+        )
+        let journal = try await journalStore.journal(for: timelineID)
+        try await journal.append(.sessionTransition(
+            sessionID: previousBinding.sessionID,
+            runtimeInstanceID: ascendantID,
+            state: .live,
+            projectKind: previousBinding.projectKind,
+            cwd: previousBinding.cwd
+        ))
+        let journalRecorder = TimelineJournalRecorder(journals: journalStore)
+        let journalSession = try #require(try await journalRecorder.sessionProjection(for: timelineID))
+
+        let sessionMapURL = stateHome.url.appendingPathComponent("\(ascendantID.uuidString).json")
+        try FileManager.default.removeItem(at: sessionMapURL)
+        let restartedBackend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url),
+            timelines: [timeline],
+            ascendantID: ascendantID,
+            optionalCapabilities: [journalRecorder]
+        )
+        defer { Task { await restartedBackend.shutdown() } }
+
+        _ = try await restartedBackend.operatedTimelines()
+        let recoveredBinding = try #require(restartedBackend.sessionBinding(for: timelineID))
+        #expect(recoveredBinding.sessionID == previousBinding.sessionID)
+        #expect(recoveredBinding.cwd == previousBinding.cwd)
+        #expect(recoveredBinding.startedAt == journalSession.startedAt)
+        await restartedBackend.shutdown()
     }
 
     @Test("plain and secret per-variable values map to the launch environment")

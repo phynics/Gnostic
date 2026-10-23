@@ -64,6 +64,58 @@ struct NodeRegistryTests {
         #expect(await registry.snapshot().operatedTimelineIDs.contains(runtimeID))
     }
 
+    @Test("a restart rebuilds a runtime Timeline title and Workspace intent from its journal")
+    func journalRebuildsRuntimeTimelineProjection() async throws {
+        let fixture = try Fixture()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("node-registry-timeline-journal-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let writer = TimelineJournalStore(directoryURL: directory)
+        let registry = try NodeRegistry(
+            plan: fixture.plan,
+            operatedTimelines: [fixture.operated],
+            timelineJournals: writer
+        )
+        let lease = UUID()
+        await registry.activateBackendLease(lease, for: fixture.ascendantID)
+        let created = try await registry.registerRuntimeTimeline(
+            fixture.runtimeTimeline(title: "Before rename"),
+            ascendantID: fixture.ascendantID,
+            backendLease: lease
+        )
+        let attached = AscendantRuntimeTimeline(
+            id: created.id,
+            title: "After rename",
+            attachedWorkspaceIDs: [fixture.networkWorkspaceID],
+            ascendantID: fixture.ascendantID,
+            isArchived: false,
+            isPrivate: false,
+            createdAt: created.timeline.createdAt,
+            updatedAt: Date()
+        )
+        _ = try await registry.commitBackendTimeline(
+            attached,
+            ascendantID: fixture.ascendantID,
+            backendLease: lease,
+            upserting: .network(fixture.networkWorkspaceID, uri: "workspace://expected")
+        )
+
+        let reader = TimelineJournalStore(directoryURL: directory)
+        let projections = try await reader.timelineProjections()
+        let restarted = try NodeRegistry(
+            plan: fixture.plan,
+            operatedTimelines: [fixture.operated],
+            timelineJournals: reader,
+            timelineJournalProjections: projections
+        )
+        let restored = try #require(await restarted.timeline(id: created.id))
+        #expect(restored.timeline.title == "After rename")
+        #expect(restored.timeline.attachedWorkspaceIDs == [fixture.networkWorkspaceID])
+        #expect(await restarted.attachmentIntent(for: created.id) == [
+            .network(fixture.networkWorkspaceID, uri: "workspace://expected")
+        ])
+    }
+
     @Test("concurrent runtime Timeline creation preserves identity and requested operator")
     func concurrentCreationIsAtomic() async throws {
         let fixture = try Fixture()
@@ -129,9 +181,9 @@ struct NodeRegistryTests {
         )
 
         #expect(await registry.attachmentIntent(for: runtime.id).isEmpty)
-        await registry.upsertAttachmentIntent(.network(fixture.networkWorkspaceID, uri: "workspace://expected"), for: runtime.id)
+        try await registry.upsertAttachmentIntent(.network(fixture.networkWorkspaceID, uri: "workspace://expected"), for: runtime.id)
         #expect(await registry.attachmentIntent(for: runtime.id) == [.network(fixture.networkWorkspaceID, uri: "workspace://expected")])
-        await registry.removeAttachmentIntent(workspaceID: fixture.networkWorkspaceID, from: runtime.id)
+        try await registry.removeAttachmentIntent(workspaceID: fixture.networkWorkspaceID, from: runtime.id)
         #expect(await registry.attachmentIntent(for: runtime.id).isEmpty)
     }
 

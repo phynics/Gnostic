@@ -166,6 +166,16 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       }
     }
     const userMessageId = "fixture-user-1";
+    if (promptText.includes("[fixture:unknown-update]")) {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "vendor_future_update",
+          extension: { phase: "fixture" },
+          _meta: { trace_id: "fixture-raw-meta" },
+        },
+      });
+    }
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
       update: {

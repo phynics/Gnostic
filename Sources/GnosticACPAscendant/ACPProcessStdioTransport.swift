@@ -12,7 +12,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     private let sendContinuation: AsyncStream<ACPJSONRPCMessage>.Continuation
     private let input: FileHandle
     private let output: FileHandle
-    private let onSessionUpdate: @Sendable (String, ACPSessionUpdate) -> Void
+    private let onSessionUpdate: @Sendable (String, ACPSessionUpdate) async throws -> Void
     private let onFailure: @Sendable () -> Void
     private let lock = NSLock()
     private var started = false
@@ -24,7 +24,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (String, ACPSessionUpdate) -> Void,
+        onSessionUpdate: @escaping @Sendable (String, ACPSessionUpdate) async throws -> Void,
         onFailure: @escaping @Sendable () -> Void
     ) {
         self.input = input
@@ -56,7 +56,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                            let params = notification.params,
                            let paramsData = try? JSONEncoder().encode(params),
                            let sessionNotification = try? JSONDecoder().decode(ACPSessionNotification.self, from: paramsData) {
-                            onSessionUpdate(sessionNotification.sessionId, sessionNotification.update)
+                             try await onSessionUpdate(sessionNotification.sessionId, sessionNotification.update)
                         }
                         messageContinuation.yield(message)
                     }

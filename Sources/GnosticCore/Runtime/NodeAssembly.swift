@@ -128,7 +128,8 @@ struct NodeAssembly {
         lifetime: NodeRuntimeLifetime,
         projectionRelay: NodeProjectionRelay,
         retirementSupervisor: BackendRetirementSupervisor,
-        runtimeTimelineDirectory: URL? = nil
+        runtimeTimelineDirectory: URL? = nil,
+        timelineJournals: TimelineJournalStore? = nil
     ) async throws -> BackendProducts {
         var operatedTimelines: [AscendantRuntimeTimeline] = []
         var identities: [AscendantBackendIdentity] = []
@@ -146,17 +147,56 @@ struct NodeAssembly {
         var timelineStoreCapabilities: [UUID: any AscendantBackendOptionalCapability] = [:]
 
         do {
+            var journalProjections: [UUID: TimelineJournalTimelineProjection] = [:]
+            if let timelineJournals {
+                for timeline in plan.timelines {
+                    try await timelineJournals.ensureTimelineCreated(
+                        timelineID: timeline.id,
+                        title: timeline.title,
+                        runtimeInstanceID: timeline.operatingAscendantID,
+                        attachments: timeline.attachments
+                    )
+                }
+                journalProjections = try await timelineJournals.timelineProjections()
+            }
             for ascendant in plan.ascendants {
                 guard let backend = plan.backend(for: ascendant.id) else {
                     throw NodeRuntimeError.unsupportedAscendantKind(ascendant.kind)
                 }
-                let timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
+                var timelineConfigurations = plan.timelines.filter { $0.operatingAscendantID == ascendant.id }
+                for index in timelineConfigurations.indices {
+                    let configuration = timelineConfigurations[index]
+                    guard let projection = journalProjections[configuration.id] else { continue }
+                    if let runtimeInstanceID = projection.runtimeInstanceID,
+                       runtimeInstanceID != ascendant.id {
+                        throw NodeRuntimeError.unknownAscendant(runtimeInstanceID)
+                    }
+                    timelineConfigurations[index] = try Self.replaying(
+                        configuration,
+                        from: projection
+                    )
+                }
+                let configuredIDs = Set(timelineConfigurations.map(\.id))
+                for (timelineID, projection) in journalProjections
+                    where !configuredIDs.contains(timelineID) && projection.runtimeInstanceID == ascendant.id {
+                    timelineConfigurations.append(NodeManifest.Timeline(
+                        id: timelineID,
+                        title: projection.title,
+                        kind: "timeline",
+                        operatingAscendantID: ascendant.id,
+                        attachments: try Self.manifestAttachments(from: projection.attachments),
+                        project: Self.replayedProject(projection.latestSession) ?? .scratch
+                    ))
+                }
                 let lease = UUID.makeVersion4()
                 let attachmentCapability = BackendWorkspaceAttachmentCapability()
                 specs[ascendant.id] = .init(ascendant: ascendant, configuration: backend)
                 leases[ascendant.id] = lease
                 attachmentCapabilities.append((ascendant.id, lease, attachmentCapability))
                 var optionalCapabilities: [any AscendantBackendOptionalCapability] = [workspaceCapability, attachmentCapability]
+                if let timelineJournals {
+                    optionalCapabilities.append(TimelineJournalRecorder(journals: timelineJournals))
+                }
                 if let runtimeTimelineDirectory, let makeTimelineStore = adapters.timelineStore {
                     let capability = try await makeTimelineStore(ascendant.id, runtimeTimelineDirectory)
                     timelineStoreCapabilities[ascendant.id] = capability
@@ -179,7 +219,25 @@ struct NodeAssembly {
                 identities.append(instance.identity)
                 operatedTimelines += try await instance.operatedTimelines()
             }
-            let registry = try NodeRegistry(plan: plan, operatedTimelines: operatedTimelines, backendLeases: leases)
+            if let timelineJournals {
+                for timeline in operatedTimelines {
+                    let configured = plan.timelines.first(where: { $0.id == timeline.id })
+                    try await timelineJournals.ensureTimelineCreated(
+                        timelineID: timeline.id,
+                        title: timeline.title,
+                        runtimeInstanceID: timeline.attachedAscendantID,
+                        attachments: configured?.attachments ?? []
+                    )
+                }
+                journalProjections = try await timelineJournals.timelineProjections()
+            }
+            let registry = try NodeRegistry(
+                plan: plan,
+                operatedTimelines: operatedTimelines,
+                backendLeases: leases,
+                timelineJournals: timelineJournals,
+                timelineJournalProjections: journalProjections
+            )
             let supervisor = AscendantBackendSupervisor(
                 plan: plan,
                 adapters: adapters,
@@ -220,5 +278,46 @@ struct NodeAssembly {
         options.username = normalized.username
         options.password = normalized.password
         return options
+    }
+
+    private static func replaying(
+        _ configuration: NodeManifest.Timeline,
+        from projection: TimelineJournalTimelineProjection
+    ) throws -> NodeManifest.Timeline {
+        NodeManifest.Timeline(
+            id: configuration.id,
+            title: projection.title,
+            kind: configuration.kind,
+            operatingAscendantID: configuration.operatingAscendantID,
+            flags: configuration.flags,
+            attachments: try manifestAttachments(from: projection.attachments),
+            project: replayedProject(projection.latestSession) ?? configuration.project
+        )
+    }
+
+    private static func replayedProject(
+        _ session: TimelineJournalSessionProjection?
+    ) -> Project? {
+        guard let session, let projectKind = session.projectKind else { return nil }
+        switch projectKind {
+        case .local:
+            return .local(session.cwd)
+        case .scratch:
+            return .scratch
+        }
+    }
+
+    private static func manifestAttachments(
+        from attachments: [TimelineJournalWorkspaceAttachment]
+    ) throws -> [NodeManifest.WorkspaceAttachment] {
+        try attachments.map { attachment in
+            if attachment.scope == .network {
+                guard let uri = attachment.uri, !uri.isEmpty else {
+                    throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
+                }
+                return .network(attachment.workspaceID, uri: uri)
+            }
+            return .local(attachment.workspaceID)
+        }
     }
 }

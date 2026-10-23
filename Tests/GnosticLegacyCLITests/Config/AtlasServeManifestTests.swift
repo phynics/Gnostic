@@ -49,6 +49,9 @@ struct AtlasServeManifestTests {
         let log = try FileHandle(forWritingTo: logURL)
         process.standardOutput = log
         process.standardError = log
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path
+        process.environment = environment
         try process.run()
         defer {
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }

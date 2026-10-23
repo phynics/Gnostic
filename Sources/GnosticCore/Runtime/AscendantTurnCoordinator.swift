@@ -252,7 +252,7 @@ public actor AscendantTurnCoordinator {
         let operationID = Self.makeOperationID()
         guard let rawClientTurnID = request.clientTurnID else {
             let lane = enqueue(timelineID: request.timelineID, operation: operation, completion: { [weak self] result in
-                await self?.recordCompletion(
+                try await self?.recordCompletion(
                     key: nil,
                     request: request,
                     ascendantID: ascendantID,
@@ -363,7 +363,7 @@ public actor AscendantTurnCoordinator {
                 }
             },
             completion: { [weak self] result in
-                await self?.recordCompletion(
+                try await self?.recordCompletion(
                     key: key,
                     request: canonicalRequest,
                     ascendantID: ascendantID,
@@ -444,7 +444,7 @@ public actor AscendantTurnCoordinator {
         ascendantID: UUID,
         operationID: String,
         result: Result<String, Error>
-    ) async {
+    ) async throws {
         var committedOperationID = operationID
         if let key {
             guard let active = inFlight[key] else { return }
@@ -481,11 +481,16 @@ public actor AscendantTurnCoordinator {
             // The outcome commits to the ledger before the in-flight slot
             // clears, so a duplicate admitted after the slot clears always
             // finds a terminal outcome instead of an unregistered identity.
-            await ledger.recordOutcome(
-                timelineID: key.timelineID,
-                clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID(rawValue: key.clientTurnID),
-                outcome: outcome
-            )
+            do {
+                try await ledger.recordOutcome(
+                    timelineID: key.timelineID,
+                    clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID(rawValue: key.clientTurnID),
+                    outcome: outcome
+                )
+            } catch {
+                inFlight.removeValue(forKey: key)
+                throw error
+            }
             inFlight.removeValue(forKey: key)
         }
 
@@ -584,20 +589,21 @@ public actor AscendantTurnCoordinator {
     private func enqueue(
         timelineID: UUID,
         operation: @escaping TurnOperation,
-        completion: @escaping @Sendable (Result<String, Error>) async -> Void
+        completion: @escaping @Sendable (Result<String, Error>) async throws -> Void
     ) -> Lane {
         let predecessor = timelineTails[timelineID]?.tail
         let task = Task<String, Error> {
+            let result: String
             do {
                 _ = await predecessor?.value
                 try Task.checkCancellation()
-                let result = try await operation()
-                await completion(.success(result))
-                return result
+                result = try await operation()
             } catch {
-                await completion(.failure(error))
+                try await completion(.failure(error))
                 throw error
             }
+            try await completion(.success(result))
+            return result
         }
         let laneID = UUID()
         let tail = Task { [weak self] in
