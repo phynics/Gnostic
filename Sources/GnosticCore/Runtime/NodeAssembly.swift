@@ -83,7 +83,7 @@ struct NodeAssembly {
         let resolvedContainer = try Container.resolve(
             components: Components(
                 controllers: ["ObjectLifecycleController": ObjectLifecycleController.self],
-                objectTypes: [GnosticAscendantObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self, GnosticWorkspaceToolObject.self]
+                objectTypes: [GnosticAscendantObject.self, GnosticRuntimeInstanceObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self, GnosticWorkspaceToolObject.self]
             ),
             configuration: Configuration(
                 common: CommonOptions(agentIdentity: ["name": "gnostic-node-\(plan.nodeID.uuidString.lowercased())"]),

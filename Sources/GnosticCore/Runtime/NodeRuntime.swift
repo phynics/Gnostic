@@ -158,6 +158,7 @@ public final class NodeRuntime {
             nodeID: plan.nodeID,
             ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
             ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
+            runtimeInstanceObjects: { [weak self] in self?.backendSupervisor.runtimeInstanceObjects ?? [] },
             workspaceReferences: { [weak self] in await self?.workspaceService.publicReferences() ?? [] },
             workspaceAuthorization: { [weak self] timelineID, workspaceID in
                 guard let self else { return false }
@@ -195,6 +196,24 @@ public final class NodeRuntime {
     /// intentionally independent from the Gnostic-owned Timeline route.
     public func backendHealth(for ascendantID: UUID) async -> AscendantBackendHealth {
         backendSupervisor.health(for: ascendantID)
+    }
+
+    /// Returns initialized ACP Runtime metadata from a local process backend.
+    /// The snapshot carries raw capabilities, version, and a secret-free launch
+    /// fingerprint for local routing decisions or diagnostics.
+    public func runtimeInstanceObject(for ascendantID: UUID) -> GnosticRuntimeInstanceObject? {
+        guard let instance = backendSupervisor.runtimeInstanceObject(for: ascendantID) else { return nil }
+        return GnosticRuntimeInstanceObject(
+            id: instance.runtimeID,
+            name: instance.name,
+            kind: instance.runtimeKind,
+            nodeID: plan.nodeID,
+            version: instance.runtimeVersion,
+            launchFingerprint: instance.launchFingerprint,
+            health: instance.health,
+            rawCapabilities: instance.rawCapabilities,
+            protocolMajor: instance.protocolMajor
+        )
     }
 
     /// The runtime's bounded in-memory accounting, for soak resource tracking.

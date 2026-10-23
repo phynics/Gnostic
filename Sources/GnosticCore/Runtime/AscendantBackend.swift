@@ -766,6 +766,18 @@ public protocol AscendantBackend: AnyObject, Sendable {
     func shutdown() async
 }
 
+/// Optional discovery data for a backend that is an ACP Runtime process.
+///
+/// The host can inspect the Runtime's pinned protocol version, implementation
+/// version, launch identity, and raw advertised capabilities without depending
+/// on the process implementation.
+@MainActor
+public protocol RuntimeInstanceSnapshotProviding: AnyObject, Sendable {
+    /// The initialized Runtime snapshot, or `nil` before successful ACP
+    /// negotiation and after the backend has shut down.
+    var runtimeInstanceObject: GnosticRuntimeInstanceObject? { get }
+}
+
 /// Optional scoped cancellation for one identified Timeline Turn.
 ///
 /// `cancel()` remains the backend-wide lifecycle operation. Backends that can

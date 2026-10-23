@@ -38,10 +38,55 @@ printf '%s\n' "$help"
 test "$status" -eq 0
 ! printf '%s\n' "$help" | grep -F -- "--scenario"
 
-pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d
-
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT INT TERM
+mosquitto_log="$scratch/mosquitto.log"
+mosquitto_config="$scratch/mosquitto.conf"
+mosquitto_pid=
+cleanup() {
+    if [ -n "$mosquitto_pid" ]; then
+        kill "$mosquitto_pid" 2>/dev/null || true
+        wait "$mosquitto_pid" 2>/dev/null || true
+    fi
+    rm -rf "$scratch"
+}
+trap cleanup EXIT INT TERM
+
+readiness_topic="gnostic/runner-smoke/readiness-$$"
+if ! mosquitto_pub -h 127.0.0.1 -t "$readiness_topic" -m ready >/dev/null 2>&1; then
+    printf '%s\n' \
+        'per_listener_settings true' \
+        'listener 1883 127.0.0.1' \
+        'allow_anonymous true' \
+        'persistence false' \
+        'log_dest stderr' >"$mosquitto_config"
+    chmod 755 "$scratch"
+    chmod 644 "$mosquitto_config"
+    mosquitto -c "$mosquitto_config" >"$mosquitto_log" 2>&1 &
+    mosquitto_pid=$!
+fi
+broker_ready=0
+for attempt in {1..50}; do
+    if mosquitto_pub -h 127.0.0.1 -t "$readiness_topic" -m ready >/dev/null 2>&1; then
+        broker_ready=1
+        break
+    fi
+    if [ -n "$mosquitto_pid" ] && ! kill -0 "$mosquitto_pid" 2>/dev/null; then break; fi
+    sleep 0.1
+done
+if [ "$broker_ready" -ne 1 ]; then
+    id >&2
+    command -v mosquitto >&2
+    ls -ld /tmp "$scratch" "$mosquitto_config" >&2 || true
+    if [ -r "$mosquitto_config" ]; then
+        printf 'Broker config is readable by the smoke process.\n' >&2
+    fi
+    if [ -f "$mosquitto_log" ]; then
+        while IFS= read -r line; do printf '%s\n' "$line" >&2; done <"$mosquitto_log"
+    fi
+    printf 'Mosquitto did not accept connections for runner smoke.\n' >&2
+    exit 1
+fi
+
 runner_log="$scratch/runner.log"
 
 run_until_online() {

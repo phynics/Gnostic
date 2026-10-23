@@ -256,6 +256,9 @@ public struct ACPInitializeResponse: Codable, Sendable, Equatable {
     public var protocolVersion: Int
     public var info: ACPImplementation
     public var capabilities: ACPAgentCapabilities?
+    /// The complete capability object received from the Runtime, including
+    /// fields this ACP v2 model does not yet recognize.
+    public private(set) var rawCapabilities: [String: ACPValue]?
     public var authMethods: [ACPValue]?
     public var meta: [String: ACPValue]?
 
@@ -265,6 +268,25 @@ public struct ACPInitializeResponse: Codable, Sendable, Equatable {
         case capabilities
         case authMethods
         case meta = "_meta"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        info = try container.decode(ACPImplementation.self, forKey: .info)
+        capabilities = try container.decodeIfPresent(ACPAgentCapabilities.self, forKey: .capabilities)
+        rawCapabilities = try container.decodeIfPresent([String: ACPValue].self, forKey: .capabilities)
+        authMethods = try container.decodeIfPresent([ACPValue].self, forKey: .authMethods)
+        meta = try container.decodeIfPresent([String: ACPValue].self, forKey: .meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(info, forKey: .info)
+        try container.encodeIfPresent(capabilities, forKey: .capabilities)
+        try container.encodeIfPresent(authMethods, forKey: .authMethods)
+        try container.encodeIfPresent(meta, forKey: .meta)
     }
 
     public init(
@@ -277,6 +299,7 @@ public struct ACPInitializeResponse: Codable, Sendable, Equatable {
         self.protocolVersion = protocolVersion
         self.info = info
         self.capabilities = capabilities
+        rawCapabilities = nil
         self.authMethods = authMethods
         self.meta = meta
     }

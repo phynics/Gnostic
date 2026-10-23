@@ -35,15 +35,19 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     if (process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS) {
       await new Promise((resolve) => setTimeout(resolve, Number(process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS)));
     }
-    return {
-      protocolVersion: acp.PROTOCOL_VERSION,
+    const extraCapabilities = JSON.parse(process.env.GNOSTIC_ACP_FIXTURE_EXTRA_CAPABILITIES ?? "{}");
+    const capabilities = {
+      ...extraCapabilities,
       ...(process.env.GNOSTIC_ACP_FIXTURE_NO_LIST === "1" ? {} : {
-        capabilities: {
-          session: {
-            ...(process.env.GNOSTIC_ACP_FIXTURE_MCP === "1" ? { mcp: { http: {} } } : {}),
-          },
+        session: {
+          ...extraCapabilities.session,
+          ...(process.env.GNOSTIC_ACP_FIXTURE_MCP === "1" ? { mcp: { http: {} } } : {}),
         },
       }),
+    };
+    return {
+      protocolVersion: Number(process.env.GNOSTIC_ACP_FIXTURE_PROTOCOL_VERSION ?? acp.PROTOCOL_VERSION),
+      ...(Object.keys(capabilities).length === 0 ? {} : { capabilities }),
       info: { name: "gnostic-deterministic-acp-fixture", version: "1" },
     };
   })

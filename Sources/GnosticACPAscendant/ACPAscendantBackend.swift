@@ -13,7 +13,7 @@ import Glibc
 ///
 /// This target owns the ACP client process, sessions, and private Timeline map.
 @MainActor
-public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation, AscendantBackendWorkspaceCapability {
+public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCancellation, AscendantBackendWorkspaceCapability, RuntimeInstanceSnapshotProviding {
     private nonisolated let hasWorkspaceService: Bool
     public nonisolated var capabilities: AscendantBackendOptionalSurfaces {
         hasWorkspaceService ? .turnCancellation.union(.workspace) : .turnCancellation
@@ -91,6 +91,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private var connectionTaskID: UUID?
     private var isShuttingDown = false
     private var sessionCapabilities: ACPAgentSessionCapabilities?
+    public private(set) var runtimeInstanceObject: GnosticRuntimeInstanceObject?
     private let permissionService: any AscendantBackendPermissionService
     private let workspaceService: (any AscendantBackendWorkspaceService)?
     // The backend contract serializes Turns per Timeline; one active entry per Timeline is intentional.
@@ -643,6 +644,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         if let stderrDrainTask { await stderrDrainTask.value }
         stderrDrainTask = nil
         sessionCapabilities = nil
+        runtimeInstanceObject = nil
         lifecycleFailure = nil
         activeSessionIDs.removeAll()
     }
@@ -754,11 +756,35 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             )
             connectionStage = "initialize ACP agent"
             let response = try await protocolConnection.initialize(request: initialize)
+            guard response.protocolVersion == ACPv2Protocol.protocolVersion else {
+                let failure = AscendantBackendLifecycleFailure(
+                    code: "acpProtocolVersionMismatch",
+                    message: "The ACP Runtime negotiated protocol version \(response.protocolVersion); Gnostic requires version \(ACPv2Protocol.protocolVersion)."
+                )
+                lifecycleFailure = failure
+                throw AscendantBackendError.lifecycleUnusable(failure)
+            }
             sessionCapabilities = response.capabilities?.session
+            runtimeInstanceObject = GnosticRuntimeInstanceObject(
+                id: identity.id,
+                name: launchSpec.displayName ?? response.info.name,
+                kind: "local-command",
+                version: response.info.version,
+                launchFingerprint: launchSpec.launchFingerprint,
+                health: .healthy,
+                rawCapabilities: response.rawCapabilities ?? [:]
+            )
             return protocolConnection
         } catch {
             let failure: AscendantBackendError
-            if !child.isRunning {
+            if connectionStage == "initialize ACP agent", Self.isProtocolVersionNegotiationFailure(error) {
+                let lifecycle = AscendantBackendLifecycleFailure(
+                    code: "acpProtocolVersionMismatch",
+                    message: "The ACP Runtime refused Gnostic's required protocol version \(ACPv2Protocol.protocolVersion)."
+                )
+                lifecycleFailure = lifecycle
+                failure = .lifecycleUnusable(lifecycle)
+            } else if !child.isRunning {
                 let lifecycle = AscendantBackendLifecycleFailure(
                     code: "acpTransportUnusable",
                     message: "Could not connect to the configured ACP agent process while attempting to \(connectionStage)."
@@ -1241,6 +1267,21 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             code: "acpAgentFailure",
             message: redact("\(context): \(Self.describe(error))")
         ))
+    }
+
+    private nonisolated static func isProtocolVersionNegotiationFailure(_ error: any Error) -> Bool {
+        guard let error = error as? ACPError else { return false }
+        switch error {
+        case .unsupportedProtocolVersion:
+            return true
+        case let .invalidRequest(message), let .invalidParams(message):
+            return message.localizedCaseInsensitiveContains("protocol version")
+        case let .custom(code, message, _):
+            return code == ACPv2Protocol.ErrorCode.unsupportedProtocolVersion
+                || message.localizedCaseInsensitiveContains("protocol version")
+        default:
+            return false
+        }
     }
 
     /// Describes a failed agent request for the operator.

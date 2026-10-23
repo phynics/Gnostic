@@ -7,6 +7,7 @@ import FoundationNetworking
 @testable import GnosticACPAscendant
 import GnosticAscendantConformance
 import GnosticCore
+import GnosticProtocol
 import Testing
 #if canImport(Darwin)
 import Darwin
@@ -132,6 +133,106 @@ struct ACPAscendantBackendTests {
         #expect(backend.launchSpec.workingDirectory == "/workspace/project")
         #expect(backend.launchSpec.environment == ["MODE": "safe", "TOKEN_HINT": "not-secret"])
         #expect(backend.launchSpec.displayName == "OpenCode")
+    }
+
+    @Test("ACP initialize retains unknown capability fields verbatim")
+    func initializeCapabilitiesPreserveUnknownFields() throws {
+        let source = #"{"protocolVersion":2,"info":{"name":"future-agent","version":"1"},"capabilities":{"session":{"mcp":{"http":{},"futureTransport":{"mode":"safe"}},"futureSession":{"enabled":true}},"futureCapability":{"values":[1,"two",true]}}}"#
+        let response = try JSONDecoder().decode(ACPInitializeResponse.self, from: Data(source.utf8))
+        let originalValue = try JSONDecoder().decode(ACPValue.self, from: Data(source.utf8))
+
+        #expect(response.rawCapabilities == originalValue["capabilities"]?.objectValue)
+    }
+
+    @Test("Runtime refuses an ACP initialize response that negotiates another version")
+    @MainActor
+    func initializeRejectsNonV2ProtocolVersion() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                initializeProtocolVersion: ACPv2Protocol.protocolVersion - 1
+            ),
+            timelines: [.init(id: timelineID, title: "Wrong protocol version")]
+        )
+
+        do {
+            _ = try await backend.operatedTimelines()
+            Issue.record("The ACP Runtime with a mismatched protocol version was accepted.")
+        } catch let AscendantBackendError.lifecycleUnusable(failure) {
+            #expect(failure.code == "acpProtocolVersionMismatch")
+            #expect(failure.message.contains(String(ACPv2Protocol.protocolVersion)))
+        }
+        await backend.shutdown()
+    }
+
+    @Test("Runtime identity excludes environment values but includes configured names")
+    @MainActor
+    func launchFingerprintUsesEnvironmentNamesOnly() throws {
+        let first = try backend(settings: [
+            "command": .string("/usr/bin/node"),
+            "args": .string("[\"agent.mjs\"]"),
+            "env.API_TOKEN": .string("first-secret"),
+        ])
+        let sameConfiguration = try backend(settings: [
+            "command": .string("/usr/bin/node"),
+            "args": .string("[\"agent.mjs\"]"),
+            "env.API_TOKEN": .string("second-secret"),
+        ])
+        let differentEnvironmentNames = try backend(settings: [
+            "command": .string("/usr/bin/node"),
+            "args": .string("[\"agent.mjs\"]"),
+            "env.OTHER_TOKEN": .string("first-secret"),
+        ])
+        let differentCommand = try backend(settings: [
+            "command": .string("/usr/bin/python3"),
+            "args": .string("[\"agent.mjs\"]"),
+            "env.API_TOKEN": .string("first-secret"),
+        ])
+        let differentArguments = try backend(settings: [
+            "command": .string("/usr/bin/node"),
+            "args": .string("[\"agent.mjs\",\"--alternate\"]"),
+            "env.API_TOKEN": .string("first-secret"),
+        ])
+
+        #expect(first.launchSpec.launchFingerprint == sameConfiguration.launchSpec.launchFingerprint)
+        #expect(first.launchSpec.launchFingerprint != differentEnvironmentNames.launchSpec.launchFingerprint)
+        #expect(first.launchSpec.launchFingerprint != differentCommand.launchSpec.launchFingerprint)
+        #expect(first.launchSpec.launchFingerprint != differentArguments.launchSpec.launchFingerprint)
+        #expect(!first.launchSpec.launchFingerprint.contains("first-secret"))
+        #expect(!first.launchSpec.launchFingerprint.contains("API_TOKEN"))
+    }
+
+    @Test("Runtime instance snapshot reports initialized metadata and raw capabilities")
+    @MainActor
+    func runtimeInstanceSnapshotReportsInitializeMetadata() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                initializeExtraCapabilities: #"{"futureCapability":{"values":[1,"two"]},"session":{"futureSession":{"enabled":true}}}"#
+            ),
+            timelines: [.init(id: timelineID, title: "Runtime discovery")]
+        )
+
+        _ = try await backend.operatedTimelines()
+
+        let instance = try #require(backend.runtimeInstanceObject)
+        #expect(instance.runtimeID == backend.identity.id)
+        #expect(instance.runtimeKind == "local-command")
+        #expect(instance.runtimeVersion == "1")
+        #expect(instance.launchFingerprint == backend.launchSpec.launchFingerprint)
+        #expect(instance.rawCapabilities["futureCapability"] == .object(["values": .array([.int(1), .string("two")])]))
+        #expect(instance.rawCapabilities["session"]?["futureSession"] == .object(["enabled": .bool(true)]))
+        let serialized = try JSONEncoder().encode(instance)
+        let decoded = try JSONDecoder().decode(GnosticRuntimeInstanceObject.self, from: serialized)
+        #expect(decoded.launchFingerprint == instance.launchFingerprint)
+        #expect(decoded.rawCapabilities == instance.rawCapabilities)
+        await backend.shutdown()
     }
 
     @Test("MCP gateway lists attached tools and rechecks status before each call")
@@ -1051,11 +1152,13 @@ struct ACPAscendantBackendTests {
             throw error
         }
         #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+        #expect(runtime.runtimeInstanceObject(for: ascendantID)?.health == .failed)
 
         let recovered = try await runtime.turn(.init(message: "recover", timelineID: timelineID, clientTurnID: "after-crash"))
         #expect(recovered.text == "fixture reply: recover")
         #expect(await factoryCount.value == 2)
         #expect(await runtime.backendHealth(for: ascendantID) == .healthy)
+        #expect(runtime.runtimeInstanceObject(for: ascendantID)?.health == .healthy)
         await runtime.shutdown()
     }
 
@@ -1091,9 +1194,17 @@ struct ACPAscendantBackendTests {
 
         let firstRuntime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         try await firstRuntime.start()
+        let runtimeInstance = try #require(firstRuntime.runtimeInstanceObject(for: ascendantID))
+        #expect(runtimeInstance.runtimeID == ascendantID)
+        #expect(runtimeInstance.nodeID == manifest.node.id)
+        #expect(runtimeInstance.runtimeKind == "local-command")
+        #expect(runtimeInstance.runtimeVersion == "1")
+        #expect(runtimeInstance.health == .healthy)
+        #expect(runtimeInstance.rawCapabilities["session"] != nil)
         let createdTimeline = try await firstRuntime.createTimeline(title: "Process-scoped", ascendantID: ascendantID)
         #expect(createdTimeline.timelineID != configuredTimelineID)
         await firstRuntime.shutdown()
+        #expect(firstRuntime.runtimeInstanceObject(for: ascendantID) == nil)
 
         let restartedRuntime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         try await restartedRuntime.start()
@@ -1953,7 +2064,9 @@ struct ACPAscendantBackendTests {
         promptProgressDurationMilliseconds: Int? = nil,
         promptProgressIntervalMilliseconds: Int? = nil,
         promptStartedFile: URL? = nil,
-        cancellationFile: URL? = nil
+        cancellationFile: URL? = nil,
+        initializeProtocolVersion: Int? = nil,
+        initializeExtraCapabilities: String? = nil
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -1989,6 +2102,12 @@ struct ACPAscendantBackendTests {
         if let startCountFile { fixtureEnvironment["GNOSTIC_ACP_FIXTURE_START_COUNT_FILE"] = startCountFile.path }
         if let initializeDelayMilliseconds {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS"] = String(initializeDelayMilliseconds)
+        }
+        if let initializeProtocolVersion {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROTOCOL_VERSION"] = String(initializeProtocolVersion)
+        }
+        if let initializeExtraCapabilities {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_EXTRA_CAPABILITIES"] = initializeExtraCapabilities
         }
         if let promptDelayMilliseconds {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS"] = String(promptDelayMilliseconds)

@@ -42,6 +42,7 @@ public final class NodeTransport {
     private let nodeID: UUID?
     private let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
+    private let runtimeInstanceObjects: @MainActor () -> [GnosticRuntimeInstanceObject]
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
     private let workspaceAuthorization: @MainActor @Sendable (UUID?, UUID) async -> Bool
     private let workspaceProvider: MultiplexedWorkspaceProvider?
@@ -62,6 +63,7 @@ public final class NodeTransport {
         nodeID: UUID? = nil,
         ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
+        runtimeInstanceObjects: @escaping @MainActor () -> [GnosticRuntimeInstanceObject] = { [] },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
         workspaceAuthorization: @escaping @MainActor @Sendable (UUID?, UUID) async -> Bool = { _, _ in false },
         localWorkspaces: [UUID: any LocalWorkspace] = [:],
@@ -75,6 +77,7 @@ public final class NodeTransport {
         self.nodeID = nodeID
         self.ascendantIdentities = ascendantIdentities
         self.ascendantHealth = ascendantHealth
+        self.runtimeInstanceObjects = runtimeInstanceObjects
         self.workspaceReferences = workspaceReferences
         self.workspaceAuthorization = workspaceAuthorization
         workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(
@@ -297,6 +300,14 @@ public final class NodeTransport {
         else { lifecycle.advertiseDiscoverableObject(object: object) }
     }
 
+    func projectRuntimeInstance(_ instance: GnosticRuntimeInstanceObject, replacing: Bool) {
+        guard isAvailable(), let lifecycle, advertisementTeardownInstalled else { return }
+        let object = networkRuntimeInstance(from: instance)
+        advertisedObjects[object.objectId.string] = object
+        if replacing { lifecycle.readvertiseDiscoverableObject(object: object) }
+        else { lifecycle.advertiseDiscoverableObject(object: object) }
+    }
+
     private func adoptComponentScopes() async throws {
         guard !scopesAdopted else { return }
         let advertisementScope = self.advertisementScope
@@ -356,8 +367,23 @@ public final class NodeTransport {
         if let registry {
             objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0, nodeID: nodeID) }
         }
+        objects += runtimeInstanceObjects().map(networkRuntimeInstance(from:))
         objects += await workspaceReferences().map { GnosticWorkspaceObject(workspace: $0) }
         return objects
+    }
+
+    private func networkRuntimeInstance(from instance: GnosticRuntimeInstanceObject) -> GnosticRuntimeInstanceObject {
+        GnosticRuntimeInstanceObject(
+            id: instance.runtimeID,
+            name: instance.name,
+            kind: instance.runtimeKind,
+            nodeID: nodeID,
+            version: instance.runtimeVersion,
+            launchFingerprint: instance.launchFingerprint,
+            health: instance.health,
+            rawCapabilities: instance.rawCapabilities,
+            protocolMajor: instance.protocolMajor
+        )
     }
 
     func cancel() async {

@@ -10,6 +10,7 @@ public final class GnosticSubscription {
     /// The exact object types observed by this subscription.
     public static let objectTypes = [
         GnosticObjectType.ascendant,
+        GnosticObjectType.runtimeInstance,
         GnosticObjectType.timeline,
         GnosticObjectType.workspace,
     ]
@@ -125,6 +126,11 @@ public final class GnosticSubscription {
             let ascendant = try await observe(GnosticObjectType.ascendant)
             acquired.append(try await owner.task(label: "observe-ascendant") {
                 for await event in ascendant { await catalog.ingest(event) }
+            })
+
+            let runtimeInstance = try await observe(GnosticObjectType.runtimeInstance)
+            acquired.append(try await owner.task(label: "observe-runtime-instance") {
+                for await event in runtimeInstance { await catalog.ingest(event) }
             })
 
             let timeline = try await observe(GnosticObjectType.timeline)
