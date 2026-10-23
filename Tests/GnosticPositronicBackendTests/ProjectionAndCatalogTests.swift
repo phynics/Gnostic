@@ -4,6 +4,7 @@ import Axoloty
 import Foundation
 @testable import GnosticPositronicBackend
 @testable import GnosticCore
+import GnosticProtocol
 import PKContracts
 import PositronicKit
 import Testing
@@ -80,6 +81,7 @@ struct ProjectionAndCatalogTests {
     @Test("advertised projections carry the stable serving node identity")
     func advertisedProjectionsCarryServingNodeIdentity() async throws {
         let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000005")!
+        let runtimeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000006")!
         let ascendant = AscendantRuntimeIdentity(
             id: ascendantID, name: "Atlas", description: "Coordinates analysis.",
             privateTimelineID: timelineID, primaryWorkspaceID: nil,
@@ -105,11 +107,33 @@ struct ProjectionAndCatalogTests {
             sourceId: "provider-a",
             object: try snapshot(of: GnosticTimelineObject(timeline: timeline, nodeID: nodeID))
         ))
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: "provider-a",
+            object: try snapshot(of: GnosticRuntimeInstanceObject(
+                id: runtimeID,
+                name: "OpenCode",
+                kind: "local-command",
+                nodeID: nodeID,
+                version: "1.2.3",
+                launchFingerprint: "0123456789abcdef",
+                health: .healthy,
+                rawCapabilities: ["session": .object(["future": .bool(true)])]
+            ))
+        ))
 
         let ascendantEntry = try #require(await catalog.object(id: ascendantID, providerID: "provider-a"))
         let timelineEntry = try #require(await catalog.object(id: timelineID, providerID: "provider-a"))
+        let runtimeEntry = try #require(await catalog.object(id: runtimeID, providerID: "provider-a"))
         #expect(ascendantEntry.knownProperties["nodeID"] == .string(nodeID.uuidString))
         #expect(timelineEntry.knownProperties["nodeID"] == .string(nodeID.uuidString))
+        #expect(runtimeEntry.objectType == GnosticObjectType.runtimeInstance)
+        #expect(runtimeEntry.knownProperties["runtimeID"] == .string(runtimeID.uuidString))
+        #expect(runtimeEntry.knownProperties["runtimeKind"] == .string("local-command"))
+        #expect(runtimeEntry.knownProperties["nodeID"] == .string(nodeID.uuidString))
+        #expect(runtimeEntry.knownProperties["runtimeVersion"] == .string("1.2.3"))
+        #expect(runtimeEntry.knownProperties["launchFingerprint"] == .string("0123456789abcdef"))
+        #expect(runtimeEntry.knownProperties["health"] == .string("healthy"))
+        #expect(runtimeEntry.knownProperties["rawCapabilities"] == .object(["session": .object(["future": .bool(true)])]))
 
         // The property is additive: a projection without a node identity keeps
         // advertising, and its catalog entry simply carries no node property.
@@ -528,6 +552,7 @@ struct ProjectionAndCatalogTests {
 
         #expect(await recorded.filters == [
             "me.atkn.gnostic.Ascendant",
+            "me.atkn.gnostic.RuntimeInstance",
             "me.atkn.gnostic.Timeline",
             "me.atkn.gnostic.Workspace",
         ])
@@ -567,8 +592,10 @@ struct ProjectionAndCatalogTests {
 
         #expect(await attempts.filters == [
             GnosticObjectType.ascendant,
+            GnosticObjectType.runtimeInstance,
             GnosticObjectType.timeline,
             GnosticObjectType.ascendant,
+            GnosticObjectType.runtimeInstance,
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
@@ -624,20 +651,22 @@ struct ProjectionAndCatalogTests {
         try await subscription.start()
         // The streams never finish, so a live effect count is evidence that
         // stop cancelled the loops and that the restart is actually running.
-        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
+        #expect(await subscription.effectSnapshot().liveEffects.count == 5)
         await subscription.stopAndWait()
         #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
         try await subscription.start()
 
         #expect(await probe.filters == [
             GnosticObjectType.ascendant,
+            GnosticObjectType.runtimeInstance,
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
             GnosticObjectType.ascendant,
+            GnosticObjectType.runtimeInstance,
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
-        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
+        #expect(await subscription.effectSnapshot().liveEffects.count == 5)
         await subscription.stopAndWait()
         #expect(await subscription.effectSnapshot().liveEffects.isEmpty)
     }
@@ -658,6 +687,7 @@ struct ProjectionAndCatalogTests {
 
         #expect(await probe.filters == [
             GnosticObjectType.ascendant,
+            GnosticObjectType.runtimeInstance,
             GnosticObjectType.timeline,
             GnosticObjectType.workspace,
         ])
@@ -671,7 +701,7 @@ struct ProjectionAndCatalogTests {
             AsyncStream { _ in }
         }
         try await subscription.start()
-        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
+        #expect(await subscription.effectSnapshot().liveEffects.count == 5)
 
         await subscription.stopAndWait()
         let snapshot = await subscription.effectSnapshot()
@@ -694,7 +724,7 @@ struct ProjectionAndCatalogTests {
         try await restart.value
 
         #expect(await subscription.effectSnapshot().state == .active)
-        #expect(await probe.filters.count == 6)
+        #expect(await probe.filters.count == 8)
 
         await subscription.stopAndWait()
     }
@@ -762,9 +792,9 @@ struct ProjectionAndCatalogTests {
         try await restart.value
 
         await #expect(throws: NodeRuntimeError.self) { try await start.value }
-        // Three observe calls for the fenced start, three for the restart.
-        #expect(await probe.filters.count == 6)
-        #expect(await subscription.effectSnapshot().liveEffects.count == 4)
+        // Four observe calls for the fenced start, four for the restart.
+        #expect(await probe.filters.count == 8)
+        #expect(await subscription.effectSnapshot().liveEffects.count == 5)
 
         await subscription.stopAndWait()
         #expect(await subscription.effectSnapshot().liveEffects.isEmpty)

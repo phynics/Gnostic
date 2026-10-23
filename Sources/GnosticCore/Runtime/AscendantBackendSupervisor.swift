@@ -70,6 +70,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
 
     private var ascendantAdapters: [UUID: any AscendantBackend]
     private let backendIdentities: [AscendantBackendIdentity]
+    private var runtimeInstanceSnapshots: [UUID: GnosticRuntimeInstanceObject] = [:]
     private let backendSpecs: [UUID: BackendSpec]
     private var backendHealthByID: [UUID: AscendantBackendHealth]
     private var quarantinedAscendantIDs: Set<UUID> = []
@@ -110,9 +111,26 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         self.backendSpecs = backendSpecs
         backendHealthByID = backendHealth
         self.backendLeases = backendLeases
+        for (id, backend) in ascendantAdapters {
+            guard let provider = backend as? any RuntimeInstanceSnapshotProviding,
+                  let snapshot = provider.runtimeInstanceObject else { continue }
+            snapshot.nodeID = plan.nodeID
+            snapshot.health = Self.runtimeInstanceHealth(backendHealth[id] ?? .unknown)
+            runtimeInstanceSnapshots[id] = snapshot
+        }
     }
 
     var identities: [AscendantBackendIdentity] { backendIdentities }
+
+    var runtimeInstanceObjects: [GnosticRuntimeInstanceObject] {
+        runtimeInstanceSnapshots.values
+            .sorted { $0.runtimeID.uuidString < $1.runtimeID.uuidString }
+    }
+
+    func runtimeInstanceObject(for id: UUID) -> GnosticRuntimeInstanceObject? {
+        guard lifetime.state != .closed else { return nil }
+        return runtimeInstanceSnapshots[id]
+    }
 
     var isRunning: Bool { lifetime.isRunning }
     var isClosed: Bool { lifetime.state == .closed }
@@ -391,6 +409,24 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private func readvertiseAscendant(_ ascendantID: UUID, health: AscendantBackendHealth) {
         guard let identity = backendIdentities.first(where: { $0.id == ascendantID }) else { return }
         projectionRelay.projectAscendant(identity, health: health, replacing: true)
+        if let backend = ascendantAdapters[ascendantID],
+           let provider = backend as? any RuntimeInstanceSnapshotProviding,
+           let runtimeInstance = provider.runtimeInstanceObject {
+            runtimeInstanceSnapshots[ascendantID] = runtimeInstance
+        }
+        if let runtimeInstance = runtimeInstanceSnapshots[ascendantID] {
+            runtimeInstance.nodeID = plan.nodeID
+            runtimeInstance.health = Self.runtimeInstanceHealth(health)
+            projectionRelay.projectRuntimeInstance(runtimeInstance, replacing: true)
+        }
+    }
+
+    private static func runtimeInstanceHealth(_ health: AscendantBackendHealth) -> GnosticRuntimeInstanceHealth {
+        switch health {
+        case .healthy: .healthy
+        case .failed: .failed
+        case .unknown: .unknown
+        }
     }
 
     private func isCurrentReconstructionGeneration(_ generation: UInt64) -> Bool {

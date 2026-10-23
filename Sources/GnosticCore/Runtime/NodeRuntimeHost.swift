@@ -14,6 +14,7 @@ final class NodeRuntimeHost {
         let nodeID: UUID
         let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
         let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
+        let runtimeInstanceObjects: @MainActor () -> [GnosticRuntimeInstanceObject]
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
         let workspaceAuthorization: @MainActor @Sendable (UUID?, UUID) async -> Bool
         let localWorkspaces: [UUID: any LocalWorkspace]
@@ -78,6 +79,7 @@ final class NodeRuntimeHost {
             nodeID: wiring.nodeID,
             ascendantIdentities: wiring.ascendantIdentities,
             ascendantHealth: wiring.ascendantHealth,
+            runtimeInstanceObjects: wiring.runtimeInstanceObjects,
             workspaceReferences: wiring.workspaceReferences,
             workspaceAuthorization: wiring.workspaceAuthorization,
             localWorkspaces: wiring.localWorkspaces,

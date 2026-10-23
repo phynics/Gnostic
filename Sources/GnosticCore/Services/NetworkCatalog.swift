@@ -25,6 +25,7 @@ public actor NetworkCatalog {
     ]
     private static let knownPropertyNames: [String: Set<String>] = [
         GnosticObjectType.ascendant: ["protocolMajor", "capabilities", "backendHealth", "backendKind", "backendVersion", "ascendantDescription", "primaryWorkspaceID", "privateTimelineID", "nodeID", "lastActiveAt", "createdAt", "updatedAt"],
+        GnosticObjectType.runtimeInstance: ["protocolMajor", "runtimeID", "nodeID", "runtimeKind", "runtimeVersion", "launchFingerprint", "health", "rawCapabilities"],
         GnosticObjectType.timeline: ["protocolMajor", "title", "isArchived", "isPrivate", "attachedAscendantID", "attachedWorkspaceIDs", "nodeID", "createdAt", "updatedAt"],
         GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "effectiveStatus", "tools", "toolsComplete", "createdAt"],
         GnosticObjectType.workspaceTool: ["protocolMajor", "workspaceID", "toolID", "toolName", "toolDescription", "parametersSchema", "usageExample", "requiresPermission", "page"],

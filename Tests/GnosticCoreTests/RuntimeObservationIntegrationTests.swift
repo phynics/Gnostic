@@ -71,7 +71,7 @@ struct RuntimeObservationIntegrationTests {
             "transport-advertisements",
         ]
         let allowedLabels: Set<String> = [
-            "observe-ascendant", "observe-timeline", "observe-workspace", "observe-deadvertise",
+            "observe-ascendant", "observe-runtime-instance", "observe-timeline", "observe-workspace", "observe-deadvertise",
             "turn-observation", "workspace-handler", "workspace-query-responder", "ascendant-turn",
             "ascendant-turn-replay", "ascendant-turn-cancel", "permission-handler", "permission-observation", "timeline-status",
             "timeline-management", "workspace-operations", "diagnostics", "discover-responder", "advertisement-teardown",

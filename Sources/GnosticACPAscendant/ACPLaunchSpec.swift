@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import GnosticProtocol
+
 /// Validated configuration values needed to describe an ACP agent process.
 ///
 /// The launch specification is configuration data only; the backend owns the
@@ -16,6 +18,9 @@ public struct ACPLaunchSpec: Sendable, Equatable, CustomStringConvertible, Custo
     public let environment: [String: String]
     /// Optional display name for the external agent.
     public let displayName: String?
+    /// Stable identity of the launch configuration, excluding environment
+    /// values so configured secrets never enter identity or diagnostics.
+    public let launchFingerprint: String
 
     /// A safe summary that identifies environment keys without showing values.
     public var description: String {
@@ -41,5 +46,29 @@ public struct ACPLaunchSpec: Sendable, Equatable, CustomStringConvertible, Custo
         self.workingDirectory = workingDirectory
         self.environment = environment
         self.displayName = displayName
+        launchFingerprint = Self.fingerprint(
+            command: command,
+            arguments: arguments,
+            environmentNames: environment.keys.sorted()
+        )
+    }
+
+    private static func fingerprint(
+        command: String,
+        arguments: [String],
+        environmentNames: [String]
+    ) -> String {
+        let components = ["gnostic-runtime-launch-v1", "command", command, "arguments", String(arguments.count)]
+            + arguments
+            + ["environment", String(environmentNames.count)]
+            + environmentNames
+        var bytes: [UInt8] = []
+        for component in components {
+            let value = Array(component.utf8)
+            let length = UInt64(value.count)
+            bytes.append(contentsOf: (0..<8).reversed().map { UInt8(truncatingIfNeeded: length >> ($0 * 8)) })
+            bytes.append(contentsOf: value)
+        }
+        return SHA256.hexDigest(bytes)
     }
 }

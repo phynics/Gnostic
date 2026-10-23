@@ -4,6 +4,7 @@ import Axoloty
 import Foundation
 import PKContracts
 import PositronicKit
+import GnosticProtocol
 import Testing
 @testable import GnosticPositronicBackend
 
@@ -1042,6 +1043,61 @@ struct NodeRuntimeTests {
         #expect(await events.value.count == 1)
     }
 
+    @Test("Runtime instances are advertised with their Node and raw ACP capabilities") @MainActor
+    func runtimeInstanceAdvertisementCarriesIdentityAndCapabilities() async throws {
+        let namespace = "node-runtime-instance-advertisement"
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000203")!
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000204")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000205")!
+        let rawCapabilities: [String: ACPValue] = [
+            "session": .object(["futureSessionFeature": .bool(true)]),
+        ]
+        let runtimeInstance = GnosticRuntimeInstanceObject(
+            id: ascendantID,
+            name: "Fixture Runtime",
+            kind: "local-command",
+            version: "1.2.3",
+            launchFingerprint: "fixture-fingerprint",
+            rawCapabilities: rawCapabilities
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "Fixture", defaultTimelineID: timelineID, kind: "runtime-fixture")],
+            timelines: [.init(id: timelineID, title: "Runtime fixture", operatingAscendantID: ascendantID)]
+        )
+        var adapters = NodeRuntimeAdapters.bundled
+        adapters.ascendants.registerBackend(kind: "runtime-fixture") { ascendant, _, _, timelines in
+            FixtureAscendantBackend(
+                ascendant: ascendant,
+                timelines: timelines,
+                runtimeInstanceObject: runtimeInstance
+            )
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        defer { Task { @MainActor in await runtime.shutdown() } }
+        try await runtime.start()
+
+        let consumer = makeNodeRuntimeBrokerManager("runtime-instance-consumer", namespace: namespace)
+        defer { consumer.stop() }
+        let catalog = NetworkCatalog()
+        let subscription = GnosticSubscription(catalog: catalog, communicationManager: consumer)
+        try await subscription.start()
+        defer { subscription.stopInTeardown() }
+        try await startNodeRuntimeBrokerManager(consumer)
+        await subscription.discover(using: consumer, timeout: .seconds(2))
+
+        let discovered = try #require(await catalog.networkObjects().first {
+            $0.objectType == GnosticObjectType.runtimeInstance && $0.objectID == ascendantID
+        })
+        #expect(discovered.knownProperties["nodeID"] == .string(nodeID.uuidString))
+        #expect(discovered.knownProperties["runtimeKind"] == .string("local-command"))
+        #expect(discovered.knownProperties["runtimeVersion"] == .string("1.2.3"))
+        #expect(discovered.knownProperties["launchFingerprint"] == .string("fixture-fingerprint"))
+        #expect(discovered.knownProperties["health"] == .string("healthy"))
+        #expect(discovered.knownProperties["rawCapabilities"] == .object(["session": .object(["futureSessionFeature": .bool(true)])]))
+    }
+
     @Test("custom Workspace adapters advertise their own tool projection") @MainActor
     func customWorkspaceAdapterToolsAreAdvertised() async throws {
         let namespace = "node-runtime-custom-workspace-tools"
@@ -1406,21 +1462,23 @@ struct NodeRuntimeTests {
 }
 
 @MainActor
-private final class FixtureAscendantBackend: AscendantBackend {
+private final class FixtureAscendantBackend: AscendantBackend, RuntimeInstanceSnapshotProviding {
     nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
     let identity: AscendantBackendIdentity
+    var runtimeInstanceObject: GnosticRuntimeInstanceObject?
     private var storedTimelines: [AscendantBackendTimeline]
     private let cancellationProbe: AdapterCancellationProbe?
     private let creationProbe: AdapterCreationProbe?
     private let shutdownProbe: BackendShutdownProbe?
     private let runCounter: TurnRunCounter?
 
-    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil, shutdownProbe: BackendShutdownProbe? = nil, runCounter: TurnRunCounter? = nil) {
+    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline], cancellationProbe: AdapterCancellationProbe? = nil, creationProbe: AdapterCreationProbe? = nil, shutdownProbe: BackendShutdownProbe? = nil, runCounter: TurnRunCounter? = nil, runtimeInstanceObject: GnosticRuntimeInstanceObject? = nil) {
         let now = Date()
         self.runCounter = runCounter
         self.cancellationProbe = cancellationProbe
         self.creationProbe = creationProbe
         self.shutdownProbe = shutdownProbe
+        self.runtimeInstanceObject = runtimeInstanceObject
         identity = .init(id: ascendant.id, name: ascendant.name, description: ascendant.description, privateTimelineID: ascendant.defaultTimelineID, primaryWorkspaceID: nil, lastActiveAt: now, createdAt: now, updatedAt: now)
         storedTimelines = timelines.map { .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), ascendantID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now) }
     }
