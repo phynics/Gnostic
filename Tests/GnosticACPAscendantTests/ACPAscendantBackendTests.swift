@@ -1194,24 +1194,41 @@ struct ACPAscendantBackendTests {
         #expect(transitions.suffix(2) == [.ambiguous, .live])
     }
 
-    @Test("a failed journal write prevents native resume dispatch")
+    @Test("a quarantined journal prevents native resume dispatch")
     @MainActor
-    func failedResumeStateJournalWriteBlocksDispatch() async throws {
-        let stateHome = try makeTemporaryStateHome()
-        defer { stateHome.cleanup() }
+    func quarantinedResumeJournalBlocksDispatch() async throws {
+        let stateHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-resume-journal-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stateHome) }
         let timelineID = UUID()
         let runtimeID = UUID()
-        let timeline = NodeManifest.Timeline(id: timelineID, title: "Resume journal failure")
-        let journalDirectory = stateHome.url.appendingPathComponent("journals")
+        let timeline = NodeManifest.Timeline(
+            id: timelineID,
+            title: "Resume journal failure",
+            project: .local(stateHome.path)
+        )
+        let journalDirectory = stateHome.appendingPathComponent("journals")
         let store = TimelineJournalStore(directoryURL: journalDirectory)
         try await store.ensureTimelineCreated(timelineID: timelineID, title: timeline.title, runtimeInstanceID: runtimeID, attachments: [])
-        let resumeRequests = stateHome.url.appendingPathComponent("resume-requests.jsonl")
-        var settings = try fixtureSettings(stateHome: stateHome.url)
+        let recorder = TimelineJournalRecorder(journals: store)
+        let sessionID = "journal-write-failure-session"
+        try await recorder.appendSessionTransition(
+            timelineID: timelineID,
+            sessionID: sessionID,
+            runtimeInstanceID: runtimeID,
+            state: .live,
+            projectKind: .local,
+            cwd: stateHome.path
+        )
+
+        let resumeRequests = stateHome.appendingPathComponent("resume-requests.jsonl")
+        let newSessions = stateHome.appendingPathComponent("new-sessions.txt")
+        let prompts = stateHome.appendingPathComponent("prompts.txt")
+        var settings = try fixtureSettings(stateHome: stateHome)
         settings["env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE"] = .string(resumeRequests.path)
-        let initialBackend = try backend(settings: settings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [TimelineJournalRecorder(journals: store)])
-        _ = try await initialBackend.runTurn(.init(timelineID: timelineID, message: "first"), updates: RecordingUpdateSink())
-        let previous = try #require(initialBackend.sessionBinding(for: timelineID))
-        await initialBackend.shutdown()
+        settings["env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE"] = .string(newSessions.path)
+        settings["env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE"] = .string(prompts.path)
 
         let journalURL = TimelineJournalStore.fileURL(for: timelineID, in: journalDirectory)
         let journalFile = try FileHandle(forWritingTo: journalURL)
@@ -1226,19 +1243,32 @@ struct ACPAscendantBackendTests {
             ascendantID: runtimeID,
             optionalCapabilities: [TimelineJournalRecorder(journals: reopenedStore)]
         )
-        do {
-            _ = try await restartedBackend.operatedTimelines()
-        } catch { }
-        #expect(restartedBackend.sessionBinding(for: timelineID)?.sessionID == previous.sessionID)
+        defer { Task { await restartedBackend.shutdown() } }
+        _ = try await restartedBackend.operatedTimelines()
+        #expect(restartedBackend.sessionBinding(for: timelineID)?.sessionID == sessionID)
+        let reopenedJournal = try await reopenedStore.journal(for: timelineID)
+        if case .quarantined = await reopenedJournal.status() {
+            // The committed prefix still supplies the native Session binding.
+        } else {
+            Issue.record("the corrupt committed tail must quarantine the journal")
+        }
+        #expect(try await reopenedStore.timelineProjection(for: timelineID)?.latestSession?.state == .live)
         do {
             _ = try await restartedBackend.runTurn(
                 .init(timelineID: timelineID, message: "journal write must block resume"),
                 updates: RecordingUpdateSink()
             )
             Issue.record("a failed ambiguity journal append must prevent native resume")
-        } catch { }
+        } catch let AscendantBackendError.terminal(failure) {
+            #expect(failure.code == "acpAgentFailure")
+            #expect(failure.message.contains("journal is read-only because it is quarantined"))
+        } catch {
+            Issue.record("expected the quarantined journal append to fail before ACP dispatch; got \(error)")
+        }
         await restartedBackend.shutdown()
         #expect(!FileManager.default.fileExists(atPath: resumeRequests.path))
+        #expect(!FileManager.default.fileExists(atPath: newSessions.path))
+        #expect(!FileManager.default.fileExists(atPath: prompts.path))
     }
 
     @Test("a failed resume is durably ambiguous before dispatch and blocks Sessions and prompts across restart", arguments: ["transport", "server-error", "invalid-params"])
