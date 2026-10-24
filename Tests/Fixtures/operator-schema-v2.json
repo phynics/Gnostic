@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "broker": { "host": "localhost", "port": 1883, "namespace": "migration-test" },
+  "node": {
+    "id": "A6420000-0000-4000-8000-000000000001",
+    "kind": "node",
+    "approvalMode": "auto",
+    "logLevel": "info"
+  },
+  "ascendants": [
+    {
+      "id": "A6420000-0000-4000-8000-000000000002",
+      "kind": "acp-client",
+      "name": "Local ACP",
+      "description": "Operator configured ACP process",
+      "metadata": { "team": "runtime-ops", "label": "support" },
+      "backend": {
+        "kind": "acp-client",
+        "schemaVersion": 1,
+        "settings": {
+          "command": "/usr/bin/node",
+          "args": "[\"agent.mjs\"]",
+          "env": "{\"MODE\":\"safe\"}"
+        },
+        "secrets": { "env-secret.API_TOKEN": "fixture-secret" }
+      },
+      "defaultTimelineID": "A6420000-0000-4000-8000-000000000003"
+    }
+  ],
+  "timelines": [
+    {
+      "id": "A6420000-0000-4000-8000-000000000003",
+      "kind": "timeline",
+      "title": "Support timeline",
+      "operatingAscendantID": "A6420000-0000-4000-8000-000000000002",
+      "flags": ["experiment", "support"],
+      "attachments": []
+    }
+  ],
+  "workspaces": [
+    { "id": "A6420000-0000-4000-8000-000000000004", "kind": "echo", "name": "Notes", "uri": "echo://notes" }
+  ]
+}
