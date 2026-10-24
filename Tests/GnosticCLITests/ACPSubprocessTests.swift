@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import Axoloty
 import Foundation
-@_spi(RuntimeHost) import GnosticCore
+import GnosticCore
 import GnosticProtocol
 import Testing
 
@@ -11,8 +12,8 @@ import Testing
 /// Clean ACP smoke coverage.
 ///
 /// The suite keeps the filter name used by `make acp-smoke`. It exercises the
-/// shipped `gnostic acp` command against an in-process Node whose backend is a
-/// host-owned echo fixture. No provider package is linked or executed.
+/// shipped `gnostic acp` command against broker advertisements from Runtime
+/// fixture providers.
 @Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
     @Test("ACP selection uses Runtime when its ID collides with a legacy Ascendant projection")
@@ -152,38 +153,52 @@ struct ACPSubprocessTests {
     func discoversProfiles() async throws {
         let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_BINARY"])
         let namespace = "acp-profiles-\(UUID().uuidString.lowercased())"
-        let lowerID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
-        let node = try await makeACPNode(
+        let sharedRuntimeID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
+        let uniqueRuntimeID = UUID(uuidString: "20000000-0000-4000-8000-000000000001")!
+        let firstNodeID = UUID(uuidString: "30000000-0000-4000-8000-000000000001")!
+        let secondNodeID = UUID(uuidString: "40000000-0000-4000-8000-000000000001")!
+        let firstProvider = try makeACPProfileProvider(
+            name: "ACP profile provider A",
             namespace: namespace,
-            ascendantID: lowerID,
-            name: "Lower Ascendant"
+            runtimes: [
+                (sharedRuntimeID, firstNodeID, "Shared Runtime A"),
+                (uniqueRuntimeID, firstNodeID, "Unique Runtime"),
+            ]
         )
-        defer { Task { @MainActor in await node.shutdown() } }
-        try await node.start()
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = [
-            "acp", "profiles", "--json",
-            "--host", "127.0.0.1",
-            "--port", "1883",
-            "--namespace", namespace,
-        ]
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-        try process.run()
-        while process.isRunning {
-            try await Task.sleep(for: .milliseconds(50))
+        let secondProvider = try makeACPProfileProvider(
+            name: "ACP profile provider B",
+            namespace: namespace,
+            runtimes: [(sharedRuntimeID, secondNodeID, "Shared Runtime B")]
+        )
+        defer {
+            firstProvider.stop()
+            secondProvider.stop()
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let standardError = String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
-        let profiles = try JSONDecoder().decode(ACPProfileBundle.self, from: data)
-        let profile = try #require(profiles.profiles.first { $0.args.contains(lowerID.uuidString.lowercased()) })
-        #expect(profile.args.contains("--runtime"))
-        #expect(!profile.args.contains("--ascendant"))
+        try await startACPProfileProvider(firstProvider)
+        try await startACPProfileProvider(secondProvider)
+
+        let profiles = try await readProfiles(binary: binary, namespace: namespace)
+        let refreshedProfiles = try await readProfiles(binary: binary, namespace: namespace)
+        #expect(profiles.version == ACPProfileBundle.currentVersion)
+        #expect(profiles.profiles.count == 3)
+        #expect(profiles.profiles.map(\.id) == profiles.profiles.map(\.id).sorted())
+        #expect(profiles.profiles.map(\.id) == refreshedProfiles.profiles.map(\.id))
+        #expect(profiles.profiles.map(\.args) == refreshedProfiles.profiles.map(\.args))
+
+        let sharedProfiles = profiles.profiles.filter { $0.args.contains(sharedRuntimeID.uuidString.lowercased()) }
+        #expect(sharedProfiles.count == 2)
+        #expect(sharedProfiles.allSatisfy { $0.args.contains("--runtime") && $0.args.contains("--node") })
+        #expect(!sharedProfiles.contains { $0.args.contains("--ascendant") })
+        #expect(Set(sharedProfiles.compactMap { value(after: "--node", in: $0.args) }) == [
+            firstNodeID.uuidString.lowercased(), secondNodeID.uuidString.lowercased(),
+        ])
+
+        let uniqueProfile = try #require(profiles.profiles.first {
+            $0.args.contains(uniqueRuntimeID.uuidString.lowercased())
+        })
+        #expect(uniqueProfile.args.contains("--runtime"))
+        #expect(!uniqueProfile.args.contains("--node"))
+        #expect(!uniqueProfile.args.contains("--ascendant"))
     }
 
     @Test(
@@ -215,115 +230,73 @@ struct ACPSubprocessTests {
 }
 
 @MainActor
-private func makeACPNode(
-    namespace: String,
-    ascendantID: UUID,
+private func makeACPProfileProvider(
     name: String,
-    host: String = "127.0.0.1",
-    port: Int = 1883
-) async throws -> NodeRuntime {
-    let timelineID = UUID()
-    let manifest = NodeManifest(
-        broker: .init(host: host, port: port, namespace: namespace),
-        node: .init(id: UUID(), approvalMode: "auto"),
-        ascendants: [.init(
-            id: ascendantID,
-            name: name,
-            defaultTimelineID: timelineID,
-            description: "ACP lifecycle fixture",
-            backend: .init(kind: "clean-echo")
-        )],
-        timelines: [.init(
-            id: timelineID,
-            title: "\(name) Timeline",
-            operatingAscendantID: ascendantID
-        )],
-        workspaces: []
+    namespace: String,
+    runtimes: [(id: UUID, nodeID: UUID, name: String)]
+) throws -> CommunicationManager {
+    let manager = try CommunicationManager(
+        identity: Identity(name: name),
+        communicationOptions: CommunicationOptions(
+            namespace: namespace,
+            shouldEnableCrossNamespacing: false,
+            mqttClientOptions: MQTTClientOptions(
+                host: "127.0.0.1",
+                port: 1883,
+                shouldTryMDNSDiscovery: false,
+                autoReconnect: false
+            ),
+            shouldAutoStart: false
+        ),
+        commonOptions: nil
     )
-    var adapters = NodeRuntimeAdapters.default
-    adapters.ascendants.registerBackend(kind: "clean-echo") { ascendant, _, _, timelines in
-        CleanEchoAscendantBackend(ascendant: ascendant, timelines: timelines)
+    for runtime in runtimes {
+        manager.publishAdvertise(GnosticRuntimeInstanceObject(
+            id: runtime.id,
+            name: runtime.name,
+            kind: "fixture",
+            nodeID: runtime.nodeID,
+            rawCapabilities: ["session": .object([:])]
+        ))
     }
-    return try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+    return manager
 }
 
 @MainActor
-private final class CleanEchoAscendantBackend: AscendantBackend {
-    nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
-    let identity: AscendantBackendIdentity
-    private var timelines: [AscendantBackendTimeline]
-
-    init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline]) {
-        let now = Date()
-        identity = AscendantBackendIdentity(
-            id: ascendant.id,
-            name: ascendant.name,
-            description: ascendant.description,
-            privateTimelineID: ascendant.defaultTimelineID,
-            primaryWorkspaceID: nil,
-            lastActiveAt: now,
-            createdAt: now,
-            updatedAt: now,
-            capabilities: AscendantBackendCapabilities(
-                interoperability: [
-                    AscendantInteroperabilityCapability.textTurn.rawValue,
-                    AscendantInteroperabilityCapability.streamedUpdates.rawValue,
-                ],
-                backendKind: "clean-echo"
-            )
-        )
-        self.timelines = timelines.map {
-            AscendantBackendTimeline(
-                id: $0.id, title: $0.title, attachedWorkspaceIDs: [],
-                ascendantID: ascendant.id, isArchived: false, isPrivate: false,
-                createdAt: now, updatedAt: now
-            )
-        }
+private func startACPProfileProvider(_ manager: CommunicationManager) async throws {
+    let stream = await manager.observeCommunicationStateStream()
+    var iterator = stream.makeAsyncIterator()
+    try manager.start()
+    while let state = await iterator.next() {
+        if state == .online { return }
     }
+    throw CancellationError()
+}
 
-    func validateConfiguration() throws {}
+private func value(after flag: String, in arguments: [String]) -> String? {
+    guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
+    return arguments[index + 1]
+}
 
-    func operatedTimelines() async throws -> [AscendantBackendTimeline] { timelines }
-
-    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        let now = Date()
-        let timeline = AscendantBackendTimeline(
-            id: id, title: title, attachedWorkspaceIDs: [], ascendantID: identity.id,
-            isArchived: false, isPrivate: false, createdAt: now, updatedAt: now
-        )
-        timelines.append(timeline)
-        return timeline
+private func readProfiles(binary: String, namespace: String) async throws -> ACPProfileBundle {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: binary)
+    process.arguments = [
+        "acp", "profiles", "--json", "--refresh",
+        "--host", "127.0.0.1",
+        "--port", "1883",
+        "--namespace", namespace,
+    ]
+    let output = Pipe()
+    let error = Pipe()
+    process.standardOutput = output
+    process.standardError = error
+    try process.run()
+    while process.isRunning {
+        try await Task.sleep(for: .milliseconds(50))
     }
-
-    func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
-
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
-        guard let index = timelines.firstIndex(where: { $0.id == id }) else {
-            throw AscendantBackendError.timelineNotFound(id)
-        }
-        let current = timelines[index]
-        let renamed = AscendantBackendTimeline(
-            id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs,
-            ascendantID: current.ascendantID, isArchived: current.isArchived,
-            isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date()
-        )
-        timelines[index] = renamed
-        return renamed
-    }
-
-    func runTurn(
-        _ request: AscendantBackendTurnRequest,
-        updates: any AscendantBackendUpdateSink
-    ) async throws -> String {
-        guard timelines.contains(where: { $0.id == request.timelineID }) else {
-            throw AscendantBackendError.timelineNotFound(request.timelineID)
-        }
-        let reply = "echo: \(request.message)"
-        try await updates.append(AscendantBackendUpdate(kind: .assistantText, text: reply))
-        try await updates.append(AscendantBackendUpdate(kind: .completion, terminal: true))
-        return reply
-    }
-
-    func cancel() async {}
-    func shutdown() async {}
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let standardError = String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+    return try JSONDecoder().decode(ACPProfileBundle.self, from: data)
 }
