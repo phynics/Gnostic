@@ -1210,6 +1210,7 @@ struct ACPAscendantBackendTests {
         settings["env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE"] = .string(resumeRequests.path)
         let initialBackend = try backend(settings: settings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [TimelineJournalRecorder(journals: store)])
         _ = try await initialBackend.runTurn(.init(timelineID: timelineID, message: "first"), updates: RecordingUpdateSink())
+        let previous = try #require(initialBackend.sessionBinding(for: timelineID))
         await initialBackend.shutdown()
 
         let journalURL = TimelineJournalStore.fileURL(for: timelineID, in: journalDirectory)
@@ -1227,7 +1228,14 @@ struct ACPAscendantBackendTests {
         )
         do {
             _ = try await restartedBackend.operatedTimelines()
-            Issue.record("a quarantined journal must prevent native resume")
+        } catch { }
+        #expect(restartedBackend.sessionBinding(for: timelineID)?.sessionID == previous.sessionID)
+        do {
+            _ = try await restartedBackend.runTurn(
+                .init(timelineID: timelineID, message: "journal write must block resume"),
+                updates: RecordingUpdateSink()
+            )
+            Issue.record("a failed ambiguity journal append must prevent native resume")
         } catch { }
         await restartedBackend.shutdown()
         #expect(!FileManager.default.fileExists(atPath: resumeRequests.path))
