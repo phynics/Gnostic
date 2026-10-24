@@ -470,11 +470,14 @@ public final class NodeRuntime {
             return await registry.attachmentIntent(for: timelineID).contains(where: { $0.workspaceID == workspaceID })
         }
         // Axoloty sourceID is routing identity, not a cryptographic credential.
-        // Bind it to Gnostic's unique Timeline-owner advertisement and attachment.
-        guard let timelineOwner = await runtimeHost.resources.catalog.timelineOwnerProviderID(id: timelineID),
-              let ownerID = UUID(uuidString: timelineOwner),
-              callerID == ownerID else { return false }
-        return await runtimeHost.resources.catalog.isWorkspaceAttached(workspaceID, to: timelineID)
+        // Bind it to Gnostic's unique Timeline-owner advertisement and
+        // attachment in one catalog actor turn, so ownership cannot change
+        // between those authorization checks.
+        return await runtimeHost.resources.catalog.authorizesWorkspaceCall(
+            sourceID: sourceID,
+            workspaceID: workspaceID,
+            to: timelineID
+        )
     }
 
     public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {

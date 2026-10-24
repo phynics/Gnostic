@@ -266,10 +266,30 @@ public actor NetworkCatalog {
     /// Whether one currently catalogued Timeline advertisement includes a Workspace attachment.
     /// Ambiguous, incompatible, missing, and archived Timelines fail closed.
     public func isWorkspaceAttached(_ workspaceID: UUID, to timelineID: UUID) -> Bool {
-        guard let candidates = entries[timelineID] else { return false }
-        let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline }
-        guard owners.count == 1, let owner = owners.first, owner.isProtocolCompatible else { return false }
-        if case .bool(true)? = owner.knownProperties["isArchived"] { return false }
+        guard let owner = currentTimelineOwner(id: timelineID) else { return false }
+        return Self.attaches(workspaceID, to: owner)
+    }
+
+    /// Authorizes one remote Workspace invocation against a single current
+    /// catalog state. Caller identity, unique Timeline ownership, and the
+    /// Timeline's Workspace attachment are checked synchronously in this actor
+    /// turn so lifecycle ingestion cannot replace the owner between checks.
+    func authorizesWorkspaceCall(
+        sourceID: String,
+        workspaceID: UUID,
+        to timelineID: UUID
+    ) -> Bool {
+        guard let callerID = UUID(uuidString: sourceID),
+              let owner = currentTimelineOwner(id: timelineID),
+              let ownerID = UUID(uuidString: owner.providerID),
+              callerID == ownerID,
+              Self.attaches(workspaceID, to: owner) else {
+            return false
+        }
+        return true
+    }
+
+    private static func attaches(_ workspaceID: UUID, to owner: NetworkCatalogEntry) -> Bool {
         guard case let .array(attached)? = owner.knownProperties["attachedWorkspaceIDs"] else { return false }
         return attached.contains { value in
             guard case let .string(rawID) = value else { return false }
@@ -277,14 +297,13 @@ public actor NetworkCatalog {
         }
     }
 
-    /// Returns the unique compatible Node identity that currently advertises a Timeline.
-    /// Ambiguous, archived, or missing Timelines have no authorizing owner.
-    func timelineOwnerProviderID(id: UUID) -> String? {
+    /// The sole compatible, non-archived current advertisement for a Timeline.
+    private func currentTimelineOwner(id: UUID) -> NetworkCatalogEntry? {
         guard let candidates = entries[id] else { return nil }
         let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline }
         guard owners.count == 1, let owner = owners.first, owner.isProtocolCompatible else { return nil }
         if case .bool(true)? = owner.knownProperties["isArchived"] { return nil }
-        return owner.providerID
+        return owner
     }
 
     private func dynamicProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {

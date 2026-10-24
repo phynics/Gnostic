@@ -246,26 +246,65 @@ struct ProtocolV2Tests {
         #expect(entries.first?.protocolMajor == GnosticProtocol.currentMajor)
     }
 
-    @Test("remote Workspace authorization requires a current compatible Timeline attachment")
-    func catalogAuthorizesOnlyAdvertisedTimelineAttachments() async throws {
+    @Test("remote Workspace authorization binds caller and attachment to one current Timeline owner")
+    func catalogAuthorizesOnlyCurrentOwnerAttachments() async throws {
         let ownerTimelineID = UUID()
         let workspaceID = UUID()
-        let payload = """
-        {"protocolMajor":3,"objectId":"\(ownerTimelineID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"\(GnosticObjectType.timeline)","name":"Remote timeline","title":"Remote timeline","isArchived":false,"attachedWorkspaceIDs":["\(workspaceID.uuidString.lowercased())"]}
-        """
+        let firstOwnerID = UUID()
+        let replacementOwnerID = UUID()
         let catalog = NetworkCatalog()
-        let snapshot = CoatyObjectSnapshot(
-            objectId: ownerTimelineID.uuidString.lowercased(),
-            coreType: .coatyObject,
-            objectType: GnosticObjectType.timeline,
-            name: "Remote timeline",
-            payload: payload
-        )
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "timeline-owner", object: snapshot))
+        func timelineSnapshot() -> CoatyObjectSnapshot {
+            let payload = """
+            {"protocolMajor":3,"objectId":"\(ownerTimelineID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"\(GnosticObjectType.timeline)","name":"Remote timeline","title":"Remote timeline","isArchived":false,"attachedWorkspaceIDs":["\(workspaceID.uuidString.lowercased())"]}
+            """
+            return CoatyObjectSnapshot(
+                objectId: ownerTimelineID.uuidString.lowercased(),
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.timeline,
+                name: "Remote timeline",
+                payload: payload
+            )
+        }
 
-        #expect(await catalog.isWorkspaceAttached(workspaceID, to: ownerTimelineID))
-        #expect(!(await catalog.isWorkspaceAttached(UUID(), to: ownerTimelineID)))
-        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "timeline-owner", objectIds: [ownerTimelineID.uuidString]))
-        #expect(!(await catalog.isWorkspaceAttached(workspaceID, to: ownerTimelineID)))
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: firstOwnerID.uuidString.lowercased(),
+            object: timelineSnapshot()
+        ))
+        #expect(await catalog.authorizesWorkspaceCall(
+            sourceID: firstOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        ))
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: replacementOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        )))
+
+        // Replace the Timeline owner while preserving its attachment. The
+        // former owner must not inherit the replacement owner's attachment.
+        await catalog.ingest(DeadvertiseEventSnapshot(
+            sourceId: firstOwnerID.uuidString.lowercased(),
+            objectIds: [ownerTimelineID.uuidString]
+        ))
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: replacementOwnerID.uuidString.lowercased(),
+            object: timelineSnapshot()
+        ))
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: firstOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        )))
+        #expect(await catalog.authorizesWorkspaceCall(
+            sourceID: replacementOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        ))
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: replacementOwnerID.uuidString,
+            workspaceID: UUID(),
+            to: ownerTimelineID
+        )))
     }
 }
