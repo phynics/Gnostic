@@ -115,36 +115,36 @@ run_until_online() {
     fi
 }
 
-cat > "$scratch/letta.json" <<'JSON'
+cat > "$scratch/acp.json" <<'JSON'
 {
   "schemaVersion": 2,
-  "broker": { "host": "127.0.0.1", "port": 1883, "namespace": "gnostic-smoke-letta" },
+  "broker": { "host": "127.0.0.1", "port": 1883, "namespace": "gnostic-smoke-acp" },
   "node": { "id": "e51d0000-0000-4000-8000-000000000001", "kind": "node", "approvalMode": "auto", "logLevel": "info" },
   "ascendants": [
     {
       "id": "e51d0000-0000-4000-8000-000000000002",
-      "kind": "letta",
-      "name": "Letta",
+      "kind": "acp-client",
+      "name": "ACP fixture",
       "description": "",
       "metadata": {},
       "backend": {
-        "kind": "letta",
+        "kind": "acp-client",
         "schemaVersion": 1,
-        "settings": { "serverURL": "http://127.0.0.1:8283", "model": "openai/test-model" },
+        "settings": { "command": "/bin/sleep", "args": "[\"3600\"]" },
         "secrets": {}
       },
       "defaultTimelineID": "e51d0000-0000-4000-8000-000000000003"
     }
   ],
   "timelines": [
-    { "id": "e51d0000-0000-4000-8000-000000000003", "kind": "timeline", "title": "Letta", "operatingAscendantID": "e51d0000-0000-4000-8000-000000000002", "flags": [], "attachments": [] }
+    { "id": "e51d0000-0000-4000-8000-000000000003", "kind": "timeline", "title": "ACP fixture", "operatingAscendantID": "e51d0000-0000-4000-8000-000000000002", "flags": [], "attachments": [] }
   ],
   "workspaces": []
 }
 JSON
 
-run_until_online "Letta backend" \
+run_until_online "ACP backend" \
     env GNOSTIC_STATE_HOME="$scratch/state" \
-    "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-letta --config "$scratch/letta.json"
+    "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-acp --config "$scratch/acp.json"
 
 echo "Gnostic runner smoke passed"

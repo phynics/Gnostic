@@ -1,16 +1,13 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticCore
+@_spi(RuntimeHost) import GnosticCore
 import Testing
 
-// The worked example for Documentation/Extending/ascendant-backends.md.
-//
-// It lives in the test target so the guide cannot describe an API that no
-// longer compiles. Keep the guide and this file in step: the guide quotes
-// this type by name.
+// An in-process echo fixture for generic lifecycle coverage. Production
+// Runtime integrations use ACP over stdio; this fixture is not a Runtime kind.
 
-/// A minimal Ascendant backend that echoes the prompt back.
+/// A test-only adapter fixture that echoes the prompt back.
 ///
 /// It implements the mandatory contract and nothing else: no Workspace
 /// consumption, no permission mediation, no optional capabilities.
@@ -108,9 +105,9 @@ final class EchoAscendantBackend: AscendantBackend {
     func shutdown() async {}
 }
 
-@Suite("Extension guide worked example")
+@Suite("In-process adapter fixture")
 struct ExampleBackendTests {
-    @Test("the guide's example backend satisfies the mandatory contract")
+    @Test("the fixture satisfies the adapter contract")
     @MainActor
     func exampleBackendRunsATurn() async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000901")!
@@ -139,7 +136,7 @@ struct ExampleBackendTests {
         #expect(await sink.terminalCount == 1)
     }
 
-    @Test("the example backend registers through the supported seam")
+    @Test("the fixture registers through host SPI")
     @MainActor
     func exampleBackendIsRegisterable() {
         var registry = AscendantAdapterRegistry()

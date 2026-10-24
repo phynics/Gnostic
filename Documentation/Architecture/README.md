@@ -51,7 +51,7 @@ The compatibility declaration in development is [0.5.0](../Compatibility/0.5.0.m
 
 ## Extension guides
 
-- [Implementing an Ascendant backend](../Extending/ascendant-backends.md)
+- [ACP Runtime integration](../Extending/ascendant-backends.md)
 - [Implementing a Workspace adapter](../Extending/workspace-adapters.md)
 - [Building an experiment on the platform kit](../Extending/experiment-kit.md)
 - [ACP SDK evaluation](ACP-SDK-Evaluation.md)

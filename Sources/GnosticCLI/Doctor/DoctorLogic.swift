@@ -229,22 +229,67 @@ public enum DoctorLogic {
             return findings
         }
 
-        let provider = configuration.provider?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if provider.isEmpty {
-            findings.append(
-                DoctorFinding(
-                    check: "provider",
-                    severity: .error,
-                    message: "Ascendant '\(ascendant.name)' has no provider configured.",
-                    path: "\(backendPath).settings.provider",
-                    hint: "Run `config backend set \(id) provider <name>`."
+        if schema.key(named: "command") != nil {
+            let command = (ascendant.backend.settings["command"]?.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if command.isEmpty {
+                findings.append(
+                    DoctorFinding(
+                        check: "backendConfig",
+                        severity: .error,
+                        message: "Ascendant '\(ascendant.name)' has no Runtime command configured.",
+                        path: "\(backendPath).settings.command",
+                        hint: "Run `gnostic config backend set \(id) command <path-to-acp-runtime>`."
+                    )
                 )
-            )
-        } else {
-            findings.append(DoctorFinding(check: "provider", severity: .ok, message: "Ascendant '\(ascendant.name)' provider is '\(provider)'.", path: "\(backendPath).settings.provider"))
+            } else {
+                findings.append(
+                    DoctorFinding(
+                        check: "backendConfig",
+                        severity: .ok,
+                        message: "Ascendant '\(ascendant.name)' Runtime command is configured.",
+                        path: "\(backendPath).settings.command"
+                    )
+                )
+            }
+
+            if let argsValue = ascendant.backend.settings["args"] {
+                let isValid = argsValue.stringValue.flatMap { args in
+                    try? JSONDecoder().decode([String].self, from: Data(args.utf8))
+                } != nil
+                if !isValid {
+                    findings.append(
+                        DoctorFinding(
+                            check: "backendConfig",
+                            severity: .error,
+                            message: "Runtime arguments must be encoded as a JSON string array.",
+                            path: "\(backendPath).settings.args",
+                            hint: "Run `gnostic config backend set \(id) args '[\"--stdio\"]'`, or set an empty array with `[]`."
+                        )
+                    )
+                }
+            }
+        }
+
+        let provider = configuration.provider?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if schema.key(named: "provider") != nil {
+            if provider.isEmpty {
+                findings.append(
+                    DoctorFinding(
+                        check: "provider",
+                        severity: .error,
+                        message: "Ascendant '\(ascendant.name)' has no provider configured.",
+                        path: "\(backendPath).settings.provider",
+                        hint: "Run `config backend set \(id) provider <name>`."
+                    )
+                )
+            } else {
+                findings.append(DoctorFinding(check: "provider", severity: .ok, message: "Ascendant '\(ascendant.name)' provider is '\(provider)'.", path: "\(backendPath).settings.provider"))
+            }
         }
 
         for tier in ["model", "utilityModel", "fastModel"] {
+            guard schema.key(named: tier) != nil else { continue }
             guard let tierValue = ascendant.backend.settings[tier] else { continue }
             let value = tierValue.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if value.isEmpty {
@@ -264,7 +309,7 @@ public enum DoctorLogic {
 
         let selectedModules = ConfigConsoleLogic.selectedNames(in: ascendant.backend)
         let requiresModelService = selectedModules.contains { composition.moduleDescriptor(named: $0)?.requiresModelService == true }
-        if requiresModelService, provider.isEmpty {
+        if requiresModelService, schema.key(named: "provider") != nil, provider.isEmpty {
             findings.append(
                 DoctorFinding(
                     check: "modelService",
@@ -411,7 +456,10 @@ public enum DoctorLogic {
             )
         }
         if options.checkProvider {
-            let endpoints = manifest.ascendants.compactMap { ProviderBackendConfiguration(backend: $0.backend).endpoint }
+            let endpoints = manifest.ascendants.compactMap { ascendant -> String? in
+                guard composition.settingsSchema(for: ascendant.backend.kind)?.key(named: "provider") != nil else { return nil }
+                return ProviderBackendConfiguration(backend: ascendant.backend).endpoint
+            }
             for endpoint in endpoints {
                 guard let url = URL(string: endpoint), let host = url.host else { continue }
                 let port = url.port ?? (url.scheme == "http" ? 80 : 443)

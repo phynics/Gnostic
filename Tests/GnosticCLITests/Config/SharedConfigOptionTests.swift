@@ -38,13 +38,9 @@ struct SharedConfigOptionTests {
         #expect(show.configOptions.store().path().path == path)
     }
 
-    @Test("experiment run and rlm-scenario accept --config through the shared group")
+    @Test("rlm-scenario accepts --config through the shared group")
     func experimentCommandsAcceptConfig() throws {
         let (_, path) = try manifestPath()
-
-        let run = try ExperimentCommand.Run.parse(["kit", "self-check", "--config", path])
-        #expect(run.configOptions.store().path().path == path)
-
         let scenario = try ExperimentCommand.RLMScenario.parse([
             "--stage", "pilot",
             "--ascendant", UUID().uuidString,

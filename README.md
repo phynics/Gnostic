@@ -43,11 +43,13 @@ The default manifest lives at `~/.gnostic/config.json`. Use `--config PATH` or
 `GNOSTIC_MQTT_PORT`, and `GNOSTIC_MQTT_NAMESPACE` override the broker values
 when a command reads the manifest.
 
-Start the Node after configuring an LLM provider and model:
+Configure an ACP Runtime command and its arguments, then start the Node. The
+Runtime owns its model and provider selection:
 
 ```sh
-gnostic config backend set <ASCENDANT_UUID> provider <PROVIDER>
-gnostic config backend set <ASCENDANT_UUID> model <MODEL>
+gnostic config backend set <ASCENDANT_UUID> command /path/to/acp-runtime
+gnostic config backend set <ASCENDANT_UUID> args '["--stdio"]'
+gnostic config validate
 gnostic serve
 ```
 
@@ -127,11 +129,11 @@ mutating `config` subcommand accepts `--dry-run`, which prints a redacted diff
 of the resulting manifest and writes nothing.
 
 Run the offline diagnostics before starting the Node. `gnostic doctor` checks
-for a missing manifest, a missing provider or model tier, a module that needs a
-model service with no provider, missing secrets and executor helpers, and the
-registry status of each selected module. Add `--online` to also check broker
-reachability and the protocol major, or `--check-provider` to probe the
-provider endpoint:
+the manifest, backend-specific configuration, missing secrets, Workspace
+paths, module requirements, and executor helpers. ACP Runtime model selection
+stays in the Runtime configuration. Add `--online` to also check broker
+reachability and the protocol major, or `--check-provider` to probe endpoints
+for backend kinds that declare provider settings:
 
 ```sh
 gnostic doctor
@@ -404,7 +406,7 @@ process and is needed only for a Node that advertises no identity.
 
 ## Extend Gnostic
 
-- [Implement an Ascendant backend](Documentation/Extending/ascendant-backends.md)
+- [Integrate an ACP Runtime](Documentation/Extending/ascendant-backends.md)
 - [Implement a Workspace adapter](Documentation/Extending/workspace-adapters.md)
 - [Build an experiment on the platform kit](Documentation/Extending/experiment-kit.md)
 

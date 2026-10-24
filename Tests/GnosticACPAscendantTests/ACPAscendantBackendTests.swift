@@ -6,7 +6,7 @@ import FoundationNetworking
 #endif
 @testable import GnosticACPAscendant
 import GnosticAscendantConformance
-import GnosticCore
+@_spi(RuntimeHost) import GnosticCore
 import GnosticProtocol
 import Testing
 #if canImport(Darwin)

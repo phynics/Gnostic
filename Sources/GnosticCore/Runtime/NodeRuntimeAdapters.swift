@@ -34,9 +34,11 @@ public struct AscendantAdapterRegistry: Sendable {
         return schemas[kind] ?? .unspecified
     }
 
-    /// Registers a backend factory for one manifest `kind`.
+    /// Registers a backend factory for one manifest `kind` through host SPI.
     ///
-    /// This is the only supported selection point for a backend kind.
+    /// This seam is reserved for host composition and test fixtures. It is not
+    /// a supported in-process Runtime extension point; Runtime integrations
+    /// use ACP over stdio.
     /// Registering a kind that is already present replaces it.
     ///
     /// - Parameters:
@@ -44,6 +46,7 @@ public struct AscendantAdapterRegistry: Sendable {
     ///   - settings: The configuration keys this kind understands, so a
     ///     composition root can list and check them without knowing the kind.
     ///   - factory: Builds the backend for one Ascendant.
+    @_spi(RuntimeHost)
     public mutating func registerBackend(
         kind: String,
         settings: AscendantBackendSettingsSchema = .unspecified,

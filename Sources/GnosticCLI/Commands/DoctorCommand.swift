@@ -13,11 +13,12 @@ struct DoctorCommand: AsyncParsableCommand {
         commandName: "doctor",
         abstract: "Diagnose a Node's configuration and environment.",
         discussion: """
-        Checks are offline by default: manifest validity, secrets presence, \
-        Workspace paths, per-tier provider configuration, module requirements, \
+        Checks are offline by default: manifest validity, backend-specific \
+        configuration, secrets presence, Workspace paths, module requirements, \
         registry consistency, and executor prerequisites. Add `--online` for \
-        broker reachability and protocol compatibility, and `--check-provider` \
-        to probe provider endpoints. Secret values are never printed.
+        broker reachability and protocol compatibility. `--check-provider` probes \
+        endpoints only for backend kinds that declare a provider setting. Secret \
+        values are never printed.
 
           gnostic doctor
           gnostic doctor --format json

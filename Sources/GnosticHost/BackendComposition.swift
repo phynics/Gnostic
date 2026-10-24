@@ -2,7 +2,7 @@
 
 import Foundation
 import GnosticACPAscendant
-import GnosticCore
+@_spi(RuntimeHost) import GnosticCore
 import GnosticKit
 
 /// The composition source for clean Ascendant backend kinds and modules.
@@ -12,10 +12,9 @@ import GnosticKit
 /// is known to configuration commands and to a running Node, with the same
 /// settings schema.
 ///
-/// The clean host registers only backends that run inside the host process.
-/// PositronicKit is deliberately absent: a Positronic Ascendant runs behind the
-/// standalone ACP Runtime process boundary, so the host cannot materialize a
-/// provider-specific agent here.
+/// The production host registers the ACP process adapter. PositronicKit is
+/// deliberately absent: the reference Runtime runs behind the standalone ACP
+/// process boundary, so the host cannot materialize its model loop here.
 ///
 /// It also owns the registry of compiled-in ``GnosticModule`` descriptors. The
 /// clean host ships no provider-specific module: legacy module composition lives
@@ -84,7 +83,11 @@ public struct BackendComposition: Sendable {
         modules[module.name] = module
     }
 
-    /// Registers an additional backend kind at the composition root.
+    /// Registers a backend kind for host composition and test fixtures.
+    ///
+    /// This SPI is implementation plumbing, not a supported in-process Runtime
+    /// extension point. Production Runtime integrations use ACP over stdio.
+    @_spi(RuntimeHost)
     public mutating func registerBackend(
         kind: String,
         settings: AscendantBackendSettingsSchema = .unspecified,
