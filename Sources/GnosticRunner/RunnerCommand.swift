@@ -55,7 +55,8 @@ struct GnosticRunner: AsyncParsableCommand {
 }
 
 /// Turns SIGINT and SIGTERM into an awaitable shutdown request.
-private final class RunnerTerminationMonitor: @unchecked Sendable {
+@MainActor
+private final class RunnerTerminationMonitor {
     private let sources: [DispatchSourceSignal]
     private let terminationSignals: AsyncStream<Void>
 
