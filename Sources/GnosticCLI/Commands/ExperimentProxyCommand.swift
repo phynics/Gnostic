@@ -11,7 +11,7 @@ struct ExperimentCommand: ParsableCommand {
         abstract: "Run opt-in evidence experiments outside a Node."
     )
 
-    @Argument(parsing: .unconditionalRemaining)
+    @Argument(parsing: .captureForPassthrough)
     var arguments: [String]
 
     func run() throws {

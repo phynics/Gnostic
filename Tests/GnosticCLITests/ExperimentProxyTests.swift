@@ -9,8 +9,11 @@ import Testing
 struct ExperimentProxyTests {
     @Test("public proxy arguments retain the experiment subcommand")
     func proxyArguments() throws {
-        let proxy = try ExperimentCommand.parse(["replay", "--trace", "trace.json"])
-        #expect(proxy.arguments == ["replay", "--trace", "trace.json"])
+        let forwardedArguments = [
+            "replay", "--trace", "trace.json", "--", "--future-option",
+        ]
+        let proxy = try ExperimentCommand.parse(forwardedArguments)
+        #expect(proxy.arguments == forwardedArguments)
     }
 
     @Test("an explicit helper path is selected only when executable")
