@@ -39,14 +39,63 @@ public struct ConfigurationMigrationReport: Codable, Equatable, Sendable {
 
 /// Migrates only the immediate pre-v0.5 schema-v2 operator manifest.
 public enum ConfigurationMigration {
+    private struct MigrationOperationFailure: Error {
+        let underlying: Error
+    }
+
     private static let sourceSchemaVersion = 2
     private static let supportedBackendKind = "acp-client"
-    private static let acceptedACPPSettings: Set<String> = ["command", "args", "cwd", "displayName", "env"]
+    private static let acceptedACPPSettings: Set<String> = ["command", "args", "cwd", "displayName", "env", "scratchRoot"]
 
     /// Validates and converts the 0.4.2 manifest at `url`. Dry runs never write
     /// to the source or create a backup. Apply mode copies the exact source
     /// bytes to a new backup before atomically replacing the manifest.
     public static func migrate(at url: URL, dryRun: Bool) throws -> ConfigurationMigrationReport {
+        try migrate(at: url, dryRun: dryRun, afterReadingSource: nil)
+    }
+
+    static func migrateForTesting(
+        at url: URL,
+        dryRun: Bool,
+        afterReadingSource: @escaping () -> Void,
+        afterBackup: @escaping () -> Void = {}
+    ) throws -> ConfigurationMigrationReport {
+        try migrate(at: url, dryRun: dryRun, afterReadingSource: afterReadingSource, afterBackup: afterBackup)
+    }
+
+    private static func migrate(
+        at url: URL,
+        dryRun: Bool,
+        afterReadingSource: (() -> Void)?,
+        afterBackup: (() -> Void)? = nil
+    ) throws -> ConfigurationMigrationReport {
+        do {
+            return try ManifestStoreLock.withLock(at: url) {
+                do {
+                    return try migrateLocked(at: url, dryRun: dryRun, afterReadingSource: afterReadingSource, afterBackup: afterBackup)
+                } catch {
+                    throw MigrationOperationFailure(underlying: error)
+                }
+            }
+        } catch let failure as MigrationOperationFailure {
+            throw failure.underlying
+        } catch let error as ConfigurationMigrationError {
+            throw error
+        } catch {
+            throw ConfigurationMigrationError(
+                reasonCode: "configurationLockFailed",
+                message: "Could not lock the configuration at '\(url.path)'.",
+                remediation: "Check the configuration directory permissions, then retry."
+            )
+        }
+    }
+
+    private static func migrateLocked(
+        at url: URL,
+        dryRun: Bool,
+        afterReadingSource: (() -> Void)?,
+        afterBackup: (() -> Void)?
+    ) throws -> ConfigurationMigrationReport {
         let source: Data
         do {
             source = try Data(contentsOf: url)
@@ -57,15 +106,23 @@ public enum ConfigurationMigration {
                 remediation: "Check that the path exists and is readable, then retry."
             )
         }
+        afterReadingSource?()
 
         let manifest = try decodeSource(source, url: url)
         try validateMappings(manifest)
         let converted = try encodeDestination(source)
+        guard try Data(contentsOf: url) == source else {
+            throw sourceChanged(at: url)
+        }
         let backupURL = dryRun ? nil : try makeBackup(of: url, source: source)
+        afterBackup?()
 
         if !dryRun {
             do {
-                try atomicallyReplace(converted, at: url)
+                try atomicallyReplace(converted, at: url, expectedSource: source)
+            } catch let error as ConfigurationMigrationError {
+                if let backupURL { try? FileManager.default.removeItem(at: backupURL) }
+                throw error
             } catch {
                 throw ConfigurationMigrationError(
                     reasonCode: "configurationWriteFailed",
@@ -149,6 +206,8 @@ public enum ConfigurationMigration {
     }
 
     private static func validateMappings(_ manifest: NodeManifest) throws {
+        // Preserve ACPAscendantBackend.parse's launch constraints here. The
+        // CLI cannot construct that backend without starting its owning target.
         for instance in manifest.ascendants {
             let backendKind = instance.backend.kind
             guard instance.kind == backendKind else {
@@ -214,24 +273,47 @@ public enum ConfigurationMigration {
                     )
                 }
             }
+            var environmentNames = Set<String>()
             if let environment = instance.backend.settings["env"] {
                 guard let json = environment.stringValue,
                       let data = json.data(using: .utf8),
                       let values = try? JSONDecoder().decode([String: String].self, from: data),
-                      values.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
+                      values.allSatisfy({ AscendantBackendSettingsSchema.isValidEnvironmentVariableName($0.key) && !$0.value.contains("\0") }) else {
                     throw ConfigurationMigrationError(
                         reasonCode: "ambiguousRuntimeMapping",
                         message: "ACP configuration '\(instance.name)' has invalid `env`.",
                         remediation: "Store `env` as a JSON object of string values, then rerun migration."
                     )
                 }
+                environmentNames = Set(values.keys)
             }
             for key in ["cwd", "displayName"] where instance.backend.settings[key] != nil {
-                guard let value = instance.backend.settings[key]?.stringValue, !value.contains("\0") else {
+                guard let value = instance.backend.settings[key]?.stringValue,
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !value.contains("\0") else {
                     throw ConfigurationMigrationError(
                         reasonCode: "ambiguousRuntimeMapping",
                         message: "ACP configuration '\(instance.name)' has an invalid `\(key)` setting.",
                         remediation: "Set `\(key)` to a string value, then rerun migration."
+                    )
+                }
+            }
+            if let scratchRoot = instance.backend.settings["scratchRoot"] {
+                guard let value = scratchRoot.stringValue,
+                      value.hasPrefix("/"),
+                      !value.contains("\0") else {
+                    throw ConfigurationMigrationError(
+                        reasonCode: "ambiguousRuntimeMapping",
+                        message: "ACP configuration '\(instance.name)' has an invalid `scratchRoot` setting.",
+                        remediation: "Set `scratchRoot` to an absolute directory path, then rerun migration."
+                    )
+                }
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: value, isDirectory: &isDirectory), !isDirectory.boolValue {
+                    throw ConfigurationMigrationError(
+                        reasonCode: "ambiguousRuntimeMapping",
+                        message: "ACP configuration '\(instance.name)' has an invalid `scratchRoot` setting.",
+                        remediation: "Set `scratchRoot` to an absolute directory path, then rerun migration."
                     )
                 }
             }
@@ -255,6 +337,19 @@ public enum ConfigurationMigration {
                     remediation: "Use a non-empty `env-secret.<VARIABLE>` name with a string value, then rerun migration."
                 )
                 }
+            }
+            let plainNames = Set(instance.backend.settings.keys.compactMap { key -> String? in
+                guard key.hasPrefix("env.") else { return nil }
+                return String(key.dropFirst("env.".count))
+            })
+            let secretNames = Set(instance.backend.secrets.keys.compactMap { key -> String? in
+                guard key.hasPrefix("env-secret.") else { return nil }
+                return String(key.dropFirst("env-secret.".count))
+            })
+            if !plainNames.isDisjoint(with: secretNames)
+                || !plainNames.isDisjoint(with: environmentNames)
+                || !secretNames.isDisjoint(with: environmentNames) {
+                throw invalidEnvironmentMapping(instance.name)
             }
         }
     }
@@ -313,7 +408,7 @@ public enum ConfigurationMigration {
         }
     }
 
-    private static func atomicallyReplace(_ data: Data, at destination: URL) throws {
+    private static func atomicallyReplace(_ data: Data, at destination: URL, expectedSource: Data) throws {
         let manager = FileManager.default
         let originalAttributes = try manager.attributesOfItem(atPath: destination.path)
         let mode = originalAttributes[.posixPermissions]
@@ -321,9 +416,26 @@ public enum ConfigurationMigration {
             .appendingPathComponent(".\(destination.lastPathComponent).migration-\(UUID().uuidString).tmp")
         defer { try? manager.removeItem(at: temporary) }
 
-        try data.write(to: temporary, options: .withoutOverwriting)
-        if let mode {
-            try manager.setAttributes([.posixPermissions: mode], ofItemAtPath: temporary.path)
+        let descriptor = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { _ = close(descriptor) }
+        try data.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let written = write(descriptor, baseAddress.advanced(by: offset), buffer.count - offset)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard written > 0 else { throw POSIXError(.EIO) }
+                offset += written
+            }
+        }
+        guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if let mode { try manager.setAttributes([.posixPermissions: mode], ofItemAtPath: temporary.path) }
+        guard try Data(contentsOf: destination) == expectedSource else {
+            throw sourceChanged(at: destination)
         }
         let result = temporary.path.withCString { sourcePath in
             destination.path.withCString { destinationPath in
@@ -331,6 +443,22 @@ public enum ConfigurationMigration {
             }
         }
         guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
+
+    private static func invalidEnvironmentMapping(_ name: String) -> ConfigurationMigrationError {
+        ConfigurationMigrationError(
+            reasonCode: "ambiguousRuntimeMapping",
+            message: "ACP configuration '\(name)' defines one environment variable more than once.",
+            remediation: "Configure each environment variable in only one of `env`, `env.<VARIABLE>`, or `env-secret.<VARIABLE>`, then rerun migration."
+        )
+    }
+
+    private static func sourceChanged(at url: URL) -> ConfigurationMigrationError {
+        ConfigurationMigrationError(
+            reasonCode: "configurationChangedDuringMigration",
+            message: "The configuration at '\(url.path)' changed while migration was preparing it.",
+            remediation: "No converted file was written. Review the latest configuration and rerun migration."
+        )
     }
 
     private static func invalid(_ detail: String) -> ConfigurationMigrationError {

@@ -41,7 +41,7 @@ Stop Gnostic before restoring the manifest. Copy the backup path from the
 migration report, then replace the migrated manifest with those exact bytes:
 
 ```sh
-cp -- '/path/to/config.json.pre-v0.5-<timestamp>.bak' ~/.gnostic/config.json
+cp '/path/to/config.json.pre-v0.5-<timestamp>.bak' ~/.gnostic/config.json
 ```
 
 Replace the example backup path with the exact path printed by the migration
