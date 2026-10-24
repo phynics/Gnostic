@@ -219,7 +219,7 @@ struct TwoNodeMQTTIntegrationTests {
             trace.record("workspace.owner-status.before-revocation.returned", [
                 "effectiveStatus": beforeStatus?.rawValue ?? "missing",
             ])
-            #expect(beforeStatus == .available)
+            try #require(beforeStatus == .available)
 
             let first = try await runTurnApprovingWorkspacePermission(
                 client: client,
@@ -230,10 +230,12 @@ struct TwoNodeMQTTIntegrationTests {
                 trace: trace,
                 stagePrefix: "gateway.first"
             )
-            #expect(first.text.contains("remote workspace result: fixture"))
+            let firstResultMatched = first.text.contains("remote workspace result: fixture")
+            trace.record("gateway.first.result-checked", ["expectedFixtureResult": String(firstResultMatched)])
+            try #require(firstResultMatched)
             let firstInvocationCount = try workspaceNode.invocationCount()
             trace.record("gateway.first.asserted", ["providerInvocationCount": String(firstInvocationCount)])
-            #expect(firstInvocationCount == 1)
+            try #require(firstInvocationCount == 1)
 
             try await assertThirdPeerCannotForgeWorkspaceApproval(
                 namespace: namespace,
@@ -256,19 +258,21 @@ struct TwoNodeMQTTIntegrationTests {
                 trace: trace,
                 stagePrefix: "gateway.revocation-transition"
             )
-            #expect(rejected.text.contains("workspace call rejected (-32003)"))
+            let transitionRejected = rejected.text.contains("workspace call rejected (-32003)")
+            trace.record("gateway.revocation-transition.result-checked", ["rejected": String(transitionRejected)])
+            try #require(transitionRejected)
             let afterTransitionInvocationCount = try workspaceNode.invocationCount()
             trace.record("gateway.revocation-transition.asserted", [
                 "providerInvocationCount": String(afterTransitionInvocationCount),
             ])
-            #expect(afterTransitionInvocationCount == 1)
+            try #require(afterTransitionInvocationCount == 1)
             trace.record("workspace.owner-status.after-revocation.request", ["providerID": workspaceProviderID])
             let afterRevocation = try await diagnostics.node(providerID: workspaceProviderID)
             let afterStatus = afterRevocation.workspaces.first { $0.id == workspaceID }?.status
             trace.record("workspace.owner-status.after-revocation.returned", [
                 "effectiveStatus": afterStatus?.rawValue ?? "missing",
             ])
-            #expect(afterStatus == .unavailable)
+            try #require(afterStatus == .unavailable)
 
             let rejectedByEffectiveStatus = try await runTurnApprovingWorkspacePermission(
                 client: client,
@@ -279,12 +283,14 @@ struct TwoNodeMQTTIntegrationTests {
                 trace: trace,
                 stagePrefix: "gateway.revoked-status"
             )
-            #expect(rejectedByEffectiveStatus.text.contains("workspace call rejected (-32003)"))
+            let effectiveStatusRejected = rejectedByEffectiveStatus.text.contains("workspace call rejected (-32003)")
+            trace.record("gateway.revoked-status.result-checked", ["rejected": String(effectiveStatusRejected)])
+            try #require(effectiveStatusRejected)
             let afterStatusInvocationCount = try workspaceNode.invocationCount()
             trace.record("gateway.revoked-status.asserted", [
                 "providerInvocationCount": String(afterStatusInvocationCount),
             ])
-            #expect(afterStatusInvocationCount == 1)
+            try #require(afterStatusInvocationCount == 1)
             trace.record("consumer.stop")
             await session.stop()
         } catch {
@@ -335,12 +341,11 @@ struct TwoNodeMQTTIntegrationTests {
                 throw TwoNodeIntegrationError.thirdPeerInvocationSucceeded
             } catch let error as GnosticWorkspaceClientError {
                 trace.record("third-peer.forged-invocation.rejected", ["reasonCode": error.reasonCode])
-                #expect(error.reasonCode == "workspaceNotAttached")
-                guard error.reasonCode == "workspaceNotAttached" else { throw error }
+                try #require(error.reasonCode == "workspaceNotAttached")
             }
             let invocationCount = try workspaceNode.invocationCount()
             trace.record("third-peer.provider-count.asserted", ["providerInvocationCount": String(invocationCount)])
-            #expect(invocationCount == 1)
+            try #require(invocationCount == 1)
             trace.record("third-peer.stop")
             await peer.stop()
         } catch {
