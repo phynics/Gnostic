@@ -545,19 +545,11 @@ function writeFixture(root) {
     "Makefile": "docs-check:\nverify:\n",
     "Package.swift": `let package = Package(
     products: [
-        .library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"]),
         .library(name: "GnosticKit", targets: ["GnosticKit"]),
     ],
     targets: [
         .target(
             name: "GnosticCore"
-        ),
-        .target(
-            name: "GnosticPositronicAtlas",
-            dependencies: [
-                "GnosticCore",
-                .product(name: "PositronicKit", package: "PositronicKit"),
-            ]
         ),
         .target(
             name: "GnosticKit",
@@ -577,9 +569,9 @@ function writeFixture(root) {
     "Documentation/Architecture/experiments.json": JSON.stringify({
       schemaVersion: 1,
       modules: [{
-        id: "GNO-MOD-ATLAS",
-        name: "Atlas continuity and context",
-        targets: ["GnosticPositronicAtlas"],
+        id: "GNO-MOD-TEST",
+        name: "Fixture module",
+        targets: ["GnosticKit"],
         status: "incubating",
         owningIssue: "https://github.com/phynics/Gnostic/issues/449",
         gateIssues: ["https://github.com/phynics/Gnostic/issues/382"],
@@ -658,7 +650,7 @@ async function selfTest() {
     );
     await expectFailure(root, options, () => writeFileSync(join(root, COMPATIBILITY_FILE), "# Compatibility\n"), `must mention '${PACKAGE_VERSION}'`);
     writeFixture(root);
-    await expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n', "")), "Atlas target must depend on GnosticCore");
+    await expectFailure(root, options, () => writeFileSync(join(root, "Package.swift"), readText(root, "Package.swift").replace('                "GnosticCore",\n            ]', '            ]')), "GnosticKit target must depend on GnosticCore");
     writeFixture(root);
     await expectFailure(root, options, () => writeFileSync(join(root, "Documentation/Architecture/README.md"), "[broken](missing.md)"), "broken local Markdown link");
     writeFixture(root);
@@ -730,14 +722,14 @@ async function selfTest() {
     writeFixture(root);
     // A `runnable` entry must have a compiled-in descriptor: the registry may
     // not advertise runnability that nothing can build.
-    writeDescriptorFixture(root, "GNO-MOD-ATLAS");
+    writeDescriptorFixture(root, "GNO-MOD-TEST");
     assert.deepEqual(await checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
     writeFixture(root);
     await expectFailure(root, options, () => {
       const document = fixtureRegistry();
       document.modules[0].runnable = true;
       writeFileSync(registryFile, JSON.stringify(document));
-    }, "runnable entry 'GNO-MOD-ATLAS' has no compiled module descriptor");
+    }, "runnable entry 'GNO-MOD-TEST' has no compiled module descriptor");
     writeFixture(root);
     // A runnable entry whose descriptor names a different registry id is still
     // uncovered: the id must match the entry, not merely exist.
@@ -746,7 +738,7 @@ async function selfTest() {
       const document = fixtureRegistry();
       document.modules[0].runnable = true;
       writeFileSync(registryFile, JSON.stringify(document));
-    }, "runnable entry 'GNO-MOD-ATLAS' has no compiled module descriptor");
+    }, "runnable entry 'GNO-MOD-TEST' has no compiled module descriptor");
 
     writeFixture(root);
     // ADR 0013: the kernel stays below the platform kit.

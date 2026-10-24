@@ -53,6 +53,7 @@ public final class RemoteTurnClient: Sendable {
     private var providerEvictionTask: Task<Void, Never>?
     private var offlineProviders: Set<String> = []
     private var inFlightCalls: [String: [UUID: @MainActor () -> Void]] = [:]
+    private(set) var ascendantDiscoveryDiagnostics = "Discovery has not run."
 
     /// Creates a client bound to a broker namespace.
     ///
@@ -151,10 +152,6 @@ public final class RemoteTurnClient: Sendable {
     public func listNetworkObjects() async -> [NetworkCatalogEntry] {
         try? await session.discover()
         return await session.networkObjects()
-    }
-
-    private func discoverAscendants() async -> [DiscoveredAscendant] {
-        discoveredAscendants(from: await listNetworkObjects())
     }
 
     private func discoveredAscendants(from entries: [NetworkCatalogEntry]) -> [DiscoveredAscendant] {
@@ -266,12 +263,39 @@ public final class RemoteTurnClient: Sendable {
         providerID: String? = nil,
         nodeID: UUID? = nil
     ) async throws -> DiscoveredAscendant {
-        try Self.selectCandidate(
-            from: await discoverAscendants(),
+        try await session.discover()
+        let entries = await session.networkObjects(includeIncompatible: true)
+        ascendantDiscoveryDiagnostics = Self.discoverySummary(entries)
+        return try Self.selectCandidate(
+            from: discoveredAscendants(from: entries.filter(\.isProtocolCompatible)),
             id: ascendantID,
             providerID: providerID,
             nodeID: nodeID
         )
+    }
+
+    private static func discoverySummary(_ entries: [NetworkCatalogEntry]) -> String {
+        let objectTypes = Dictionary(grouping: entries, by: \.objectType)
+            .map { "\($0.key):\($0.value.count)" }
+            .sorted()
+            .joined(separator: ",")
+        let ascendants = entries.filter { $0.objectType == GnosticObjectType.ascendant }
+        guard !ascendants.isEmpty else {
+            return "catalogObjectTypes=[\(objectTypes)]; catalogAscendants=none"
+        }
+        let summaries = ascendants.map { entry in
+            let timeline: String
+            if case let .string(raw)? = entry.knownProperties["privateTimelineID"] {
+                timeline = UUID(uuidString: raw) == nil ? "malformed" : "valid"
+            } else {
+                timeline = "missing"
+            }
+            let node = Self.nodeID(of: entry)?.uuidString.lowercased() ?? "missing"
+            let capabilities = entry.advertisedCapabilities.sorted().joined(separator: ",")
+            let protocolMajor = entry.protocolMajor.map { String($0) } ?? "missing"
+            return "id=\(entry.objectID.uuidString.lowercased()),provider=\(entry.providerID),node=\(node),protocol=\(protocolMajor),compatible=\(entry.isProtocolCompatible),privateTimeline=\(timeline),capabilities=[\(capabilities)]"
+        }
+        return "catalogObjectTypes=[\(objectTypes)]; catalogAscendants=[\(summaries.joined(separator: "; "))]"
     }
 
     static func selectCandidate(

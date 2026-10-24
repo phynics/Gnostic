@@ -586,7 +586,9 @@ final class ACPDispatcher: Sendable {
                 nodeID: selected.nodeID ?? requestedNodeID
             )
         } catch let error as RemoteTurnClientError {
-            throw JSONRPCMethodError.invalidState(error.localizedDescription)
+            throw JSONRPCMethodError.invalidState(
+                "\(error.localizedDescription) Discovery details: \(client.ascendantDiscoveryDiagnostics)"
+            )
         }
     }
 

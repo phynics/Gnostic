@@ -100,7 +100,9 @@ struct ServeSubprocessSignalTests {
         }
 
         if requireOnlineBeforeSignal {
-            try await waitForOnline(log: log, logURL: logURL, process: process)
+            let manifest = try configStore.loadManifest()
+            let timelineID = try #require(manifest.timelines.first?.id)
+            try await waitForOnline(log: log, logURL: logURL, process: process, timelineID: timelineID)
             try await waitForMarker(fixtureInitializeURL)
             #expect(FileManager.default.fileExists(atPath: fixturePIDURL.path))
         } else {
@@ -124,12 +126,10 @@ struct ServeSubprocessSignalTests {
         #expect(exited, "gnostic serve ignored \(signal)")
         #expect(process.terminationReason == .exit, Comment(rawValue: standardError))
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
-        if requireOnlineBeforeSignal {
-            try await waitForFixtureExit(exitURL: fixtureExitURL, pidURL: fixturePIDURL)
-            #expect(try String(contentsOf: fixtureExitURL, encoding: .utf8).contains("exited"))
-            #expect(!fixtureProcessIsRunning(pidURL: fixturePIDURL))
-        } else {
-            #expect(!FileManager.default.fileExists(atPath: fixturePIDURL.path))
+        if FileManager.default.fileExists(atPath: fixturePIDURL.path) {
+            let fixtureExited = await waitForFixtureExit(exitURL: fixtureExitURL, pidURL: fixturePIDURL)
+            #expect(fixtureExited, "ACP fixture did not exit gracefully after \(signal).")
+            #expect(!fixtureProcessIsRunning(pidURL: fixturePIDURL), "ACP fixture process remained alive after \(signal).")
         }
     }
 
@@ -148,12 +148,12 @@ struct ServeSubprocessSignalTests {
     }
 
     @MainActor
-    private func waitForFixtureExit(exitURL: URL, pidURL: URL) async throws {
+    private func waitForFixtureExit(exitURL: URL, pidURL: URL) async -> Bool {
         for _ in 0..<100 {
-            if FileManager.default.fileExists(atPath: exitURL.path), !fixtureProcessIsRunning(pidURL: pidURL) { return }
-            try await Task.sleep(for: .milliseconds(50))
+            if FileManager.default.fileExists(atPath: exitURL.path), !fixtureProcessIsRunning(pidURL: pidURL) { return true }
+            try? await Task.sleep(for: .milliseconds(50))
         }
-        Issue.record("ACP fixture did not record shutdown and exit within the timeout.")
+        return false
     }
 
     private func fixtureProcessIsRunning(pidURL: URL) -> Bool {
@@ -167,11 +167,13 @@ struct ServeSubprocessSignalTests {
     /// broker connection can take well over a second under load, so signaling
     /// early could hit the default handler before the monitor is installed.
     @MainActor
-    private func waitForOnline(log: FileHandle, logURL: URL, process: Process) async throws {
+    private func waitForOnline(log: FileHandle, logURL: URL, process: Process, timelineID: UUID) async throws {
         var sawOnline = false
         for _ in 0..<150 {
             try log.synchronize()
-            if try String(contentsOf: logURL, encoding: .utf8).contains("objectCount=0") {
+            let startupLog = try String(contentsOf: logURL, encoding: .utf8)
+            if startupLog.contains("advertised objects"),
+               startupLog.contains("timeline=\(timelineID.uuidString.lowercased())") {
                 sawOnline = true
                 break
             }

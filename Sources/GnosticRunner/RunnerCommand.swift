@@ -70,12 +70,13 @@ private final class RunnerTerminationMonitor {
         #endif
         let pair = AsyncStream<Void>.makeStream()
         terminationSignals = pair.stream
-        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        // These handlers inherit MainActor isolation from init; deliver them on its matching queue.
+        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         terminate.setEventHandler {
             pair.continuation.yield(())
             pair.continuation.finish()
         }
-        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         interrupt.setEventHandler {
             pair.continuation.yield(())
             pair.continuation.finish()

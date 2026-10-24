@@ -720,7 +720,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             child.arguments = [
                 "-MPOSIX",
                 "-e",
-                "setpgid(0, 0) or die; my $program = shift; exec {$program} $program, @ARGV or die;",
+                "setpgid(0, 0) or die; $SIG{INT} = 'DEFAULT'; $SIG{TERM} = 'DEFAULT'; my $program = shift; exec {$program} $program, @ARGV or die;",
                 agentExecutable.path,
             ] + launchSpec.arguments
             connectionStage = "start agent through the Perl process-group launcher"
