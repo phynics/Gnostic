@@ -12,7 +12,7 @@ struct RuntimeACPSubprocessTests {
     }
 
     @Test(
-        "scripted Runtime completes a multi-turn ACP v2 lifecycle",
+        "standalone Runtime host-defined consumer completes a multi-turn ACP v2 lifecycle",
         .timeLimit(.minutes(1)),
         .enabled(if: ProcessInfo.processInfo.environment["GNOSTIC_PK_RUNTIME_BINARY"] != nil,
                  "GNOSTIC_PK_RUNTIME_BINARY is not set")

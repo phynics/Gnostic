@@ -50,6 +50,12 @@ jobs:
       - name: make harness-test
         run: make harness-test
 
+      # Dependency pins can add or remove transitive packages. Resolve through
+      # the repository's pinned development image before any locked builds.
+      - name: make resolve
+        id: resolve-package-graph
+        run: make resolve
+
       # Every target below builds the image from .devcontainer/Dockerfile via
       # the Makefile, so CI and local development share one dependency list.
       # Restating the apt packages here would let the two drift.
@@ -63,6 +69,17 @@ jobs:
           # cannot be skipped for lack of a token.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make verify
+
+      # Keep the lockfile produced by the repository-supported resolver
+      # available for review when a dependency pin changes the package graph.
+      - name: Upload resolved Swift package graph
+        if: always() && steps.resolve-package-graph.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: resolved-swift-package-graph
+          path: Package.resolved
+          if-no-files-found: error
+          retention-days: 14
 
       # Only main saves. A pull request entry is restorable only from its own
       # branch, and each ~1 GB entry pushes main's toward eviction.
@@ -104,6 +121,11 @@ jobs:
           restore-keys: |
             swift-6.4.0-${{ hashFiles('Package.resolved') }}-
             swift-6.4.0-
+
+      # Keep the smoke job on the same exact manifest resolution as the
+      # validation matrix, including when a dependency pin changes its graph.
+      - name: make resolve
+        run: make resolve
 
       # acp-smoke locates the gnostic executable before `swift test` builds
       # it, so a cold or stale cache needs an explicit build first.

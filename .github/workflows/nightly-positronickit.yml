@@ -1,8 +1,8 @@
 name: nightly PositronicKit
 
-# Builds and tests Gnostic against PositronicKit `main` so upstream breakage
-# surfaces before a release pins it. Scheduled and manual only: it never runs on
-# a pull request and is never a required check, so it cannot block work.
+# Builds and smokes the standalone ACP Runtime against PositronicKit `main`.
+# Scheduled and manual only: it never runs on a pull request and is never a
+# required check, so upstream changes cannot block host work.
 on:
   schedule:
     # Off-peak minute; GitHub's scheduler is busiest on the hour.
@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   positronickit-main:
-    name: build and test against PositronicKit main
+    name: standalone Runtime smoke against PositronicKit main
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -57,8 +57,8 @@ jobs:
           echo "POSITRONICKIT_REVISION=$revision" >> "$GITHUB_ENV"
           echo "PositronicKit revision under test: $revision" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: make verify
-        run: make verify
+      - name: make acp-smoke
+        run: make acp-smoke
 
       - name: Upload logs
         if: failure()

@@ -445,7 +445,7 @@ private actor ACPAgentServer {
             let assistantMessageID = UUID().uuidString.lowercased()
             var assistantText = ""
             for await event in updates {
-                if case let .delta(.generation(text)) = event {
+                if let text = event.textContent {
                     assistantText += text
                     try await sendUpdate(
                         sessionID: sessionID,
