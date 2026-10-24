@@ -287,30 +287,18 @@ async function validateExperiments(root, failures, { issueState = null } = {}) {
     }
   }
 
-  // A compiled-in descriptor names the registry entry it implements, so a
-  // module cannot ship without a registry record (ADR 0013).
-  const compiledRegistryIDs = new Set();
-  for (const { text } of sourceFiles(root, "Sources/GnosticHost")) {
-    for (const match of text.matchAll(/registryID:\s*"([^"]+)"/g)) compiledRegistryIDs.add(match[1]);
-  }
-  for (const id of compiledRegistryIDs) {
-    if (!ids.has(id)) {
-      failures.push(`Sources/GnosticHost: compiled-in module registryID '${id}' has no entry in ${MODULE_FILE}`);
-    }
-  }
-
-  // A `runnable` entry must have a descriptor, so a module cannot advertise
-  // manifest runnability that nothing can build.
+  // A runnable research entry names its own package targets. It does not need
+  // a descriptor compiled into GnosticHost.
   for (const entry of document.modules) {
     if (typeof entry.id !== "string" || !entry.runnable) continue;
-    if (!compiledRegistryIDs.has(entry.id)) {
-      failures.push(`${MODULE_FILE}: runnable entry '${entry.id}' has no compiled module descriptor in Sources/GnosticHost`);
+    if (!Array.isArray(entry.targets) || entry.targets.length === 0) {
+      failures.push(`${MODULE_FILE}: runnable entry '${entry.id}' must name at least one isolated package target`);
     }
   }
 }
 
 function swiftTargetBlock(packageText, name) {
-  const targetStart = packageText.search(new RegExp(`\\.target\\(\\s*name:\\s*"${name}"`));
+  const targetStart = packageText.search(new RegExp(`\\.(?:target|executableTarget|testTarget)\\(\\s*name:\\s*"${name}"`));
   const targetEndMarker = "\n        ),";
   const targetEnd = targetStart < 0 ? -1 : packageText.indexOf(targetEndMarker, targetStart);
   if (targetStart < 0 || targetEnd < 0) return null;
@@ -340,9 +328,8 @@ function validateResetBaseline(root, failures) {
   }
 }
 
-// ADR 0013: the platform kit sits above the kernel and below modules. The
-// kernel never depends on the kit, and the kit depends on the kernel only, so
-// P7 can extract Positronic from Core without touching the kit.
+// ADR 0013/0021: experiment libraries remain optional consumers. No stable
+// host executable may reach them through a direct or transitive target edge.
 function validatePlatformKit(root, failures) {
   const packageText = readText(root, "Package.swift");
   const coreTarget = swiftTargetBlock(packageText, "GnosticCore");
@@ -361,8 +348,58 @@ function validatePlatformKit(root, failures) {
       if (kitTarget.includes(`"${target}"`)) failures.push(`Package.swift: GnosticKit must not depend on ${target}`);
     }
   }
+  const internalTargets = new Set(
+    [...packageText.matchAll(/\.(?:target|executableTarget|testTarget)\(\s*name:\s*"([^"]+)"/g)].map((match) => match[1])
+  );
+  const dependenciesFor = (target) => {
+    const block = swiftTargetBlock(packageText, target);
+    if (!block) {
+      failures.push(`Package.swift: ${target} target is missing`);
+      return [];
+    }
+    return [...block.matchAll(/^\s*"([^"]+)"\s*,?\s*$/gm)]
+      .map((match) => match[1])
+      .filter((name) => internalTargets.has(name));
+  };
+  const forbidden = new Set([
+    "GnosticKit",
+    "GnosticExperimentCLI",
+    "GnosticRLM",
+    "GnosticRLMScenario",
+    "GnosticRLMBenchmark",
+    "GnosticRLMGuile",
+    "GnosticRLMChibi",
+    "GnosticRLMProcessWorker",
+    "GnosticRLMWorkerSupport",
+  ]);
+  for (const rootTarget of ["GnosticCore", "GnosticHost", "GnosticCLI"]) {
+    const visited = new Set();
+    const pending = [rootTarget];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (current !== rootTarget && forbidden.has(current)) {
+        failures.push(`Package.swift: ${rootTarget} dependency closure must not include experimental target ${current}`);
+      }
+      pending.push(...dependenciesFor(current));
+    }
+  }
+  const experimentTarget = swiftTargetBlock(packageText, "GnosticExperimentCLI");
+  if (!experimentTarget) {
+    failures.push("Package.swift: GnosticExperimentCLI target is missing");
+  } else if (!experimentTarget.includes('"GnosticKit"') || !experimentTarget.includes('"GnosticRLM"')) {
+    failures.push("Package.swift: GnosticExperimentCLI must own the GnosticKit and GnosticRLM dependencies");
+  }
   for (const { path, text } of sourceFiles(root, "Sources/GnosticCore")) {
     if (/import\s+GnosticKit\b/.test(text)) failures.push(`${relative(root, path)}: GnosticCore must not import GnosticKit`);
+  }
+  for (const directory of ["Sources/GnosticHost", "Sources/GnosticCLI"]) {
+    for (const { path, text } of sourceFiles(root, directory)) {
+      if (/import\s+(?:GnosticKit|GnosticExperimentCLI|GnosticRLM[A-Za-z]*)\b/.test(text)) {
+        failures.push(`${relative(root, path)}: stable host sources must not import experiment targets`);
+      }
+    }
   }
   for (const { path, text } of sourceFiles(root, "Sources/GnosticKit")) {
     if (/import\s+(?:PositronicKit|PKContracts|PK[A-Za-z]+Provider)\b/.test(text)) {
@@ -524,18 +561,6 @@ function makeTargetsForRoot(root) {
   return makeTargets(root);
 }
 
-function writeDescriptorFixture(root, registryID) {
-  const path = join(root, "Sources/GnosticHost/RLMModule.swift");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `let value = GnosticModule(
-    name: "rlm",
-    registryID: "${registryID}",
-    settingKeys: [],
-    terminalTurnObservers: []
-) { _ in NotesContribution() }
-`);
-}
-
 function writeFixture(root) {
   rmSync(join(root, "Sources"), { recursive: true, force: true });
   const files = {
@@ -557,12 +582,37 @@ function writeFixture(root) {
                 "GnosticCore",
             ]
         ),
+        .target(
+            name: "GnosticRLM"
+        ),
+        .executableTarget(
+            name: "GnosticExperimentCLI",
+            dependencies: [
+                "GnosticKit",
+                "GnosticRLM",
+            ]
+        ),
+        .target(
+            name: "GnosticHost",
+            dependencies: [
+                "GnosticCore",
+            ]
+        ),
+        .executableTarget(
+            name: "GnosticCLI",
+            dependencies: [
+                "GnosticHost",
+            ]
+        ),
     ]
 )
 `,
     [COMPATIBILITY_FILE]: `# Compatibility\n\n- Package version: \`${PACKAGE_VERSION}\`.\n\nPackage ${PACKAGE_VERSION} uses protocol major 2 and manifest v2; v1 migration is supported. Bundled Atlas status is scaffold-only, and Narrative is superseded after the intentional 0.2 break.\n`,
     "Sources/GnosticCore/Core.swift": "let core = true\n",
     "Sources/GnosticKit/Kit.swift": "let kit = true\n",
+    "Sources/GnosticHost/Host.swift": "let host = true\n",
+    "Sources/GnosticCLI/CLI.swift": "let cli = true\n",
+    "Sources/GnosticExperimentCLI/Experiment.swift": "let experiment = true\n",
     "Sources/Protocol.swift": "let route = \"me.atkn.gnostic.workspace.invoke\"\n",
     "Documentation/Architecture/README.md": "# Architecture\n\n[ADR 0001](ADRs/0001-axoloty-native-multi-backend-host.md) [ADR 0002](ADRs/0002-gnostic-identity-vs-backend-state.md) [ADR 0003](ADRs/0003-pre-1-0-manifest-and-protocol-reset.md) [ADR 0004](ADRs/0004-atlas-supersedes-narrative.md)\n",
     "Documentation/Architecture/exceptions.json": JSON.stringify({ schemaVersion: 1, exceptions: [] }, null, 2),
@@ -720,25 +770,15 @@ async function selfTest() {
       writeFileSync(registryFile, JSON.stringify(document));
     }, "is duplicated");
     writeFixture(root);
-    // A `runnable` entry must have a compiled-in descriptor: the registry may
-    // not advertise runnability that nothing can build.
-    writeDescriptorFixture(root, "GNO-MOD-TEST");
+    // A research registry entry can be runnable without a GnosticHost descriptor.
     assert.deepEqual(await checkRepository({ root, ...options }), { checked: REQUIRED_FILES.length, failures: [] });
     writeFixture(root);
     await expectFailure(root, options, () => {
       const document = fixtureRegistry();
       document.modules[0].runnable = true;
+      document.modules[0].targets = [];
       writeFileSync(registryFile, JSON.stringify(document));
-    }, "runnable entry 'GNO-MOD-TEST' has no compiled module descriptor");
-    writeFixture(root);
-    // A runnable entry whose descriptor names a different registry id is still
-    // uncovered: the id must match the entry, not merely exist.
-    writeDescriptorFixture(root, "GNO-MOD-MISSING");
-    await expectFailure(root, options, () => {
-      const document = fixtureRegistry();
-      document.modules[0].runnable = true;
-      writeFileSync(registryFile, JSON.stringify(document));
-    }, "runnable entry 'GNO-MOD-TEST' has no compiled module descriptor");
+    }, "must name at least one isolated package target");
 
     writeFixture(root);
     // ADR 0013: the kernel stays below the platform kit.
@@ -753,6 +793,26 @@ async function selfTest() {
     await expectFailure(root, options, () => {
       writeFileSync(join(root, "Sources/GnosticCore/KitImport.swift"), "import GnosticKit\n");
     }, "GnosticCore must not import GnosticKit");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const packageText = readText(root, "Package.swift").replace(
+        'name: "GnosticHost",\n            dependencies: [\n                "GnosticCore",',
+        'name: "GnosticHost",\n            dependencies: [\n                "GnosticCore",\n                "GnosticKit",'
+      );
+      writeFileSync(join(root, "Package.swift"), packageText);
+    }, "GnosticHost dependency closure must not include experimental target GnosticKit");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      const packageText = readText(root, "Package.swift").replace(
+        'name: "GnosticCLI",\n            dependencies: [\n                "GnosticHost",',
+        'name: "GnosticCLI",\n            dependencies: [\n                "GnosticHost",\n                "GnosticRLM",'
+      );
+      writeFileSync(join(root, "Package.swift"), packageText);
+    }, "GnosticCLI dependency closure must not include experimental target GnosticRLM");
+    writeFixture(root);
+    await expectFailure(root, options, () => {
+      writeFileSync(join(root, "Sources/GnosticCLI/ExperimentImport.swift"), "import GnosticRLM\n");
+    }, "stable host sources must not import experiment targets");
     writeFixture(root);
     // The kit depends on the kernel only: no module or composition target.
     await expectFailure(root, options, () => {
@@ -789,18 +849,6 @@ async function selfTest() {
       assert.deepEqual(await checkRepository({ root, ...options, issueState: async () => "closed" }), { checked: REQUIRED_FILES.length, failures: [] });
     }
 
-    writeFixture(root);
-    // A compiled-in descriptor must name a real registry entry.
-    mkdirSync(join(root, "Sources/GnosticHost"), { recursive: true });
-    writeFileSync(
-      join(root, "Sources/GnosticHost/Composition.swift"),
-      'let module = GnosticModule(name: "rlm", registryID: "GNO-MOD-MISSING")\n'
-    );
-    await assert.rejects(
-      () => checkRepository({ root, ...options }),
-      (error) => error.message.includes("registryID 'GNO-MOD-MISSING' has no entry")
-    );
-    rmSync(join(root, "Sources/GnosticHost"), { recursive: true, force: true });
     writeFixture(root);
     await assert.rejects(
       () => checkRepository({

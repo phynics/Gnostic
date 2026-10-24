@@ -61,7 +61,7 @@ resolve: require-package image
 worktree-bootstrap: resolve
 
 build: require-package require-build-configuration image
-	@GNOSTIC_BUILD_REVISION="$$(git rev-parse HEAD)" $(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS); bin_dir=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path); case "$$bin_dir" in /workspace/.build/*) ;; *) echo "Unexpected SwiftPM executable directory: $$bin_dir" >&2; exit 1 ;; esac; printf "%s\n" "$$bin_dir/gnostic" > .build/gnostic-bin-path; printf "%s\n" "$${GNOSTIC_BUILD_REVISION:?}" > .build/gnostic-build-revision'
+	@GNOSTIC_BUILD_REVISION="$$(git rev-parse HEAD)" $(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic; bin_dir=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --show-bin-path); case "$$bin_dir" in /workspace/.build/*) ;; *) echo "Unexpected SwiftPM executable directory: $$bin_dir" >&2; exit 1 ;; esac; printf "%s\n" "$$bin_dir/gnostic" > .build/gnostic-bin-path; printf "%s\n" "$${GNOSTIC_BUILD_REVISION:?}" > .build/gnostic-build-revision'
 
 test: build
 	@mkdir -p .testing
@@ -99,7 +99,7 @@ scenario-live-preflight: build
 		bash Scripts/rlm-scenario-live-preflight.sh
 
 docs-check: build
-	@EXTRA_CONTAINER_ENV="-e GH_TOKEN -e GITHUB_TOKEN" $(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'node /workspace/Scripts/check-documentation.mjs --self-test; bin=$$(cat .build/gnostic-bin-path); test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; node /workspace/Scripts/check-documentation.mjs --root /workspace --cli "$$bin"'
+	@EXTRA_CONTAINER_ENV="-e GH_TOKEN -e GITHUB_TOKEN" $(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic-experiment; node /workspace/Scripts/check-documentation.mjs --self-test; bin=$$(cat .build/gnostic-bin-path); test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; node /workspace/Scripts/check-documentation.mjs --root /workspace --cli "$$bin"'
 
 lint: require-package
 	@./Scripts/check-unchecked-sendable.sh

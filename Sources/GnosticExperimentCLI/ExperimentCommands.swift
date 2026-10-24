@@ -39,10 +39,10 @@ struct ExperimentCommand: AsyncParsableCommand {
 
         static let configuration = CommandConfiguration(
             commandName: commandName,
-            abstract: "Run the RLM scenario live stages (pilot or full matrix) against a configured provider.",
+            abstract: "RLM live scenario (unavailable pending outer-consumer work).",
             discussion: """
-            Without --confirm-spend this prints the plan and a worst-case cost ceiling. \
-            The live provider path runs behind the standalone ACP Runtime process boundary.
+            The in-process model loop was retired in #611. The outer-consumer path is \
+            tracked by #624 and is not implemented in this release increment.
             """
         )
 
@@ -52,7 +52,8 @@ struct ExperimentCommand: AsyncParsableCommand {
         @Option(name: .long, help: "UUID of the Ascendant whose provider, models, and key are used.")
         var ascendant: String
 
-        @OptionGroup var configOptions: ConfigPathOptions
+        @Option(name: .customLong("config"), help: "Manifest path retained for scenario planning.")
+        var configPath: String?
 
         @Option(name: .long, help: "Repository root holding the corpus and the frozen question set.")
         var repository: String = "."

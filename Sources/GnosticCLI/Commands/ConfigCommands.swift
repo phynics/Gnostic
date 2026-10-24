@@ -24,8 +24,7 @@ struct ConfigCommand: AsyncParsableCommand {
         """,
         subcommands: [
             Init.self, Show.self, Validate.self, Migrate.self, Path.self, Broker.self, Backend.self,
-            Ascendant.self, Timeline.self, Workspace.self, ConfigModuleCommand.self,
-            ConfigRegimeCommand.self,
+            Ascendant.self, Timeline.self, Workspace.self,
         ]
     )
 
