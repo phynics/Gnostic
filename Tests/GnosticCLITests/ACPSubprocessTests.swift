@@ -58,6 +58,68 @@ struct ACPSubprocessTests {
         #expect(!profiles[0].args.contains("--ascendant"))
     }
 
+    @Test("explicit Node selection requires a known matching Node ID")
+    @MainActor
+    func explicitNodeSelectionRequiresKnownMatch() throws {
+        let runtimeID = UUID(uuidString: "e51d0000-0000-4000-8000-000000000002")!
+        let requestedNodeID = UUID(uuidString: "e51d0000-0000-4000-8000-000000000001")!
+        let otherNodeID = UUID(uuidString: "e51d0000-0000-4000-8000-000000000003")!
+        let withoutNode = RemoteTurnClient.DiscoveredRuntimeInstance(
+            runtimeID: runtimeID,
+            name: "Runtime without Node metadata",
+            providerID: "provider-a"
+        )
+        let matchingNode = RemoteTurnClient.DiscoveredRuntimeInstance(
+            runtimeID: runtimeID,
+            name: "Runtime on requested Node",
+            providerID: "provider-a",
+            nodeID: requestedNodeID
+        )
+        let wrongNode = RemoteTurnClient.DiscoveredRuntimeInstance(
+            runtimeID: runtimeID,
+            name: "Runtime on another Node",
+            providerID: "provider-b",
+            nodeID: otherNodeID
+        )
+
+        #expect(selectionErrorCode(from: [withoutNode]) == "nodeUnavailable")
+        #expect(try RemoteTurnClient.selectCandidate(from: [matchingNode], id: runtimeID, nodeID: requestedNodeID) == matchingNode)
+        #expect(selectionErrorCode(from: [wrongNode]) == "nodeUnavailable")
+
+        // Provider-only profiles remain valid for Runtime advertisements without Node metadata.
+        #expect(try RemoteTurnClient.selectCandidate(from: [withoutNode], providerID: "provider-a") == withoutNode)
+
+        func selectionErrorCode(from candidates: [RemoteTurnClient.DiscoveredRuntimeInstance]) -> String? {
+            do {
+                _ = try RemoteTurnClient.selectCandidate(from: candidates, id: runtimeID, nodeID: requestedNodeID)
+                return nil
+            } catch let error as RemoteTurnClientError {
+                return error.gnosticCode
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    @Test("final discovery failure formatting bounds and sanitizes the entire response")
+    @MainActor
+    func discoveryFailureFormattingIsBounded() {
+        let selector = "provider\n\u{001B}" + String(repeating: "p", count: 4_000)
+        let error = RemoteTurnClientError.providerUnavailable(selector)
+        let formatted = RemoteTurnClient.discoveryFailureDescription(
+            error: error,
+            diagnostics: "catalog\r\n" + String(repeating: "d", count: 4_000)
+        )
+
+        #expect(formatted.count <= 1_320)
+        #expect(!formatted.contains("\n"))
+        #expect(!formatted.contains("\r"))
+        #expect(!formatted.contains("\u{001B}"))
+        #expect(formatted.contains("Provider provider"))
+        #expect(formatted.contains("Discovery details: catalog"))
+        #expect(formatted.contains("…"))
+    }
+
     @Test("ACP discovery diagnostics bound and sanitize catalog details")
     @MainActor
     func discoveryDiagnosticsAreBounded() {

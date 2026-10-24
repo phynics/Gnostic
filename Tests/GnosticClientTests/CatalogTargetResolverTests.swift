@@ -108,6 +108,40 @@ struct CatalogTargetResolverTests {
             == .success(CatalogTarget(providerID: "node-a", ascendantID: operatingID)))
     }
 
+    @Test("a canonical Runtime supports the required Timeline prompt without an Ascendant projection")
+    func runtimeAdvertisementSupportsTimelinePrompt() {
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let entries = [
+            entry(GnosticObjectType.timeline, id: timelineID, provider: "node-a", properties: [
+                "attachedAscendantID": .string(runtimeID.uuidString),
+            ]),
+            entry(GnosticObjectType.runtimeInstance, id: runtimeID, provider: "node-a"),
+        ]
+
+        #expect(CatalogTargetResolver.target(
+            .timeline,
+            id: timelineID,
+            expectedProviderID: nil,
+            requiredCapability: GnosticCapability.textTurnInput,
+            in: entries
+        ) == .success(CatalogTarget(providerID: "node-a", ascendantID: runtimeID)))
+        #expect(CatalogTargetResolver.target(
+            .timeline,
+            id: timelineID,
+            expectedProviderID: nil,
+            requiredCapability: GnosticCapability.timelineManagement,
+            in: entries
+        ) == .success(CatalogTarget(providerID: "node-a", ascendantID: runtimeID)))
+        #expect(CatalogTargetResolver.target(
+            .timeline,
+            id: timelineID,
+            expectedProviderID: nil,
+            requiredCapability: GnosticCapability.workspaceAttachment,
+            in: entries
+        ) == .failure(.missingCapability(GnosticCapability.workspaceAttachment)))
+    }
+
     @Test("an Ascendant target checks its own capability advertisement")
     func ascendantTargetChecksOwnCapability() {
         let ascendantID = UUID()

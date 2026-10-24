@@ -37,17 +37,17 @@ public final class GnosticTimelineClient {
         self.timeout = timeout
     }
 
-    /// Creates a Timeline under a discovered Ascendant.
+    /// Creates a Timeline under a discovered Runtime instance.
     ///
     /// - Parameters:
     ///   - title: The new Timeline title.
-    ///   - ascendantID: The Ascendant that will operate the Timeline.
+    ///   - ascendantID: The Runtime identity that will operate the Timeline.
     ///   - providerID: The expected provider of the Ascendant, or `nil` to
     ///     resolve it from the session catalog.
     /// - Returns: The status returned by the serving Node.
-    /// - Throws: ``GnosticTimelineClientError`` when the Ascendant cannot be
-    ///   resolved, the addressed provider does not advertise it, it lacks
-    ///   Timeline management, or the serve rejects the call.
+    /// - Throws: ``GnosticTimelineClientError`` when the Runtime cannot be
+    ///   resolved, the addressed provider does not own it, a legacy Ascendant
+    ///   lacks Timeline management, or the serve rejects the call.
     public func create(title: String, ascendantID: UUID, providerID expectedProviderID: String? = nil) async throws -> TimelineStatus {
         let providerID = try await resolvedAscendantProvider(for: ascendantID, expected: expectedProviderID)
         return try await channel.call(
@@ -113,6 +113,17 @@ public final class GnosticTimelineClient {
     }
 
     private func resolvedAscendantProvider(for ascendantID: UUID, expected: String?) async throws -> String {
+        switch await resolver.resolve(
+            .runtimeInstance,
+            id: ascendantID,
+            expectedProviderID: expected
+        ) {
+        case let .success(target): return target.providerID
+        case .failure(.unavailable): break
+        case .failure(.ambiguous): throw GnosticTimelineClientError.ascendantAmbiguous(ascendantID)
+        case .failure(.providerMismatch): throw GnosticTimelineClientError.providerMismatch
+        case .failure(.missingCapability): break
+        }
         switch await resolver.resolve(
             .ascendant,
             id: ascendantID,

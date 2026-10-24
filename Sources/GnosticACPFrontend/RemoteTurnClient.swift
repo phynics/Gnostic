@@ -301,6 +301,16 @@ public final class RemoteTurnClient: Sendable {
         return String(summary.prefix(1_008)) + "; truncated=true"
     }
 
+    static func discoveryFailureDescription(error: Error, diagnostics: String) -> String {
+        let message = safeDiagnosticField(error.localizedDescription, limit: 256)
+        let details = safeDiagnosticField(diagnostics, limit: 1_024)
+        let response = "\(message) Discovery details: \(details)"
+        guard response.count <= 1_320 else {
+            return String(response.prefix(1_304)) + "; truncated=true"
+        }
+        return response
+    }
+
     private static func safeDiagnosticField(_ value: String, limit: Int) -> String {
         var scalars = value.unicodeScalars.makeIterator()
         var characters: [Character] = []
@@ -322,7 +332,7 @@ public final class RemoteTurnClient: Sendable {
             let matches = candidates.filter {
                 (runtimeID == nil || $0.runtimeID == runtimeID)
                     && (providerID == nil || $0.providerID.lowercased() == providerID?.lowercased())
-                    && (nodeID == nil || $0.nodeID == nil || $0.nodeID == nodeID)
+                    && (nodeID == nil || $0.nodeID == nodeID)
             }
             guard let candidate = matches.first else {
                 if let nodeID, candidates.contains(where: { runtimeID == nil || $0.runtimeID == runtimeID }) {

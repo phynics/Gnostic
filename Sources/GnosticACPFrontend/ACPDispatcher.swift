@@ -585,7 +585,10 @@ final class ACPDispatcher: Sendable {
             )
         } catch let error as RemoteTurnClientError {
             throw JSONRPCMethodError.invalidState(
-                "\(error.localizedDescription) Discovery details: \(client.runtimeDiscoveryDiagnostics)"
+                RemoteTurnClient.discoveryFailureDescription(
+                    error: error,
+                    diagnostics: client.runtimeDiscoveryDiagnostics
+                )
             )
         }
     }
