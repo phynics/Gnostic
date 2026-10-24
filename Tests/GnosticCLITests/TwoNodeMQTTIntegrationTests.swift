@@ -13,11 +13,11 @@ import Glibc
 import Darwin
 #endif
 
-@Suite("Two Node MQTT process integration", .serialized, .timeLimit(.minutes(1)))
+@Suite("Consumer to two owner process MQTT integration", .serialized, .timeLimit(.minutes(1)))
 struct TwoNodeMQTTIntegrationTests {
-    @Test("separate serve processes route Turns and observations to each Timeline owner")
+    @Test("consumer runs Turns against two live Timeline owner processes")
     @MainActor
-    func routesTurnsAcrossTwoLiveNodes() async throws {
+    func consumerRunsTurnsAgainstTwoLiveTimelineOwners() async throws {
         let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
         let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
         let namespace = "two-node-\(UUID().uuidString.lowercased())"
@@ -33,49 +33,83 @@ struct TwoNodeMQTTIntegrationTests {
             agentFixture: agentFixture,
             scratch: scratch
         )
-        defer { stop(first) }
-        let second = try await launchNode(
-            name: "second",
-            namespace: namespace,
-            serveBinary: serveBinary,
-            agentFixture: agentFixture,
-            scratch: scratch
-        )
-        defer { stop(second) }
+        let second: NodeProcess
+        do {
+            second = try await launchNode(
+                name: "second",
+                namespace: namespace,
+                serveBinary: serveBinary,
+                agentFixture: agentFixture,
+                scratch: scratch
+            )
+        } catch {
+            await first.shutdown()
+            throw error
+        }
 
+        do {
+            try await runConsumer(namespace: namespace, nodes: [first, second])
+        } catch {
+            await second.shutdown()
+            await first.shutdown()
+            throw error
+        }
+
+        await second.shutdown()
+        await first.shutdown()
+    }
+
+    @MainActor
+    private func runConsumer(namespace: String, nodes: [NodeProcess]) async throws {
         let session = try GnosticConsumerSession(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
             connectTimeout: .seconds(3),
             discoverTimeout: .seconds(3)
         )
-        try await session.start()
-        defer { Task { @MainActor in await session.stop() } }
-        let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
+        do {
+            try await session.start()
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
 
-        for node in [first, second] {
-            let message = "hello \(node.name)"
-            let clientTurnID = "turn-\(node.name)"
-            let updates = try await client.updates(for: clientTurnID, timelineID: node.timelineID)
-            let observation = Task {
-                var received: [AscendantTurnUpdate] = []
-                for await update in updates {
-                    received.append(update)
-                    if update.terminal { break }
+            for node in nodes {
+                let message = "hello \(node.name)"
+                let clientTurnID = "turn-\(node.name)"
+                let updates = try await client.updates(for: clientTurnID, timelineID: node.timelineID)
+                let observation = Task {
+                    var received: [AscendantTurnUpdate] = []
+                    for await update in updates {
+                        received.append(update)
+                        if update.terminal { break }
+                    }
+                    return received
                 }
-                return received
+
+                do {
+                    let result = try await client.run(
+                        message: message,
+                        timelineID: node.timelineID,
+                        clientTurnID: clientTurnID
+                    )
+                    let received = await withTaskCancellationHandler {
+                        await observation.value
+                    } onCancel: {
+                        observation.cancel()
+                    }
+
+                    #expect(result.text == "fixture reply: \(message)")
+                    #expect(received.map(\.text).compactMap { $0 }.joined() == "fixture reply: \(message)")
+                    #expect(received.last?.kind == AscendantTurnUpdateKind.completion.rawValue)
+                    #expect(received.last?.terminal == true)
+                } catch {
+                    observation.cancel()
+                    await session.stop()
+                    _ = await observation.value
+                    throw error
+                }
             }
-
-            let result = try await client.run(
-                message: message,
-                timelineID: node.timelineID,
-                clientTurnID: clientTurnID
-            )
-            let received = await observation.value
-
-            #expect(result.text == "fixture reply: \(message)")
-            #expect(received.map(\.text).compactMap { $0 }.joined() == "fixture reply: \(message)")
-            #expect(received.last?.kind == AscendantTurnUpdateKind.completion.rawValue)
-            #expect(received.last?.terminal == true)
+            await session.stop()
+        } catch {
+            await session.stop()
+            throw error
         }
     }
 
@@ -95,7 +129,11 @@ struct TwoNodeMQTTIntegrationTests {
         let timelineID = try #require(manifest.timelines.first?.id)
         let fixtureState = configDirectory.appendingPathComponent("fixture-sessions.json")
         try store.mutateManifest { manifest in
-            let fixtureEnvironment = ["GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path]
+            let fixturePID = configDirectory.appendingPathComponent("fixture-process.pid")
+            let fixtureEnvironment = [
+                "GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path,
+                "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePID.path,
+            ]
             manifest.ascendants[0].backend.settings["command"] = .string("node")
             manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([agentFixture]))
             manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
@@ -115,37 +153,41 @@ struct TwoNodeMQTTIntegrationTests {
         process.environment = environment
         process.standardOutput = log
         process.standardError = log
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            try? log.close()
+            throw error
+        }
 
-        var online = false
-        for _ in 0..<100 {
-            try log.synchronize()
+        let node = NodeProcess(
+            name: name,
+            timelineID: timelineID,
+            process: process,
+            log: log,
+            fixturePIDURL: configDirectory.appendingPathComponent("fixture-process.pid")
+        )
+        do {
+            var online = false
+            for _ in 0..<100 {
+                try log.synchronize()
+                let output = try String(contentsOf: logURL, encoding: .utf8)
+                if output.contains("advertised objects"),
+                   output.contains("timeline=\(timelineID.uuidString.lowercased())") {
+                    online = true
+                    break
+                }
+                if !process.isRunning { break }
+                try await Task.sleep(for: .milliseconds(100))
+            }
             let output = try String(contentsOf: logURL, encoding: .utf8)
-            if output.contains("advertised objects"),
-               output.contains("timeline=\(timelineID.uuidString.lowercased())") {
-                online = true
-                break
-            }
-            if !process.isRunning { break }
-            try await Task.sleep(for: .milliseconds(100))
+            #expect(online, Comment(rawValue: output))
+            guard online else { throw TwoNodeIntegrationError.nodeFailedToStart(name) }
+            return node
+        } catch {
+            await node.shutdown()
+            throw error
         }
-        let output = try String(contentsOf: logURL, encoding: .utf8)
-        #expect(online, Comment(rawValue: output))
-        guard online else { throw TwoNodeIntegrationError.nodeFailedToStart(name) }
-        return NodeProcess(name: name, timelineID: timelineID, process: process, log: log)
-    }
-
-    @MainActor
-    private func stop(_ node: NodeProcess) {
-        if node.process.isRunning {
-            node.process.terminate()
-            for _ in 0..<50 where node.process.isRunning { usleep(100_000) }
-            if node.process.isRunning {
-                _ = kill(node.process.processIdentifier, SIGKILL)
-            }
-            node.process.waitUntilExit()
-        }
-        try? node.log.close()
     }
 
     private func jsonString<T: Encodable>(_ value: T) throws -> String {
@@ -154,11 +196,65 @@ struct TwoNodeMQTTIntegrationTests {
     }
 }
 
+@MainActor
 private struct NodeProcess {
     let name: String
     let timelineID: UUID
     let process: Process
     let log: FileHandle
+
+    let fixturePIDURL: URL
+
+    func shutdown() async {
+        if process.isRunning {
+            process.terminate()
+            for _ in 0..<50 {
+                guard process.isRunning else { break }
+                if Task.isCancelled { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if process.isRunning {
+                _ = kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        process.waitUntilExit()
+        await stopFixtureProcess(at: fixturePIDURL)
+        try? log.close()
+    }
+}
+
+@MainActor
+private func stopFixtureProcess(at pidURL: URL) async {
+    guard FileManager.default.fileExists(atPath: pidURL.path) else { return }
+    guard let rawPID = try? String(contentsOf: pidURL, encoding: .utf8)
+        .split(whereSeparator: \.isNewline).first,
+          let pid = Int32(String(rawPID)) else {
+        Issue.record("ACP fixture PID file is present but invalid: \(pidURL.path)")
+        return
+    }
+    guard fixtureProcessIsRunning(pid: pid) else { return }
+
+    _ = kill(pid, SIGTERM)
+    for _ in 0..<50 {
+        guard fixtureProcessIsRunning(pid: pid) else { return }
+        if Task.isCancelled { break }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    _ = kill(pid, SIGKILL)
+    let stopped = await Task.detached {
+        for _ in 0..<50 {
+            guard fixtureProcessIsRunning(pid: pid) else { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return !fixtureProcessIsRunning(pid: pid)
+    }.value
+    if !stopped {
+        Issue.record("ACP fixture process \(pid) remained alive after forced cleanup.")
+    }
+}
+
+private func fixtureProcessIsRunning(pid: Int32) -> Bool {
+    kill(pid, 0) == 0 || errno != ESRCH
 }
 
 private enum TwoNodeIntegrationError: Error {
