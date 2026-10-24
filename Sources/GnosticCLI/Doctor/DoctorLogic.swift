@@ -119,14 +119,12 @@ public enum DoctorLogic {
     /// - Parameters:
     ///   - store: The manifest store.
     ///   - composition: The compiled composition source.
-    ///   - registry: The module registry, or `nil` when it cannot be read.
     ///   - options: The check options.
     ///   - probe: The environment probes.
     /// - Returns: The report. `healthy` is false when any finding is an error.
     public static func run(
         store: CLIConfigurationStore,
         composition: BackendComposition = .default,
-        registry: ModuleRegistry? = nil,
         options: DoctorOptions = .offline,
         probe: some DoctorProbing = SystemDoctorProbe()
     ) -> DoctorReport {
@@ -156,7 +154,7 @@ public enum DoctorLogic {
 
         findings.append(contentsOf: workspaceFindings(manifest: manifest, probe: probe))
         for ascendant in manifest.ascendants {
-            findings.append(contentsOf: ascendantFindings(ascendant: ascendant, composition: composition, registry: registry, probe: probe))
+            findings.append(contentsOf: ascendantFindings(ascendant: ascendant, composition: composition, probe: probe))
         }
 
         var checkedOnline = false
@@ -208,7 +206,6 @@ public enum DoctorLogic {
     private static func ascendantFindings(
         ascendant: NodeManifest.Ascendant,
         composition: BackendComposition,
-        registry: ModuleRegistry?,
         probe: some DoctorProbing
     ) -> [DoctorFinding] {
         let id = ascendant.id.uuidString.lowercased()
@@ -307,33 +304,9 @@ public enum DoctorLogic {
             }
         }
 
-        let selectedModules = ConfigConsoleLogic.selectedNames(in: ascendant.backend)
-        let requiresModelService = selectedModules.contains { composition.moduleDescriptor(named: $0)?.requiresModelService == true }
-        if requiresModelService, schema.key(named: "provider") != nil, provider.isEmpty {
-            findings.append(
-                DoctorFinding(
-                    check: "modelService",
-                    severity: .error,
-                    message: "Ascendant '\(ascendant.name)' selects a module that needs a model service, but no provider is configured.",
-                    path: "\(backendPath).settings.provider",
-                    hint: "Configure a provider before starting the Node."
-                )
-            )
-        }
-
         for secretName in schema.secretNames {
             let set = ascendant.backend.secrets[secretName]?.stringValue.map { !$0.isEmpty } ?? false
-            if !set, requiresModelService {
-                findings.append(
-                    DoctorFinding(
-                        check: "secret",
-                        severity: .error,
-                        message: "Secret '\(secretName)' is not set on Ascendant '\(ascendant.name)'.",
-                        path: "\(backendPath).secrets.\(secretName)",
-                        hint: "Run `config backend set-secret \(id) \(secretName)` and paste the value."
-                    )
-                )
-            } else if !set {
+            if !set {
                 findings.append(
                     DoctorFinding(
                         check: "secret",
@@ -346,82 +319,7 @@ public enum DoctorLogic {
             }
         }
 
-        for moduleName in selectedModules {
-            guard let module = composition.moduleDescriptor(named: moduleName) else {
-                findings.append(
-                    DoctorFinding(
-                        check: "module",
-                        severity: .error,
-                        message: "Ascendant '\(ascendant.name)' selects module '\(moduleName)', which is not compiled into this build.",
-                        path: "\(backendPath).settings.extensions",
-                        hint: "Rebuild with the module linked, or disable it with `config module disable \(id) \(moduleName)`."
-                    )
-                )
-                continue
-            }
-            findings.append(DoctorFinding(check: "module", severity: .ok, message: "Module '\(moduleName)' is compiled in.", path: "\(backendPath).settings.extensions"))
-            findings.append(contentsOf: registryFindings(module: module, registry: registry, id: id, backendPath: backendPath))
-            let localSettings = moduleLocalSettings(moduleName: moduleName, backend: ascendant.backend)
-            for prerequisite in module.prerequisites?(localSettings) ?? [] {
-                let severity: DoctorFinding.Severity = prerequisite.isAvailable ? .ok : .error
-                findings.append(
-                    DoctorFinding(
-                        check: "executor",
-                        severity: severity,
-                        message: prerequisite.isAvailable
-                            ? "Module '\(moduleName)' prerequisite '\(prerequisite.name)' is available."
-                            : "Module '\(moduleName)' prerequisite '\(prerequisite.name)' is missing.",
-                        path: prerequisite.path,
-                        hint: prerequisite.isAvailable ? nil : prerequisite.hint
-                    )
-                )
-            }
-        }
         return findings
-    }
-
-    private static func registryFindings(
-        module: GnosticModule,
-        registry: ModuleRegistry?,
-        id: String,
-        backendPath: String
-    ) -> [DoctorFinding] {
-        guard let registryID = module.registryID else { return [] }
-        guard let entry = registry?.entry(id: registryID) else {
-            guard registry != nil else { return [] }
-            return [
-                DoctorFinding(
-                    check: "registry",
-                    severity: .error,
-                    message: "Module '\(module.name)' names registry id '\(registryID)', which is absent from experiments.json.",
-                    path: "\(backendPath).settings.extensions",
-                    hint: "Add the entry or remove the descriptor's registry id."
-                )
-            ]
-        }
-        if entry.isCautionary {
-            return [
-                DoctorFinding(
-                    check: "registry",
-                    severity: .warning,
-                    message: "Module '\(module.name)' is \(entry.status) in experiments.json.",
-                    path: "\(backendPath).settings.extensions",
-                    hint: "Promote the module or accept the risk in the owning issue \(entry.owningIssue)."
-                )
-            ]
-        }
-        return [DoctorFinding(check: "registry", severity: .ok, message: "Module '\(module.name)' registry status is '\(entry.status)'.", path: "\(backendPath).settings.extensions")]
-    }
-
-    static func moduleLocalSettings(moduleName: String, backend: NodeManifest.BackendConfiguration) -> [String: String] {
-        let prefix = "\(moduleName)."
-        var result: [String: String] = [:]
-        for (key, value) in backend.settings where key.hasPrefix(prefix) {
-            if let string = value.stringValue {
-                result[String(key.dropFirst(prefix.count))] = string
-            }
-        }
-        return result
     }
 
     private static func onlineFindings(

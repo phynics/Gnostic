@@ -26,16 +26,9 @@ struct RunnerCompositionTests {
             "The runner must compose from BackendComposition.default, not a narrower registry."
         )
         #expect(
-            Set(RunnerRuntime.composition.moduleDescriptors.map(\.name))
-                == Set(GnosticHost.BackendComposition.default.moduleDescriptors.map(\.name))
-        )
-        #expect(
             RunnerRuntime.composition.registeredKinds == ["acp-client"],
             "The runner must host Runtime processes through ACP."
         )
-        let modules = Set(RunnerRuntime.composition.moduleDescriptors.map(\.name))
-        #expect(modules.contains("rlm"))
-        #expect(modules.contains("atlas"))
     }
 
     @Test("RunnerRuntime keeps no private Ascendant registry")

@@ -26,6 +26,7 @@ let package = Package(
         .executable(name: "gnostic-acp-live-smoke", targets: ["GnosticACPLiveSmoke"]),
         .executable(name: "gnostic-soak-driver", targets: ["GnosticSoakDriver"]),
         .executable(name: "gnostic", targets: ["GnosticCLI"]),
+        .executable(name: "gnostic-experiment", targets: ["GnosticExperimentCLI"]),
         .executable(name: "gnostic-pk-runtime", targets: ["GnosticPositronicRuntime"]),
     ],
     dependencies: [
@@ -69,7 +70,6 @@ let package = Package(
             dependencies: [
                 "GnosticACPAscendant",
                 "GnosticCore",
-                "GnosticKit",
             ]
         ),
         .target(
@@ -293,14 +293,20 @@ let package = Package(
             ]
         ),
         .executableTarget(
+            name: "GnosticExperimentCLI",
+            dependencies: [
+                "GnosticKit",
+                "GnosticRLM",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
             name: "GnosticCLI",
             dependencies: [
                 "GnosticACPFrontend",
                 "GnosticClient",
                 "GnosticCore",
                 "GnosticHost",
-                "GnosticKit",
-                "GnosticRLM",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
             ]
@@ -313,10 +319,16 @@ let package = Package(
                 "GnosticACPAscendant",
                 "GnosticCore",
                 "GnosticHost",
-                "GnosticKit",
                 "GnosticProtocol",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Axoloty", package: "Axoloty"),
+            ]
+        ),
+        .testTarget(
+            name: "GnosticExperimentCLITests",
+            dependencies: [
+                "GnosticExperimentCLI",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
     ],

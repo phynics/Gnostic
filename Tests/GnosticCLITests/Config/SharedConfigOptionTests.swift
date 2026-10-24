@@ -18,37 +18,6 @@ struct SharedConfigOptionTests {
         return (folder, folder.url.appendingPathComponent("node.json").path)
     }
 
-    @Test("config module commands accept --config through the shared group")
-    func configModuleCommandsAcceptConfig() throws {
-        let (_, path) = try manifestPath()
-        let ascendantID = UUID().uuidString
-
-        let enable = try ConfigModuleCommand.Enable.parse([ascendantID, "rlm", "--config", path])
-        #expect(enable.configOptions.store().path().path == path)
-        let disable = try ConfigModuleCommand.Disable.parse([ascendantID, "rlm", "--config", path])
-        #expect(disable.configOptions.store().path().path == path)
-        let keys = try ConfigModuleCommand.Keys.parse([ascendantID, "--config", path])
-        #expect(keys.configOptions.store().path().path == path)
-    }
-
-    @Test("config regime show accepts --config through the shared group")
-    func configRegimeShowAcceptsConfig() throws {
-        let (_, path) = try manifestPath()
-        let show = try ConfigRegimeCommand.Show.parse([UUID().uuidString, "--config", path])
-        #expect(show.configOptions.store().path().path == path)
-    }
-
-    @Test("rlm-scenario accepts --config through the shared group")
-    func experimentCommandsAcceptConfig() throws {
-        let (_, path) = try manifestPath()
-        let scenario = try ExperimentCommand.RLMScenario.parse([
-            "--stage", "pilot",
-            "--ascendant", UUID().uuidString,
-            "--config", path,
-        ])
-        #expect(scenario.configOptions.store().path().path == path)
-    }
-
     @Test("gnostic acp accepts --config through the shared group")
     func acpAcceptsConfig() throws {
         let (_, path) = try manifestPath()
@@ -58,10 +27,8 @@ struct SharedConfigOptionTests {
         #expect(acp.configOptions.store().path().path == path)
     }
 
-    @Test("commands without --config leave the store to default resolution")
+    @Test("ACP command without --config leaves the store to default resolution")
     func omittedConfigUsesDefaultResolution() throws {
-        let enable = try ConfigModuleCommand.Enable.parse([UUID().uuidString, "rlm"])
-        #expect(enable.configOptions.configPath == nil)
         let acp = try ACPCommand.parse([])
         #expect(acp.configOptions.configPath == nil)
     }

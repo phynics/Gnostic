@@ -66,24 +66,21 @@ to `Package.swift`, a lifecycle `status` (`incubating`, `gated`, `promoted`,
 whether it is `runnable` from a manifest, and a `reviewBy` date.
 
 `make docs-check` validates the schema, rejects a closed owning issue on an
-active entry, and rejects a target that is not declared in `Package.swift`. It
-also rejects a compiled-in module descriptor whose `registryID` has no matching
-entry, so a module and its registry record cannot drift apart. An empty
-`targets` array is allowed: it means the module has no compiled target yet. The
-`verify` workflow passes `GITHUB_TOKEN` to `make verify`, so the issue-state
-rule runs on every pull request and every push to `main`; the checker self-test
-always pins the closed-owner rejection so the rule itself cannot silently rot.
+active entry, and rejects a target that is not declared in `Package.swift`. The
+registry is research lifecycle metadata. It does not compile descriptors into
+the host or make a research target a dependency of a release executable. A
+`runnable` entry names its isolated package targets; an empty `targets` array
+means the design has no implementation target yet. The `verify` workflow
+passes `GITHUB_TOKEN` to `make verify`, so the issue-state rule runs on every
+pull request and every push to `main`; the checker self-test pins the closed-
+owner rejection.
 
-The same check keeps the registry and the compiled-in module descriptors from
-drifting apart in the other direction too: a `runnable` entry must have a
-compiled-in `GnosticModule` descriptor whose `registryID` is that entry's `id`,
-so a module reaches `runnable` only after its descriptor is compiled in. #449
-and #450 delivered those two wiring steps; once closed, the entries name the
-open umbrella epic #438 so the registry invariant holds.
-
-The platform kit boundary is enforced the same way. `GnosticCore` must not
-depend on or import `GnosticKit`; the kit depends on `GnosticCore` only; and
-`Sources/GnosticKit` imports no Runtime implementation.
+The platform kit boundary is enforced the same way. `GnosticCore`,
+`GnosticHost`, and `GnosticCLI` have no direct or transitive experiment-target
+dependency. `GnosticKit` depends on `GnosticCore` only and imports no Runtime
+implementation. The separate `GnosticExperimentCLI` owns the Kit and RLM
+dependencies; `gnostic experiment` forwards to it without linking it into the
+host executable.
 
 `GnosticACPWire` contains the Gnostic-owned ACP v2 wire types and depends only
 on Foundation. The standalone reference Runtime uses this target without

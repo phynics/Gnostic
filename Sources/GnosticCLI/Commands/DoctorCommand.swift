@@ -5,8 +5,8 @@ import Foundation
 
 /// gnostic doctor — diagnose a Node before or during startup.
 ///
-/// The default run is fully offline: it reads the manifest, the compiled module
-/// descriptors, and the local filesystem. `--online` adds opt-in network probes,
+/// The default run is fully offline: it reads the manifest and local filesystem.
+/// `--online` adds opt-in network probes,
 /// and `--check-provider` additionally probes provider endpoints.
 struct DoctorCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -14,8 +14,7 @@ struct DoctorCommand: AsyncParsableCommand {
         abstract: "Diagnose a Node's configuration and environment.",
         discussion: """
         Checks are offline by default: manifest validity, backend-specific \
-        configuration, secrets presence, Workspace paths, module requirements, \
-        registry consistency, and executor prerequisites. Add `--online` for \
+        configuration, Runtime command and arguments, secret presence, and Workspace paths. Add `--online` for \
         broker reachability and protocol compatibility. `--check-provider` probes \
         endpoints only for backend kinds that declare a provider setting. Secret \
         values are never printed.
@@ -31,14 +30,12 @@ struct DoctorCommand: AsyncParsableCommand {
     var online = false
     @Flag(name: .customLong("check-provider"), help: "Probe configured provider endpoints. Implies --online and may cost money.")
     var checkProvider = false
-    @OptionGroup var experiments: ExperimentsOptions
     @OptionGroup var formatOptions: OutputFormatOptions
 
     func run() async throws {
         let format = try formatOptions.resolved()
         let report = DoctorLogic.run(
             store: configOptions.store(),
-            registry: try experiments.registry(),
             options: DoctorOptions(online: online, checkProvider: checkProvider)
         )
         switch format {

@@ -7,14 +7,15 @@ scenario cases, a deterministic driver, assertion scoring, run records and
 manifests, the resumable runner and spend guard, and the shared
 planted-obligation fixtures.
 
-The kit depends on `GnosticCore` only. It imports no backend.
-`CompositionArchitectureFitnessTests.kitDependencyBoundary` fails the build if
-`GnosticKit` gains a `PositronicKit`, `PKContracts`, module, or composition
-dependency. The host no longer adapts an in-process Positronic model; live
-provider work must cross the standalone ACP Runtime process boundary.
+The kit depends on `GnosticCore` only. It imports no backend. The architecture
+fitness check keeps `GnosticCore`, `GnosticHost`, and `GnosticCLI` free of
+direct or transitive Kit and RLM dependencies. The isolated
+`GnosticExperimentCLI` target owns those dependencies; the host's
+`gnostic experiment` command forwards to that executable.
 
-This chapter covers the contract a module implements. The RLM scenario
-(`Sources/GnosticCLI/Experiment/`) is the worked in-tree consumer.
+This chapter covers the optional experiment-kit contract. It is not a host
+module extension API. The RLM scenario glue lives in
+`Sources/GnosticExperimentCLI/`.
 
 ## What you build
 
@@ -29,7 +30,9 @@ A module contributes four things:
 
 The kit names none of your Runtime types. Provider-specific model loops run in
 independent ACP Runtime processes. The old in-process model bridge was removed
-with the legacy host composition in #611.
+with the legacy host composition in #611. The current RLM live scenario command
+remains unavailable until its outer-consumer work has an owner and implementation
+(#624).
 
 ## Scenarios and frozen cases
 
@@ -56,7 +59,7 @@ Freeze the file by digest. `ExperimentScenarioCaseSet.load(from:expectedSHA256:)
 reads the file, SHA-256s the raw bytes with `ExperimentDigest`, and throws
 `ExperimentError.caseSetChanged` when the file no longer matches. Pin the
 approved digest as a constant next to the loader, as
-[`RLMScenarioQuestionSet`](../../Sources/GnosticCLI/Experiment/RLMScenarioQuestionSet.swift)
+[`RLMScenarioQuestionSet`](../../Sources/GnosticExperimentCLI/Experiment/RLMScenarioQuestionSet.swift)
 does. A changed case set needs a new manifest version, not a silent rerun.
 
 ## Drivers
@@ -193,26 +196,20 @@ with no provider.
 
 ## Generic commands
 
-`gnostic experiment` is the shared surface. Every run is opt-in and separate
-from a Node.
+`gnostic experiment` forwards to the separately packaged `gnostic-experiment`
+executable, installed beside `gnostic` or on `PATH`. Experiment commands remain
+separate from a Node.
 
 ```sh
-gnostic experiment run <module> <scenario> --regime <ascendant-uuid>
 gnostic experiment replay --trace Documentation/Experiments/<file>.trace.json
-gnostic experiment export --artifact Documentation/Experiments/<file>.json
+gnostic experiment rlm-scenario-rating --artifact <file.json> --write-sheet <sheet.json>
 ```
 
-`run` resolves the `(module, scenario)` pair through a CLI-owned catalog. The
-built-in `kit self-check` scenario runs offline with scripted models and
-assertion scoring. A live scenario names `--regime`, the Positronic Ascendant
-whose provider and models it uses, and follows the spend guard above. `replay`
-replays a recorded tape against the built-in harness with no provider contact.
-`export` prints any round artifact as machine-readable JSON.
-
-A module can also contribute its own experiment subcommand through its
-descriptor, as `rlm-scenario` does. That command still consumes the same kit
-runner, artifact, metering, scoring, and spend guard; only the backend glue
-stays with the module.
+`replay` checks a recorded tape against the built-in harness without provider
+contact. `rlm-scenario-rating` exports or applies blind scores for an existing
+RLM artifact. The RLM live scenario remains an error because its in-process
+model path was retired; the isolated executable does not restore host model
+execution or the deferred gateway tool (#615).
 
 ## Trace and replay
 
@@ -262,22 +259,13 @@ The regime/run surface and the payload-free instrumentation hooks are the
 handoff points to the CLI console (#463) and the module instrumentation issues
 (#492 Ouroboros, #493 Akasha).
 
-## Turn interception (seam without a production adapter)
+## Runtime-owned model loops
 
-`GnosticKit` also owns the Turn interception seam: `TurnModelIntercepting`,
-`TurnToolIntercepting`, and `TurnRoundIntercepting`, composed by
-`TurnInterceptionPipeline`. A module contributes interceptors through the
-`GnosticModule.turnInterception` factory, and the composition layer builds one
-pipeline per Ascendant.
-
-No production module registers `turnInterception`, so the pipeline is `.empty`
-for every production Ascendant. The protocols are kept as the planned seam for
-Ouroboros and Akasha (#465); the only consumers today are the kit tests in
-`TurnInterceptionTests` and the host tests in `TurnInterceptionHostTests`. On the
-Positronic path the model and tool hooks are wired; `TurnRoundIntercepting` is
-not, because a backend that does not expose round boundaries leaves it unused.
-Treat an added `turnInterception` factory as a contract addition and gate it
-with a behavioral test.
+The host does not expose Kit interceptors or module hooks to ACP Runtimes.
+Ouroboros, Akasha, context compilation, and Atlas remain parked design
+references. An experiment that needs to alter a model loop must implement an
+independent ACP Runtime; an outer consumer uses the public `GnosticClient`
+products over Axoloty. Neither path adds experiment dependencies to the host.
 
 ## Validate your change
 

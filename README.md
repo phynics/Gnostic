@@ -104,27 +104,20 @@ prints the payload. Every command supports `--format json`. Every `inspect`
 command also accepts `--config PATH`, which resolves the broker from the same
 manifest that `gnostic serve --config PATH` reads.
 
-## Inspect the platform configuration
+## Run experiments
 
-List the compiled-in modules, their `Documentation/Architecture/experiments.json`
-lifecycle status, and their settings keys. Selecting an `incubating` or `parked`
-module is allowed, but the console prints a warning:
-
-```sh
-gnostic config module list
-gnostic config module list --format json
-gnostic config module keys <ASCENDANT_UUID>
-gnostic config module enable <ASCENDANT_UUID> rlm
-gnostic config module disable <ASCENDANT_UUID> rlm
-```
-
-Show the resolved Regime, which is the same module and model resolution `serve`
-uses. Secrets are always redacted:
+`gnostic experiment` forwards to the separately packaged
+`gnostic-experiment` executable. Install it beside `gnostic` or on `PATH`.
+The experiment tools keep their research dependencies out of the host build.
 
 ```sh
-gnostic config regime show <ASCENDANT_UUID>
-gnostic config regime show <ASCENDANT_UUID> --format json
+gnostic experiment replay --trace Documentation/Experiments/kit-replay-self-check.trace.json
+gnostic experiment rlm-scenario-rating --artifact <artifact.json> --write-sheet <sheet.json>
 ```
+
+The RLM live scenario remains unavailable after #611 retired the in-process
+model loop. Its outer-consumer design is owned by #624 and its gateway tool is
+deferred in #615.
 
 `gnostic config validate` reports every problem with its manifest path and a
 remediation hint, and exits non-zero when the manifest is invalid. Every
@@ -132,11 +125,11 @@ mutating `config` subcommand accepts `--dry-run`, which prints a redacted diff
 of the resulting manifest and writes nothing.
 
 Run the offline diagnostics before starting the Node. `gnostic doctor` checks
-the manifest, backend-specific configuration, missing secrets, Workspace
-paths, module requirements, and executor helpers. ACP Runtime model selection
-stays in the Runtime configuration. Add `--online` to also check broker
-reachability and the protocol major, or `--check-provider` to probe endpoints
-for backend kinds that declare provider settings:
+the manifest, backend-specific Runtime configuration, missing secrets, and
+Workspace paths. ACP Runtime model selection stays in the Runtime
+configuration. Add `--online` to also check broker reachability and the
+protocol major, or `--check-provider` to probe endpoints for backend kinds
+that declare provider settings:
 
 ```sh
 gnostic doctor
@@ -147,7 +140,7 @@ gnostic doctor --check-provider
 
 `gnostic doctor` exits non-zero when any check is an error; warnings do not
 fail the command. The `--format human|json` option is shared by `inspect`,
-`config module`, `config regime`, and `doctor`.
+`config validate`, and `doctor`.
 
 ## Inspect the durable Turn event log
 
