@@ -878,13 +878,14 @@ struct BackendLifecycleTests {
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let nodeJournalDirectory = stateDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
         let journals = TimelineJournalStore(directoryURL: nodeJournalDirectory)
+        let journalRecorder = TimelineJournalRecorder(journals: journals)
         try await journals.ensureTimelineCreated(
             timelineID: timelineID,
             title: "Journaled live Session",
             runtimeInstanceID: ascendantID,
             attachments: []
         )
-        try await journals.appendSessionTransition(
+        try await journalRecorder.appendSessionTransition(
             timelineID: timelineID,
             sessionID: "previous-runtime-session",
             runtimeInstanceID: ascendantID,
