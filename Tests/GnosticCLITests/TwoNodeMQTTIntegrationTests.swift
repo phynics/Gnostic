@@ -121,7 +121,7 @@ struct TwoNodeMQTTIntegrationTests {
                 workspaceID: workspaceID,
                 workspaceURI: workspaceURI
             )
-            trace.record("runtime-owner.started", ["pid": String(owner.processIdentifier)])
+            trace.record("runtime-owner.started", ["pid": String(owner.process.processIdentifier)])
         } catch {
             trace.recordFailure(error)
             await workspaceNode.process.shutdown()
