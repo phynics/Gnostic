@@ -55,6 +55,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private let explicitProjectIDs: Set<UUID>
     private var projects: [UUID: Project]
     private var sessionIDs: [UUID: String]
+    private var sessionStates: [UUID: TimelineJournalSessionState] = [:]
     private var pendingSessionCreations = 0
     private var bindingTimelineIDsBySessionID: [String: UUID] = [:]
     private var pendingSessionUpdates: [String: [ACPSessionUpdate]] = [:]
@@ -169,6 +170,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             guard configuredTimelineIDs.contains(entry.key) else { return }
             result[entry.key] = entry.value.sessionID
         }
+        sessionStates = Dictionary(uniqueKeysWithValues: sessionIDs.keys.map { ($0, .resumable) })
         var timelineIDsBySessionID: [String: UUID] = [:]
         for (timelineID, session) in recoveredSessions where configuredTimelineIDs.contains(timelineID) {
             if let otherTimelineID = timelineIDsBySessionID[session.sessionID], otherTimelineID != timelineID {
@@ -835,6 +837,12 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         let project = projects[timelineID] ?? .scratch
         let desired = try resolvedProject(for: timelineID, project: project)
 
+        if sessionStates[timelineID] == .ambiguous {
+            throw AscendantBackendError.terminal(.init(
+                code: "acpSessionRecoveryAmbiguous",
+                message: "The ACP Runtime could not confirm whether the previous Session survived. This Timeline is blocked to avoid losing or duplicating Runtime context."
+            ))
+        }
         if let sessionID = sessionIDs[timelineID],
            sessionCwds[timelineID] == desired.cwd {
             if sessionProjectKinds[timelineID] != desired.kind || sessionStartedAt[timelineID] == nil {
@@ -849,19 +857,30 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     message: "The ACP agent cannot resume the session for Timeline \(timelineID.uuidString)."
                 ))
             }
-            _ = try await connection.resumeSession(request: ACPResumeSessionRequest(
+            try Task.checkCancellation()
+            let mcpServers = try mcpServers(for: timelineID)
+            let resumeRequest = ACPResumeSessionRequest(
                 sessionId: sessionID,
                 cwd: desired.cwd,
-                mcpServers: try mcpServers(for: timelineID)
-            ))
-            try await timelineJournalRecorder?.appendSessionTransition(
-                timelineID: timelineID,
-                sessionID: sessionID,
-                runtimeInstanceID: identity.id,
-                state: .live,
-                projectKind: desired.kind,
-                cwd: desired.cwd
+                mcpServers: mcpServers
             )
+            // Commit uncertainty before dispatch. If the Node exits after the
+            // Runtime receives this request but before its response arrives,
+            // recovery must not retry the operation or issue a new prompt.
+            try await recordSessionState(.ambiguous, sessionID: sessionID, timelineID: timelineID, project: desired)
+            do {
+                _ = try await connection.resumeSession(request: resumeRequest)
+            } catch {
+                // ACP v2 does not define a missing-session error. No failed
+                // resume response proves that the Runtime lost this Session.
+                if Task.isCancelled { throw AscendantBackendError.cancelled }
+                throw AscendantBackendError.terminal(.init(
+                    code: "acpSessionRecoveryAmbiguous",
+                    message: "The ACP Runtime could not confirm whether the previous Session survived. This Timeline is blocked to avoid losing or duplicating Runtime context."
+                ))
+            }
+            try await recordSessionState(.live, sessionID: sessionID, timelineID: timelineID, project: desired)
+            try Task.checkCancellation()
             activeSessionIDs.insert(timelineID)
             try persistSessionMap()
             return sessionID
@@ -871,6 +890,23 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             try await closeAndRetireSession(for: timelineID, using: connection)
         }
         return try await createSession(for: timelineID, project: desired, using: connection)
+    }
+
+    private func recordSessionState(
+        _ state: TimelineJournalSessionState,
+        sessionID: String,
+        timelineID: UUID,
+        project: ResolvedProject
+    ) async throws {
+        try await timelineJournalRecorder?.appendSessionTransition(
+            timelineID: timelineID,
+            sessionID: sessionID,
+            runtimeInstanceID: identity.id,
+            state: state,
+            projectKind: project.kind,
+            cwd: project.cwd
+        )
+        sessionStates[timelineID] = state
     }
 
     private func recordRawSessionUpdate(sessionID: String, update: ACPSessionUpdate) async throws -> Bool {
@@ -986,6 +1022,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             throw error
         }
         sessionIDs[timelineID] = response.sessionId
+        sessionStates[timelineID] = .live
         timelineIDsBySessionID[response.sessionId] = timelineID
         sessionCwds[timelineID] = project.cwd
         sessionProjectKinds[timelineID] = project.kind
@@ -998,6 +1035,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             // session may remain until process cleanup, but this Timeline will
             // not falsely resume it after a restart.
             sessionIDs.removeValue(forKey: timelineID)
+            sessionStates.removeValue(forKey: timelineID)
             sessionCwds.removeValue(forKey: timelineID)
             sessionProjectKinds.removeValue(forKey: timelineID)
             sessionStartedAt.removeValue(forKey: timelineID)
@@ -1063,6 +1101,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 projectKind: sessionProjectKinds[timelineID],
                 cwd: cwd
             )
+            sessionStates[timelineID] = sessionClosed ? .lost : (sessionCapabilities?.supportsResume == true ? .resumable : .ambiguous)
         }
         let cwd = sessionCwds.removeValue(forKey: timelineID)
         let kind = sessionProjectKinds.removeValue(forKey: timelineID)
@@ -1295,6 +1334,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
 
         for (timelineID, projection) in restored {
+            sessionStates[timelineID] = projection.state
             sessionIDs[timelineID] = projection.sessionID
             timelineIDsBySessionID[projection.sessionID] = timelineID
             sessionCwds[timelineID] = projection.cwd

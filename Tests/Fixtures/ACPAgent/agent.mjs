@@ -59,6 +59,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     const session = { cwd: params.cwd, title: "Gnostic fixture session" };
     if (params.mcpServers?.length) session.mcpServers = params.mcpServers;
     sessions.set(sessionId, session);
+    if (process.env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE) {
+      await appendFile(process.env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE, `${sessionId}\n`);
+    }
     await saveSessions();
     return { sessionId };
   })
@@ -95,6 +98,23 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     return { sessions: listedSessions };
   })
   .onRequest(acp.methods.agent.session.resume, async ({ params }) => {
+    if (process.env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE) {
+      await appendFile(process.env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE, `${JSON.stringify(params)}\n`);
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_ASSERT_AMBIGUOUS_JOURNAL_FILE) {
+      const journal = await readFile(process.env.GNOSTIC_ACP_FIXTURE_TIMELINE_JOURNAL_FILE, "utf8");
+      const priorSessionRecord = journal.trim().split("\n").reverse()
+        .find((record) => record.includes(JSON.stringify(params.sessionId)));
+      const state = priorSessionRecord?.includes('"ambiguous"') ? "ambiguous" : "not-ambiguous";
+      await writeFile(process.env.GNOSTIC_ACP_FIXTURE_ASSERT_AMBIGUOUS_JOURNAL_FILE, `${state}\n`);
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_EXIT_ON_RESUME === "1") process.exit(19);
+    if (process.env.GNOSTIC_ACP_FIXTURE_INTERNAL_RESUME_ERROR === "1") {
+      throw acp.RequestError.internalError({ details: "fixture resume failed" }, "Internal error");
+    }
+    if (process.env.GNOSTIC_ACP_FIXTURE_REJECT_RESUME === "1") {
+      throw acp.RequestError.invalidParams({ details: "unknown fixture session" }, "Session cannot be resumed");
+    }
     if (!sessions.has(params.sessionId)) throw new Error("unknown fixture session");
     const session = sessions.get(params.sessionId);
     if (params.mcpServers?.length) session.mcpServers = params.mcpServers;
@@ -118,6 +138,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
   })
   .onRequest(acp.methods.agent.session.prompt, async ({ params, client }) => {
+    if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE) {
+      await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE, `${params.sessionId}\n`);
+    }
     if (!sessions.has(params.sessionId)) throw new Error("unknown fixture session");
     if (process.env.GNOSTIC_ACP_FIXTURE_CRASH_ON_PROMPT === "1") {
       process.stderr.write(`fixture crash diagnostic ${process.env.API_TOKEN}\n`);
