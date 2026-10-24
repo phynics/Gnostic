@@ -102,9 +102,9 @@ struct NodeAssembly {
         }
         let catalog = NetworkCatalog()
         let subscription = GnosticSubscription(catalog: catalog, communicationManager: communication)
-        let networkWorkspaceInvoker = adapters.networkWorkspaceInvoker.flatMap { makeInvoker in
+        let networkWorkspaceInvoker = adapters.networkWorkspaceInvoker.map { makeInvoker in
             makeInvoker(catalog, communication)
-        }
+        } ?? AxolotyNetworkWorkspaceInvoker(catalog: catalog, communication: communication)
         return Infrastructure(
             container: resolvedContainer,
             communication: communication,

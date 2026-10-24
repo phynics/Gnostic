@@ -133,9 +133,7 @@ public final class GnosticWorkspaceClient {
     ///     resolve it from the session catalog.
     /// - Throws: ``GnosticWorkspaceClientError`` when approval is missing, the
     ///   Workspace or Timeline cannot be resolved, the addressed provider does
-    ///   not own the Timeline, the Timeline's Ascendant does not advertise
-    ///   ``GnosticCapability/workspaceAttachment``, or the serve rejected the
-    ///   attach.
+    ///   not own the Timeline, or the Node rejected the attach.
     public func attach(
         workspaceID: UUID,
         to timelineID: UUID,
@@ -146,8 +144,7 @@ public final class GnosticWorkspaceClient {
         _ = try await resolvedWorkspaceProvider(nil, for: workspaceID)
         let target = try await resolvedTimelineProvider(
             providerID,
-            for: timelineID,
-            requiredCapability: GnosticCapability.workspaceAttachment
+            for: timelineID
         )
         let result = try await channel.call(
             WorkspaceOpsProvider.attachOperation,
@@ -174,9 +171,8 @@ public final class GnosticWorkspaceClient {
     ///   - providerID: The expected provider that owns the Timeline, or `nil` to
     ///     resolve it from the session catalog.
     /// - Throws: ``GnosticWorkspaceClientError`` when the Timeline cannot be
-    ///   resolved, the addressed provider does not own it, its operating
-    ///   Ascendant does not advertise ``GnosticCapability/workspaceAttachment``,
-    ///   or the serve rejected the detach.
+    ///   resolved, the addressed provider does not own it, or the Node
+    ///   rejected the detach.
     public func detach(
         workspaceID: UUID,
         from timelineID: UUID,
@@ -184,8 +180,7 @@ public final class GnosticWorkspaceClient {
     ) async throws {
         let target = try await resolvedTimelineProvider(
             providerID,
-            for: timelineID,
-            requiredCapability: GnosticCapability.workspaceAttachment
+            for: timelineID
         )
         let result = try await channel.call(
             WorkspaceOpsProvider.detachOperation,
@@ -217,9 +212,8 @@ public final class GnosticWorkspaceClient {
     /// - Returns: The Gnostic-owned invocation result.
     /// - Throws: ``GnosticWorkspaceClientError`` when the Workspace cannot be
     ///   resolved, the Timeline does not currently attach the Workspace, the
-    ///   addressed provider does not own it, the provider does not
-    ///   advertise ``GnosticCapability/workspaceToolInvocation``, or the
-    ///   invocation failed.
+    ///   addressed provider does not own it, the provider does not advertise a
+    ///   compatible Workspace object, or invocation fails.
     public func invoke(
         timelineID: UUID,
         workspaceID: UUID,
@@ -229,8 +223,11 @@ public final class GnosticWorkspaceClient {
         providerID: String? = nil
     ) async throws -> GnosticWorkspaceToolResult {
         let target = try await resolvedWorkspaceProvider(providerID, for: workspaceID)
-        guard await resolver.providerAdvertises(GnosticCapability.workspaceToolInvocation, providerID: target) else {
-            throw GnosticWorkspaceClientError.missingCapability(GnosticCapability.workspaceToolInvocation)
+        guard let advertisement = await catalog.object(id: workspaceID, providerID: target),
+              advertisement.objectType == GnosticObjectType.workspace,
+              advertisement.isProtocolCompatible,
+              advertisement.workspace?.id == workspaceID else {
+            throw GnosticWorkspaceClientError.workspaceUnsupported(workspaceID)
         }
         return try await channel.call(
             GnosticWorkspaceProtocol.invocationOperation,

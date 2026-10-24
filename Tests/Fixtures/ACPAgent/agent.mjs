@@ -162,11 +162,11 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
-    if (promptText.includes("[fixture:workspace-tool]")) {
+    if (promptText.includes("[fixture:workspace-tool]") || promptText.includes("[fixture:workspace-tool-rejected]")) {
       const server = sessions.get(params.sessionId)?.mcpServers?.[0];
       assert(server?.url && server.headers, "Gnostic did not provide an authenticated MCP server");
       const protocolVersion = "2025-03-26";
-      const mcp = async (id, method, requestParams = {}) => {
+      const mcp = async (id, method, requestParams = {}, allowError = false) => {
         const headers = {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
@@ -180,15 +180,41 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         });
         assert.equal(response.status, 200, `MCP ${method} returned HTTP ${response.status}`);
         const message = await response.json();
+        if (allowError) {
+          assert(message.error, `MCP ${method} was expected to fail`);
+          return { error: message.error };
+        }
         assert.equal(message.error, undefined, `MCP ${method} failed: ${JSON.stringify(message.error)}`);
         return message.result;
       };
       await mcp(1, "initialize", { protocolVersion, capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
       const listed = await mcp(2, "tools/list");
-      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]") ? 0 : 1;
+      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]")
+        ? 0
+        : Number(process.env.GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT ?? 1);
       assert.equal(listed.tools.length, expectedToolCount, "tools/list must reflect current Timeline attachments");
       if (listed.tools.length > 0) {
-        await mcp(3, "tools/call", { name: listed.tools[0].name, arguments: { query: "fixture" } });
+        const requiredToolSuffix = process.env.GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_SUFFIX;
+        const invocationTool = requiredToolSuffix
+          ? listed.tools.find((tool) => tool.name.endsWith(requiredToolSuffix))
+          : listed.tools[0];
+        assert(invocationTool, `tools/list must include the configured permission tool ${requiredToolSuffix}`);
+        const expectsRejection = promptText.includes("[fixture:workspace-tool-rejected]");
+        const result = await mcp(
+          3,
+          "tools/call",
+          { name: invocationTool.name, arguments: { query: "fixture" } },
+          expectsRejection,
+        );
+        if (expectsRejection) {
+          assert.equal(result.error.code, -32003, "the owner must reject the revoked Workspace invocation");
+          sessions.get(params.sessionId).workspaceCallOutcome = `workspace call rejected (${result.error.code})`;
+        } else {
+          sessions.get(params.sessionId).workspaceCallOutcome = result.content
+            ?.map((block) => block.type === "text" ? block.text : "")
+            .filter(Boolean)
+            .join(" ") ?? "";
+        }
       }
     }
     const userMessageId = "fixture-user-1";
@@ -340,7 +366,10 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         update: {
           sessionUpdate: "agent_message_chunk",
           messageId,
-          content: { type: "text", text: `reply: ${prompt}` },
+          content: {
+            type: "text",
+            text: `reply: ${prompt}${sessions.get(params.sessionId)?.workspaceCallOutcome ? ` | ${sessions.get(params.sessionId).workspaceCallOutcome}` : ""}`,
+          },
         },
       });
     }

@@ -2,7 +2,8 @@
 
 import Axoloty
 import Foundation
-import GnosticCore
+@testable import GnosticCore
+import GnosticProtocol
 import GnosticWorkspaceTestSupport
 import Testing
 
@@ -246,26 +247,212 @@ struct ProtocolV2Tests {
         #expect(entries.first?.protocolMajor == GnosticProtocol.currentMajor)
     }
 
-    @Test("remote Workspace authorization requires a current compatible Timeline attachment")
-    func catalogAuthorizesOnlyAdvertisedTimelineAttachments() async throws {
+    @Test("a partial Workspace tool query stays incomplete until the owner sends its terminal page")
+    func workspaceToolCatalogRequiresTerminalPage() async throws {
+        let workspaceID = UUID()
+        let providerID = UUID().uuidString.lowercased()
+        let definitions = (0..<16).map { index in
+            GnosticWorkspaceToolDefinition(
+                id: "tool-\(index)",
+                name: "Tool \(index)",
+                description: String(repeating: "paged tool metadata ", count: 8),
+                parametersSchema: ["type": .string("object")],
+                requiresPermission: false
+            )
+        }
+        let reference = GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://paged-tools",
+            tools: definitions
+        )
+        let workspaceObject = GnosticWorkspaceObject(workspace: reference)
+        #expect(!workspaceObject.toolsComplete)
+
+        let workspacePayload = try JSONEncoder().encode(workspaceObject)
+        let workspaceSnapshot = CoatyObjectSnapshot(
+            objectId: workspaceObject.objectId.string,
+            coreType: .coatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: workspaceObject.name,
+            payload: String(decoding: workspacePayload, as: UTF8.self)
+        )
+        let catalog = NetworkCatalog()
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: workspaceSnapshot))
+        let originalGenerations = await catalog.workspaceToolCatalogGenerations(id: workspaceID)
+        let originalGeneration = try #require(originalGenerations[providerID])
+        let initial = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(!initial.toolsComplete)
+        #expect(initial.tools.count < definitions.count)
+
+        let lastTool = try #require(definitions.last)
+        let originalPage = try workspaceToolResponse(
+            workspaceID: workspaceID,
+            providerID: providerID,
+            definition: lastTool,
+            page: definitions.count - 1
+        )
+        #expect(await catalog.ingestWorkspaceToolQueryResponse(
+            originalPage,
+            workspaceID: workspaceID,
+            providerID: providerID,
+            generation: originalGeneration
+        ))
+        let partial = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(!partial.toolsComplete)
+        #expect(partial.tools.contains { $0.id == lastTool.id })
+
+        #expect(await catalog.markWorkspaceToolCatalogComplete(
+            id: workspaceID,
+            providerID: providerID,
+            generation: originalGeneration
+        ))
+        let complete = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(complete.toolsComplete)
+
+        let replacementReference = GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: reference.uri,
+            tools: Array(definitions.dropLast())
+        )
+        let replacementObject = GnosticWorkspaceObject(workspace: replacementReference)
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: providerID,
+            object: CoatyObjectSnapshot(
+                objectId: replacementObject.objectId.string,
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.workspace,
+                name: replacementObject.name,
+                payload: String(decoding: try JSONEncoder().encode(replacementObject), as: UTF8.self)
+            )
+        ))
+        let currentGenerations = await catalog.workspaceToolCatalogGenerations(id: workspaceID)
+        let currentGeneration = try #require(currentGenerations[providerID])
+        #expect(currentGeneration > originalGeneration)
+        let refreshed = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(!refreshed.toolsComplete)
+        #expect(!refreshed.tools.contains { $0.id == lastTool.id })
+
+        #expect(!(await catalog.ingestWorkspaceToolQueryResponse(
+            originalPage,
+            workspaceID: workspaceID,
+            providerID: providerID,
+            generation: originalGeneration
+        )))
+        #expect(!(await catalog.markWorkspaceToolCatalogComplete(
+            id: workspaceID,
+            providerID: providerID,
+            generation: originalGeneration
+        )))
+
+        let currentPages = [definitions[definitions.count - 3], definitions[definitions.count - 2]]
+        for (offset, tool) in currentPages.enumerated() {
+            let currentPage = try workspaceToolResponse(
+                workspaceID: workspaceID,
+                providerID: providerID,
+                definition: tool,
+                page: definitions.count - 2 + offset
+            )
+            #expect(await catalog.ingestWorkspaceToolQueryResponse(
+                currentPage,
+                workspaceID: workspaceID,
+                providerID: providerID,
+                generation: currentGeneration
+            ))
+        }
+        let concurrentPages = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(currentPages.allSatisfy { page in concurrentPages.tools.contains { $0.id == page.id } })
+        #expect(!concurrentPages.tools.contains { $0.id == lastTool.id })
+        #expect(await catalog.markWorkspaceToolCatalogComplete(
+            id: workspaceID,
+            providerID: providerID,
+            generation: currentGeneration
+        ))
+        let refreshedComplete = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(refreshedComplete.toolsComplete)
+    }
+
+    @Test("remote Workspace authorization binds caller and attachment to one current Timeline owner")
+    func catalogAuthorizesOnlyCurrentOwnerAttachments() async throws {
         let ownerTimelineID = UUID()
         let workspaceID = UUID()
-        let payload = """
-        {"protocolMajor":3,"objectId":"\(ownerTimelineID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"\(GnosticObjectType.timeline)","name":"Remote timeline","title":"Remote timeline","isArchived":false,"attachedWorkspaceIDs":["\(workspaceID.uuidString.lowercased())"]}
-        """
+        let firstOwnerID = UUID()
+        let replacementOwnerID = UUID()
         let catalog = NetworkCatalog()
-        let snapshot = CoatyObjectSnapshot(
-            objectId: ownerTimelineID.uuidString.lowercased(),
-            coreType: .coatyObject,
-            objectType: GnosticObjectType.timeline,
-            name: "Remote timeline",
-            payload: payload
-        )
-        await catalog.ingest(AdvertiseEventSnapshot(sourceId: "timeline-owner", object: snapshot))
+        func timelineSnapshot() -> CoatyObjectSnapshot {
+            let payload = """
+            {"protocolMajor":3,"objectId":"\(ownerTimelineID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"\(GnosticObjectType.timeline)","name":"Remote timeline","title":"Remote timeline","isArchived":false,"attachedWorkspaceIDs":["\(workspaceID.uuidString.lowercased())"]}
+            """
+            return CoatyObjectSnapshot(
+                objectId: ownerTimelineID.uuidString.lowercased(),
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.timeline,
+                name: "Remote timeline",
+                payload: payload
+            )
+        }
 
-        #expect(await catalog.isWorkspaceAttached(workspaceID, to: ownerTimelineID))
-        #expect(!(await catalog.isWorkspaceAttached(UUID(), to: ownerTimelineID)))
-        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: "timeline-owner", objectIds: [ownerTimelineID.uuidString]))
-        #expect(!(await catalog.isWorkspaceAttached(workspaceID, to: ownerTimelineID)))
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: firstOwnerID.uuidString.lowercased(),
+            object: timelineSnapshot()
+        ))
+        #expect(await catalog.authorizesWorkspaceCall(
+            sourceID: firstOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        ))
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: replacementOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        )))
+
+        // Replace the Timeline owner while preserving its attachment. The
+        // former owner must not inherit the replacement owner's attachment.
+        await catalog.ingest(DeadvertiseEventSnapshot(
+            sourceId: firstOwnerID.uuidString.lowercased(),
+            objectIds: [ownerTimelineID.uuidString]
+        ))
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: replacementOwnerID.uuidString.lowercased(),
+            object: timelineSnapshot()
+        ))
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: firstOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        )))
+        #expect(await catalog.authorizesWorkspaceCall(
+            sourceID: replacementOwnerID.uuidString,
+            workspaceID: workspaceID,
+            to: ownerTimelineID
+        ))
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: replacementOwnerID.uuidString,
+            workspaceID: UUID(),
+            to: ownerTimelineID
+        )))
+    }
+
+    private func workspaceToolResponse(
+        workspaceID: UUID,
+        providerID: String,
+        definition: GnosticWorkspaceToolDefinition,
+        page: Int
+    ) throws -> ResponseEventSnapshot {
+        let object = GnosticWorkspaceToolObject(workspaceID: workspaceID, definition: definition, page: page)
+        let payload = try JSONEncoder().encode(object)
+        return ResponseEventSnapshot(
+            eventType: "resolve",
+            sourceId: providerID,
+            correlationId: UUID().uuidString.lowercased(),
+            payload: "{}",
+            object: CoatyObjectSnapshot(
+                objectId: object.objectId.string,
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.workspaceTool,
+                name: object.name,
+                payload: String(decoding: payload, as: UTF8.self)
+            )
+        )
     }
 }
