@@ -64,7 +64,11 @@ public struct BackendComposition: Sendable {
     /// Builds the Node adapters `serve` runs with. The launch plan is accepted
     /// for source compatibility; ACP adapter composition is manifest-neutral.
     public func makeAdapters(for _: [NodeManifest.Ascendant]) -> NodeRuntimeAdapters {
-        return NodeRuntimeAdapters(ascendants: registry)
+        var workspaces = WorkspaceAdapterRegistry()
+        #if DEBUG
+        DebugWorkspaceFixtures.register(in: &workspaces, environment: ProcessInfo.processInfo.environment)
+        #endif
+        return NodeRuntimeAdapters(ascendants: registry, workspaces: workspaces)
     }
 
     /// Installs the configuration-only ACP backend and its CLI schema.

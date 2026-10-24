@@ -59,6 +59,156 @@ struct TwoNodeMQTTIntegrationTests {
         await first.shutdown()
     }
 
+    @Test("Node A ACP Runtime reaches Node B Workspace through the gateway and honors owner revocation")
+    @MainActor
+    func runtimeInvokesRemoteWorkspaceAndOwnerRevocationBlocksNextCall() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "peer-workspace-\(UUID().uuidString.lowercased())"
+        let workspaceID = UUID()
+        let workspaceURI = "workspace://peer-workspace-\(workspaceID.uuidString.lowercased())"
+        let timelineID = UUID()
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-peer-workspace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        var completed = false
+        defer {
+            if completed {
+                try? FileManager.default.removeItem(at: scratch)
+            } else {
+                print("Two-Node Workspace diagnostics retained at \(scratch.path)")
+            }
+        }
+
+        let workspaceNode = try await launchWorkspaceNode(
+            namespace: namespace,
+            scratch: scratch,
+            workspaceID: workspaceID,
+            workspaceURI: workspaceURI
+        )
+        let owner: NodeProcess
+        do {
+            owner = try await launchNode(
+                name: "runtime-owner",
+                namespace: namespace,
+                serveBinary: serveBinary,
+                agentFixture: agentFixture,
+                scratch: scratch,
+                timelineID: timelineID,
+                workspaceID: workspaceID,
+                workspaceURI: workspaceURI
+            )
+        } catch {
+            await workspaceNode.process.shutdown()
+            throw error
+        }
+        do {
+            try await runGatewayRevocationScenario(
+                namespace: namespace,
+                timelineID: timelineID,
+                workspaceID: workspaceID,
+                workspaceNode: workspaceNode
+            )
+        } catch {
+            await owner.shutdown()
+            await workspaceNode.process.shutdown()
+            throw error
+        }
+
+        await owner.shutdown()
+        await workspaceNode.process.shutdown()
+        completed = true
+    }
+
+    @MainActor
+    private func runGatewayRevocationScenario(
+        namespace: String,
+        timelineID: UUID,
+        workspaceID: UUID,
+        workspaceNode: WorkspaceNodeProcess
+    ) async throws {
+        let session = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(3)
+        )
+        do {
+            try await session.start()
+            try await session.discover(timeout: .seconds(3))
+            let timeline = await session.networkObjects().first {
+                $0.objectType == GnosticObjectType.timeline
+                    && $0.objectID == timelineID
+            }
+            let providerID = try #require(timeline?.providerID)
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
+            let workspaceClient = try session.workspaceClient(timeout: .seconds(5))
+            try await workspaceClient.attach(
+                workspaceID: workspaceID,
+                to: timelineID,
+                approved: true,
+                providerID: providerID
+            )
+
+            let first = try await runTurnApprovingWorkspacePermission(
+                client: client,
+                timelineID: timelineID,
+                clientTurnID: "peer-workspace-first",
+                providerID: providerID,
+                message: "[fixture:workspace-tool]"
+            )
+            #expect(first.text.contains("remote workspace result: fixture"))
+            #expect(try workspaceNode.invocationCount() == 1)
+
+            try workspaceNode.revoke()
+            let rejected = try await runTurnApprovingWorkspacePermission(
+                client: client,
+                timelineID: timelineID,
+                clientTurnID: "peer-workspace-revoked",
+                providerID: providerID,
+                message: "[fixture:workspace-tool-rejected]"
+            )
+            #expect(rejected.text.contains("workspace call rejected (-32003)"))
+            #expect(try workspaceNode.invocationCount() == 1)
+            await session.stop()
+        } catch {
+            await session.stop()
+            throw error
+        }
+    }
+
+    @MainActor
+    private func runTurnApprovingWorkspacePermission(
+        client: GnosticTurnClient,
+        timelineID: UUID,
+        clientTurnID: String,
+        providerID: String,
+        message: String
+    ) async throws -> AscendantTurnResult {
+        let updates = try await client.updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
+        let permissionResponder = Task {
+            for await update in updates {
+                guard let permission = update.permissionState, permission.status == "pending" else { continue }
+                try client.respond(
+                    to: AscendantPermissionResponse(
+                        correlationID: permission.correlationID,
+                        timelineID: timelineID,
+                        clientTurnID: clientTurnID,
+                        approved: true
+                    ),
+                    providerID: providerID
+                )
+            }
+        }
+        let result = try await client.run(
+            message: message,
+            timelineID: timelineID,
+            clientTurnID: clientTurnID,
+            providerID: providerID
+        )
+        try await permissionResponder.value
+        return result
+    }
+
     @MainActor
     private func runConsumer(namespace: String, nodes: [NodeProcess]) async throws {
         let session = try GnosticConsumerSession(
@@ -119,14 +269,17 @@ struct TwoNodeMQTTIntegrationTests {
         namespace: String,
         serveBinary: String,
         agentFixture: String,
-        scratch: URL
+        scratch: URL,
+        timelineID requestedTimelineID: UUID? = nil,
+        workspaceID: UUID? = nil,
+        workspaceURI: String? = nil
     ) async throws -> NodeProcess {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
         _ = try store.initializeManifest()
         let manifest = try store.loadManifest()
-        let timelineID = try #require(manifest.timelines.first?.id)
+        let timelineID = requestedTimelineID ?? (try #require(manifest.timelines.first?.id))
         let fixtureState = configDirectory.appendingPathComponent("fixture-sessions.json")
         try store.mutateManifest { manifest in
             let fixturePID = configDirectory.appendingPathComponent("fixture-process.pid")
@@ -137,6 +290,11 @@ struct TwoNodeMQTTIntegrationTests {
             manifest.ascendants[0].backend.settings["command"] = .string("node")
             manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([agentFixture]))
             manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
+            if let requestedTimelineID, let workspaceID, let workspaceURI {
+                manifest.timelines[0].id = requestedTimelineID
+                manifest.ascendants[0].defaultTimelineID = requestedTimelineID
+                manifest.timelines[0].attachments = [.network(workspaceID, uri: workspaceURI)]
+            }
         }
 
         let logURL = configDirectory.appendingPathComponent("serve.log")
@@ -150,6 +308,9 @@ struct TwoNodeMQTTIntegrationTests {
         ]
         var environment = ProcessInfo.processInfo.environment
         environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path
+        environment["GNOSTIC_TEST_WORKSPACE_FIXTURE"] = nil
+        environment["GNOSTIC_TEST_WORKSPACE_HEALTH_FILE"] = nil
+        environment["GNOSTIC_TEST_WORKSPACE_INVOCATIONS_FILE"] = nil
         process.environment = environment
         process.standardOutput = log
         process.standardError = log
@@ -190,6 +351,85 @@ struct TwoNodeMQTTIntegrationTests {
         }
     }
 
+    @MainActor
+    private func launchWorkspaceNode(
+        namespace: String,
+        scratch: URL,
+        workspaceID: UUID,
+        workspaceURI: String
+    ) async throws -> WorkspaceNodeProcess {
+        let configDirectory = scratch.appendingPathComponent("workspace-owner", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
+        _ = try store.initializeManifest()
+        try store.mutateManifest { manifest in
+            manifest.ascendants = []
+            manifest.timelines = []
+            manifest.workspaces = [NodeManifest.Workspace(
+                id: workspaceID,
+                name: "Remote revocation fixture",
+                uri: workspaceURI,
+                kind: "test-revocable-peer"
+            )]
+        }
+
+        let healthURL = configDirectory.appendingPathComponent("workspace-health.txt")
+        let invocationURL = configDirectory.appendingPathComponent("workspace-invocations.txt")
+        try "available".write(to: healthURL, atomically: true, encoding: .utf8)
+        try "0".write(to: invocationURL, atomically: true, encoding: .utf8)
+        let logURL = configDirectory.appendingPathComponent("serve.log")
+        #expect(FileManager.default.createFile(atPath: logURL.path, contents: nil))
+        let log = try FileHandle(forWritingTo: logURL)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"]))
+        process.arguments = [
+            "serve", "--config", store.path().path,
+            "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path
+        environment["GNOSTIC_TEST_WORKSPACE_FIXTURE"] = "revocable-peer"
+        environment["GNOSTIC_TEST_WORKSPACE_HEALTH_FILE"] = healthURL.path
+        environment["GNOSTIC_TEST_WORKSPACE_INVOCATIONS_FILE"] = invocationURL.path
+        process.environment = environment
+        process.standardOutput = log
+        process.standardError = log
+        do {
+            try process.run()
+        } catch {
+            try? log.close()
+            throw error
+        }
+
+        let node = NodeProcess(
+            name: "workspace-owner",
+            timelineID: UUID(),
+            process: process,
+            log: log,
+            fixturePIDURL: nil
+        )
+        do {
+            var online = false
+            for _ in 0..<100 {
+                try log.synchronize()
+                let output = try String(contentsOf: logURL, encoding: .utf8)
+                if output.contains("advertised objects") {
+                    online = true
+                    break
+                }
+                if !process.isRunning { break }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            let output = try String(contentsOf: logURL, encoding: .utf8)
+            #expect(online, Comment(rawValue: output))
+            guard online else { throw TwoNodeIntegrationError.nodeFailedToStart("workspace-owner") }
+            return WorkspaceNodeProcess(process: node, healthURL: healthURL, invocationURL: invocationURL)
+        } catch {
+            await node.shutdown()
+            throw error
+        }
+    }
+
     private func jsonString<T: Encodable>(_ value: T) throws -> String {
         let data = try JSONEncoder().encode(value)
         return try #require(String(data: data, encoding: .utf8))
@@ -203,7 +443,7 @@ private struct NodeProcess {
     let process: Process
     let log: FileHandle
 
-    let fixturePIDURL: URL
+    let fixturePIDURL: URL?
 
     func shutdown() async {
         if process.isRunning {
@@ -218,8 +458,23 @@ private struct NodeProcess {
             }
         }
         process.waitUntilExit()
-        await stopFixtureProcess(at: fixturePIDURL)
+        if let fixturePIDURL { await stopFixtureProcess(at: fixturePIDURL) }
         try? log.close()
+    }
+}
+
+@MainActor
+private struct WorkspaceNodeProcess {
+    let process: NodeProcess
+    let healthURL: URL
+    let invocationURL: URL
+
+    func revoke() throws {
+        try "revoked".write(to: healthURL, atomically: true, encoding: .utf8)
+    }
+
+    func invocationCount() throws -> Int {
+        Int(try String(contentsOf: invocationURL, encoding: .utf8)) ?? -1
     }
 }
 
