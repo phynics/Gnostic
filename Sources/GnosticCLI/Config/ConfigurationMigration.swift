@@ -492,7 +492,7 @@ public enum ConfigurationMigration {
             }
         }
         try preserveOwnership(from: originalAttributes, descriptor: descriptor)
-        if let mode, fchmod(descriptor, mode.uint32Value) != 0 {
+        if let mode, fchmod(descriptor, mode_t(mode.uint32Value)) != 0 {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         try beforeSync?(.replacementFile)
