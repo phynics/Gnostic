@@ -44,6 +44,8 @@ mosquitto_log="$scratch/mosquitto.log"
 mosquitto_config="$scratch/mosquitto.conf"
 mosquitto_pid=
 cleanup() {
+    local status=$?
+    trap - EXIT INT TERM
     if [ -n "${runner_pid:-}" ] && kill -0 "$runner_pid" 2>/dev/null; then
         kill -TERM "$runner_pid" 2>/dev/null || true
         wait "$runner_pid" 2>/dev/null || true
@@ -52,9 +54,21 @@ cleanup() {
         kill "$mosquitto_pid" 2>/dev/null || true
         wait "$mosquitto_pid" 2>/dev/null || true
     fi
-    rm -rf "$scratch"
+    if [ "$status" -eq 0 ]; then
+        rm -rf "$scratch"
+    else
+        local diagnostics="/workspace/.testing/runner-smoke-failure-$(date +%s)-$$"
+        mkdir -p "$diagnostics" || true
+        for name in runner.log mosquitto.log client.stderr fixture-initialize fixture-new-session fixture-prompt fixture-pid fixture-exit; do
+            if [ -f "$scratch/$name" ]; then cp "$scratch/$name" "$diagnostics/$name" || true; fi
+        done
+        printf 'Runner smoke diagnostics saved to %s\n' "$diagnostics" >&2
+        rm -rf "$scratch"
+    fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 readiness_topic="gnostic/runner-smoke/readiness-$$"
 if ! mosquitto_pub -h 127.0.0.1 -t "$readiness_topic" -m ready >/dev/null 2>&1; then
@@ -177,6 +191,7 @@ GNOSTIC_ACP_CLIENT_BINARY="$cli_bin" \
 GNOSTIC_ACP_CLIENT_CONFIG="$scratch/acp.json" \
 GNOSTIC_ACP_CLIENT_NAMESPACE=gnostic-smoke-acp \
 GNOSTIC_ACP_CLIENT_STATE="$scratch/client-state" \
+GNOSTIC_ACP_CLIENT_STDERR_FILE="$scratch/client.stderr" \
 timeout --signal=TERM --kill-after=5s 90s node Tests/Fixtures/ACPAgent/runner-smoke.mjs
 
 test -s "$scratch/fixture-initialize"

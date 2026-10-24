@@ -62,6 +62,22 @@ struct CLIConfigurationTests {
         #expect(config.llmModel == nil)
     }
 
+    @Test("new manifest defaults require no unregistered Workspace adapter")
+    func defaultManifestContainsOnlyRegisteredHostResources() throws {
+        let folder = try TemporaryFolder()
+        let store = self.store(folder: folder)
+
+        try ConfigCommandLogic.initialize(store: store, writeOutput: { _ in })
+        let manifest = try store.loadManifest()
+        try manifest.validate()
+
+        #expect(manifest.ascendants.count == 1)
+        #expect(manifest.timelines.count == 1)
+        #expect(manifest.timelines[0].operatingAscendantID == manifest.ascendants[0].id)
+        #expect(manifest.ascendants[0].defaultTimelineID == manifest.timelines[0].id)
+        #expect(manifest.workspaces.isEmpty)
+    }
+
     @Test("secrets are stored with restrictive permissions and redacted on show")
     func secretsAreStoredPrivateAndRedacted() throws {
         let folder = try TemporaryFolder()
@@ -71,7 +87,7 @@ struct CLIConfigurationTests {
         let ascendantID = try #require(try store.loadManifest().ascendants.first?.id.uuidString)
 
         try store.setValue("s3cr3t", for: .mqttPassword)
-        try ConfigCommandLogic.setBackendSecret(ascendantID: ascendantID, key: "apiKey", value: "sk-ant-123", store: store)
+        try ConfigCommandLogic.setBackendSecret(ascendantID: ascendantID, key: "env-secret.API_TOKEN", value: "sk-ant-123", store: store)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: store.path().path)
         let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue

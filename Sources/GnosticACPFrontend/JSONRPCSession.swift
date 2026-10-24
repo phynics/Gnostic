@@ -154,6 +154,8 @@ public actor JSONRPCSession {
             let result = try await initializeHandler()
             state = .initialized
             respondIfNeeded(to: request, result: result)
+        } catch let error as JSONRPCMethodError {
+            respondIfNeeded(to: request, error: errorObject(for: error))
         } catch {
             respondIfNeeded(to: request, error: JSONRPCErrorObject(
                 code: JSONRPCErrorCode.internalError.rawValue,

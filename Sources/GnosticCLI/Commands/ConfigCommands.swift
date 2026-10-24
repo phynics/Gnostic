@@ -20,7 +20,7 @@ struct ConfigCommand: AsyncParsableCommand {
           gnostic config ascendant add "Agent" --kind acp-client
           gnostic config backend keys <ascendant-id>
           gnostic config backend set <ascendant-id> command /path/to/acp-agent
-          gnostic config backend set-secret <ascendant-id> apiKey   # reads stdin
+          gnostic config backend set-secret <ascendant-id> env-secret.API_TOKEN   # reads stdin
         """,
         subcommands: [
             Init.self, Show.self, Validate.self, Migrate.self, Path.self, Broker.self, Backend.self,
@@ -536,11 +536,9 @@ struct ConfigCommand: AsyncParsableCommand {
             commandName: "workspace",
             abstract: "Manage local Workspaces.",
             discussion: """
-            Local Workspaces are addressed by URI. Attach them to a Timeline \
-            with `config timeline attach-workspace`.
-
-              gnostic config workspace add "Scratch" --uri echo://scratch
-              gnostic config workspace update <id> --name "Scratch II"
+            A host must register a local Workspace adapter for the configured \
+            kind before it can serve that Workspace. The default `gnostic` host \
+            registers no local Workspace adapters.
             """,
             subcommands: [WorkspaceAdd.self, WorkspaceUpdate.self, WorkspaceRemove.self]
         )

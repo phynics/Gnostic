@@ -51,13 +51,27 @@ struct ServeSubprocessSignalTests {
     ) async throws {
         let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
         let namespace = "serve-signal-\(UUID().uuidString.lowercased())"
+        let fixturePath = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
         let configDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-serve-config-\(UUID().uuidString)")
+        let fixtureDirectory = configDirectory.appendingPathComponent("fixture-state", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
+        let fixtureStateURL = fixtureDirectory.appendingPathComponent("sessions.json")
+        let fixtureInitializeURL = fixtureDirectory.appendingPathComponent("initialized")
+        let fixturePIDURL = fixtureDirectory.appendingPathComponent("process.pid")
+        let fixtureExitURL = fixtureDirectory.appendingPathComponent("process.exited")
         let configStore = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
         _ = try configStore.initializeManifest()
         try configStore.mutateManifest { manifest in
-            manifest.ascendants[0].backend.settings["command"] = .string("/bin/sleep")
-            manifest.ascendants[0].backend.settings["args"] = .string("[\"3600\"]")
+            let fixtureEnvironment = [
+                "GNOSTIC_ACP_FIXTURE_STATE": fixtureStateURL.path,
+                "GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE": fixtureInitializeURL.path,
+                "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePIDURL.path,
+                "GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE": fixtureExitURL.path,
+            ]
+            manifest.ascendants[0].backend.settings["command"] = .string("node")
+            manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([fixturePath]))
+            manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
@@ -76,7 +90,10 @@ struct ServeSubprocessSignalTests {
         process.standardError = log
         try process.run()
         defer {
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
             try? log.close()
             try? FileManager.default.removeItem(at: logURL)
             try? FileManager.default.removeItem(at: configDirectory)
@@ -84,6 +101,8 @@ struct ServeSubprocessSignalTests {
 
         if requireOnlineBeforeSignal {
             try await waitForOnline(log: log, logURL: logURL, process: process)
+            try await waitForMarker(fixtureInitializeURL)
+            #expect(FileManager.default.fileExists(atPath: fixturePIDURL.path))
         } else {
             try await Task.sleep(for: signalDelay)
         }
@@ -105,6 +124,42 @@ struct ServeSubprocessSignalTests {
         #expect(exited, "gnostic serve ignored \(signal)")
         #expect(process.terminationReason == .exit, Comment(rawValue: standardError))
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        if requireOnlineBeforeSignal {
+            try await waitForFixtureExit(exitURL: fixtureExitURL, pidURL: fixturePIDURL)
+            #expect(try String(contentsOf: fixtureExitURL, encoding: .utf8).contains("exited"))
+            #expect(!fixtureProcessIsRunning(pidURL: fixturePIDURL))
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: fixturePIDURL.path))
+        }
+    }
+
+    private func jsonString<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        return try #require(String(data: data, encoding: .utf8))
+    }
+
+    @MainActor
+    private func waitForMarker(_ url: URL) async throws {
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: url.path) { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        Issue.record("Timed out waiting for ACP fixture marker at \(url.lastPathComponent).")
+    }
+
+    @MainActor
+    private func waitForFixtureExit(exitURL: URL, pidURL: URL) async throws {
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: exitURL.path), !fixtureProcessIsRunning(pidURL: pidURL) { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        Issue.record("ACP fixture did not record shutdown and exit within the timeout.")
+    }
+
+    private func fixtureProcessIsRunning(pidURL: URL) -> Bool {
+        guard let rawPID = try? String(contentsOf: pidURL, encoding: .utf8).split(whereSeparator: \.isNewline).first,
+              let pid = Int32(String(rawPID)) else { return false }
+        return kill(pid, 0) == 0 || errno != ESRCH
     }
 
     /// Polls the serve log until it advertises its object graph. A fixed delay

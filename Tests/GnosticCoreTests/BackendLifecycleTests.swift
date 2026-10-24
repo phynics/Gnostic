@@ -3,6 +3,7 @@
 import Foundation
 @_spi(RuntimeHost) @testable import GnosticCore
 import GnosticClient
+import GnosticWorkspaceTestSupport
 import Testing
 
 @Suite("Ascendant backend lifecycle")
@@ -244,7 +245,7 @@ struct BackendLifecycleTests {
                 node: .init(id: UUID()),
                 ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
                 timelines: [.init(id: timelineID, title: "First", operatingAscendantID: ascendantID)],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "workspace://fixture", kind: "lifecycle-test-local")]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: probe, outcomes: [ascendantID: [.success]])
         )
@@ -339,7 +340,7 @@ struct BackendLifecycleTests {
                     .init(id: secondTimelineID, title: "Second", operatingAscendantID: ascendantID),
                     .init(id: recoveryTimelineID, title: "Recovery", operatingAscendantID: ascendantID),
                 ],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "workspace://fixture", kind: "lifecycle-test-local")]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: probe, outcomes: [ascendantID: []])
         )
@@ -384,7 +385,7 @@ struct BackendLifecycleTests {
                 node: .init(id: UUID()),
                 ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
                 timelines: [.init(id: timelineID, title: "First", operatingAscendantID: ascendantID)],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "workspace://fixture", kind: "lifecycle-test-local")]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: probe, outcomes: [ascendantID: [.lifecycle, .success]])
         )
@@ -788,7 +789,7 @@ struct BackendLifecycleTests {
                 node: .init(id: UUID()),
                 ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
                 timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID)],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "workspace://fixture", kind: "lifecycle-test-local")]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: attachProbe, outcomes: [ascendantID: [.success]])
         )
@@ -809,7 +810,7 @@ struct BackendLifecycleTests {
                 node: .init(id: UUID()),
                 ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
                 timelines: [.init(id: timelineID, title: "Before", operatingAscendantID: ascendantID, attachments: [.local(workspaceID)])],
-                workspaces: [.init(id: workspaceID, name: "Local", uri: "echo://local")]
+                workspaces: [.init(id: workspaceID, name: "Local", uri: "workspace://fixture", kind: "lifecycle-test-local")]
             ).compileLaunchPlan(),
             adapters: makeAdapters(probe: detachProbe, outcomes: [ascendantID: [.success]])
         )
@@ -963,6 +964,9 @@ struct BackendLifecycleTests {
 
     private func makeAdapters(probe: LifecycleBackendProbe, outcomes: [UUID: [LifecycleFixtureBackend.Outcome]]) -> NodeRuntimeAdapters {
         var adapters = NodeRuntimeAdapters.default
+        adapters.workspaces.registerProduct(kind: "lifecycle-test-local") { configuration in
+            WorkspaceInvocationTestWorkspace(id: configuration.id, tools: [])
+        }
         adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
             let number = await probe.recordFactory(timelines: timelines)
             if probe.shouldFailSecondFactory && number == 2 {

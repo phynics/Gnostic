@@ -242,8 +242,8 @@ public struct NodeManifest: Codable, Equatable, Sendable {
 
     public static func makeDefault(broker: Broker) -> Self {
         let node = UUID.makeVersion4(), ascendant = UUID.makeVersion4()
-        let timeline = UUID.makeVersion4(), workspace = UUID.makeVersion4()
-        return .init(broker: broker, node: .init(id: node), ascendants: [.init(id: ascendant, name: "Default Runtime", defaultTimelineID: timeline, backend: .init(kind: "acp-client"))], timelines: [.init(id: timeline, title: "Default Timeline", operatingAscendantID: ascendant)], workspaces: [.init(id: workspace, name: "Echo Workspace", uri: "echo://default")])
+        let timeline = UUID.makeVersion4()
+        return .init(broker: broker, node: .init(id: node), ascendants: [.init(id: ascendant, name: "Default Runtime", defaultTimelineID: timeline, backend: .init(kind: "acp-client"))], timelines: [.init(id: timeline, title: "Default Timeline", operatingAscendantID: ascendant)])
     }
 
     public static func empty(broker: Broker) -> Self { .init(broker: broker, node: .init(id: UUID.makeVersion4())) }

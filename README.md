@@ -65,8 +65,11 @@ updates preserve existing IDs and validate references before writing:
 ```sh
 gnostic config ascendant add --name "Research"
 gnostic config timeline add --title "Research notes"
-gnostic config workspace add --name "Echo" --uri "echo://local"
 ```
+
+Workspace entries require a matching local Workspace adapter in the host. The
+default `gnostic` CLI build registers no local Workspace kinds, so its fresh
+configuration leaves `workspaces` empty.
 
 Inspect the objects that a running Node advertises:
 

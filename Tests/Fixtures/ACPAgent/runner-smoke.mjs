@@ -1,17 +1,24 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { writeFile } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 
 const binary = process.env.GNOSTIC_ACP_CLIENT_BINARY;
 const config = process.env.GNOSTIC_ACP_CLIENT_CONFIG;
 const namespace = process.env.GNOSTIC_ACP_CLIENT_NAMESPACE;
-assert(binary && config && namespace, "runner smoke client configuration is required");
+const stderrFile = process.env.GNOSTIC_ACP_CLIENT_STDERR_FILE;
+assert(binary && config && namespace && stderrFile, "runner smoke client configuration is required");
 
 const child = spawn(binary, [
   "acp", "--config", config,
   "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
-], { stdio: ["pipe", "pipe", "inherit"] });
+  "--ascendant", "e51d0000-0000-4000-8000-000000000002",
+  "--node", "e51d0000-0000-4000-8000-000000000001",
+], { stdio: ["pipe", "pipe", "pipe"] });
+const clientStderr = [];
+child.stderr.on("data", (chunk) => clientStderr.push(chunk));
 const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout));
 
 try {
@@ -48,6 +55,8 @@ try {
     });
 } finally {
   child.kill("SIGTERM");
+  if (child.exitCode === null && child.signalCode === null) await once(child, "close");
+  await writeFile(stderrFile, Buffer.concat(clientStderr));
 }
 
 async function waitForIdle(updates, start) {
