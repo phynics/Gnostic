@@ -139,7 +139,7 @@ build, and `settingsSchema(for:)` returns a kind's keys.
 Configuration commands consult the default registrations only. A kind
 registered solely inside a custom running host can be built but not configured
 through the CLI. The production CLI composition is shared by `serve` and
-`config`, and includes the optional `letta` and `acp-client` kinds.
+`config` and registers the `acp-client` Runtime adapter.
 
 ### Using an ACP agent backend
 
@@ -297,84 +297,14 @@ personal data, file paths, tokens, and other secrets from the transcript before
 posting it. If a run cannot be completed, record the environmental blocker and
 the exact replacement condition instead.
 
-## Extending the bundled Positronic backend
 
-This section describes the transitional `gnostic-legacy` host. The shipped
-`gnostic` tool has no PositronicKit in its dependency closure, so a new
-backend reaches it as an ACP v2 Runtime process over stdio, not as an
-in-process contribution. The transitional host and its contributions are
-removed by #611.
+## Retired in-process implementations
 
-The bundled Positronic backend accepts a static list of
-`PositronicContribution` values at construction. A contribution is compiled in;
-it is not loaded dynamically. It may expose additional tools and one bounded
-`TurnContextSource`.
-
-```swift
-struct NotesContribution: PositronicContribution {
-    let label = "notes"
-    func turnContextSource() -> (any TurnContextSource)? { NotesContextSource() }
-    func tools() -> [AnyTool] { [AnyTool(NotesTool())] }
-}
-```
-
-A contribution cannot override a Workspace or network tool. Duplicate tool
-identities or call names, and labels that collide with reserved tools, fail at
-startup before the backend is published. A contribution label is static and
-must not carry user payloads or secrets.
-
-`TurnContextSource.failureRequirement` decides what a failure means: `.required`
-aborts the Turn before provider work and leaves the backend healthy, while
-`.optional` records a host notice and the Turn continues. The adapter scopes a
-`PositronicTurnInvocation` to the Turn, so a source reads
-`PositronicTurnInvocationContext.current` to correlate the Ascendant, Timeline,
-and admitted client Turn it is projecting for.
-
-### Selecting modules per Ascendant
-
-A composition root registers each compiled-in module on `BackendComposition`,
-keyed by a static name. The module declares its own settings keys and builds its
-contribution from the settings of the Ascendant that selected it:
-
-```swift
-var composition = BackendComposition()
-composition.registerModule(GnosticModule(
-    name: "notes",
-    settingKeys: [
-        .init(name: "topic", summary: "Notes topic."),
-        .init(name: "token", summary: "Notes credential.", isSecret: true),
-    ],
-    terminalTurnObservers: []
-) { scope in
-    NotesContribution(topic: try scope.stringSetting("topic"))
-})
-```
-
-Each Ascendant opts in through the backend-owned `extensions` setting; existing
-envelopes without the key behave exactly as before:
-
-```json
-{ "kind": "positronic", "settings": { "extensions": ["notes"], "notes.topic": "release" } }
-```
-
-Module settings are namespaced `<name>.<key>` in `settings`. Secrets use the
-same namespacing in `backend.secrets`, so they stay covered by the structural
-redaction `gnostic config show` applies. The Positronic settings schema includes
-the selection key and every registered module key, so
-`gnostic config backend keys <ascendant-id>` lists them.
-
-A module may also declare terminal Turn observers. `serve` and the runner
-install them through `makeAdapters(for:)`, scoped to the Ascendants that select
-the module. A module that selects no observer leaves the runtime path unchanged.
-The descriptor may name an experiment subcommand, but the CLI keeps argument
-parsing: `GnosticHost` never depends on `ArgumentParser`.
-
-Two Positronic Ascendants on one Node may select different module sets.
-Selection is static: there is no live enable, disable, or hot reload. An unknown
-or malformed selection fails startup before advertisement and names the module.
-The rejected alternative, a distinct backend kind per variant, would multiply
-kinds combinatorially and conflict with the single `positronic` kind the adapter
-validates.
+The Positronic and Letta in-process backends, their contribution hooks, and
+the transitional host executable were removed in #611. Configure a Runtime
+through an ACP v2 process over stdio. The configuration migration command
+explicitly rejects old `positronic` and `letta` mappings; it does not convert
+or delete historical execution state.
 
 ## What stays Gnostic's
 

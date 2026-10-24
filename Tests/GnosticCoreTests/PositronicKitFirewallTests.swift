@@ -21,31 +21,8 @@ struct PositronicKitFirewallTests {
             .deletingLastPathComponent()
     }
 
-    /// The targets that may still declare or import a PositronicKit product.
-    ///
-    /// The list is explicit on purpose. A prefix rule would silently allow a
-    /// new target that only looks transitional.
-    ///
-    /// - `GnosticPositronic*` is the backend family that #611 removes with the
-    ///   transitional host composition.
-    /// - `GnosticLegacy*` is the isolated transitional composition that #611
-    ///   deletes.
-    ///
-    /// `GnosticPositronicRuntime` is the sole executable permitted to link
-    /// PositronicKit. It is intentionally explicit and removed if the runtime
-    /// boundary changes.
-    private static let transitionalTargets: Set<String> = [
-        "GnosticPositronicBackend",
-        "GnosticPositronicAtlas",
-        "GnosticPositronicContext",
-        "GnosticPositronicBackendTests",
-        "GnosticPositronicAtlasTests",
-        "GnosticPositronicContextTests",
-        "GnosticLegacyPositronicHost",
-        "GnosticLegacyCLI",
-        "GnosticLegacyCLITests",
-        "GnosticPositronicRuntime",
-    ]
+    /// The sole target allowed to declare or import PositronicKit.
+    private static let allowedTargets: Set<String> = ["GnosticPositronicRuntime"]
 
     /// The shipped targets the issue names. Each one, and each of its test
     /// targets, must stay free of PositronicKit.
@@ -63,7 +40,7 @@ struct PositronicKitFirewallTests {
     /// process must not link the Axoloty discovery/routing fabric.
     private static let standaloneRuntimeTarget = "GnosticPositronicRuntime"
 
-    @Test("no target outside the transitional set declares PositronicKit")
+    @Test("no target outside the reference Runtime declares PositronicKit")
     func packageDeclarationsAreClean() throws {
         let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
         for violation in declarationViolations(package: package) {
@@ -119,7 +96,7 @@ struct PositronicKitFirewallTests {
         let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
         let targets = try parseTargets(package)
         let byName = Dictionary(uniqueKeysWithValues: targets.map { ($0.name, $0) })
-        for name in Self.transitionalTargets {
+        for name in Self.allowedTargets {
             let target = try #require(
                 byName[name],
                 "The firewall allows '\(name)', but Package.swift declares no such target."
@@ -166,7 +143,7 @@ struct PositronicKitFirewallTests {
     // MARK: - Checks
 
     /// Reports every target that declares a PositronicKit product outside the
-    /// transitional set.
+    /// standalone reference Runtime.
     private func declarationViolations(package: String) -> [String] {
         guard let targets = try? parseTargets(package) else { return [] }
         var violations: [String] = []
@@ -206,7 +183,7 @@ struct PositronicKitFirewallTests {
     private func importViolations(sources: [String: String]) -> [String] {
         var violations: [String] = []
         for (relativePath, source) in sources.sorted(by: { $0.key < $1.key }) {
-            let allowed = Self.transitionalTargets.contains { target in
+            let allowed = Self.allowedTargets.contains { target in
                 relativePath.hasPrefix("Sources/\(target)/")
                     || relativePath.hasPrefix("Tests/\(target)/")
             }
@@ -253,7 +230,7 @@ struct PositronicKitFirewallTests {
     }
 
     private func isAllowed(_ target: String) -> Bool {
-        Self.transitionalTargets.contains(target)
+        Self.allowedTargets.contains(target)
     }
 
     private func isPositronicDependency(_ dependency: String) -> Bool {

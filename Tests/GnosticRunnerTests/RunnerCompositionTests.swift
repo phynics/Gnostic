@@ -4,7 +4,6 @@ import Foundation
 import GnosticACPAscendant
 import GnosticCore
 import GnosticHost
-import GnosticLettaBackend
 import Testing
 
 @testable import GnosticRunner
@@ -13,7 +12,7 @@ import Testing
 ///
 /// The runner composes through `GnosticHost`. This suite asserts the runner's
 /// adapters come from ``BackendComposition``, that the composition carries
-/// every backend kind `gnostic serve` has, and that the runner keeps no private
+/// the ACP Runtime kind, and that the runner keeps no private
 /// Ascendant registry.
 @Suite("Runner composition")
 struct RunnerCompositionTests {
@@ -31,11 +30,8 @@ struct RunnerCompositionTests {
                 == Set(GnosticHost.BackendComposition.default.moduleDescriptors.map(\.name))
         )
         #expect(
-            RunnerRuntime.composition.registeredKinds.isSuperset(of: [
-                LettaAscendantBackend.kind,
-                ACPAscendantBackend.kind,
-            ]),
-            "The runner must host every process-independent backend kind `gnostic serve` has."
+            RunnerRuntime.composition.registeredKinds == ["acp-client"],
+            "The runner must host Runtime processes through ACP."
         )
         let modules = Set(RunnerRuntime.composition.moduleDescriptors.map(\.name))
         #expect(modules.contains("rlm"))

@@ -319,21 +319,14 @@ function swiftTargetBlock(packageText, name) {
 
 function validateResetBaseline(root, failures) {
   const packageText = readText(root, "Package.swift");
-  if (!packageText.includes('.library(name: "GnosticPositronicAtlas", targets: ["GnosticPositronicAtlas"])')) {
-    failures.push("Package.swift: Atlas boundary product is missing");
-  }
   const coreTarget = swiftTargetBlock(packageText, "GnosticCore");
   if (!coreTarget) {
     failures.push("Package.swift: GnosticCore target is missing");
   } else if (coreTarget.includes("GnosticPositronicAtlas")) {
     failures.push("Package.swift: GnosticCore must not depend on GnosticPositronicAtlas");
   }
-  const atlasTarget = swiftTargetBlock(packageText, "GnosticPositronicAtlas");
-  if (!atlasTarget) {
-    failures.push("Package.swift: GnosticPositronicAtlas target is missing");
-  } else {
-    if (!atlasTarget.includes('"GnosticCore"')) failures.push("Package.swift: Atlas target must depend on GnosticCore");
-    if (!atlasTarget.includes("PositronicKit")) failures.push("Package.swift: Atlas target must depend on PositronicKit");
+  for (const target of ["GnosticPositronicBackend", "GnosticPositronicAtlas", "GnosticPositronicContext", "GnosticLettaBackend", "GnosticLegacyPositronicHost", "GnosticLegacyCLI"]) {
+    if (swiftTargetBlock(packageText, target)) failures.push(`Package.swift: retired target ${target} must not remain`);
   }
 
   for (const { path, text } of sourceFiles(root, "Sources/GnosticCore")) {
@@ -364,7 +357,7 @@ function validatePlatformKit(root, failures) {
   } else {
     if (!kitTarget.includes('"GnosticCore"')) failures.push("Package.swift: GnosticKit target must depend on GnosticCore");
     if (kitTarget.includes("PositronicKit")) failures.push("Package.swift: GnosticKit must not depend on PositronicKit");
-    for (const target of ["GnosticCLI", "GnosticHost", "GnosticPositronicAtlas", "GnosticLettaBackend", "GnosticACPAscendant", "GnosticRLM", "GnosticRLMGuile", "GnosticRLMChibi", "GnosticRLMProcessWorker"]) {
+    for (const target of ["GnosticCLI", "GnosticHost", "GnosticACPAscendant", "GnosticRLM", "GnosticRLMGuile", "GnosticRLMChibi", "GnosticRLMProcessWorker"]) {
       if (kitTarget.includes(`"${target}"`)) failures.push(`Package.swift: GnosticKit must not depend on ${target}`);
     }
   }

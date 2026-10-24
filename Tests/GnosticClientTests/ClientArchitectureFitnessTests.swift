@@ -80,7 +80,7 @@ struct ClientArchitectureFitnessTests {
         )
         for forbidden in [
             "PositronicKit", "PKContracts", "GnosticHost", "GnosticKit",
-            "GnosticCLI", "GnosticLettaBackend", "GnosticPositronicAtlas",
+            "GnosticCLI",
         ] {
             #expect(
                 !clientTarget.contains(forbidden),

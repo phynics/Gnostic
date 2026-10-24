@@ -237,13 +237,7 @@ public enum ConfigConsoleLogic {
         composition: BackendComposition = .default,
         registry: ModuleRegistry? = nil
     ) throws -> ModuleMutation {
-        try mutateModule(ascendantID: ascendantID, module: module, enable: true, store: store, composition: composition, registry: registry, mutation: { backend in
-            var selected = Self.selectedNames(in: backend)
-            guard !selected.contains(module) else { return false }
-            selected.append(module)
-            backend.settings["extensions"] = .array(selected.map(ManifestJSONValue.string))
-            return true
-        })
+        try mutateModule(ascendantID: ascendantID, module: module, store: store, composition: composition)
     }
 
     /// Disables one module on one Ascendant.
@@ -265,27 +259,14 @@ public enum ConfigConsoleLogic {
         composition: BackendComposition = .default,
         registry: ModuleRegistry? = nil
     ) throws -> ModuleMutation {
-        try mutateModule(ascendantID: ascendantID, module: module, enable: false, store: store, composition: composition, registry: registry, mutation: { backend in
-            var selected = Self.selectedNames(in: backend)
-            guard selected.contains(module) else { return false }
-            selected.removeAll { $0 == module }
-            if selected.isEmpty {
-                backend.settings.removeValue(forKey: "extensions")
-            } else {
-                backend.settings["extensions"] = .array(selected.map(ManifestJSONValue.string))
-            }
-            return true
-        })
+        try mutateModule(ascendantID: ascendantID, module: module, store: store, composition: composition)
     }
 
     private static func mutateModule(
         ascendantID: String,
         module: String,
-        enable: Bool,
         store: CLIConfigurationStore,
-        composition: BackendComposition,
-        registry: ModuleRegistry?,
-        mutation: (inout NodeManifest.BackendConfiguration) -> Bool
+        composition: BackendComposition
     ) throws -> ModuleMutation {
         guard let id = UUID(uuidString: ascendantID) else {
             throw CLIConfigurationError.invalidArgument("Invalid ascendant UUID '\(ascendantID)'.")
@@ -296,21 +277,25 @@ public enum ConfigConsoleLogic {
                 "Unknown module '\(module)'. Known modules: \(known.isEmpty ? "none" : known.joined(separator: ", "))."
             )
         }
-        var warningMessage: String?
-        _ = try store.mutateManifest { manifest in
-            guard let index = manifest.ascendants.firstIndex(where: { $0.id == id }) else {
-                throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
-            }
-            guard manifest.ascendants[index].backend.kind == AscendantAdapterRegistry.positronicKind else {
-                throw CLIConfigurationError.invalidArgument(
-                    "Module selection applies to the '\(AscendantAdapterRegistry.positronicKind)' backend kind, but this Ascendant uses '\(manifest.ascendants[index].backend.kind)'."
-                )
-            }
-            let warnings = enable ? Self.warnings(for: module, registryID: composition.moduleDescriptor(named: module)?.registryID, registry: registry) : []
-            warningMessage = warnings.first
-            _ = mutation(&manifest.ascendants[index].backend)
+        guard composition.moduleDescriptor(named: module) != nil else {
+            let known = composition.moduleDescriptors.map(\.name).sorted()
+            throw CLIConfigurationError.invalidArgument(
+                "Unknown module '\(module)'. Known modules: \(known.isEmpty ? "none" : known.joined(separator: ", "))."
+            )
         }
-        return ModuleMutation(ascendantID: id, module: module, enabled: enable, warnings: warningMessage.map { [$0] } ?? [])
+        let manifest = try store.loadManifest()
+        guard let ascendant = manifest.ascendants.first(where: { $0.id == id }) else {
+            throw CLIConfigurationError.resourceNotFound(kind: "ascendant", id: id)
+        }
+        let kind = ascendant.backend.kind
+        if kind == "positronic" || kind == "letta" {
+            throw CLIConfigurationError.invalidArgument(
+                "Backend kind '\(kind)' was removed. Configure an ACP v2 Runtime and migrate the manifest; historical execution state is not converted."
+            )
+        }
+        throw CLIConfigurationError.invalidArgument(
+            "Host module selection is unavailable for ACP Runtime instances. Configure tools and model behavior in the Runtime itself."
+        )
     }
 
     private static func warnings(for module: String, registryID: String?, registry: ModuleRegistry?) -> [String] {

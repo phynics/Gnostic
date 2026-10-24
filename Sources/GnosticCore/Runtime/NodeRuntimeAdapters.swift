@@ -20,13 +20,6 @@ public struct AscendantAdapterRegistry: Sendable {
         schemas = [:]
     }
 
-    /// The manifest kind served by the bundled Positronic backend.
-    ///
-    /// The kernel advertises the constant so configuration and routing code can
-    /// name the kind without depending on the implementation. The bundled
-    /// implementation registers its factory from `GnosticPositronicBackend`.
-    public static let positronicKind = "positronic"
-
     /// Every backend kind this registry can build.
     public var registeredKinds: Set<String> { Set(factories.keys) }
 

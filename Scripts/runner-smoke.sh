@@ -27,7 +27,7 @@ process.stdin.on("end", () => {
     const targets = JSON.parse(data).targets;
     const target = targets.find(({ name }) => name === "GnosticRunner");
     const dependencies = JSON.stringify(target?.dependencies ?? []);
-    if (!target || /PositronicKit|PKContracts|GnosticPositronicBackend/.test(dependencies)) process.exit(1);
+    if (!target || /PositronicKit|PKContracts|GnosticPositronic|GnosticLegacy|GnosticLetta/.test(dependencies)) process.exit(1);
 });
 '
 

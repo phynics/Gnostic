@@ -1,18 +1,16 @@
 # Gnostic
 
-Gnostic hosts Ascendant backends and exposes them over Axoloty. The shipped
-`gnostic` tool hosts the process-independent `letta` and `acp` Ascendant
-backends. The bundled `positronic` backend runs PositronicKit inside the host
-process, so it is transitional: it ships as the separate `gnostic-legacy`
-executable until #611 removes it. The bundled local Workspace backend is
-`echo`. The latest release is 0.4.2. The next release, 0.5.0, is the first
-supported line and is in development
+Gnostic hosts Runtime processes and exposes Timeline orchestration over
+Axoloty. Every Runtime uses ACP v2 over stdio. The standalone reference Runtime
+uses PositronicKit privately; the host does not. The 0.5.0 line is in
+development
 ([#551](https://github.com/phynics/Gnostic/issues/551)).
 
 The [0.5.0 compatibility declaration](Documentation/Compatibility/0.5.0.md)
 records what changes from 0.4.2. It is a source-breaking minor for Swift
-consumers: public types moved into new library products. It is
-wire-compatible with 0.4.2. The
+consumers: public types moved into new library products. It is wire-breaking
+from 0.4.2 and migrates operator configuration without converting execution
+history. The
 [0.4.2 compatibility declaration](Documentation/Compatibility/0.4.2.md)
 records the load-time cancellation-shield fix. The
 [0.4.1 declaration](Documentation/Compatibility/0.4.1.md) records the
@@ -384,15 +382,9 @@ Timelines created at runtime, so a later resume or prompt fails with
 `timelineUnavailable` and `session/list` omits the session (ADR 0008). The
 session record stays on disk for diagnostics, marked ended.
 
-For Ascendants on the transitional `positronic` backend of `gnostic-legacy`,
-runtime-created Timelines
-and their backend transcripts can survive a restart. Run `gnostic serve` with
-`GNOSTIC_STATE_HOME` set, or with `--turn-log PATH`, whose parent directory
-then serves as the state home. Serve keeps a durable Turn event log and a
-file-backed Timeline store under `<state home>/timelines` (ADR 0014,
-ADR 0015). External `acp-client` Ascendants keep the default behavior above.
-This durable mode is opt-in, and its on-disk formats will change before 0.5.0
-([#550](https://github.com/phynics/Gnostic/issues/550)).
+Configuration migration explicitly rejects the removed `positronic` and
+`letta` backend kinds and guides operators to an ACP v2 Runtime. Historical
+execution state is not converted or deleted.
 
 To create profiles for the generic
 [`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running

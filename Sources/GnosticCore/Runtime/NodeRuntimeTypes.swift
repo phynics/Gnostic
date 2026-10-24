@@ -22,6 +22,8 @@ public enum NodeRuntimeError: Error, Sendable, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case let .unsupportedAscendantKind(kind) where kind == "positronic" || kind == "letta":
+            "Backend kind '\(kind)' was removed. Configure an ACP v2 Runtime process; historical execution state is not converted."
         case let .unsupportedAscendantKind(kind): "No Ascendant adapter is registered for '\(kind)'."
         case let .unsupportedWorkspaceKind(kind): "No Workspace adapter is registered for '\(kind)'."
         case let .invalidWorkspaceURI(id): "Workspace \(id.uuidString) has an invalid URI."

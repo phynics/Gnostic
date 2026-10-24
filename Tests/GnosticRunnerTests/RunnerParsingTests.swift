@@ -137,7 +137,7 @@ struct RunnerParsingTests {
         #expect(manifest.broker.host == "broker.example.com")
         #expect(manifest.broker.port == 1884)
         #expect(manifest.broker.namespace == "flag-ns")
-        #expect(manifest.ascendants.contains { $0.backend.kind == "positronic" })
+        #expect(manifest.ascendants.contains { $0.backend.kind == "acp-client" })
     }
 
     @Test("the resolved broker overrides the manifest broker")

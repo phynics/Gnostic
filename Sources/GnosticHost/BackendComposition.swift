@@ -4,7 +4,6 @@ import Foundation
 import GnosticACPAscendant
 import GnosticCore
 import GnosticKit
-import GnosticLettaBackend
 
 /// The composition source for clean Ascendant backend kinds and modules.
 ///
@@ -33,14 +32,11 @@ public struct BackendComposition: Sendable {
 
     /// The CLI's production composition.
     ///
-    /// Carries optional Letta and ACP backends. Their factories construct a
-    /// remote client only when a backend is materialized, so configuration
-    /// listing stays free of credentials and network access.
+    /// Registers the ACP process adapter for configured Runtime instances.
     public static var `default`: BackendComposition {
         var composition = BackendComposition()
         composition.registerModule(KnownModuleCatalog.atlas)
         composition.registerModule(KnownModuleCatalog.rlm)
-        composition.registerLettaBackend()
         composition.registerACPBackend()
         return composition
     }
@@ -112,21 +108,6 @@ public struct BackendComposition: Sendable {
             ascendants: registry,
             terminalTurnObservers: terminalTurnObservers(for: ascendants)
         )
-    }
-
-    /// Installs the optional Letta backend over this composition.
-    private mutating func registerLettaBackend() {
-        registry.registerBackend(
-            kind: LettaAscendantBackend.kind,
-            settings: LettaAscendantBackend.settingsSchema
-        ) { ascendant, backend, services, timelines in
-            try LettaAscendantBackend(
-                ascendant: ascendant,
-                configuration: backend,
-                services: services,
-                timelines: timelines
-            )
-        }
     }
 
     /// Installs the configuration-only ACP backend and its CLI schema.
