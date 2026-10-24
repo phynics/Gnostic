@@ -23,6 +23,29 @@ permissions:
 # .devcontainer/Dockerfile itself; the duplicated image build costs runner
 # minutes but not wall-clock time.
 jobs:
+  resolve-package-graph:
+    name: resolved Swift package graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: make resolve
+        id: resolve-package-graph
+        run: make resolve
+
+      # Keep the container-produced lockfile available even if the other
+      # verification jobs fail. This temporary lane can be removed once the
+      # resolved graph is committed to the branch.
+      - name: Upload resolved Swift package graph
+        if: always() && steps.resolve-package-graph.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: resolved-swift-package-graph
+          path: Package.resolved
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
     name: validation matrix
     # Match the Noble development image instead of following OS migrations.
