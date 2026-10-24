@@ -12,8 +12,8 @@ import Synchronization
 private let mcpRequestTimeoutSeconds: TimeInterval = 60 * 60
 
 protocol MCPClient: Sendable {
-    func initialize() async throws -> [WorkspaceToolDefinition]
-    func listTools() async throws -> [WorkspaceToolDefinition]
+    func initialize() async throws -> [ToolDefinition]
+    func listTools() async throws -> [ToolDefinition]
     func callTool(name: String, arguments: [String: AnyCodable]) async throws -> ToolResult
     func isRunning() async -> Bool
     func shutdown() async
@@ -147,7 +147,7 @@ actor MCPStdioClient: MCPClient {
         Task { await self.consume(readStream) }
     }
 
-    func initialize() async throws -> [WorkspaceToolDefinition] {
+    func initialize() async throws -> [ToolDefinition] {
         let result = try await request(method: "initialize", params: .object([
             "protocolVersion": .string("2024-11-05"),
             "capabilities": .object([:]),
@@ -161,7 +161,7 @@ actor MCPStdioClient: MCPClient {
         return try await listTools()
     }
 
-    func listTools() async throws -> [WorkspaceToolDefinition] {
+    func listTools() async throws -> [ToolDefinition] {
         var cursor: String?
         var seenCursors: Set<String> = []
         var discovered: [Tool] = []
@@ -180,7 +180,7 @@ actor MCPStdioClient: MCPClient {
             }
         } while cursor != nil
         return discovered.map { tool in
-            WorkspaceToolDefinition(
+            ToolDefinition(
                 id: tool.name,
                 name: tool.name,
                 description: tool.description ?? "MCP tool \(tool.name)",
@@ -377,7 +377,7 @@ actor MCPHTTPClient: MCPClient {
         )
     }
 
-    func initialize() async throws -> [WorkspaceToolDefinition] {
+    func initialize() async throws -> [ToolDefinition] {
         let response = try await request(method: "initialize", params: .object([
             "protocolVersion": .string("2025-03-26"),
             "capabilities": .object([:]),
@@ -396,7 +396,7 @@ actor MCPHTTPClient: MCPClient {
         return try await listTools()
     }
 
-    func listTools() async throws -> [WorkspaceToolDefinition] {
+    func listTools() async throws -> [ToolDefinition] {
         var cursor: String?
         var seenCursors: Set<String> = []
         var discovered: [Tool] = []
@@ -416,7 +416,7 @@ actor MCPHTTPClient: MCPClient {
         } while cursor != nil
 
         return discovered.map { tool in
-            WorkspaceToolDefinition(
+            ToolDefinition(
                 id: tool.name,
                 name: tool.name,
                 description: tool.description ?? "MCP tool \(tool.name)",
