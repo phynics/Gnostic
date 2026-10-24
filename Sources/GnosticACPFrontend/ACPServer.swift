@@ -11,7 +11,7 @@ public struct ACPServer: Sendable {
 
     public init(
         client: RemoteTurnClient,
-        ascendantID: UUID?,
+        runtimeID: UUID?,
         providerID: String? = nil,
         nodeID: UUID? = nil,
         registry: ACPSessionRegistry,
@@ -25,7 +25,7 @@ public struct ACPServer: Sendable {
         let dispatcher = ACPDispatcher(
             client: client,
             registry: registry,
-            requestedAscendantID: ascendantID,
+            requestedRuntimeID: runtimeID,
             requestedProviderID: providerID,
             requestedNodeID: nodeID,
             publish: { method, params in

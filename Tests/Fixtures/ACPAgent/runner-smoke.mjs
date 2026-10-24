@@ -14,7 +14,7 @@ assert(binary && config && namespace && stderrFile, "runner smoke client configu
 const child = spawn(binary, [
   "acp", "--config", config,
   "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
-  "--ascendant", "e51d0000-0000-4000-8000-000000000002",
+  "--runtime", "e51d0000-0000-4000-8000-000000000002",
   "--node", "e51d0000-0000-4000-8000-000000000001",
 ], { stdio: ["pipe", "pipe", "pipe"] });
 const clientStderr = [];

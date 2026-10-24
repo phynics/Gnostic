@@ -52,7 +52,9 @@ struct SharedConfigOptionTests {
     @Test("gnostic acp accepts --config through the shared group")
     func acpAcceptsConfig() throws {
         let (_, path) = try manifestPath()
-        let acp = try ACPCommand.parse(["--config", path])
+        let runtimeID = UUID().uuidString
+        let acp = try ACPCommand.parse(["--runtime", runtimeID, "--config", path])
+        #expect(acp.runtime == runtimeID)
         #expect(acp.configOptions.store().path().path == path)
     }
 

@@ -5,11 +5,11 @@ import Foundation
 import GnosticACPFrontend
 import GnosticCore
 
-/// `gnostic acp` — an ACP v1 Ascendant projection of one Gnostic Ascendant.
+/// `gnostic acp` — an ACP v2 adapter for one discovered Runtime instance.
 struct ACPCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "acp",
-        abstract: "Expose a Gnostic Ascendant through ACP over stdio."
+        abstract: "Expose a selected Runtime instance through ACP over stdio."
     )
 
     @Argument(help: "Optional operation (`profiles`).")
@@ -30,8 +30,8 @@ struct ACPCommand: AsyncParsableCommand {
     @Option(name: .long, help: "MQTT namespace (overrides config).")
     var namespace: String?
 
-    @Option(name: .long, help: "Ascendant UUID to pin for this ACP process.")
-    var ascendant: String?
+    @Option(name: .long, help: "Runtime instance UUID to pin for this ACP process.")
+    var runtime: String?
 
     @Option(name: .long, help: "Provider identity to pin for this ACP process. Prefer --node.")
     var provider: String?
@@ -55,9 +55,9 @@ struct ACPCommand: AsyncParsableCommand {
             return
         }
         guard !json else { throw ValidationError("--json requires the profiles operation") }
-        let ascendantID = try ascendant.map { value in
+        let runtimeID = try runtime.map { value in
             guard let id = UUID(uuidString: value) else {
-                throw ValidationError("--ascendant must be a UUID")
+                throw ValidationError("--runtime must be a UUID")
             }
             return id
         }
@@ -80,7 +80,7 @@ struct ACPCommand: AsyncParsableCommand {
         )
         try await ACPServer(
             client: client,
-            ascendantID: ascendantID,
+            runtimeID: runtimeID,
             providerID: provider,
             nodeID: nodeID,
             registry: ACPSessionRegistry()
@@ -95,7 +95,10 @@ struct ACPCommand: AsyncParsableCommand {
             namespace: namespace ?? stored.mqttNamespace
         )
         let cache = ACPProfileCache()
-        if !refresh, let cached = cache.load(for: brokerKey), cached.isRestartStable {
+        if !refresh,
+           let cached = cache.load(for: brokerKey),
+           cached.isRestartStable,
+           cached.profiles.allSatisfy({ $0.args.contains("--runtime") }) {
             try writeProfiles(cached)
             return
         }
@@ -111,7 +114,7 @@ struct ACPCommand: AsyncParsableCommand {
         // subscription.
         do {
             try await client.connect()
-            let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.ascendant }
+            let entries = await client.listNetworkObjects().filter { $0.objectType == GnosticObjectType.runtimeInstance }
             let profiles = Self.profiles(
                 from: entries,
                 host: host ?? stored.mqttHost,
@@ -134,10 +137,10 @@ struct ACPCommand: AsyncParsableCommand {
         await client.stop()
     }
 
-    /// Builds one profile per served Ascendant, per node.
+    /// Builds one profile per served Runtime instance, per node.
     ///
     /// A profile carries a disambiguating selector only when more than one node
-    /// advertises the same Ascendant identifier, and that selector is the node
+    /// advertises the same Runtime instance identifier, and that selector is the node
     /// identity. The provider identity changes with every serve process, so
     /// pinning it would invalidate the profile at the next restart. It remains
     /// the fallback selector for a serve that advertises no node identity.
@@ -148,7 +151,8 @@ struct ACPCommand: AsyncParsableCommand {
         namespace: String
     ) -> [ACPProfile] {
         var profiles: [ACPProfile] = []
-        for (ascendantID, advertised) in Dictionary(grouping: entries, by: \.objectID) {
+        let runtimes = entries.filter { $0.objectType == GnosticObjectType.runtimeInstance }
+        for (runtimeID, advertised) in Dictionary(grouping: runtimes, by: \.objectID) {
             var byNode: [String: NetworkCatalogEntry] = [:]
             for entry in advertised.sorted(by: { $0.providerID < $1.providerID }) {
                 let key = RemoteTurnClient.nodeID(of: entry)?.uuidString.lowercased()
@@ -157,13 +161,13 @@ struct ACPCommand: AsyncParsableCommand {
             }
             let needsSelector = byNode.count > 1
             for entry in byNode.values {
-                var identifier = "gnostic-\(ascendantID.uuidString.lowercased())"
+                var identifier = "gnostic-\(runtimeID.uuidString.lowercased())"
                 var args = [
                     "acp",
                     "--host", host,
                     "--port", String(port),
                     "--namespace", namespace,
-                    "--ascendant", ascendantID.uuidString.lowercased(),
+                    "--runtime", runtimeID.uuidString.lowercased(),
                 ]
                 if needsSelector {
                     if let nodeID = RemoteTurnClient.nodeID(of: entry)?.uuidString.lowercased() {

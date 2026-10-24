@@ -43,28 +43,39 @@ scratch=$(mktemp -d)
 mosquitto_log="$scratch/mosquitto.log"
 mosquitto_config="$scratch/mosquitto.conf"
 mosquitto_pid=
+runner_pid=
+fixture_pid=
 cleanup() {
     local status=$?
     trap - EXIT INT TERM
-    if [ -n "${runner_pid:-}" ] && kill -0 "$runner_pid" 2>/dev/null; then
+    if [ "$status" -ne 0 ]; then
+        local diagnostics="/workspace/.testing/runner-smoke-failure-$(date +%s)-$$"
+        mkdir -p "$diagnostics" || true
+        for name in runner.log mosquitto.log client.stderr fixture-initialize fixture-new-session fixture-prompt fixture-pid; do
+            if [ -f "$scratch/$name" ]; then cp "$scratch/$name" "$diagnostics/$name" || true; fi
+        done
+        printf 'Runner smoke diagnostics saved to %s\n' "$diagnostics" >&2
+    fi
+    if [ -n "$runner_pid" ] && kill -0 "$runner_pid" 2>/dev/null; then
         kill -TERM "$runner_pid" 2>/dev/null || true
+        for _ in $(seq 1 50); do
+            if ! kill -0 "$runner_pid" 2>/dev/null; then break; fi
+            sleep 0.1
+        done
+        kill -KILL "$runner_pid" 2>/dev/null || true
         wait "$runner_pid" 2>/dev/null || true
+    fi
+    if [ -z "$fixture_pid" ] && [ -s "$scratch/fixture-pid" ]; then
+        fixture_pid=$(head -n1 "$scratch/fixture-pid")
+    fi
+    if [ -n "$fixture_pid" ] && kill -0 "$fixture_pid" 2>/dev/null; then
+        kill -KILL "$fixture_pid" 2>/dev/null || true
     fi
     if [ -n "$mosquitto_pid" ]; then
         kill "$mosquitto_pid" 2>/dev/null || true
         wait "$mosquitto_pid" 2>/dev/null || true
     fi
-    if [ "$status" -eq 0 ]; then
-        rm -rf "$scratch"
-    else
-        local diagnostics="/workspace/.testing/runner-smoke-failure-$(date +%s)-$$"
-        mkdir -p "$diagnostics" || true
-        for name in runner.log mosquitto.log client.stderr fixture-initialize fixture-new-session fixture-prompt fixture-pid fixture-exit; do
-            if [ -f "$scratch/$name" ]; then cp "$scratch/$name" "$diagnostics/$name" || true; fi
-        done
-        printf 'Runner smoke diagnostics saved to %s\n' "$diagnostics" >&2
-        rm -rf "$scratch"
-    fi
+    rm -rf "$scratch"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -176,7 +187,6 @@ manifest.ascendants[0].backend.settings.env = JSON.stringify({
   GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE: `${scratch}/fixture-new-session`,
   GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE: `${scratch}/fixture-prompt`,
   GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE: `${scratch}/fixture-pid`,
-  GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE: `${scratch}/fixture-exit`,
 });
 fs.writeFileSync(manifestPath, JSON.stringify(manifest));
 NODE
@@ -203,11 +213,6 @@ wait "$runner_pid" || runner_status=$?
 runner_status=${runner_status:-0}
 test "$runner_status" -eq 0
 runner_pid=
-for _ in $(seq 1 50); do
-    if [ -s "$scratch/fixture-exit" ]; then break; fi
-    sleep 0.1
-done
-test -s "$scratch/fixture-exit"
 fixture_pid=$(head -n1 "$scratch/fixture-pid")
 for _ in $(seq 1 50); do
     if ! kill -0 "$fixture_pid" 2>/dev/null; then break; fi

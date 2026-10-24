@@ -279,8 +279,8 @@ public actor JSONRPCSession {
     private func errorObject(for error: RemoteTurnClientError) -> JSONRPCErrorObject {
         let code: JSONRPCErrorCode = switch error {
         case .brokerUnreachable: .internalError
-        case .noServedAscendant, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
-             .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .providerOffline,
+        case .noServedAscendant, .noRuntime, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
+             .ambiguousAscendant, .ambiguousRuntime, .ascendantUnavailable, .runtimeUnavailable, .providerUnavailable, .providerOffline,
              .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
              .missingCapability: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI, .promptTooLarge: .invalidParams

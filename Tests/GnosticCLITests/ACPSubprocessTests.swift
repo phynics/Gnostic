@@ -2,6 +2,7 @@
 
 import Foundation
 @_spi(RuntimeHost) import GnosticCore
+import GnosticProtocol
 import Testing
 
 @testable import GnosticACPFrontend
@@ -14,6 +15,72 @@ import Testing
 /// host-owned echo fixture. No provider package is linked or executed.
 @Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
+    @Test("ACP selection uses Runtime when its ID collides with a legacy Ascendant projection")
+    @MainActor
+    func selectsCanonicalRuntimeAdvertisement() throws {
+        let id = UUID(uuidString: "e51d0000-0000-4000-8000-000000000002")!
+        let nodeID = UUID(uuidString: "e51d0000-0000-4000-8000-000000000001")!
+        let legacyProjection = NetworkCatalogEntry(
+            objectID: id,
+            objectType: GnosticObjectType.ascendant,
+            protocolMajor: GnosticProtocol.currentMajor,
+            providerID: "provider",
+            name: "Legacy projection",
+            knownProperties: [:],
+            dynamicProperties: [:],
+            workspace: nil
+        )
+        let runtime = NetworkCatalogEntry(
+            objectID: id,
+            objectType: GnosticObjectType.runtimeInstance,
+            protocolMajor: GnosticProtocol.currentMajor,
+            providerID: "provider",
+            name: "ACP fixture Runtime",
+            knownProperties: ["nodeID": .string(nodeID.uuidString)],
+            dynamicProperties: [:],
+            workspace: nil
+        )
+
+        let candidates = RemoteTurnClient.discoveredRuntimes(from: [legacyProjection, runtime])
+        let selected = try RemoteTurnClient.selectCandidate(from: candidates, id: id)
+        #expect(candidates.count == 1)
+        #expect(selected.runtimeID == id)
+        #expect(selected.name == "ACP fixture Runtime")
+        #expect(selected.nodeID == nodeID)
+        let profiles = ACPCommand.profiles(
+            from: [legacyProjection, runtime],
+            host: "127.0.0.1",
+            port: 1883,
+            namespace: "fixture"
+        )
+        #expect(profiles.count == 1)
+        #expect(profiles[0].args.contains("--runtime"))
+        #expect(!profiles[0].args.contains("--ascendant"))
+    }
+
+    @Test("ACP discovery diagnostics bound and sanitize catalog details")
+    @MainActor
+    func discoveryDiagnosticsAreBounded() {
+        let entries = (0..<24).map { index in
+            NetworkCatalogEntry(
+                objectID: UUID(),
+                objectType: GnosticObjectType.runtimeInstance,
+                protocolMajor: GnosticProtocol.currentMajor,
+                providerID: "provider\n\u{001B}" + String(repeating: "x", count: 300),
+                name: "Runtime \(index)",
+                knownProperties: ["rawCapabilities": .object(Dictionary(uniqueKeysWithValues: (0..<2_000).map { ("cap-\($0)", NetworkDynamicValue.bool(true)) }))],
+                dynamicProperties: [:],
+                workspace: nil
+            )
+        }
+        let summary = RemoteTurnClient.discoverySummary(entries)
+        #expect(summary.count <= 1_024)
+        #expect(!summary.contains("\n"))
+        #expect(!summary.contains("\u{001B}"))
+        #expect(summary.contains("truncated=true"))
+        #expect(summary.contains("capabilityCount=999+"))
+    }
+
     @Test(
         "profile discovery emits deterministic source profiles",
         .timeLimit(.minutes(1)),
@@ -52,7 +119,9 @@ struct ACPSubprocessTests {
         let standardError = String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
         let profiles = try JSONDecoder().decode(ACPProfileBundle.self, from: data)
-        #expect(profiles.profiles.contains { $0.args.contains(lowerID.uuidString.lowercased()) })
+        let profile = try #require(profiles.profiles.first { $0.args.contains(lowerID.uuidString.lowercased()) })
+        #expect(profile.args.contains("--runtime"))
+        #expect(!profile.args.contains("--ascendant"))
     }
 
     @Test(

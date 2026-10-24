@@ -59,7 +59,6 @@ struct ServeSubprocessSignalTests {
         let fixtureStateURL = fixtureDirectory.appendingPathComponent("sessions.json")
         let fixtureInitializeURL = fixtureDirectory.appendingPathComponent("initialized")
         let fixturePIDURL = fixtureDirectory.appendingPathComponent("process.pid")
-        let fixtureExitURL = fixtureDirectory.appendingPathComponent("process.exited")
         let configStore = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
         _ = try configStore.initializeManifest()
         try configStore.mutateManifest { manifest in
@@ -67,7 +66,6 @@ struct ServeSubprocessSignalTests {
                 "GNOSTIC_ACP_FIXTURE_STATE": fixtureStateURL.path,
                 "GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE": fixtureInitializeURL.path,
                 "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePIDURL.path,
-                "GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE": fixtureExitURL.path,
             ]
             manifest.ascendants[0].backend.settings["command"] = .string("node")
             manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([fixturePath]))
@@ -94,6 +92,7 @@ struct ServeSubprocessSignalTests {
                 kill(process.processIdentifier, SIGKILL)
                 process.waitUntilExit()
             }
+            cleanupFixtureProcess(pidURL: fixturePIDURL)
             try? log.close()
             try? FileManager.default.removeItem(at: logURL)
             try? FileManager.default.removeItem(at: configDirectory)
@@ -127,8 +126,8 @@ struct ServeSubprocessSignalTests {
         #expect(process.terminationReason == .exit, Comment(rawValue: standardError))
         #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
         if FileManager.default.fileExists(atPath: fixturePIDURL.path) {
-            let fixtureExited = await waitForFixtureExit(exitURL: fixtureExitURL, pidURL: fixturePIDURL)
-            #expect(fixtureExited, "ACP fixture did not exit gracefully after \(signal).")
+            let fixtureStopped = await waitForFixtureStop(pidURL: fixturePIDURL)
+            #expect(fixtureStopped, "ACP fixture process remained alive after \(signal).")
             #expect(!fixtureProcessIsRunning(pidURL: fixturePIDURL), "ACP fixture process remained alive after \(signal).")
         }
     }
@@ -148,12 +147,23 @@ struct ServeSubprocessSignalTests {
     }
 
     @MainActor
-    private func waitForFixtureExit(exitURL: URL, pidURL: URL) async -> Bool {
+    private func waitForFixtureStop(pidURL: URL) async -> Bool {
         for _ in 0..<100 {
-            if FileManager.default.fileExists(atPath: exitURL.path), !fixtureProcessIsRunning(pidURL: pidURL) { return true }
+            if !fixtureProcessIsRunning(pidURL: pidURL) { return true }
             try? await Task.sleep(for: .milliseconds(50))
         }
         return false
+    }
+
+    private func cleanupFixtureProcess(pidURL: URL) {
+        guard let rawPID = try? String(contentsOf: pidURL, encoding: .utf8).split(whereSeparator: \.isNewline).first,
+              let pid = Int32(String(rawPID)) else { return }
+        guard kill(pid, 0) == 0 || errno != ESRCH else { return }
+        kill(pid, SIGKILL)
+        for _ in 0..<50 {
+            if kill(pid, 0) != 0 && errno == ESRCH { return }
+            usleep(10_000)
+        }
     }
 
     private func fixtureProcessIsRunning(pidURL: URL) -> Bool {

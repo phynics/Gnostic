@@ -9,35 +9,29 @@ import GnosticProtocol
 ///
 /// Connection, discovery, Turns, and Timeline calls go through one
 /// ``GnosticConsumerSession`` and its clients. This type adds only what ACP
-/// needs on top: Ascendant selection, Timeline presence for the session
+/// needs on top: Runtime selection, Timeline presence for the session
 /// registry, fast failure once a provider is evicted, and the ACP error
 /// vocabulary.
 @MainActor
 public final class RemoteTurnClient: Sendable {
-    public struct DiscoveredAscendant: Sendable, Equatable {
-        public let id: UUID
+    public struct DiscoveredRuntimeInstance: Sendable, Equatable {
+        public let runtimeID: UUID
         public let name: String
-        public let timelineID: UUID
         public let providerID: String
         /// The serving node identity, when the serve advertises one. It is
         /// stable across serve processes; `providerID` is not.
         public let nodeID: UUID?
-        public let capabilities: [String]
 
         public init(
-            id: UUID,
+            runtimeID: UUID,
             name: String,
-            timelineID: UUID,
             providerID: String,
-            nodeID: UUID? = nil,
-            capabilities: [String] = []
+            nodeID: UUID? = nil
         ) {
-            self.id = id
+            self.runtimeID = runtimeID
             self.name = name
-            self.timelineID = timelineID
             self.providerID = providerID
             self.nodeID = nodeID
-            self.capabilities = capabilities
         }
     }
     public let host: String
@@ -53,7 +47,7 @@ public final class RemoteTurnClient: Sendable {
     private var providerEvictionTask: Task<Void, Never>?
     private var offlineProviders: Set<String> = []
     private var inFlightCalls: [String: [UUID: @MainActor () -> Void]] = [:]
-    private(set) var ascendantDiscoveryDiagnostics = "Discovery has not run."
+    private(set) var runtimeDiscoveryDiagnostics = "Discovery has not run."
 
     /// Creates a client bound to a broker namespace.
     ///
@@ -154,22 +148,18 @@ public final class RemoteTurnClient: Sendable {
         return await session.networkObjects()
     }
 
-    private func discoveredAscendants(from entries: [NetworkCatalogEntry]) -> [DiscoveredAscendant] {
+    static func discoveredRuntimes(from entries: [NetworkCatalogEntry]) -> [DiscoveredRuntimeInstance] {
         entries
-            .filter { $0.objectType == GnosticObjectType.ascendant }
-            .compactMap { entry in
-                guard case let .string(raw) = entry.knownProperties["privateTimelineID"],
-                      let timelineID = UUID(uuidString: raw) else { return nil }
-                return DiscoveredAscendant(
-                    id: entry.objectID,
+            .filter { $0.objectType == GnosticObjectType.runtimeInstance }
+            .map { entry in
+                DiscoveredRuntimeInstance(
+                    runtimeID: entry.objectID,
                     name: entry.name,
-                    timelineID: timelineID,
                     providerID: entry.providerID,
-                    nodeID: Self.nodeID(of: entry),
-                    capabilities: entry.advertisedCapabilities
+                    nodeID: Self.nodeID(of: entry)
                 )
             }
-            .sorted { ($0.id.uuidString, $0.providerID) < ($1.id.uuidString, $1.providerID) }
+            .sorted { ($0.runtimeID.uuidString, $0.providerID) < ($1.runtimeID.uuidString, $1.providerID) }
     }
 
     /// Runs an identified Turn. Supplying a stable id enables serve-lifetime
@@ -246,90 +236,109 @@ public final class RemoteTurnClient: Sendable {
         }
     }
 
-    /// Creates a new Timeline under a discovered Ascendant.
+    /// Creates a new Timeline for the selected Runtime instance.
     public func createTimeline(
         title: String,
-        ascendantID: UUID,
+        runtimeID: UUID,
         providerID: String? = nil
     ) async throws -> TimelineStatus {
         let timelines = try connectedTimelines()
         return try await tracked(providerID) {
-            try await timelines.create(title: title, ascendantID: ascendantID, providerID: providerID)
+            try await timelines.create(title: title, ascendantID: runtimeID, providerID: providerID)
         }
     }
 
-    public func selectAscendant(
-        id ascendantID: UUID? = nil,
+    /// Selects one compatible Runtime advertisement; Timeline creation happens separately.
+    public func selectRuntime(
+        id runtimeID: UUID? = nil,
         providerID: String? = nil,
         nodeID: UUID? = nil
-    ) async throws -> DiscoveredAscendant {
+    ) async throws -> DiscoveredRuntimeInstance {
         try await session.discover()
         let entries = await session.networkObjects(includeIncompatible: true)
-        ascendantDiscoveryDiagnostics = Self.discoverySummary(entries)
+        runtimeDiscoveryDiagnostics = Self.discoverySummary(entries)
         return try Self.selectCandidate(
-            from: discoveredAscendants(from: entries.filter(\.isProtocolCompatible)),
-            id: ascendantID,
+            from: Self.discoveredRuntimes(from: entries.filter(\.isProtocolCompatible)),
+            id: runtimeID,
             providerID: providerID,
             nodeID: nodeID
         )
     }
 
-    private static func discoverySummary(_ entries: [NetworkCatalogEntry]) -> String {
-        let objectTypes = Dictionary(grouping: entries, by: \.objectType)
-            .map { "\($0.key):\($0.value.count)" }
+    static func discoverySummary(_ entries: [NetworkCatalogEntry]) -> String {
+        let entryLimit = 8
+        let fieldLimit = 64
+        let objectTypes = Dictionary(grouping: entries.prefix(entryLimit), by: \.objectType)
+            .map { "\(safeDiagnosticField($0.key, limit: fieldLimit)):\($0.value.count)" }
             .sorted()
             .joined(separator: ",")
-        let ascendants = entries.filter { $0.objectType == GnosticObjectType.ascendant }
-        guard !ascendants.isEmpty else {
-            return "catalogObjectTypes=[\(objectTypes)]; catalogAscendants=none"
+        let runtimeCount = entries.reduce(into: 0) { count, entry in
+            if entry.objectType == GnosticObjectType.runtimeInstance { count += 1 }
         }
-        let summaries = ascendants.map { entry in
-            let timeline: String
-            if case let .string(raw)? = entry.knownProperties["privateTimelineID"] {
-                timeline = UUID(uuidString: raw) == nil ? "malformed" : "valid"
+        let runtimeEntries = entries.lazy.filter { $0.objectType == GnosticObjectType.runtimeInstance }
+        let summaries = runtimeEntries.prefix(entryLimit).map { entry in
+            let kind: String
+            if case let .string(raw)? = entry.knownProperties["runtimeKind"] {
+                kind = safeDiagnosticField(raw, limit: fieldLimit)
             } else {
-                timeline = "missing"
+                kind = "missing"
             }
             let node = Self.nodeID(of: entry)?.uuidString.lowercased() ?? "missing"
-            let capabilities = entry.advertisedCapabilities.sorted().joined(separator: ",")
             let protocolMajor = entry.protocolMajor.map { String($0) } ?? "missing"
-            return "id=\(entry.objectID.uuidString.lowercased()),provider=\(entry.providerID),node=\(node),protocol=\(protocolMajor),compatible=\(entry.isProtocolCompatible),privateTimeline=\(timeline),capabilities=[\(capabilities)]"
+            let capabilityCount: Int
+            if case let .object(capabilities)? = entry.knownProperties["rawCapabilities"] {
+                capabilityCount = capabilities.count
+            } else {
+                capabilityCount = 0
+            }
+            let capabilityCountText = capabilityCount > 999 ? "999+" : String(capabilityCount)
+            return "id=\(entry.objectID.uuidString.lowercased()),provider=\(safeDiagnosticField(entry.providerID, limit: fieldLimit)),node=\(node),kind=\(kind),protocol=\(protocolMajor),capabilityCount=\(capabilityCountText),compatible=\(entry.isProtocolCompatible)"
         }
-        return "catalogObjectTypes=[\(objectTypes)]; catalogAscendants=[\(summaries.joined(separator: "; "))]"
+        let omittedEntries = max(0, entries.count - entryLimit)
+        let omittedRuntimes = max(0, runtimeCount - entryLimit)
+        let summary = "catalogObjectTypes=[\(objectTypes)]; catalogRuntimes=[\(summaries.joined(separator: "; "))]; omittedEntries=\(omittedEntries); omittedRuntimes=\(omittedRuntimes)\(omittedEntries > 0 || omittedRuntimes > 0 ? "; truncated=true" : "")"
+        guard summary.count > 1_024 else { return summary }
+        return String(summary.prefix(1_008)) + "; truncated=true"
+    }
+
+    private static func safeDiagnosticField(_ value: String, limit: Int) -> String {
+        var scalars = value.unicodeScalars.makeIterator()
+        var characters: [Character] = []
+        characters.reserveCapacity(limit)
+        while characters.count < limit, let scalar = scalars.next() {
+            characters.append(CharacterSet.controlCharacters.contains(scalar) ? " " : Character(scalar))
+        }
+        let truncated = scalars.next() != nil
+        return String(characters) + (truncated ? "…" : "")
     }
 
     static func selectCandidate(
-        from candidates: [DiscoveredAscendant],
-        id ascendantID: UUID? = nil,
+        from candidates: [DiscoveredRuntimeInstance],
+        id runtimeID: UUID? = nil,
         providerID: String? = nil,
         nodeID: UUID? = nil
-    ) throws -> DiscoveredAscendant {
-        if ascendantID != nil || providerID != nil || nodeID != nil {
+    ) throws -> DiscoveredRuntimeInstance {
+        if runtimeID != nil || providerID != nil || nodeID != nil {
             let matches = candidates.filter {
-                (ascendantID == nil || $0.id == ascendantID)
+                (runtimeID == nil || $0.runtimeID == runtimeID)
                     && (providerID == nil || $0.providerID.lowercased() == providerID?.lowercased())
                     && (nodeID == nil || $0.nodeID == nil || $0.nodeID == nodeID)
             }
             guard let candidate = matches.first else {
-                if let nodeID, candidates.contains(where: { ascendantID == nil || $0.id == ascendantID }) {
+                if let nodeID, candidates.contains(where: { runtimeID == nil || $0.runtimeID == runtimeID }) {
                     throw RemoteTurnClientError.nodeUnavailable(nodeID)
                 }
-                if let ascendantID { throw RemoteTurnClientError.ascendantUnavailable(ascendantID) }
+                if let runtimeID { throw RemoteTurnClientError.runtimeUnavailable(runtimeID) }
                 throw RemoteTurnClientError.providerUnavailable(providerID ?? "")
             }
-            guard matches.count == 1 else { throw RemoteTurnClientError.ambiguousAscendant }
-            guard candidate.capabilities.contains(GnosticCapability.textTurnInput) else {
-                throw RemoteTurnClientError.missingCapability(GnosticCapability.textTurnInput)
-            }
+            guard matches.count == 1 else { throw RemoteTurnClientError.ambiguousRuntime }
             return candidate
         }
-        guard !candidates.isEmpty else { throw RemoteTurnClientError.noServedAscendant }
-        let capable = candidates.filter { $0.capabilities.contains(GnosticCapability.textTurnInput) }
-        guard !capable.isEmpty else { throw RemoteTurnClientError.missingCapability(GnosticCapability.textTurnInput) }
-        guard capable.count == 1 else {
-            throw RemoteTurnClientError.ambiguousAscendant
+        guard !candidates.isEmpty else { throw RemoteTurnClientError.noRuntime }
+        guard candidates.count == 1 else {
+            throw RemoteTurnClientError.ambiguousRuntime
         }
-        return capable[0]
+        return candidates[0]
     }
 
     /// Refreshes discovery once and returns a snapshot that answers Timeline
@@ -346,7 +355,7 @@ public final class RemoteTurnClient: Sendable {
         }
         return TimelinePresenceSnapshot(
             providersByTimeline: providersByTimeline,
-            hasDiscoveredNode: entries.contains { $0.objectType == GnosticObjectType.ascendant }
+            hasDiscoveredNode: entries.contains { $0.objectType == GnosticObjectType.runtimeInstance }
         )
     }
 
