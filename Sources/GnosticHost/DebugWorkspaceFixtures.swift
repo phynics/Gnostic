@@ -37,6 +37,15 @@ private final class RevocablePeerWorkspace: LocalWorkspace, LocalWorkspaceHealth
     init(id: UUID, uri: String, healthURL: URL, invocationURL: URL) {
         self.healthURL = healthURL
         self.invocationURL = invocationURL
+        let supplementalTools = (0..<16).map { index in
+            BackendWorkspaceTool(
+                id: String(format: "peer-tool-%02d", index),
+                name: "Peer tool \(index)",
+                description: "A paged peer Workspace tool definition used by the two-Node fixture. \(String(repeating: "detail ", count: 8))",
+                parametersSchema: .object(["type": .string("object")]),
+                requiresPermission: false
+            )
+        }
         reference = BackendWorkspaceReference(
             id: id,
             uri: uri,
@@ -47,7 +56,7 @@ private final class RevocablePeerWorkspace: LocalWorkspace, LocalWorkspaceHealth
                 description: "Search the remote Workspace fixture",
                 parametersSchema: .object(["type": .string("object")]),
                 requiresPermission: true
-            )]
+            )] + supplementalTools
         )
     }
 

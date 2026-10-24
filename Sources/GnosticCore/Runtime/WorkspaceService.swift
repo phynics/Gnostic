@@ -12,6 +12,15 @@ import GnosticProtocol
 /// provider dependency is the optional ``NetworkWorkspaceInvoking`` seam.
 @MainActor
 public final class WorkspaceService {
+    /// `workspace.attach` has a five-second caller RPC deadline. Keep two
+    /// seconds for backend projection, response encoding, and MQTT delivery;
+    /// peer discovery and tool resolution share the remaining three seconds.
+    private static let attachmentResolutionBudget: Duration = .seconds(3)
+    /// Axoloty resolve streams stay open until their timeout and have no
+    /// terminal marker. Reserve a bounded discovery window to collect competing
+    /// owners, then leave the rest of the attach budget for descriptor pages.
+    private static let coldCatalogDiscoveryWindow: Duration = .seconds(1)
+
     private let plan: NodeLaunchPlan
     private let registry: NodeRegistry
     private let discovery: any WorkspaceDiscovery
@@ -95,7 +104,10 @@ public final class WorkspaceService {
             }
             reference = local
         } else {
-            reference = try await resolveNetworkWorkspace(workspaceID: request.workspaceID)
+            reference = try await resolveNetworkWorkspace(
+                workspaceID: request.workspaceID,
+                timeout: Self.attachmentResolutionBudget
+            )
         }
         try await attach(
             reference: reference,
@@ -122,7 +134,10 @@ public final class WorkspaceService {
         guard ascendantID == expectedAscendantID, session.lease == expectedBackendLease else {
             throw NodeRuntimeError.notRunning
         }
-        let reference = try await resolveNetworkWorkspace(workspaceID: workspaceID)
+        let reference = try await resolveNetworkWorkspace(
+            workspaceID: workspaceID,
+            timeout: Self.attachmentResolutionBudget
+        )
         let runtime = try Self.requireWorkspaceRuntime(session.backend, timelineID: timelineID)
         try await attach(
             reference: reference,
@@ -223,6 +238,7 @@ public final class WorkspaceService {
     func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> BackendWorkspaceReference {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
+        let deadline = ContinuousClock.now.advanced(by: timeout)
         var status = await discovery.attachmentStatus(id: workspaceID)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         if case .available = status {
@@ -230,26 +246,63 @@ public final class WorkspaceService {
             // A full discover sweep here consumes the same deadline as the caller's
             // attach call, even though the Workspace is already in the catalog.
         } else {
-            await discovery.discover(timeout: timeout)
+            guard let remaining = Self.remaining(until: deadline) else {
+                throw DiscoveredWorkspaceAttachmentError.unavailable(status)
+            }
+            let discoveryWindow = min(remaining, Self.coldCatalogDiscoveryWindow)
+            if let resolutionDiscovery = discovery as? any WorkspaceResolutionDiscovery {
+                let discoveryDeadline = min(
+                    deadline,
+                    ContinuousClock.now.advanced(by: discoveryWindow)
+                )
+                await resolutionDiscovery.discoverForResolution(deadline: discoveryDeadline)
+            } else {
+                await discovery.discover(timeout: discoveryWindow)
+            }
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             status = await discovery.attachmentStatus(id: workspaceID)
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         }
-        guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
-            throw NodeRuntimeError.notRunning
-        }
         guard case let .available(providerID, uri) = status else {
+            if await registry.workspace(id: workspaceID) != nil {
+                guard await registry.setWorkspaceStatus(
+                    id: workspaceID,
+                    status: Self.effectiveStatus(status),
+                    generation: generation
+                ) else { throw NodeRuntimeError.notRunning }
+            }
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
         if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
-            await discovery.queryTools(workspaceID: workspaceID, timeout: timeout)
+            guard let remaining = Self.remaining(until: deadline) else {
+                throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
+            }
+            let complete: Bool
+            if let resolutionDiscovery = discovery as? any WorkspaceResolutionDiscovery {
+                complete = await resolutionDiscovery.queryToolsForResolution(
+                    workspaceID: workspaceID,
+                    providerID: providerID,
+                    deadline: deadline
+                )
+            } else {
+                await discovery.queryTools(workspaceID: workspaceID, timeout: remaining)
+                complete = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == true
+            }
+            guard complete else {
+                throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
+            }
         }
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-            guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
-                throw NodeRuntimeError.notRunning
+            if await registry.workspace(id: workspaceID) != nil {
+                guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
+                    throw NodeRuntimeError.notRunning
+                }
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+        }
+        guard descriptor.toolsComplete else {
+            throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
         }
         let reference = WorkspaceReferenceProjection.backendReference(from: descriptor)
         if let configured = await registry.workspace(id: workspaceID), configured.uri != uri {
@@ -258,6 +311,19 @@ public final class WorkspaceService {
                 throw NodeRuntimeError.notRunning
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+        }
+        if await registry.workspace(id: workspaceID) != nil {
+            guard await registry.setWorkspaceStatus(id: workspaceID, status: .available, generation: generation) else {
+                throw NodeRuntimeError.notRunning
+            }
+        } else {
+            guard try await registry.resolveLazyWorkspace(
+                id: workspaceID,
+                uri: uri,
+                toolIDs: reference.tools.map(\.id)
+            ) else {
+                throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
+            }
         }
         try await installResolved(reference, workspaceID: workspaceID)
         return reference
@@ -282,6 +348,7 @@ public final class WorkspaceService {
     func resolveAvailableNetworkWorkspace(_ workspaceID: UUID) async throws -> BackendWorkspaceReference? {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let status = await discovery.attachmentStatus(id: workspaceID)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
@@ -299,13 +366,26 @@ public final class WorkspaceService {
             return nil
         }
         if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
-            await discovery.queryTools(workspaceID: workspaceID, timeout: .seconds(5))
+            guard let remaining = Self.remaining(until: deadline) else { return nil }
+            let complete: Bool
+            if let resolutionDiscovery = discovery as? any WorkspaceResolutionDiscovery {
+                complete = await resolutionDiscovery.queryToolsForResolution(
+                    workspaceID: workspaceID,
+                    providerID: providerID,
+                    deadline: deadline
+                )
+            } else {
+                await discovery.queryTools(workspaceID: workspaceID, timeout: remaining)
+                complete = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == true
+            }
+            guard complete else { return nil }
         }
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
             guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
             await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation)
             return nil
         }
+        guard descriptor.toolsComplete else { return nil }
         let reference = WorkspaceReferenceProjection.backendReference(from: descriptor)
         try await installResolved(reference, workspaceID: workspaceID)
         return reference
@@ -316,6 +396,11 @@ public final class WorkspaceService {
         guard let session = backendProvider.session(for: ascendantID) else { throw NodeRuntimeError.unknownAscendant(ascendantID) }
         try backendProvider.requireCurrentSession(session)
         return (ascendantID, session)
+    }
+
+    private static func remaining(until deadline: ContinuousClock.Instant) -> Duration? {
+        let remaining = ContinuousClock.now.duration(to: deadline)
+        return remaining > .zero ? remaining : nil
     }
 
     private func runBackendOperation<T>(

@@ -108,6 +108,29 @@ struct TwoNodeMQTTIntegrationTests {
             trace.recordFailure(error)
             throw error
         }
+        let session = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(3)
+        )
+        do {
+            trace.record("consumer.construct")
+            try await session.start()
+            trace.record("consumer.discover.workspace-owner-before-runtime-owner")
+            try await session.discover(timeout: .seconds(3))
+            let cachedWorkspace = await session.networkObjects().first {
+                $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID
+            }
+            trace.record("consumer.workspace-cached-before-runtime-owner", [
+                "providerID": cachedWorkspace?.providerID ?? "missing",
+            ])
+            try #require(cachedWorkspace != nil)
+        } catch {
+            trace.recordFailure(error)
+            await session.stop()
+            await workspaceNode.process.shutdown()
+            throw error
+        }
         let owner: NodeProcess
         do {
             trace.record("runtime-owner.starting")
@@ -117,13 +140,12 @@ struct TwoNodeMQTTIntegrationTests {
                 serveBinary: serveBinary,
                 agentFixture: agentFixture,
                 scratch: scratch,
-                timelineID: timelineID,
-                workspaceID: workspaceID,
-                workspaceURI: workspaceURI
+                timelineID: timelineID
             )
             trace.record("runtime-owner.started", ["pid": String(owner.process.processIdentifier)])
         } catch {
             trace.recordFailure(error)
+            await session.stop()
             await workspaceNode.process.shutdown()
             throw error
         }
@@ -133,10 +155,12 @@ struct TwoNodeMQTTIntegrationTests {
                 timelineID: timelineID,
                 workspaceID: workspaceID,
                 workspaceNode: workspaceNode,
+                session: session,
                 trace: trace
             )
         } catch {
             trace.recordFailure(error)
+            await session.stop()
             await owner.shutdown()
             await workspaceNode.process.shutdown()
             throw error
@@ -153,17 +177,10 @@ struct TwoNodeMQTTIntegrationTests {
         timelineID: UUID,
         workspaceID: UUID,
         workspaceNode: WorkspaceNodeProcess,
+        session: GnosticConsumerSession,
         trace: WorkspaceScenarioTrace
     ) async throws {
-        trace.record("consumer.construct")
-        let session = try GnosticConsumerSession(
-            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
-            connectTimeout: .seconds(3),
-            discoverTimeout: .seconds(3)
-        )
         do {
-            trace.record("consumer.start")
-            try await session.start()
             trace.record("consumer.discover")
             try await session.discover(timeout: .seconds(3))
             trace.record("consumer.resolve-timeline")
@@ -183,7 +200,6 @@ struct TwoNodeMQTTIntegrationTests {
             ])
             let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
             let workspaceClient = try session.workspaceClient(timeout: .seconds(5))
-            let diagnostics = try session.diagnosticsClient(timeout: .seconds(5))
             trace.record("workspace.attach.request", [
                 "timelineProviderID": providerID,
                 "workspaceProviderID": workspaceProviderID,
@@ -213,11 +229,10 @@ struct TwoNodeMQTTIntegrationTests {
                 "attachedWorkspaceIDs": attachedWorkspaceIDs,
             ])
 
-            trace.record("workspace.owner-status.before-revocation.request", ["providerID": workspaceProviderID])
-            let beforeRevocation = try await diagnostics.node(providerID: workspaceProviderID)
-            let beforeStatus = beforeRevocation.workspaces.first { $0.id == workspaceID }?.status
+            let beforeStatus = await workspaceClient.effectiveStatus(workspaceID: workspaceID)
             trace.record("workspace.owner-status.before-revocation.returned", [
-                "effectiveStatus": beforeStatus?.rawValue ?? "missing",
+                "effectiveStatus": beforeStatus.rawValue,
+                "source": "owner-advertisement",
             ])
             try #require(beforeStatus == .available)
 
@@ -266,11 +281,12 @@ struct TwoNodeMQTTIntegrationTests {
                 "providerInvocationCount": String(afterTransitionInvocationCount),
             ])
             try #require(afterTransitionInvocationCount == 1)
-            trace.record("workspace.owner-status.after-revocation.request", ["providerID": workspaceProviderID])
-            let afterRevocation = try await diagnostics.node(providerID: workspaceProviderID)
-            let afterStatus = afterRevocation.workspaces.first { $0.id == workspaceID }?.status
+            trace.record("workspace.owner-status.after-revocation.refresh.request")
+            try await session.discover(timeout: .seconds(3))
+            let afterStatus = await workspaceClient.effectiveStatus(workspaceID: workspaceID)
             trace.record("workspace.owner-status.after-revocation.returned", [
-                "effectiveStatus": afterStatus?.rawValue ?? "missing",
+                "effectiveStatus": afterStatus.rawValue,
+                "source": "owner-advertisement",
             ])
             try #require(afterStatus == .unavailable)
 
@@ -483,9 +499,7 @@ struct TwoNodeMQTTIntegrationTests {
         serveBinary: String,
         agentFixture: String,
         scratch: URL,
-        timelineID requestedTimelineID: UUID? = nil,
-        workspaceID: UUID? = nil,
-        workspaceURI: String? = nil
+        timelineID requestedTimelineID: UUID? = nil
     ) async throws -> NodeProcess {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -504,14 +518,14 @@ struct TwoNodeMQTTIntegrationTests {
             let fixtureEnvironment = [
                 "GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path,
                 "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePID.path,
+                "GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT": requestedTimelineID == nil ? "1" : "17",
             ]
             manifest.ascendants[0].backend.settings["command"] = .string("node")
             manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([agentFixture]))
             manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
-            if let requestedTimelineID, let workspaceID, let workspaceURI {
+            if let requestedTimelineID {
                 manifest.timelines[0].id = requestedTimelineID
                 manifest.ascendants[0].defaultTimelineID = requestedTimelineID
-                manifest.timelines[0].attachments = [.network(workspaceID, uri: workspaceURI)]
             }
         }
 

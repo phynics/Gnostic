@@ -3,6 +3,7 @@
 import Axoloty
 import Foundation
 @testable import GnosticCore
+import GnosticProtocol
 import GnosticWorkspaceTestSupport
 import Testing
 
@@ -244,6 +245,67 @@ struct ProtocolV2Tests {
         let entries = await catalog.networkObjects()
         #expect(entries.count == 1)
         #expect(entries.first?.protocolMajor == GnosticProtocol.currentMajor)
+    }
+
+    @Test("a partial Workspace tool query stays incomplete until the owner sends its terminal page")
+    func workspaceToolCatalogRequiresTerminalPage() async throws {
+        let workspaceID = UUID()
+        let providerID = UUID().uuidString.lowercased()
+        let definitions = (0..<16).map { index in
+            GnosticWorkspaceToolDefinition(
+                id: "tool-\(index)",
+                name: "Tool \(index)",
+                description: String(repeating: "paged tool metadata ", count: 8),
+                parametersSchema: ["type": .string("object")],
+                requiresPermission: false
+            )
+        }
+        let reference = GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://paged-tools",
+            tools: definitions
+        )
+        let workspaceObject = GnosticWorkspaceObject(workspace: reference)
+        #expect(!workspaceObject.toolsComplete)
+
+        let workspacePayload = try JSONEncoder().encode(workspaceObject)
+        let workspaceSnapshot = CoatyObjectSnapshot(
+            objectId: workspaceObject.objectId.string,
+            coreType: .coatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: workspaceObject.name,
+            payload: String(decoding: workspacePayload, as: UTF8.self)
+        )
+        let catalog = NetworkCatalog()
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: workspaceSnapshot))
+        let initial = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(!initial.toolsComplete)
+        #expect(initial.tools.count < definitions.count)
+
+        let lastTool = try #require(definitions.last)
+        let toolObject = GnosticWorkspaceToolObject(
+            workspaceID: workspaceID,
+            definition: lastTool,
+            page: definitions.count - 1
+        )
+        let toolPayload = try JSONEncoder().encode(toolObject)
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: providerID,
+            object: CoatyObjectSnapshot(
+                objectId: toolObject.objectId.string,
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.workspaceTool,
+                name: toolObject.name,
+                payload: String(decoding: toolPayload, as: UTF8.self)
+            )
+        ))
+        let partial = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(!partial.toolsComplete)
+        #expect(partial.tools.contains { $0.id == lastTool.id })
+
+        await catalog.markWorkspaceToolCatalogComplete(id: workspaceID, providerID: providerID)
+        let complete = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(complete.toolsComplete)
     }
 
     @Test("remote Workspace authorization binds caller and attachment to one current Timeline owner")

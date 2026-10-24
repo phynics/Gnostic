@@ -33,6 +33,7 @@ public actor NetworkCatalog {
 
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
+    private var completeWorkspaceToolCatalogs: [UUID: Set<String>] = [:]
     private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
     private var providerEvictionContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var changeContinuations: [UUID: AsyncStream<NetworkCatalogChange>.Continuation] = [:]
@@ -106,6 +107,12 @@ public actor NetworkCatalog {
             // projection evict a provider-scoped, protocol-valid object.
             return
         }
+        if snapshot.objectType == GnosticObjectType.workspace {
+            completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
+            if completeWorkspaceToolCatalogs[objectID]?.isEmpty == true {
+                completeWorkspaceToolCatalogs[objectID] = nil
+            }
+        }
         let protocolMajor = Self.protocolMajor(from: snapshot)
         let isProtocolCompatible = GnosticProtocol.isCompatible(protocolMajor)
         let knownProperties = knownProperties(from: snapshot)
@@ -170,6 +177,19 @@ public actor NetworkCatalog {
         }
         for rawID in event.objectIds {
             guard let objectID = UUID(uuidString: rawID) else { continue }
+            if entries[objectID]?[providerID]?.objectType == GnosticObjectType.workspace {
+                workspaceTools[objectID]?[providerID] = nil
+                if workspaceTools[objectID]?.isEmpty == true { workspaceTools[objectID] = nil }
+                completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
+                if completeWorkspaceToolCatalogs[objectID]?.isEmpty == true {
+                    completeWorkspaceToolCatalogs[objectID] = nil
+                }
+                for toolObjectID in Array(workspaceToolOwners.keys)
+                    where workspaceToolOwners[toolObjectID]?.workspaceID == objectID
+                        && workspaceToolOwners[toolObjectID]?.providerID == providerID {
+                    workspaceToolOwners[toolObjectID] = nil
+                }
+            }
             if let owner = workspaceToolOwners.removeValue(forKey: objectID) {
                 workspaceTools[owner.workspaceID]?[owner.providerID]?[owner.toolID] = nil
                 if workspaceTools[owner.workspaceID]?[owner.providerID]?.isEmpty == true {
@@ -199,6 +219,12 @@ public actor NetworkCatalog {
             workspaceTools[workspaceID]?[providerID] = nil
             if workspaceTools[workspaceID]?.isEmpty == true {
                 workspaceTools[workspaceID] = nil
+            }
+        }
+        for workspaceID in Array(completeWorkspaceToolCatalogs.keys) {
+            completeWorkspaceToolCatalogs[workspaceID]?.remove(providerID)
+            if completeWorkspaceToolCatalogs[workspaceID]?.isEmpty == true {
+                completeWorkspaceToolCatalogs[workspaceID] = nil
             }
         }
         for objectID in Array(workspaceToolOwners.keys) where workspaceToolOwners[objectID]?.providerID == providerID {
@@ -238,6 +264,12 @@ public actor NetworkCatalog {
         entries[id]?[providerID]?.workspace.map { descriptor in
             mergedWorkspaceDescriptor(descriptor, id: id, providerID: providerID)
         }
+    }
+
+    /// Records the provider's explicit terminal empty page for its tool query.
+    func markWorkspaceToolCatalogComplete(id: UUID, providerID: String) {
+        guard entries[id]?[providerID]?.workspace != nil else { return }
+        completeWorkspaceToolCatalogs[id, default: []].insert(providerID)
     }
 
     /// Returns whether a workspace can be attached without ambiguity.
@@ -413,7 +445,7 @@ public actor NetworkCatalog {
             status: descriptor.status,
             effectiveStatus: descriptor.effectiveStatus,
             tools: descriptor.tools + queried.filter { !known.contains($0.id) },
-            toolsComplete: descriptor.toolsComplete || !queried.isEmpty,
+            toolsComplete: descriptor.toolsComplete || completeWorkspaceToolCatalogs[id]?.contains(providerID) == true,
             createdAt: descriptor.createdAt
         )
     }

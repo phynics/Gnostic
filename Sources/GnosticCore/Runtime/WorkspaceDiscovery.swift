@@ -36,6 +36,18 @@ public protocol WorkspaceDiscovery: Sendable {
     func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor?
 }
 
+/// Internal extension used by attachment resolution when the transport can
+/// distinguish a provider's explicit terminal tool page from a timeout.
+@MainActor
+protocol WorkspaceResolutionDiscovery: WorkspaceDiscovery {
+    func discoverForResolution(deadline: ContinuousClock.Instant) async
+    func queryToolsForResolution(
+        workspaceID: UUID,
+        providerID: String,
+        deadline: ContinuousClock.Instant
+    ) async -> Bool
+}
+
 /// Gnostic-owned optional host capability for backends that expose network
 /// Workspace tools. It keeps catalog and broker implementations in the host
 /// composition layer while allowing a backend to opt into discovery.
@@ -89,7 +101,7 @@ public final class BackendWorkspaceAttachmentCapability: AscendantBackendOptiona
 }
 
 @MainActor
-final class AxolotyWorkspaceDiscovery: WorkspaceDiscovery {
+final class AxolotyWorkspaceDiscovery: WorkspaceResolutionDiscovery {
     private let catalog: NetworkCatalog
     private let subscription: GnosticSubscription
     private let communication: CommunicationManager
@@ -104,6 +116,10 @@ final class AxolotyWorkspaceDiscovery: WorkspaceDiscovery {
         await subscription.discover(using: communication, timeout: timeout)
     }
 
+    func discoverForResolution(deadline: ContinuousClock.Instant) async {
+        await subscription.discover(using: communication, deadline: deadline)
+    }
+
     func objects() async -> [NetworkCatalogEntry] { await catalog.networkObjects() }
 
     func attachmentStatus(id: UUID) async -> WorkspaceAttachmentStatus {
@@ -112,6 +128,19 @@ final class AxolotyWorkspaceDiscovery: WorkspaceDiscovery {
 
     func queryTools(workspaceID: UUID, timeout: Duration) async {
         await subscription.queryTools(using: communication, workspaceID: workspaceID, timeout: timeout)
+    }
+
+    func queryToolsForResolution(
+        workspaceID: UUID,
+        providerID: String,
+        deadline: ContinuousClock.Instant
+    ) async -> Bool {
+        await subscription.queryTools(
+            using: communication,
+            workspaceID: workspaceID,
+            providerID: providerID,
+            deadline: deadline
+        )
     }
 
     func descriptor(workspaceID: UUID, providerID: String) async -> NetworkWorkspaceDescriptor? {

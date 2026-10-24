@@ -189,7 +189,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       };
       await mcp(1, "initialize", { protocolVersion, capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
       const listed = await mcp(2, "tools/list");
-      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]") ? 0 : 1;
+      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]")
+        ? 0
+        : Number(process.env.GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT ?? 1);
       assert.equal(listed.tools.length, expectedToolCount, "tools/list must reflect current Timeline attachments");
       if (listed.tools.length > 0) {
         const expectsRejection = promptText.includes("[fixture:workspace-tool-rejected]");
