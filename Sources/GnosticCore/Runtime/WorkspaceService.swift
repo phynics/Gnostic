@@ -223,10 +223,18 @@ public final class WorkspaceService {
     func resolveNetworkWorkspace(workspaceID: UUID, timeout: Duration = .seconds(5)) async throws -> BackendWorkspaceReference {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
-        await discovery.discover(timeout: timeout)
+        var status = await discovery.attachmentStatus(id: workspaceID)
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
-        let status = await discovery.attachmentStatus(id: workspaceID)
-        guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        if case .available = status {
+            // The observed owner advertisement is already sufficient for resolution.
+            // A full discover sweep here consumes the same deadline as the caller's
+            // attach call, even though the Workspace is already in the catalog.
+        } else {
+            await discovery.discover(timeout: timeout)
+            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            status = await discovery.attachmentStatus(id: workspaceID)
+            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        }
         guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
             throw NodeRuntimeError.notRunning
         }
