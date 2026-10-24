@@ -967,13 +967,16 @@ public enum ConfigCommandLogic {
     }
 
     private static func initializationSummary(_ manifest: NodeManifest) -> String {
-        [
+        var lines = [
             "Initialized configuration.",
             "node: \(manifest.node.id.uuidString.lowercased())",
             "ascendant: \(manifest.ascendants[0].id.uuidString.lowercased())",
             "timeline: \(manifest.timelines[0].id.uuidString.lowercased())",
-            "workspace: \(manifest.workspaces[0].id.uuidString.lowercased())",
-        ].joined(separator: "\n")
+        ]
+        if let workspace = manifest.workspaces.first {
+            lines.append("workspace: \(workspace.id.uuidString.lowercased())")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func humanDescription(_ manifest: NodeManifest) -> String {

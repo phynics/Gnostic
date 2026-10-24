@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticCore
 import Testing
 
 @testable import GnosticCLI
@@ -76,6 +77,43 @@ struct CLIConfigurationTests {
         #expect(manifest.timelines[0].operatingAscendantID == manifest.ascendants[0].id)
         #expect(manifest.ascendants[0].defaultTimelineID == manifest.timelines[0].id)
         #expect(manifest.workspaces.isEmpty)
+    }
+
+    @Test("public config init reports the generated Node, Runtime, and Timeline IDs")
+    func publicInitializeReportsDefaultResourceIDs() async throws {
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"])
+        let folder = try TemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder.url) }
+        let path = folder.url.appendingPathComponent("config.json")
+
+        let result = try await runCLI(binary: binary, arguments: ["config", "init", "--config", path.path])
+
+        #expect(result.status == 0, Comment(rawValue: result.stderr))
+        let manifest = try JSONDecoder().decode(NodeManifest.self, from: Data(contentsOf: path))
+        #expect(manifest.workspaces.isEmpty)
+        #expect(result.stdout.contains("node: \(manifest.node.id.uuidString.lowercased())"))
+        #expect(result.stdout.contains("ascendant: \(manifest.ascendants[0].id.uuidString.lowercased())"))
+        #expect(result.stdout.contains("timeline: \(manifest.timelines[0].id.uuidString.lowercased())"))
+        #expect(!result.stdout.contains("workspace:"))
+    }
+
+    @Test("public config init dry run reports a no-Workspace manifest without creating its source")
+    func publicInitializeDryRunPreservesMissingSource() async throws {
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_CLI_BINARY"])
+        let folder = try TemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder.url) }
+        let path = folder.url.appendingPathComponent("config.json")
+
+        let result = try await runCLI(binary: binary, arguments: ["config", "init", "--dry-run", "--config", path.path])
+
+        #expect(result.status == 0, Comment(rawValue: result.stderr))
+        #expect(result.stdout.contains("--- manifest (redacted)"))
+        #expect(result.stdout.contains("+++ manifest (preview, redacted)"))
+        #expect(result.stdout.contains("runtimeInstances"))
+        #expect(result.stdout.contains("timelines"))
+        #expect(!result.stdout.contains("Echo Workspace"))
+        #expect(!result.stdout.contains("echo://default"))
+        #expect(!FileManager.default.fileExists(atPath: path.path))
     }
 
     @Test("secrets are stored with restrictive permissions and redacted on show")
@@ -198,6 +236,23 @@ struct CLIConfigurationTests {
         let reloaded = CLIConfigurationStore(environment: ["GNOSTIC_CONFIG": fileURL.path])
         #expect(try reloaded.load().mqttHost == "custom.example.com")
         #expect(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    private func runCLI(binary: String, arguments: [String]) async throws -> (status: Int32, stdout: String, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = arguments
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        while process.isRunning { try await Task.sleep(for: .milliseconds(20)) }
+        return (
+            process.terminationStatus,
+            String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+            String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
     }
 }
 
