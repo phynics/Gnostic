@@ -110,7 +110,7 @@ harness-test:
 	@./Tests/Support/test-build-isolation.sh
 
 runner-smoke: require-package require-build-configuration image
-	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh /workspace/Scripts/runner-smoke.sh
+	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; npm ci --prefix Tests/Fixtures/ACPAgent --cache .build/npm-cache; /workspace/Scripts/runner-smoke.sh'
 
 acp-smoke: build
 	@mkdir -p .testing

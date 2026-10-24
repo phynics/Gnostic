@@ -32,6 +32,7 @@ process.stdin.on("end", () => {
 '
 
 bin=$(swift build "${swift_flags[@]}" --product gnostic-runner --show-bin-path)/gnostic-runner
+cli_bin=$(swift build "${swift_flags[@]}" --product gnostic --show-bin-path)/gnostic
 help=$("$bin" --help 2>&1)
 status=$?
 printf '%s\n' "$help"
@@ -43,6 +44,10 @@ mosquitto_log="$scratch/mosquitto.log"
 mosquitto_config="$scratch/mosquitto.conf"
 mosquitto_pid=
 cleanup() {
+    if [ -n "${runner_pid:-}" ] && kill -0 "$runner_pid" 2>/dev/null; then
+        kill -TERM "$runner_pid" 2>/dev/null || true
+        wait "$runner_pid" 2>/dev/null || true
+    fi
     if [ -n "$mosquitto_pid" ]; then
         kill "$mosquitto_pid" 2>/dev/null || true
         wait "$mosquitto_pid" 2>/dev/null || true
@@ -94,7 +99,7 @@ run_until_online() {
     shift
     : > "$runner_log"
     stdbuf -oL "$@" >"$runner_log" 2>&1 &
-    local runner_pid=$!
+    runner_pid=$!
     local ready=1
     for _ in $(seq 1 30); do
         if grep -F "gnostic-runner online at" "$runner_log" >/dev/null 2>&1; then
@@ -106,10 +111,10 @@ run_until_online() {
         fi
         sleep 1
     done
-    kill "$runner_pid" 2>/dev/null || true
-    wait "$runner_pid" 2>/dev/null || true
     cat "$runner_log"
     if [ "$ready" -ne 0 ]; then
+        kill "$runner_pid" 2>/dev/null || true
+        wait "$runner_pid" 2>/dev/null || true
         echo "runner did not come online for: $label" >&2
         return 1
     fi
@@ -130,7 +135,11 @@ cat > "$scratch/acp.json" <<'JSON'
       "backend": {
         "kind": "acp-client",
         "schemaVersion": 1,
-        "settings": { "command": "/bin/sleep", "args": "[\"3600\"]" },
+        "settings": {
+          "command": "node",
+          "args": "[\"/workspace/Tests/Fixtures/ACPAgent/agent.mjs\"]",
+          "env": "{}"
+        },
         "secrets": {}
       },
       "defaultTimelineID": "e51d0000-0000-4000-8000-000000000003"
@@ -143,8 +152,52 @@ cat > "$scratch/acp.json" <<'JSON'
 }
 JSON
 
+node - "$scratch/acp.json" "$scratch" <<'NODE'
+const fs = require("node:fs");
+const [manifestPath, scratch] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+manifest.ascendants[0].backend.settings.env = JSON.stringify({
+  GNOSTIC_ACP_FIXTURE_STATE: `${scratch}/fixture-sessions.json`,
+  GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE: `${scratch}/fixture-initialize`,
+  GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE: `${scratch}/fixture-new-session`,
+  GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE: `${scratch}/fixture-prompt`,
+  GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE: `${scratch}/fixture-pid`,
+  GNOSTIC_ACP_FIXTURE_PROCESS_EXIT_FILE: `${scratch}/fixture-exit`,
+});
+fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+NODE
+
+mkdir -p "$scratch/client-state"
+
 run_until_online "ACP backend" \
     env GNOSTIC_STATE_HOME="$scratch/state" \
     "$bin" --host 127.0.0.1 --port 1883 --namespace gnostic-smoke-acp --config "$scratch/acp.json"
+
+GNOSTIC_ACP_CLIENT_BINARY="$cli_bin" \
+GNOSTIC_ACP_CLIENT_CONFIG="$scratch/acp.json" \
+GNOSTIC_ACP_CLIENT_NAMESPACE=gnostic-smoke-acp \
+GNOSTIC_ACP_CLIENT_STATE="$scratch/client-state" \
+timeout --signal=TERM --kill-after=5s 90s node Tests/Fixtures/ACPAgent/runner-smoke.mjs
+
+test -s "$scratch/fixture-initialize"
+test -s "$scratch/fixture-new-session"
+test -s "$scratch/fixture-prompt"
+
+kill -TERM "$runner_pid"
+wait "$runner_pid" || runner_status=$?
+runner_status=${runner_status:-0}
+test "$runner_status" -eq 0
+runner_pid=
+for _ in $(seq 1 50); do
+    if [ -s "$scratch/fixture-exit" ]; then break; fi
+    sleep 0.1
+done
+test -s "$scratch/fixture-exit"
+fixture_pid=$(head -n1 "$scratch/fixture-pid")
+for _ in $(seq 1 50); do
+    if ! kill -0 "$fixture_pid" 2>/dev/null; then break; fi
+    sleep 0.1
+done
+! kill -0 "$fixture_pid" 2>/dev/null
 
 echo "Gnostic runner smoke passed"

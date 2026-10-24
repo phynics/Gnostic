@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+@_spi(RuntimeHost) @testable import GnosticCore
 import GnosticClient
 import Testing
-
-@testable import GnosticCore
 
 @Suite("Ascendant backend lifecycle")
 struct BackendLifecycleTests {

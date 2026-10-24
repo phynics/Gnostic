@@ -32,6 +32,9 @@ const cancelledSessions = new Set();
 
 const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   .onRequest(acp.methods.agent.initialize, async () => {
+    if (process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE) {
+      await appendFile(process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE, "initialized\n");
+    }
     if (process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS) {
       await new Promise((resolve) => setTimeout(resolve, Number(process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_DELAY_MS)));
     }
