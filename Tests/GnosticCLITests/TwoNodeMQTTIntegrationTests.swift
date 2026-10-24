@@ -84,7 +84,9 @@ struct TwoNodeMQTTIntegrationTests {
             namespace: namespace,
             scratch: scratch,
             workspaceID: workspaceID,
-            workspaceURI: workspaceURI
+            workspaceURI: workspaceURI,
+            serveBinary: serveBinary,
+            agentFixture: agentFixture
         )
         let owner: NodeProcess
         do {
@@ -140,14 +142,22 @@ struct TwoNodeMQTTIntegrationTests {
                     && $0.objectID == timelineID
             }
             let providerID = try #require(timeline?.providerID)
+            let networkObjects = await session.networkObjects()
+            let workspaceProviderID = try #require(networkObjects.first {
+                $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID
+            }?.providerID)
             let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
             let workspaceClient = try session.workspaceClient(timeout: .seconds(5))
+            let diagnostics = try session.diagnosticsClient(timeout: .seconds(5))
             try await workspaceClient.attach(
                 workspaceID: workspaceID,
                 to: timelineID,
                 approved: true,
                 providerID: providerID
             )
+
+            let beforeRevocation = try await diagnostics.node(providerID: workspaceProviderID)
+            #expect(beforeRevocation.workspaces.first { $0.id == workspaceID }?.status == .available)
 
             let first = try await runTurnApprovingWorkspacePermission(
                 client: client,
@@ -159,19 +169,77 @@ struct TwoNodeMQTTIntegrationTests {
             #expect(first.text.contains("remote workspace result: fixture"))
             #expect(try workspaceNode.invocationCount() == 1)
 
+            try await assertThirdPeerCannotForgeWorkspaceApproval(
+                namespace: namespace,
+                timelineID: timelineID,
+                workspaceID: workspaceID,
+                providerID: workspaceProviderID,
+                workspaceNode: workspaceNode
+            )
+
             try workspaceNode.revoke()
             let rejected = try await runTurnApprovingWorkspacePermission(
                 client: client,
                 timelineID: timelineID,
-                clientTurnID: "peer-workspace-revoked",
+                clientTurnID: "peer-workspace-revocation-transition",
                 providerID: providerID,
                 message: "[fixture:workspace-tool-rejected]"
             )
             #expect(rejected.text.contains("workspace call rejected (-32003)"))
             #expect(try workspaceNode.invocationCount() == 1)
+            let afterRevocation = try await diagnostics.node(providerID: workspaceProviderID)
+            #expect(afterRevocation.workspaces.first { $0.id == workspaceID }?.status == .unavailable)
+
+            let rejectedByEffectiveStatus = try await runTurnApprovingWorkspacePermission(
+                client: client,
+                timelineID: timelineID,
+                clientTurnID: "peer-workspace-revoked-status",
+                providerID: providerID,
+                message: "[fixture:workspace-tool-rejected]"
+            )
+            #expect(rejectedByEffectiveStatus.text.contains("workspace call rejected (-32003)"))
+            #expect(try workspaceNode.invocationCount() == 1)
             await session.stop()
         } catch {
             await session.stop()
+            throw error
+        }
+    }
+
+    @MainActor
+    private func assertThirdPeerCannotForgeWorkspaceApproval(
+        namespace: String,
+        timelineID: UUID,
+        workspaceID: UUID,
+        providerID: String,
+        workspaceNode: WorkspaceNodeProcess
+    ) async throws {
+        let peer = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(3)
+        )
+        do {
+            try await peer.start()
+            try await peer.discover(timeout: .seconds(3))
+            let workspaceClient = try peer.workspaceClient(timeout: .seconds(5))
+            do {
+                _ = try await workspaceClient.invoke(
+                    timelineID: timelineID,
+                    workspaceID: workspaceID,
+                    toolID: "search",
+                    arguments: ["query": .string("forged")],
+                    permissionApproved: true,
+                    providerID: providerID
+                )
+                Issue.record("a third caller must not authorize itself with a Timeline ID and approval flag")
+            } catch let error as GnosticWorkspaceClientError {
+                #expect(error.reasonCode == "workspaceNotAttached")
+            }
+            #expect(try workspaceNode.invocationCount() == 1)
+            await peer.stop()
+        } catch {
+            await peer.stop()
             throw error
         }
     }
@@ -279,7 +347,12 @@ struct TwoNodeMQTTIntegrationTests {
         let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
         _ = try store.initializeManifest()
         let manifest = try store.loadManifest()
-        let timelineID = requestedTimelineID ?? (try #require(manifest.timelines.first?.id))
+        let timelineID: UUID
+        if let requestedTimelineID {
+            timelineID = requestedTimelineID
+        } else {
+            timelineID = try #require(manifest.timelines.first?.id)
+        }
         let fixtureState = configDirectory.appendingPathComponent("fixture-sessions.json")
         try store.mutateManifest { manifest in
             let fixturePID = configDirectory.appendingPathComponent("fixture-process.pid")
@@ -356,15 +429,24 @@ struct TwoNodeMQTTIntegrationTests {
         namespace: String,
         scratch: URL,
         workspaceID: UUID,
-        workspaceURI: String
+        workspaceURI: String,
+        serveBinary: String,
+        agentFixture: String
     ) async throws -> WorkspaceNodeProcess {
         let configDirectory = scratch.appendingPathComponent("workspace-owner", isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
         _ = try store.initializeManifest()
         try store.mutateManifest { manifest in
-            manifest.ascendants = []
-            manifest.timelines = []
+            let fixtureState = configDirectory.appendingPathComponent("fixture-sessions.json")
+            let fixturePID = configDirectory.appendingPathComponent("fixture-process.pid")
+            let fixtureEnvironment = [
+                "GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path,
+                "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePID.path,
+            ]
+            manifest.ascendants[0].backend.settings["command"] = .string("node")
+            manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([agentFixture]))
+            manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
             manifest.workspaces = [NodeManifest.Workspace(
                 id: workspaceID,
                 name: "Remote revocation fixture",
@@ -381,7 +463,7 @@ struct TwoNodeMQTTIntegrationTests {
         #expect(FileManager.default.createFile(atPath: logURL.path, contents: nil))
         let log = try FileHandle(forWritingTo: logURL)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"]))
+        process.executableURL = URL(fileURLWithPath: serveBinary)
         process.arguments = [
             "serve", "--config", store.path().path,
             "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
@@ -406,7 +488,7 @@ struct TwoNodeMQTTIntegrationTests {
             timelineID: UUID(),
             process: process,
             log: log,
-            fixturePIDURL: nil
+            fixturePIDURL: configDirectory.appendingPathComponent("fixture-process.pid")
         )
         do {
             var online = false

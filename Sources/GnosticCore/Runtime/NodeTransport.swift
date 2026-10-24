@@ -44,7 +44,7 @@ public final class NodeTransport {
     private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let runtimeInstanceObjects: @MainActor () -> [GnosticRuntimeInstanceObject]
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
-    private let workspaceAuthorization: @MainActor @Sendable (UUID?, UUID) async -> Bool
+    private let workspaceAuthorization: @MainActor @Sendable (String?, UUID?, UUID) async -> Bool
     private let workspaceProvider: MultiplexedWorkspaceProvider?
     private let scope: RuntimeEffectScope
     private let registrationScope: RuntimeEffectScope
@@ -65,7 +65,7 @@ public final class NodeTransport {
         ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         runtimeInstanceObjects: @escaping @MainActor () -> [GnosticRuntimeInstanceObject] = { [] },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
-        workspaceAuthorization: @escaping @MainActor @Sendable (UUID?, UUID) async -> Bool = { _, _ in false },
+        workspaceAuthorization: @escaping @MainActor @Sendable (String?, UUID?, UUID) async -> Bool = { _, _, _ in false },
         localWorkspaces: [UUID: any LocalWorkspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         operations: any NodeOperations,
@@ -83,7 +83,10 @@ public final class NodeTransport {
         workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(
             workspaces: localWorkspaces,
             workspaceStatus: { id in await registry?.effectiveWorkspaceStatus(id: id) },
-            isAttached: { timelineID, workspaceID in await workspaceAuthorization(timelineID, workspaceID) },
+            setWorkspaceStatus: { id, status in await registry?.setWorkspaceStatus(id: id, status: status) ?? false },
+            callerBoundAuthorization: { sourceID, timelineID, workspaceID in
+                await workspaceAuthorization(sourceID, timelineID, workspaceID)
+            },
             isAvailable: { await isAvailable() }
         )
         self.isAvailable = isAvailable

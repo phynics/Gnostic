@@ -267,14 +267,24 @@ public actor NetworkCatalog {
     /// Ambiguous, incompatible, missing, and archived Timelines fail closed.
     public func isWorkspaceAttached(_ workspaceID: UUID, to timelineID: UUID) -> Bool {
         guard let candidates = entries[timelineID] else { return false }
-        let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline && $0.isProtocolCompatible }
-        guard owners.count == 1, let owner = owners.first else { return false }
+        let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline }
+        guard owners.count == 1, let owner = owners.first, owner.isProtocolCompatible else { return false }
         if case .bool(true)? = owner.knownProperties["isArchived"] { return false }
         guard case let .array(attached)? = owner.knownProperties["attachedWorkspaceIDs"] else { return false }
         return attached.contains { value in
             guard case let .string(rawID) = value else { return false }
             return UUID(uuidString: rawID) == workspaceID
         }
+    }
+
+    /// Returns the unique compatible Node identity that currently advertises a Timeline.
+    /// Ambiguous, archived, or missing Timelines have no authorizing owner.
+    func timelineOwnerProviderID(id: UUID) -> String? {
+        guard let candidates = entries[id] else { return nil }
+        let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline }
+        guard owners.count == 1, let owner = owners.first, owner.isProtocolCompatible else { return nil }
+        if case .bool(true)? = owner.knownProperties["isArchived"] { return nil }
+        return owner.providerID
     }
 
     private func dynamicProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {

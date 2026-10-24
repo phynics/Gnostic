@@ -16,7 +16,7 @@ final class NodeRuntimeHost {
         let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
         let runtimeInstanceObjects: @MainActor () -> [GnosticRuntimeInstanceObject]
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
-        let workspaceAuthorization: @MainActor @Sendable (UUID?, UUID) async -> Bool
+        let workspaceAuthorization: @MainActor @Sendable (String?, UUID?, UUID) async -> Bool
         let localWorkspaces: [UUID: any LocalWorkspace]
         let isAvailable: @MainActor () -> Bool
         let operations: any NodeOperations
