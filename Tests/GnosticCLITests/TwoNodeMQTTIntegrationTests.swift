@@ -71,25 +71,46 @@ struct TwoNodeMQTTIntegrationTests {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-peer-workspace-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let trace = WorkspaceScenarioTrace()
+        trace.record("setup.begin", [
+            "timelineID": timelineID.uuidString.lowercased(),
+            "workspaceID": workspaceID.uuidString.lowercased(),
+            "brokerNamespace": namespace,
+        ])
         var completed = false
         defer {
             if completed {
                 try? FileManager.default.removeItem(at: scratch)
             } else {
-                print("Two-Node Workspace diagnostics retained at \(scratch.path)")
+                if let artifact = try? trace.persist(from: scratch) {
+                    print("Two-Node Workspace diagnostics saved under \(artifact.path)")
+                } else {
+                    print("Two-Node Workspace diagnostics could not be copied; temporary path retained at \(scratch.path)")
+                }
             }
         }
 
-        let workspaceNode = try await launchWorkspaceNode(
-            namespace: namespace,
-            scratch: scratch,
-            workspaceID: workspaceID,
-            workspaceURI: workspaceURI,
-            serveBinary: serveBinary,
-            agentFixture: agentFixture
-        )
+        trace.record("workspace-owner.starting")
+        let workspaceNode: WorkspaceNodeProcess
+        do {
+            workspaceNode = try await launchWorkspaceNode(
+                namespace: namespace,
+                scratch: scratch,
+                workspaceID: workspaceID,
+                workspaceURI: workspaceURI,
+                serveBinary: serveBinary,
+                agentFixture: agentFixture
+            )
+            trace.record("workspace-owner.started", [
+                "pid": String(workspaceNode.process.process.processIdentifier),
+            ])
+        } catch {
+            trace.recordFailure(error)
+            throw error
+        }
         let owner: NodeProcess
         do {
+            trace.record("runtime-owner.starting")
             owner = try await launchNode(
                 name: "runtime-owner",
                 namespace: namespace,
@@ -100,7 +121,9 @@ struct TwoNodeMQTTIntegrationTests {
                 workspaceID: workspaceID,
                 workspaceURI: workspaceURI
             )
+            trace.record("runtime-owner.started", ["pid": String(owner.processIdentifier)])
         } catch {
+            trace.recordFailure(error)
             await workspaceNode.process.shutdown()
             throw error
         }
@@ -109,9 +132,11 @@ struct TwoNodeMQTTIntegrationTests {
                 namespace: namespace,
                 timelineID: timelineID,
                 workspaceID: workspaceID,
-                workspaceNode: workspaceNode
+                workspaceNode: workspaceNode,
+                trace: trace
             )
         } catch {
+            trace.recordFailure(error)
             await owner.shutdown()
             await workspaceNode.process.shutdown()
             throw error
@@ -127,80 +152,143 @@ struct TwoNodeMQTTIntegrationTests {
         namespace: String,
         timelineID: UUID,
         workspaceID: UUID,
-        workspaceNode: WorkspaceNodeProcess
+        workspaceNode: WorkspaceNodeProcess,
+        trace: WorkspaceScenarioTrace
     ) async throws {
+        trace.record("consumer.construct")
         let session = try GnosticConsumerSession(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
             connectTimeout: .seconds(3),
             discoverTimeout: .seconds(3)
         )
         do {
+            trace.record("consumer.start")
             try await session.start()
+            trace.record("consumer.discover")
             try await session.discover(timeout: .seconds(3))
+            trace.record("consumer.resolve-timeline")
             let timeline = await session.networkObjects().first {
                 $0.objectType == GnosticObjectType.timeline
                     && $0.objectID == timelineID
             }
             let providerID = try #require(timeline?.providerID)
+            trace.record("consumer.resolve-workspace")
             let networkObjects = await session.networkObjects()
             let workspaceProviderID = try #require(networkObjects.first {
                 $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID
             }?.providerID)
+            trace.record("consumer.targets-resolved", [
+                "timelineProviderID": providerID,
+                "workspaceProviderID": workspaceProviderID,
+            ])
             let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
             let workspaceClient = try session.workspaceClient(timeout: .seconds(5))
             let diagnostics = try session.diagnosticsClient(timeout: .seconds(5))
+            trace.record("workspace.attach.request", [
+                "timelineProviderID": providerID,
+                "workspaceProviderID": workspaceProviderID,
+                "operation": WorkspaceOpsProvider.attachOperation,
+            ])
             try await workspaceClient.attach(
                 workspaceID: workspaceID,
                 to: timelineID,
                 approved: true,
                 providerID: providerID
             )
+            trace.record("workspace.attach.returned")
+            let timelineAfterAttach = await session.networkObjects().first {
+                $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
+            }
+            let attachedWorkspaceIDs: String
+            if case let .array(values)? = timelineAfterAttach?.knownProperties["attachedWorkspaceIDs"] {
+                attachedWorkspaceIDs = values.compactMap { value in
+                    guard case let .string(id) = value else { return nil }
+                    return id
+                }.joined(separator: ",")
+            } else {
+                attachedWorkspaceIDs = "missing"
+            }
+            trace.record("workspace.attach.catalog-snapshot", [
+                "timelineProviderID": timelineAfterAttach?.providerID ?? "missing",
+                "attachedWorkspaceIDs": attachedWorkspaceIDs,
+            ])
 
+            trace.record("workspace.owner-status.before-revocation.request", ["providerID": workspaceProviderID])
             let beforeRevocation = try await diagnostics.node(providerID: workspaceProviderID)
-            #expect(beforeRevocation.workspaces.first { $0.id == workspaceID }?.status == .available)
+            let beforeStatus = beforeRevocation.workspaces.first { $0.id == workspaceID }?.status
+            trace.record("workspace.owner-status.before-revocation.returned", [
+                "effectiveStatus": beforeStatus?.rawValue ?? "missing",
+            ])
+            #expect(beforeStatus == .available)
 
             let first = try await runTurnApprovingWorkspacePermission(
                 client: client,
                 timelineID: timelineID,
                 clientTurnID: "peer-workspace-first",
                 providerID: providerID,
-                message: "[fixture:workspace-tool]"
+                message: "[fixture:workspace-tool]",
+                trace: trace,
+                stagePrefix: "gateway.first"
             )
             #expect(first.text.contains("remote workspace result: fixture"))
-            #expect(try workspaceNode.invocationCount() == 1)
+            let firstInvocationCount = try workspaceNode.invocationCount()
+            trace.record("gateway.first.asserted", ["providerInvocationCount": String(firstInvocationCount)])
+            #expect(firstInvocationCount == 1)
 
             try await assertThirdPeerCannotForgeWorkspaceApproval(
                 namespace: namespace,
                 timelineID: timelineID,
                 workspaceID: workspaceID,
                 providerID: workspaceProviderID,
-                workspaceNode: workspaceNode
+                workspaceNode: workspaceNode,
+                trace: trace
             )
 
+            trace.record("workspace.owner-revocation.request")
             try workspaceNode.revoke()
+            trace.record("workspace.owner-revocation.written")
             let rejected = try await runTurnApprovingWorkspacePermission(
                 client: client,
                 timelineID: timelineID,
                 clientTurnID: "peer-workspace-revocation-transition",
                 providerID: providerID,
-                message: "[fixture:workspace-tool-rejected]"
+                message: "[fixture:workspace-tool-rejected]",
+                trace: trace,
+                stagePrefix: "gateway.revocation-transition"
             )
             #expect(rejected.text.contains("workspace call rejected (-32003)"))
-            #expect(try workspaceNode.invocationCount() == 1)
+            let afterTransitionInvocationCount = try workspaceNode.invocationCount()
+            trace.record("gateway.revocation-transition.asserted", [
+                "providerInvocationCount": String(afterTransitionInvocationCount),
+            ])
+            #expect(afterTransitionInvocationCount == 1)
+            trace.record("workspace.owner-status.after-revocation.request", ["providerID": workspaceProviderID])
             let afterRevocation = try await diagnostics.node(providerID: workspaceProviderID)
-            #expect(afterRevocation.workspaces.first { $0.id == workspaceID }?.status == .unavailable)
+            let afterStatus = afterRevocation.workspaces.first { $0.id == workspaceID }?.status
+            trace.record("workspace.owner-status.after-revocation.returned", [
+                "effectiveStatus": afterStatus?.rawValue ?? "missing",
+            ])
+            #expect(afterStatus == .unavailable)
 
             let rejectedByEffectiveStatus = try await runTurnApprovingWorkspacePermission(
                 client: client,
                 timelineID: timelineID,
                 clientTurnID: "peer-workspace-revoked-status",
                 providerID: providerID,
-                message: "[fixture:workspace-tool-rejected]"
+                message: "[fixture:workspace-tool-rejected]",
+                trace: trace,
+                stagePrefix: "gateway.revoked-status"
             )
             #expect(rejectedByEffectiveStatus.text.contains("workspace call rejected (-32003)"))
-            #expect(try workspaceNode.invocationCount() == 1)
+            let afterStatusInvocationCount = try workspaceNode.invocationCount()
+            trace.record("gateway.revoked-status.asserted", [
+                "providerInvocationCount": String(afterStatusInvocationCount),
+            ])
+            #expect(afterStatusInvocationCount == 1)
+            trace.record("consumer.stop")
             await session.stop()
         } catch {
+            trace.recordFailure(error)
             await session.stop()
             throw error
         }
@@ -212,17 +300,27 @@ struct TwoNodeMQTTIntegrationTests {
         timelineID: UUID,
         workspaceID: UUID,
         providerID: String,
-        workspaceNode: WorkspaceNodeProcess
+        workspaceNode: WorkspaceNodeProcess,
+        trace: WorkspaceScenarioTrace
     ) async throws {
+        trace.record("third-peer.construct")
         let peer = try GnosticConsumerSession(
             broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
             connectTimeout: .seconds(3),
             discoverTimeout: .seconds(3)
         )
         do {
+            trace.record("third-peer.start")
             try await peer.start()
+            trace.record("third-peer.discover")
             try await peer.discover(timeout: .seconds(3))
             let workspaceClient = try peer.workspaceClient(timeout: .seconds(5))
+            trace.record("third-peer.forged-invocation.request", [
+                "providerID": providerID,
+                "timelineID": timelineID.uuidString.lowercased(),
+                "workspaceID": workspaceID.uuidString.lowercased(),
+                "operation": GnosticWorkspaceProtocol.invocationOperation,
+            ])
             do {
                 _ = try await workspaceClient.invoke(
                     timelineID: timelineID,
@@ -232,13 +330,21 @@ struct TwoNodeMQTTIntegrationTests {
                     permissionApproved: true,
                     providerID: providerID
                 )
+                trace.record("third-peer.forged-invocation.unexpectedly-returned")
                 Issue.record("a third caller must not authorize itself with a Timeline ID and approval flag")
+                throw TwoNodeIntegrationError.thirdPeerInvocationSucceeded
             } catch let error as GnosticWorkspaceClientError {
+                trace.record("third-peer.forged-invocation.rejected", ["reasonCode": error.reasonCode])
                 #expect(error.reasonCode == "workspaceNotAttached")
+                guard error.reasonCode == "workspaceNotAttached" else { throw error }
             }
-            #expect(try workspaceNode.invocationCount() == 1)
+            let invocationCount = try workspaceNode.invocationCount()
+            trace.record("third-peer.provider-count.asserted", ["providerInvocationCount": String(invocationCount)])
+            #expect(invocationCount == 1)
+            trace.record("third-peer.stop")
             await peer.stop()
         } catch {
+            trace.recordFailure(error)
             await peer.stop()
             throw error
         }
@@ -250,30 +356,64 @@ struct TwoNodeMQTTIntegrationTests {
         timelineID: UUID,
         clientTurnID: String,
         providerID: String,
-        message: String
+        message: String,
+        trace: WorkspaceScenarioTrace,
+        stagePrefix: String
     ) async throws -> AscendantTurnResult {
+        trace.record("\(stagePrefix).updates.subscribe", [
+            "timelineProviderID": providerID,
+            "clientTurnID": clientTurnID,
+        ])
         let updates = try await client.updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
+        trace.record("\(stagePrefix).updates.subscribed")
         let permissionResponder = Task {
             for await update in updates {
+                trace.record("\(stagePrefix).update.received", [
+                    "clientTurnID": clientTurnID,
+                    "sequence": String(update.sequence),
+                    "kind": update.kind,
+                    "terminal": String(update.terminal),
+                    "hasPermissionState": String(update.permissionState != nil),
+                    "reasonCode": update.reasonCode ?? "",
+                    "statusCode": update.statusCode.map { String($0) } ?? "",
+                ])
                 guard let permission = update.permissionState, permission.status == "pending" else { continue }
-                try client.respond(
-                    to: AscendantPermissionResponse(
-                        correlationID: permission.correlationID,
-                        timelineID: timelineID,
-                        clientTurnID: clientTurnID,
-                        approved: true
-                    ),
-                    providerID: providerID
-                )
+                trace.record("\(stagePrefix).permission.pending", [
+                    "clientTurnID": clientTurnID,
+                    "correlationPresent": String(!permission.correlationID.isEmpty),
+                ])
+                do {
+                    try client.respond(
+                        to: AscendantPermissionResponse(
+                            correlationID: permission.correlationID,
+                            timelineID: timelineID,
+                            clientTurnID: clientTurnID,
+                            approved: true
+                        ),
+                        providerID: providerID
+                    )
+                } catch {
+                    trace.recordFailure(error)
+                    throw error
+                }
+                trace.record("\(stagePrefix).permission.response-published", ["clientTurnID": clientTurnID])
             }
+            trace.record("\(stagePrefix).updates.finished")
         }
+        trace.record("\(stagePrefix).run.request", [
+            "timelineProviderID": providerID,
+            "clientTurnID": clientTurnID,
+        ])
         let result = try await client.run(
             message: message,
             timelineID: timelineID,
             clientTurnID: clientTurnID,
             providerID: providerID
         )
+        trace.record("\(stagePrefix).run.returned", ["clientTurnID": clientTurnID])
+        trace.record("\(stagePrefix).permission-responder.join")
         try await permissionResponder.value
+        trace.record("\(stagePrefix).completed")
         return result
     }
 
@@ -561,6 +701,82 @@ private struct WorkspaceNodeProcess {
 }
 
 @MainActor
+private final class WorkspaceScenarioTrace {
+    private struct Event: Encodable {
+        let elapsedMilliseconds: Int
+        let stage: String
+        let fields: [String: String]
+    }
+
+    private struct Context: Encodable {
+        let failureType: String
+        let events: [Event]
+        let copiedFiles: [String]
+        let unavailableFiles: [String]
+    }
+
+    private let startedAt = Date()
+    private var events: [Event] = []
+    private var failureType = "unknown"
+
+    func record(_ stage: String, _ fields: [String: String] = [:]) {
+        events.append(Event(
+            elapsedMilliseconds: Int(Date().timeIntervalSince(startedAt) * 1_000),
+            stage: stage,
+            fields: fields
+        ))
+    }
+
+    func recordFailure(_ error: Error) {
+        failureType = String(reflecting: type(of: error))
+        record("scenario.failed", ["errorType": failureType])
+    }
+
+    func persist(from scratch: URL) throws -> URL {
+        let artifact = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent(".testing", isDirectory: true)
+            .appendingPathComponent("two-node-workspace", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: artifact, withIntermediateDirectories: true)
+
+        let allowlistedFiles: [(source: String, destination: String)] = [
+            ("runtime-owner/serve.log", "runtime-owner-serve.log"),
+            ("workspace-owner/serve.log", "workspace-owner-serve.log"),
+            ("workspace-owner/workspace-invocations.txt", "workspace-invocations.txt"),
+            ("workspace-owner/workspace-health.txt", "workspace-health.txt"),
+        ]
+        var copiedFiles: [String] = []
+        var unavailableFiles: [String] = []
+        for file in allowlistedFiles {
+            let source = scratch.appendingPathComponent(file.source)
+            let destination = artifact.appendingPathComponent(file.destination)
+            guard FileManager.default.fileExists(atPath: source.path) else {
+                unavailableFiles.append(file.source)
+                continue
+            }
+            do {
+                try FileManager.default.copyItem(at: source, to: destination)
+                copiedFiles.append(file.destination)
+            } catch {
+                unavailableFiles.append(file.source)
+            }
+        }
+
+        let context = Context(
+            failureType: failureType,
+            events: events,
+            copiedFiles: copiedFiles,
+            unavailableFiles: unavailableFiles
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(context)
+        try data.write(to: artifact.appendingPathComponent("context.json"), options: .atomic)
+        return artifact
+    }
+}
+
+@MainActor
 private func stopFixtureProcess(at pidURL: URL) async {
     guard FileManager.default.fileExists(atPath: pidURL.path) else { return }
     guard let rawPID = try? String(contentsOf: pidURL, encoding: .utf8)
@@ -596,4 +812,5 @@ private func fixtureProcessIsRunning(pid: Int32) -> Bool {
 
 private enum TwoNodeIntegrationError: Error {
     case nodeFailedToStart(String)
+    case thirdPeerInvocationSucceeded
 }
