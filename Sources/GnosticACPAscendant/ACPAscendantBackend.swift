@@ -55,6 +55,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private let explicitProjectIDs: Set<UUID>
     private var projects: [UUID: Project]
     private var sessionIDs: [UUID: String]
+    private var sessionStates: [UUID: TimelineJournalSessionState] = [:]
     private var pendingSessionCreations = 0
     private var bindingTimelineIDsBySessionID: [String: UUID] = [:]
     private var pendingSessionUpdates: [String: [ACPSessionUpdate]] = [:]
@@ -169,6 +170,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             guard configuredTimelineIDs.contains(entry.key) else { return }
             result[entry.key] = entry.value.sessionID
         }
+        sessionStates = Dictionary(uniqueKeysWithValues: sessionIDs.keys.map { ($0, .resumable) })
         var timelineIDsBySessionID: [String: UUID] = [:]
         for (timelineID, session) in recoveredSessions where configuredTimelineIDs.contains(timelineID) {
             if let otherTimelineID = timelineIDsBySessionID[session.sessionID], otherTimelineID != timelineID {
@@ -835,6 +837,13 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         let project = projects[timelineID] ?? .scratch
         let desired = try resolvedProject(for: timelineID, project: project)
 
+        if sessionStates[timelineID] == .ambiguous {
+            throw AscendantBackendError.terminal(.init(
+                code: "acpSessionRecoveryAmbiguous",
+                message: "The ACP Runtime could not confirm whether the previous Session survived. This Timeline is blocked to avoid losing or duplicating Runtime context."
+            ))
+        }
+
         if let sessionID = sessionIDs[timelineID],
            sessionCwds[timelineID] == desired.cwd {
             if sessionProjectKinds[timelineID] != desired.kind || sessionStartedAt[timelineID] == nil {
@@ -849,19 +858,40 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     message: "The ACP agent cannot resume the session for Timeline \(timelineID.uuidString)."
                 ))
             }
-            _ = try await connection.resumeSession(request: ACPResumeSessionRequest(
+            try Task.checkCancellation()
+            try await recordSessionState(.resumable, sessionID: sessionID, timelineID: timelineID, project: desired)
+            try Task.checkCancellation()
+            let mcpServers = try mcpServers(for: timelineID)
+            let resumeRequest = ACPResumeSessionRequest(
                 sessionId: sessionID,
                 cwd: desired.cwd,
-                mcpServers: try mcpServers(for: timelineID)
-            ))
-            try await timelineJournalRecorder?.appendSessionTransition(
-                timelineID: timelineID,
-                sessionID: sessionID,
-                runtimeInstanceID: identity.id,
-                state: .live,
-                projectKind: desired.kind,
-                cwd: desired.cwd
+                mcpServers: mcpServers
             )
+            do {
+                _ = try await connection.resumeSession(request: resumeRequest)
+            } catch {
+                if Self.isDefinitiveSessionResumeRejection(error) {
+                    try await recordSessionState(.lost, sessionID: sessionID, timelineID: timelineID, project: desired)
+                    sessionIDs.removeValue(forKey: timelineID)
+                    timelineIDsBySessionID.removeValue(forKey: sessionID)
+                    sessionStartedAt.removeValue(forKey: timelineID)
+                    try persistSessionMap()
+                    try Task.checkCancellation()
+                    return try await createSession(for: timelineID, project: desired, using: connection)
+                }
+
+                // The remote operation may have taken effect before its
+                // response was lost. Persist uncertainty before returning it.
+                sessionStates[timelineID] = .ambiguous
+                try await recordSessionState(.ambiguous, sessionID: sessionID, timelineID: timelineID, project: desired)
+                if Task.isCancelled { throw AscendantBackendError.cancelled }
+                throw AscendantBackendError.terminal(.init(
+                    code: "acpSessionRecoveryAmbiguous",
+                    message: "The ACP Runtime could not confirm whether the previous Session survived. This Timeline is blocked to avoid losing or duplicating Runtime context."
+                ))
+            }
+            try await recordSessionState(.live, sessionID: sessionID, timelineID: timelineID, project: desired)
+            try Task.checkCancellation()
             activeSessionIDs.insert(timelineID)
             try persistSessionMap()
             return sessionID
@@ -871,6 +901,31 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             try await closeAndRetireSession(for: timelineID, using: connection)
         }
         return try await createSession(for: timelineID, project: desired, using: connection)
+    }
+
+    private func recordSessionState(
+        _ state: TimelineJournalSessionState,
+        sessionID: String,
+        timelineID: UUID,
+        project: ResolvedProject
+    ) async throws {
+        try await timelineJournalRecorder?.appendSessionTransition(
+            timelineID: timelineID,
+            sessionID: sessionID,
+            runtimeInstanceID: identity.id,
+            state: state,
+            projectKind: project.kind,
+            cwd: project.cwd
+        )
+        sessionStates[timelineID] = state
+    }
+
+    private nonisolated static func isDefinitiveSessionResumeRejection(_ error: any Error) -> Bool {
+        guard let error = error as? ACPError,
+              case let .custom(code, _, _) = error else { return false }
+        // ADR 0020 identifies JSON-RPC invalidParams (-32602) as a
+        // definitive resume rejection. Other JSON-RPC errors do not prove loss.
+        return code == ACPv2Protocol.ErrorCode.invalidParams
     }
 
     private func recordRawSessionUpdate(sessionID: String, update: ACPSessionUpdate) async throws -> Bool {
@@ -986,6 +1041,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             throw error
         }
         sessionIDs[timelineID] = response.sessionId
+        sessionStates[timelineID] = .live
         timelineIDsBySessionID[response.sessionId] = timelineID
         sessionCwds[timelineID] = project.cwd
         sessionProjectKinds[timelineID] = project.kind
@@ -998,6 +1054,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             // session may remain until process cleanup, but this Timeline will
             // not falsely resume it after a restart.
             sessionIDs.removeValue(forKey: timelineID)
+            sessionStates.removeValue(forKey: timelineID)
             sessionCwds.removeValue(forKey: timelineID)
             sessionProjectKinds.removeValue(forKey: timelineID)
             sessionStartedAt.removeValue(forKey: timelineID)
@@ -1063,6 +1120,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 projectKind: sessionProjectKinds[timelineID],
                 cwd: cwd
             )
+            sessionStates[timelineID] = sessionClosed ? .lost : (sessionCapabilities?.supportsResume == true ? .resumable : .ambiguous)
         }
         let cwd = sessionCwds.removeValue(forKey: timelineID)
         let kind = sessionProjectKinds.removeValue(forKey: timelineID)
@@ -1286,6 +1344,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     "The Timeline journal Session for \(timelineID.uuidString) belongs to another Runtime instance."
                 )
             }
+            sessionStates[timelineID] = projection.state
             guard projection.state != .lost else { continue }
             if let otherTimelineID = sessionOwners[projection.sessionID], otherTimelineID != timelineID {
                 throw Self.invalidConfiguration("A journaled ACP Session ID belongs to more than one Timeline.")

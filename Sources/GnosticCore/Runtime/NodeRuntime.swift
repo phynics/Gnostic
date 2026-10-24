@@ -370,13 +370,40 @@ public final class NodeRuntime {
             throw NodeRuntimeError.missingTimeline(timelineID)
         }
         let workspaces = await diagnosticsWorkspaceSummaries(ids: record.timeline.attachedWorkspaceIDs)
+        let projection = try await timelineJournals?.timelineProjection(for: timelineID)
+        let sessionState: DiagnosticsTimelineSessionState?
+        switch projection?.latestSession?.state {
+        case .live: sessionState = .live
+        case .resumable: sessionState = .resumable
+        case .lost: sessionState = .lost
+        case .ambiguous: sessionState = .ambiguous
+        case nil: sessionState = nil
+        }
+        let sessionRecovery: DiagnosticsTimelineSessionRecovery? = {
+            guard let projection,
+                  sessionState != nil || projection.hasLostSession else { return nil }
+            let message: String?
+            if sessionState == .ambiguous {
+                message = "The Runtime Session outcome is ambiguous. Gnostic blocks prompts and Session creation for this Timeline."
+            } else if projection.hasLostSession {
+                message = "A prior Runtime Session was definitively lost. Gnostic did not reconstruct its context in a replacement Session."
+            } else {
+                message = nil
+            }
+            return DiagnosticsTimelineSessionRecovery(
+                state: sessionState,
+                contextWasLost: projection.hasLostSession,
+                message: message
+            )
+        }()
         return TimelineDiagnostics(
             timeline: DiagnosticsTimelineSummary(
                 id: record.id,
                 title: record.timeline.title,
                 operatingAscendantID: record.operatorID
             ),
-            workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems))
+            workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems)),
+            sessionRecovery: sessionRecovery
         )
     }
 

@@ -142,6 +142,7 @@ public struct TimelineJournalTimelineProjection: Sendable, Equatable {
     /// Desired placement, retained even between Project change and Session creation.
     public let project: Project?
     public let latestSession: TimelineJournalSessionProjection?
+    public let hasLostSession: Bool
 
     public init(
         timelineID: UUID,
@@ -151,7 +152,8 @@ public struct TimelineJournalTimelineProjection: Sendable, Equatable {
         createdAt: Date,
         updatedAt: Date,
         latestSession: TimelineJournalSessionProjection?,
-        project: Project? = nil
+        project: Project? = nil,
+        hasLostSession: Bool = false
     ) {
         self.timelineID = timelineID
         self.title = title
@@ -161,6 +163,7 @@ public struct TimelineJournalTimelineProjection: Sendable, Equatable {
         self.updatedAt = updatedAt
         self.latestSession = latestSession
         self.project = project
+        self.hasLostSession = hasLostSession
     }
 }
 
@@ -320,6 +323,7 @@ public actor TimelineJournal {
         var updatedAt: Date?
         var project: Project?
         var latestSession: TimelineJournalSessionProjection?
+        var hasLostSession = false
 
         for record in records {
             switch record.payload {
@@ -353,6 +357,7 @@ public actor TimelineJournal {
                 attachmentOrder.removeAll { $0 == workspaceID }
                 updatedAt = record.timestamp
             case let .sessionTransition(sessionID, runtimeID, state, projectKind, cwd):
+                if state == .lost { hasLostSession = true }
                 if let projectKind {
                     project = projectKind == .local ? .local(cwd) : .scratch
                 }
@@ -385,7 +390,8 @@ public actor TimelineJournal {
             createdAt: createdAt,
             updatedAt: updatedAt,
             latestSession: latestSession,
-            project: project
+            project: project,
+            hasLostSession: hasLostSession
         )
     }
 

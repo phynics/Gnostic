@@ -125,6 +125,33 @@ struct DiagnosticsProviderTests {
         #expect(decodedTimeline == timeline)
     }
 
+    @Test("Timeline diagnostics disclose lost Runtime context without exposing Session data")
+    func timelineDiagnosticsDiscloseContextLoss() async throws {
+        let recovery = DiagnosticsTimelineSessionRecovery(
+            state: .live,
+            contextWasLost: true,
+            message: "A prior Runtime Session was definitively lost. Gnostic did not reconstruct its context in a replacement Session."
+        )
+        let timeline = TimelineDiagnostics(
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            workspaces: [],
+            sessionRecovery: recovery
+        )
+        let result = try await provider(timeline: { _ in timeline })
+            .handle(operation: DiagnosticsProvider.timelineOperation, parameters: encoded(DiagnosticsTargetRequest(id: timelineID)))
+        guard case let .success(payload, _) = result else {
+            Issue.record("expected success, got \(result)")
+            return
+        }
+
+        let decoded = try JSONDecoder().decode(TimelineDiagnostics.self, from: Data(payload.utf8))
+        #expect(decoded.sessionRecovery == recovery)
+        #expect(payload.contains("contextWasLost"))
+        #expect(payload.contains("definitively lost"))
+        #expect(!payload.contains("sessionId"))
+        #expect(!payload.contains("cwd"))
+    }
+
     @Test("unknown operation returns 404")
     func unknownOperationReturnsNotFound() async throws {
         let result = try await provider().handle(operation: "me.atkn.gnostic.diagnostics.missing", parameters: nil)

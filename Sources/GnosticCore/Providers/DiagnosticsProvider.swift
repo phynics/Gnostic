@@ -80,6 +80,27 @@ public struct DiagnosticsWorkspaceSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// The durable state of the Timeline's latest ACP Session record.
+public enum DiagnosticsTimelineSessionState: String, Codable, Sendable, Equatable {
+    case live
+    case resumable
+    case lost
+    case ambiguous
+}
+
+/// Payload-free Session continuity information for Timeline diagnostics.
+public struct DiagnosticsTimelineSessionRecovery: Codable, Sendable, Equatable {
+    public let state: DiagnosticsTimelineSessionState?
+    public let contextWasLost: Bool
+    public let message: String?
+
+    public init(state: DiagnosticsTimelineSessionState?, contextWasLost: Bool, message: String?) {
+        self.state = state
+        self.contextWasLost = contextWasLost
+        self.message = message.map(GnosticWirePayload.boundedLabel)
+    }
+}
+
 /// Live Turn counts. These are counts only; no Turn identity or body is carried.
 public struct DiagnosticsTurnCounters: Codable, Sendable, Equatable {
     public let inFlight: Int
@@ -204,15 +225,18 @@ public struct TimelineDiagnostics: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let timeline: DiagnosticsTimelineSummary
     public let workspaces: [DiagnosticsWorkspaceSummary]
+    public let sessionRecovery: DiagnosticsTimelineSessionRecovery?
 
     public init(
         timeline: DiagnosticsTimelineSummary,
         workspaces: [DiagnosticsWorkspaceSummary],
+        sessionRecovery: DiagnosticsTimelineSessionRecovery? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
         self.timeline = timeline
         self.workspaces = workspaces
+        self.sessionRecovery = sessionRecovery
     }
 }
 
