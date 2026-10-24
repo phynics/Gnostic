@@ -23,7 +23,7 @@ struct ConfigCommand: AsyncParsableCommand {
           gnostic config backend set-secret <ascendant-id> apiKey   # reads stdin
         """,
         subcommands: [
-            Init.self, Show.self, Validate.self, Path.self, Broker.self, Backend.self,
+            Init.self, Show.self, Validate.self, Migrate.self, Path.self, Broker.self, Backend.self,
             Ascendant.self, Timeline.self, Workspace.self, ConfigModuleCommand.self,
             ConfigRegimeCommand.self,
         ]
@@ -94,6 +94,35 @@ struct ConfigCommand: AsyncParsableCommand {
                 print(try JSONOutput.encode(report))
             }
             if !report.valid { throw ExitCode.failure }
+        }
+    }
+
+    struct Migrate: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "migrate",
+            abstract: "Migrate an immediate pre-v0.5 schema-v2 manifest to Runtime instance configuration."
+        )
+        @OptionGroup var configOptions: ConfigPathOptions
+        @Flag(name: .customLong("dry-run"), help: "Show the structured migration diff without writing or backing up the source.")
+        var dryRun = false
+        @OptionGroup var formatOptions: OutputFormatOptions
+
+        func run() async throws {
+            let format = try formatOptions.resolved()
+            let report = try ConfigurationMigration.migrate(at: configOptions.store().path(), dryRun: dryRun)
+            switch format {
+            case .json:
+                print(try JSONOutput.encode(report))
+            case .human:
+                print(dryRun ? "Configuration migration preview (no files changed):" : "Configuration migrated:")
+                print("  source: \(report.source)")
+                if let backup = report.backup { print("  backup: \(backup)") }
+                for change in report.changedFields { print("  change: \(change)") }
+                print("  preserved Node: \(report.preservedNodeID.uuidString)")
+                print("  preserved Runtime instances: \(report.preservedRuntimeInstanceIDs.count)")
+                print("  preserved Timelines: \(report.preservedTimelineIDs.count)")
+                print("  preserved Workspaces: \(report.preservedWorkspaceIDs.count)")
+            }
         }
     }
 

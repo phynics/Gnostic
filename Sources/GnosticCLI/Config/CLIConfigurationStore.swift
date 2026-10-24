@@ -318,7 +318,7 @@ public struct ManifestPreview: Sendable {
     }
 }
 
-private enum ManifestStoreLock {
+enum ManifestStoreLock {
     static func withLock<T>(at file: URL, _ operation: () throws -> T) throws -> T {
         let directory = file.deletingLastPathComponent()
         let directoryExisted = FileManager.default.fileExists(atPath: directory.path)
