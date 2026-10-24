@@ -261,9 +261,9 @@ struct TwoNodeMQTTIntegrationTests {
                 trace: trace
             )
 
-            trace.record("workspace.owner-revocation.request")
+            trace.record("workspace.owner-health-revocation.request")
             try workspaceNode.revoke()
-            trace.record("workspace.owner-revocation.written")
+            trace.record("workspace.owner-health-revocation.written")
             let rejected = try await runTurnApprovingWorkspacePermission(
                 client: client,
                 timelineID: timelineID,
@@ -281,14 +281,15 @@ struct TwoNodeMQTTIntegrationTests {
                 "providerInvocationCount": String(afterTransitionInvocationCount),
             ])
             try #require(afterTransitionInvocationCount == 1)
-            trace.record("workspace.owner-status.after-revocation.refresh.request")
+            trace.record("workspace.owner-registry-status.rediscovery.request")
             try await session.discover(timeout: .seconds(3))
             let afterStatus = await workspaceClient.effectiveStatus(workspaceID: workspaceID)
-            trace.record("workspace.owner-status.after-revocation.returned", [
+            trace.record("workspace.owner-registry-status.rediscovery.returned", [
                 "effectiveStatus": afterStatus.rawValue,
-                "source": "owner-advertisement",
+                "source": "Node B authoritative registry projection",
             ])
             try #require(afterStatus == .unavailable)
+            trace.record("workspace.owner-registry-status.unavailable.asserted")
 
             let rejectedByEffectiveStatus = try await runTurnApprovingWorkspacePermission(
                 client: client,
@@ -356,7 +357,7 @@ struct TwoNodeMQTTIntegrationTests {
                 Issue.record("a third caller must not authorize itself with a Timeline ID and approval flag")
                 throw TwoNodeIntegrationError.thirdPeerInvocationSucceeded
             } catch let error as GnosticWorkspaceClientError {
-                trace.record("third-peer.forged-invocation.rejected", ["reasonCode": error.reasonCode])
+                trace.record("third-peer.forged-invocation.owner-handler-rejected", ["reasonCode": error.reasonCode])
                 try #require(error.reasonCode == "workspaceNotAttached")
             }
             let invocationCount = try workspaceNode.invocationCount()
@@ -387,7 +388,8 @@ struct TwoNodeMQTTIntegrationTests {
         ])
         let updates = try await client.updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
         trace.record("\(stagePrefix).updates.subscribed")
-        let permissionResponder = Task {
+        let permissionResponder = Task { () async throws -> Bool in
+            var receivedAndAnsweredPermission = false
             for await update in updates {
                 trace.record("\(stagePrefix).update.received", [
                     "clientTurnID": clientTurnID,
@@ -418,8 +420,10 @@ struct TwoNodeMQTTIntegrationTests {
                     throw error
                 }
                 trace.record("\(stagePrefix).permission.response-published", ["clientTurnID": clientTurnID])
+                receivedAndAnsweredPermission = true
             }
             trace.record("\(stagePrefix).updates.finished")
+            return receivedAndAnsweredPermission
         }
         trace.record("\(stagePrefix).run.request", [
             "timelineProviderID": providerID,
@@ -433,7 +437,8 @@ struct TwoNodeMQTTIntegrationTests {
         )
         trace.record("\(stagePrefix).run.returned", ["clientTurnID": clientTurnID])
         trace.record("\(stagePrefix).permission-responder.join")
-        try await permissionResponder.value
+        try #require(try await permissionResponder.value)
+        trace.record("\(stagePrefix).permission.required-event-asserted")
         trace.record("\(stagePrefix).completed")
         return result
     }
@@ -519,6 +524,8 @@ struct TwoNodeMQTTIntegrationTests {
                 "GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path,
                 "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePID.path,
                 "GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT": requestedTimelineID == nil ? "1" : "17",
+                "GNOSTIC_ACP_FIXTURE_MCP": requestedTimelineID == nil ? "0" : "1",
+                "GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_SUFFIX": requestedTimelineID == nil ? "" : "__search",
             ]
             manifest.ascendants[0].backend.settings["command"] = .string("node")
             manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([agentFixture]))

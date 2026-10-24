@@ -40,7 +40,7 @@ public protocol WorkspaceDiscovery: Sendable {
 /// distinguish a provider's explicit terminal tool page from a timeout.
 @MainActor
 protocol WorkspaceResolutionDiscovery: WorkspaceDiscovery {
-    func discoverForResolution(deadline: ContinuousClock.Instant) async
+    func discoverForResolution(workspaceID: UUID, deadline: ContinuousClock.Instant) async
     func queryToolsForResolution(
         workspaceID: UUID,
         providerID: String,
@@ -116,8 +116,8 @@ final class AxolotyWorkspaceDiscovery: WorkspaceResolutionDiscovery {
         await subscription.discover(using: communication, timeout: timeout)
     }
 
-    func discoverForResolution(deadline: ContinuousClock.Instant) async {
-        await subscription.discover(using: communication, deadline: deadline)
+    func discoverForResolution(workspaceID: UUID, deadline: ContinuousClock.Instant) async {
+        await subscription.discoverForResolution(using: communication, workspaceID: workspaceID, deadline: deadline)
     }
 
     func objects() async -> [NetworkCatalogEntry] { await catalog.networkObjects() }

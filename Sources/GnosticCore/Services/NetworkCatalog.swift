@@ -34,6 +34,7 @@ public actor NetworkCatalog {
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
     private var completeWorkspaceToolCatalogs: [UUID: Set<String>] = [:]
+    private var workspaceToolCatalogEpochs: [UUID: [String: UInt64]] = [:]
     private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
     private var providerEvictionContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var changeContinuations: [UUID: AsyncStream<NetworkCatalogChange>.Continuation] = [:]
@@ -108,6 +109,8 @@ public actor NetworkCatalog {
             return
         }
         if snapshot.objectType == GnosticObjectType.workspace {
+            advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
+            removeWorkspaceToolPages(workspaceID: objectID, providerID: providerID)
             completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
             if completeWorkspaceToolCatalogs[objectID]?.isEmpty == true {
                 completeWorkspaceToolCatalogs[objectID] = nil
@@ -160,6 +163,41 @@ public actor NetworkCatalog {
         }
     }
 
+    func workspaceToolCatalogGenerations(id: UUID) -> [String: UInt64] {
+        guard let providers = entries[id] else { return [:] }
+        var generations: [String: UInt64] = [:]
+        for entry in providers.values where entry.objectType == GnosticObjectType.workspace {
+            let key = entry.providerID.lowercased()
+            generations[key] = workspaceToolCatalogEpochs[id]?[key] ?? 0
+        }
+        return generations
+    }
+
+    func ingestWorkspaceToolQueryResponse(
+        _ event: ResponseEventSnapshot,
+        workspaceID: UUID,
+        providerID: String,
+        generation: UInt64
+    ) -> Bool {
+        let providerKey = providerID.lowercased()
+        guard (workspaceToolCatalogEpochs[workspaceID]?[providerKey] ?? 0) == generation,
+              entries[workspaceID]?[providerID]?.objectType == GnosticObjectType.workspace,
+              event.sourceId?.caseInsensitiveCompare(providerID) == .orderedSame else { return false }
+        let snapshots = event.objects ?? event.object.map { [$0] } ?? []
+        let hydrated = snapshots.map { Self.hydrateResponseObject($0, from: event.payload) }
+        guard hydrated.allSatisfy({ snapshot in
+            guard snapshot.objectType == GnosticObjectType.workspaceTool,
+                  let payload = snapshot.payload,
+                  let object = try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8))
+            else { return false }
+            return object.workspaceID == workspaceID
+        }) else { return false }
+        for snapshot in hydrated {
+            ingest(AdvertiseEventSnapshot(sourceId: providerID, object: snapshot))
+        }
+        return true
+    }
+
     /// Ingests a deadvertisement and removes only entries owned by its provider.
     ///
     /// A lifecycle identity deadvertisement names the provider's own identity in
@@ -178,8 +216,8 @@ public actor NetworkCatalog {
         for rawID in event.objectIds {
             guard let objectID = UUID(uuidString: rawID) else { continue }
             if entries[objectID]?[providerID]?.objectType == GnosticObjectType.workspace {
-                workspaceTools[objectID]?[providerID] = nil
-                if workspaceTools[objectID]?.isEmpty == true { workspaceTools[objectID] = nil }
+                advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
+                removeWorkspaceToolPages(workspaceID: objectID, providerID: providerID)
                 completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
                 if completeWorkspaceToolCatalogs[objectID]?.isEmpty == true {
                     completeWorkspaceToolCatalogs[objectID] = nil
@@ -209,6 +247,10 @@ public actor NetworkCatalog {
 
     /// Removes every record owned by one provider and notifies observers.
     private func evictProvider(_ providerID: String) {
+        for (workspaceID, providers) in Array(entries) where providers[providerID]?.objectType == GnosticObjectType.workspace {
+            advanceWorkspaceToolCatalogGeneration(workspaceID: workspaceID, providerID: providerID)
+            removeWorkspaceToolPages(workspaceID: workspaceID, providerID: providerID)
+        }
         for objectID in Array(entries.keys) where entries[objectID]?[providerID] != nil {
             entries[objectID]?[providerID] = nil
             if entries[objectID]?.isEmpty == true {
@@ -267,9 +309,29 @@ public actor NetworkCatalog {
     }
 
     /// Records the provider's explicit terminal empty page for its tool query.
-    func markWorkspaceToolCatalogComplete(id: UUID, providerID: String) {
-        guard entries[id]?[providerID]?.workspace != nil else { return }
+    func markWorkspaceToolCatalogComplete(id: UUID, providerID: String, generation: UInt64) -> Bool {
+        let providerKey = providerID.lowercased()
+        guard entries[id]?[providerID]?.workspace != nil,
+              (workspaceToolCatalogEpochs[id]?[providerKey] ?? 0) == generation else { return false }
         completeWorkspaceToolCatalogs[id, default: []].insert(providerID)
+        return true
+    }
+
+    private func advanceWorkspaceToolCatalogGeneration(workspaceID: UUID, providerID: String) {
+        let key = providerID.lowercased()
+        workspaceToolCatalogEpochs[workspaceID, default: [:]][key, default: 0] &+= 1
+    }
+
+    private func removeWorkspaceToolPages(workspaceID: UUID, providerID: String) {
+        workspaceTools[workspaceID]?[providerID] = nil
+        if workspaceTools[workspaceID]?.isEmpty == true { workspaceTools[workspaceID] = nil }
+        for objectID in Array(workspaceToolOwners.keys)
+            where workspaceToolOwners[objectID]?.workspaceID == workspaceID
+                && workspaceToolOwners[objectID]?.providerID == providerID {
+            workspaceToolOwners[objectID] = nil
+            entries[objectID]?[providerID] = nil
+            if entries[objectID]?.isEmpty == true { entries[objectID] = nil }
+        }
     }
 
     /// Returns whether a workspace can be attached without ambiguity.

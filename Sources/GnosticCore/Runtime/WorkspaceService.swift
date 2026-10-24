@@ -240,7 +240,7 @@ public final class WorkspaceService {
         let generation = backendProvider.lifecycleGeneration
         let deadline = ContinuousClock.now.advanced(by: timeout)
         var status = await discovery.attachmentStatus(id: workspaceID)
-        guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        try requireCurrentGeneration(generation)
         if case .available = status {
             // The observed owner advertisement is already sufficient for resolution.
             // A full discover sweep here consumes the same deadline as the caller's
@@ -255,16 +255,17 @@ public final class WorkspaceService {
                     deadline,
                     ContinuousClock.now.advanced(by: discoveryWindow)
                 )
-                await resolutionDiscovery.discoverForResolution(deadline: discoveryDeadline)
+                await resolutionDiscovery.discoverForResolution(workspaceID: workspaceID, deadline: discoveryDeadline)
             } else {
                 await discovery.discover(timeout: discoveryWindow)
             }
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
             status = await discovery.attachmentStatus(id: workspaceID)
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
         }
         guard case let .available(providerID, uri) = status else {
             if await registry.workspace(id: workspaceID) != nil {
+                try requireCurrentGeneration(generation)
                 guard await registry.setWorkspaceStatus(
                     id: workspaceID,
                     status: Self.effectiveStatus(status),
@@ -274,6 +275,7 @@ public final class WorkspaceService {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
         if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
+            try requireCurrentGeneration(generation)
             guard let remaining = Self.remaining(until: deadline) else {
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
             }
@@ -286,14 +288,16 @@ public final class WorkspaceService {
                 )
             } else {
                 await discovery.queryTools(workspaceID: workspaceID, timeout: remaining)
+                try requireCurrentGeneration(generation)
                 complete = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == true
             }
+            try requireCurrentGeneration(generation)
             guard complete else {
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
             }
         }
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
             if await registry.workspace(id: workspaceID) != nil {
                 guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                     throw NodeRuntimeError.notRunning
@@ -301,31 +305,36 @@ public final class WorkspaceService {
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
+        try requireCurrentGeneration(generation)
         guard descriptor.toolsComplete else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
         }
         let reference = WorkspaceReferenceProjection.backendReference(from: descriptor)
         if let configured = await registry.workspace(id: workspaceID), configured.uri != uri {
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                 throw NodeRuntimeError.notRunning
             }
             throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
         }
         if await registry.workspace(id: workspaceID) != nil {
+            try requireCurrentGeneration(generation)
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .available, generation: generation) else {
                 throw NodeRuntimeError.notRunning
             }
         } else {
+            try requireCurrentGeneration(generation)
             guard try await registry.resolveLazyWorkspace(
                 id: workspaceID,
                 uri: uri,
-                toolIDs: reference.tools.map(\.id)
+                toolIDs: reference.tools.map(\.id),
+                generation: generation
             ) else {
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.malformed)
             }
         }
-        try await installResolved(reference, workspaceID: workspaceID)
+        try requireCurrentGeneration(generation)
+        try await installResolved(reference, workspaceID: workspaceID, generation: generation)
         return reference
     }
 
@@ -351,13 +360,13 @@ public final class WorkspaceService {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         guard let expectedURI = await registry.workspace(id: workspaceID)?.uri else { return nil }
         let status = await discovery.attachmentStatus(id: workspaceID)
-        guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+        try requireCurrentGeneration(generation)
         guard await registry.setWorkspaceStatus(id: workspaceID, status: Self.effectiveStatus(status), generation: generation) else {
             throw NodeRuntimeError.notRunning
         }
         guard case let .available(_, uri) = status, uri == expectedURI,
               let providerID = providerID(for: status) else {
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
             if case .available = status {
                 guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                     throw NodeRuntimeError.notRunning
@@ -365,7 +374,9 @@ public final class WorkspaceService {
             }
             return nil
         }
+        try requireCurrentGeneration(generation)
         if await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == false {
+            try requireCurrentGeneration(generation)
             guard let remaining = Self.remaining(until: deadline) else { return nil }
             let complete: Bool
             if let resolutionDiscovery = discovery as? any WorkspaceResolutionDiscovery {
@@ -376,18 +387,21 @@ public final class WorkspaceService {
                 )
             } else {
                 await discovery.queryTools(workspaceID: workspaceID, timeout: remaining)
+                try requireCurrentGeneration(generation)
                 complete = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID)?.toolsComplete == true
             }
+            try requireCurrentGeneration(generation)
             guard complete else { return nil }
         }
         guard let descriptor = await discovery.descriptor(workspaceID: workspaceID, providerID: providerID) else {
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
             await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation)
             return nil
         }
+        try requireCurrentGeneration(generation)
         guard descriptor.toolsComplete else { return nil }
         let reference = WorkspaceReferenceProjection.backendReference(from: descriptor)
-        try await installResolved(reference, workspaceID: workspaceID)
+        try await installResolved(reference, workspaceID: workspaceID, generation: generation)
         return reference
     }
 
@@ -421,12 +435,16 @@ public final class WorkspaceService {
         }
     }
 
-    private func installResolved(_ reference: BackendWorkspaceReference, workspaceID: UUID) async throws {
+    private func installResolved(_ reference: BackendWorkspaceReference, workspaceID: UUID, generation: UInt64) async throws {
+        try requireCurrentGeneration(generation)
         var operationContext: AscendantBackendSession?
         var attachedTargets: [(session: AscendantBackendSession, runtime: any AscendantBackendWorkspaceCapability, timelineID: UUID)] = []
         do {
-            for target in await registry.attachmentTargets(for: workspaceID) {
+            let targets = await registry.attachmentTargets(for: workspaceID)
+            try requireCurrentGeneration(generation)
+            for target in targets {
                 guard let session = backendProvider.session(for: target.ascendantID),
+                      session.generation == generation,
                       let runtime = session.backend.optionalCapability(.workspace, as: (any AscendantBackendWorkspaceCapability).self) else { continue }
                 try backendProvider.requireCurrentSession(session)
                 operationContext = session
@@ -434,6 +452,7 @@ public final class WorkspaceService {
                     try await runtime.attachWorkspace(reference, to: target.timelineID)
                 }
                 attachedTargets.append((session, runtime, target.timelineID))
+                try requireCurrentGeneration(generation)
                 guard let timeline = try await runBackendOperation(session, { try await session.backend.operatedTimelines().first(where: { $0.id == target.timelineID }) }),
                       timeline.attachedWorkspaceIDs.contains(workspaceID) else {
                     throw NodeRuntimeError.missingTimeline(target.timelineID)
@@ -450,15 +469,14 @@ public final class WorkspaceService {
         if let session = operationContext {
             try backendProvider.requireCurrentSession(session)
         }
-        guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
-        let generation = backendProvider.lifecycleGeneration
+        try requireCurrentGeneration(generation)
         guard try await registry.resolveLazyWorkspace(
             id: workspaceID,
             uri: reference.uri,
             toolIDs: reference.tools.map(\.id),
             generation: generation
         ) else {
-            guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
+            try requireCurrentGeneration(generation)
             guard await registry.setWorkspaceStatus(id: workspaceID, status: .unsupported, generation: generation) else {
                 throw NodeRuntimeError.notRunning
             }
@@ -470,6 +488,12 @@ public final class WorkspaceService {
         guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else { throw NodeRuntimeError.notRunning }
         references[workspaceID] = reference
         backendWorkspaceService?.update(reference: reference)
+    }
+
+    private func requireCurrentGeneration(_ generation: UInt64) throws {
+        guard backendProvider.isRunning, backendProvider.lifecycleGeneration == generation else {
+            throw NodeRuntimeError.notRunning
+        }
     }
 
     private static func effectiveStatus(_ status: WorkspaceAttachmentStatus) -> NodeRegistry.WorkspaceEffectiveStatus {

@@ -189,6 +189,35 @@ public final class GnosticSubscription {
         }
     }
 
+    /// Resolves an attachment from a correlated discovery stream. Discovery
+    /// has no terminal event, so an available result must use the bounded
+    /// collection window to rule out a competing owner. Ambiguity is already
+    /// terminal and can return immediately; all other paths honor the shared
+    /// deadline and leave its remaining budget for tool pages.
+    func discoverForResolution(
+        using communicationManager: CommunicationManager,
+        workspaceID: UUID,
+        deadline: ContinuousClock.Instant
+    ) async {
+        let stream = await communicationManager.publishDiscover(
+            DiscoverEvent.with(objectTypes: [GnosticObjectType.workspace])
+        )
+        guard let remaining = Self.remaining(until: deadline) else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [catalog] in
+                for await response in stream {
+                    await catalog.ingest(response)
+                    if case .ambiguous = await catalog.workspaceAttachmentStatus(id: workspaceID) { return }
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: remaining)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
     /// Retrieves one public Workspace tool object per bounded query page.
     /// Querying stops at the owning provider's explicit empty page, at a page
     /// nobody answers within `timeout`, or at the fixed page ceiling; no
@@ -228,6 +257,7 @@ public final class GnosticSubscription {
         providerID: String?,
         deadline: ContinuousClock.Instant
     ) async -> Bool {
+        let generations = await catalog.workspaceToolCatalogGenerations(id: workspaceID)
         for page in 0..<64 {
             guard let remaining = Self.remaining(until: deadline) else { return false }
             let stream = await communicationManager.publishQuery(
@@ -238,14 +268,23 @@ public final class GnosticSubscription {
                 timeout: remaining
             )
             guard let remaining = Self.remaining(until: deadline) else { return false }
-            switch await receiveOne(from: stream, providerID: providerID, timeout: remaining) {
+            switch await receiveOne(
+                from: stream,
+                workspaceID: workspaceID,
+                providerID: providerID,
+                generations: generations,
+                timeout: remaining
+            ) {
             case .objects:
                 continue
-            case .empty:
-                if let providerID {
-                    await catalog.markWorkspaceToolCatalogComplete(id: workspaceID, providerID: providerID)
-                }
-                return true
+            case let .empty(owner, generation):
+                return await catalog.markWorkspaceToolCatalogComplete(
+                    id: workspaceID,
+                    providerID: owner,
+                    generation: generation
+                )
+            case .stale:
+                return false
             case .timedOut:
                 return false
             }
@@ -255,25 +294,33 @@ public final class GnosticSubscription {
 
     private enum WorkspaceToolPageResult: Sendable {
         case objects
-        case empty
+        case empty(providerID: String, generation: UInt64)
+        case stale
         case timedOut
     }
 
     private func receiveOne(
         from stream: AsyncStream<ResponseEventSnapshot>,
+        workspaceID: UUID,
         providerID: String?,
+        generations: [String: UInt64],
         timeout: Duration
     ) async -> WorkspaceToolPageResult {
         await withTaskGroup(of: WorkspaceToolPageResult.self) { group in
             group.addTask { [catalog] in
                 for await response in stream {
+                    guard let sourceID = response.sourceId,
+                          let generation = generations[sourceID.lowercased()] else { continue }
                     if let providerID,
-                       response.sourceId?.caseInsensitiveCompare(providerID) != .orderedSame {
-                        continue
-                    }
-                    await catalog.ingest(response)
+                       sourceID.caseInsensitiveCompare(providerID) != .orderedSame { continue }
+                    guard await catalog.ingestWorkspaceToolQueryResponse(
+                        response,
+                        workspaceID: workspaceID,
+                        providerID: sourceID,
+                        generation: generation
+                    ) else { return .stale }
                     let objects = response.objects ?? response.object.map { [$0] } ?? []
-                    return objects.isEmpty ? .empty : .objects
+                    return objects.isEmpty ? .empty(providerID: sourceID, generation: generation) : .objects
                 }
                 return .timedOut
             }

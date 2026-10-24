@@ -83,7 +83,12 @@ public final class NodeTransport {
         workspaceProvider = localWorkspaces.isEmpty ? nil : MultiplexedWorkspaceProvider(
             workspaces: localWorkspaces,
             workspaceStatus: { id in await registry?.effectiveWorkspaceStatus(id: id) },
-            setWorkspaceStatus: { id, status in await registry?.setWorkspaceStatus(id: id, status: status) ?? false },
+            setWorkspaceStatus: { id, status in
+                guard await registry?.setWorkspaceStatus(id: id, status: status) == true else { return false }
+                guard let reference = await workspaceReferences().first(where: { $0.id == id }) else { return false }
+                await lifecycle?.readvertiseDiscoverableObjectAndWait(object: GnosticWorkspaceObject(workspace: reference))
+                return true
+            },
             callerBoundAuthorization: { sourceID, timelineID, workspaceID in
                 await workspaceAuthorization(sourceID, timelineID, workspaceID)
             },
