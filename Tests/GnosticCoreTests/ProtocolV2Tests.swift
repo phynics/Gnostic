@@ -2,7 +2,7 @@
 
 import Axoloty
 import Foundation
-import GnosticCore
+@testable import GnosticCore
 import GnosticWorkspaceTestSupport
 import Testing
 
