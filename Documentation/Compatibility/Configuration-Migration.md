@@ -30,10 +30,28 @@ gnostic config migrate --format json --config ~/.gnostic/config.json
 ```
 
 Apply mode creates an exact, timestamped sibling backup before it atomically
-replaces the source manifest. If validation or backup creation fails, the
-source is not changed. The report includes the backup path. Keep that backup
-until the migrated node has started successfully and its Timelines and
-Workspaces are visible.
+replaces the source manifest. It syncs the backup file and containing directory
+before replacement, then syncs the directory again after replacement. The
+backup and replacement preserve the source owner, group, and mode. If the
+invoking user cannot preserve ownership, migration fails before replacing the
+source. A failure syncing the directory after rename reports that the migrated
+file is already visible and keeps the backup for recovery. If validation or
+backup creation fails, the source is not changed. The report includes the
+backup path. Keep that backup until the migrated node has started successfully
+and its Timelines and Workspaces are visible.
+
+Migration validates and converts configuration values; it does not prove that
+the configured Runtime executable exists or that its working directory is
+accessible on the machine where the Node will run. On the target Node, validate
+the migrated manifest before startup:
+
+```sh
+gnostic config validate --config ~/.gnostic/config.json
+```
+
+This checks the manifest against the running version's configuration rules.
+Successful validation still does not prove that the Runtime can start; confirm
+startup readiness on that Node before relying on the migrated configuration.
 
 ## Roll back
 

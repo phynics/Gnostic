@@ -44,10 +44,16 @@ struct ConfigurationMigrationCommandTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let path = folder.appendingPathComponent("config.json")
-        let original = Data(try fixtureTextIncludingScratchRoot().utf8)
+        let originalText = try fixtureTextIncludingScratchRoot().replacingOccurrences(
+            of: "\"schemaVersion\": 2,",
+            with: "\"schemaVersion\": 2,\n  \"opaqueExtension\": {\"providerValue\": \"preserve-me\"},"
+        )
+        let original = Data(originalText.utf8)
         try original.write(to: path)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
         let originalPermissions = try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions]
+        let originalOwner = try FileManager.default.attributesOfItem(atPath: path.path)[.ownerAccountID]
+        let originalGroup = try FileManager.default.attributesOfItem(atPath: path.path)[.groupOwnerAccountID]
 
         let result = try await run(binary: binary, path: path, dryRun: false)
         #expect(result.status == 0, Comment(rawValue: result.stderr))
@@ -59,6 +65,10 @@ struct ConfigurationMigrationCommandTests {
         let migratedPermissions = try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions]
         #expect(backupPermissions as? NSNumber == originalPermissions as? NSNumber)
         #expect(migratedPermissions as? NSNumber == originalPermissions as? NSNumber)
+        #expect(try FileManager.default.attributesOfItem(atPath: backupPath)[.ownerAccountID] as? NSNumber == originalOwner as? NSNumber)
+        #expect(try FileManager.default.attributesOfItem(atPath: backupPath)[.groupOwnerAccountID] as? NSNumber == originalGroup as? NSNumber)
+        #expect(try FileManager.default.attributesOfItem(atPath: path.path)[.ownerAccountID] as? NSNumber == originalOwner as? NSNumber)
+        #expect(try FileManager.default.attributesOfItem(atPath: path.path)[.groupOwnerAccountID] as? NSNumber == originalGroup as? NSNumber)
 
         let migrated = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
         #expect(migrated["ascendants"] == nil)
@@ -79,6 +89,8 @@ struct ConfigurationMigrationCommandTests {
         #expect(settings["scratchRoot"] as? String == "/tmp/gnostic-scratch")
         let migratedText = String(decoding: try Data(contentsOf: path), as: UTF8.self)
         #expect(migratedText.contains("fixture-secret"))
+        #expect(migrated["opaqueExtension"] as? [String: Any] != nil)
+        #expect((migrated["opaqueExtension"] as? [String: String])?["providerValue"] == "preserve-me")
     }
 
     @Test("invalid environment object names are rejected")
@@ -163,17 +175,21 @@ struct ConfigurationMigrationCommandTests {
         var transactionLockHeld = false
 
         #expect(throws: ConfigurationMigrationError.self) {
-            try ConfigurationMigration.migrateForTesting(at: path, dryRun: false) {
-                transactionLockHeld = isManifestLockHeld(for: path)
-                try? concurrentUpdate.write(to: path)
-            }
+            try ConfigurationMigration.migrateForTesting(
+                at: path,
+                dryRun: false,
+                afterReadingSource: {
+                    transactionLockHeld = isManifestLockHeld(for: path)
+                    try? concurrentUpdate.write(to: path)
+                }
+            )
         }
         #expect(transactionLockHeld)
         #expect(try Data(contentsOf: path) == concurrentUpdate)
         #expect(try onlySourceAndLockRemain(in: folder))
     }
 
-    @Test("a source change after backup is detected and the stale backup is removed")
+    @Test("a source change after backup is detected and the exact backup is retained")
     func sourceChangeAfterBackupIsDetected() throws {
         let source = Data(try fixtureText().utf8)
         let concurrentUpdate = Data(try fixtureText().replacingOccurrences(of: "migration-test", with: "concurrent-update").utf8)
@@ -185,14 +201,107 @@ struct ConfigurationMigrationCommandTests {
         var transactionLockHeld = false
 
         #expect(throws: ConfigurationMigrationError.self) {
-            try ConfigurationMigration.migrateForTesting(at: path, dryRun: false, afterReadingSource: {}) {
-                transactionLockHeld = isManifestLockHeld(for: path)
-                try? concurrentUpdate.write(to: path)
-            }
+            try ConfigurationMigration.migrateForTesting(
+                at: path,
+                dryRun: false,
+                afterReadingSource: {},
+                afterBackup: {
+                    transactionLockHeld = isManifestLockHeld(for: path)
+                    try? concurrentUpdate.write(to: path)
+                }
+            )
         }
         #expect(transactionLockHeld)
         #expect(try Data(contentsOf: path) == concurrentUpdate)
-        #expect(try onlySourceAndLockRemain(in: folder))
+        #expect(try backupFiles(in: folder).count == 1)
+        #expect(try Data(contentsOf: backupFiles(in: folder)[0]) == source)
+    }
+
+    @Test("backup directory sync failure keeps the source unchanged before replacement")
+    func backupDirectorySyncFailurePrecedesReplacement() throws {
+        let source = Data(try fixtureText().utf8)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("config.json")
+        try source.write(to: path)
+        var observedBackupFileSync = false
+
+        #expect(throws: ConfigurationMigrationError.self) {
+            try ConfigurationMigration.migrateForTesting(
+                at: path,
+                dryRun: false,
+                afterReadingSource: {},
+                beforeSync: { point in
+                    if point == .backupFile { observedBackupFileSync = true }
+                    if point == .backupDirectory { throw POSIXError(.EIO) }
+                }
+            )
+        }
+        #expect(observedBackupFileSync)
+        #expect(try Data(contentsOf: path) == source)
+        #expect(try backupFiles(in: folder).count == 1)
+        #expect(try Data(contentsOf: backupFiles(in: folder)[0]) == source)
+    }
+
+    @Test("replacement file sync failure leaves the source unchanged and retains the backup")
+    func replacementFileSyncFailureLeavesSourceUnchanged() throws {
+        let source = Data(try fixtureText().utf8)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("config.json")
+        try source.write(to: path)
+        var failure: ConfigurationMigrationError?
+
+        do {
+            _ = try ConfigurationMigration.migrateForTesting(
+                at: path,
+                dryRun: false,
+                afterReadingSource: {},
+                beforeSync: { point in
+                    if point == .replacementFile { throw POSIXError(.EIO) }
+                }
+            )
+        } catch let error as ConfigurationMigrationError {
+            failure = error
+        }
+
+        #expect(failure?.reasonCode == "configurationWriteFailed")
+        #expect(failure?.message.contains("original was not replaced") == true)
+        #expect(try Data(contentsOf: path) == source)
+        #expect(try backupFiles(in: folder).count == 1)
+        #expect(try Data(contentsOf: backupFiles(in: folder)[0]) == source)
+    }
+
+    @Test("replacement directory sync failure reports that the migrated source is already visible")
+    func replacementDirectorySyncFailureReportsVisibleReplacement() throws {
+        let source = Data(try fixtureText().utf8)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("config.json")
+        try source.write(to: path)
+        var failure: ConfigurationMigrationError?
+
+        do {
+            _ = try ConfigurationMigration.migrateForTesting(
+                at: path,
+                dryRun: false,
+                afterReadingSource: {},
+                beforeSync: { point in
+                    if point == .replacementDirectory { throw POSIXError(.EIO) }
+                }
+            )
+        } catch let error as ConfigurationMigrationError {
+            failure = error
+        }
+
+        #expect(failure?.reasonCode == "replacementDurabilityUnconfirmed")
+        #expect(failure?.message.contains("is visible") == true)
+        #expect(try Data(contentsOf: path) != source)
+        #expect(try backupFiles(in: folder).count == 1)
+        #expect(try Data(contentsOf: backupFiles(in: folder)[0]) == source)
     }
 
     @Test("removed in-process backends fail with remediation and keep the source untouched")
@@ -316,6 +425,11 @@ struct ConfigurationMigrationCommandTests {
         let entries = try FileManager.default.contentsOfDirectory(atPath: folder.path)
             .filter { $0 != ".config.json.lock" }
         return entries == ["config.json"]
+    }
+
+    private func backupFiles(in folder: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasSuffix(".bak") }
     }
 
     private func expectRejected(_ source: Data, label: String) async throws {

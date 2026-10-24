@@ -39,6 +39,13 @@ public struct ConfigurationMigrationReport: Codable, Equatable, Sendable {
 
 /// Migrates only the immediate pre-v0.5 schema-v2 operator manifest.
 public enum ConfigurationMigration {
+    enum SyncPoint: Equatable {
+        case backupFile
+        case backupDirectory
+        case replacementFile
+        case replacementDirectory
+    }
+
     private struct MigrationOperationFailure: Error {
         let underlying: Error
     }
@@ -51,28 +58,42 @@ public enum ConfigurationMigration {
     /// to the source or create a backup. Apply mode copies the exact source
     /// bytes to a new backup before atomically replacing the manifest.
     public static func migrate(at url: URL, dryRun: Bool) throws -> ConfigurationMigrationReport {
-        try migrate(at: url, dryRun: dryRun, afterReadingSource: nil)
+        try migrate(at: url, dryRun: dryRun, afterReadingSource: nil, beforeSync: nil)
     }
 
     static func migrateForTesting(
         at url: URL,
         dryRun: Bool,
         afterReadingSource: @escaping () -> Void,
-        afterBackup: @escaping () -> Void = {}
+        afterBackup: @escaping () -> Void = {},
+        beforeSync: ((SyncPoint) throws -> Void)? = nil
     ) throws -> ConfigurationMigrationReport {
-        try migrate(at: url, dryRun: dryRun, afterReadingSource: afterReadingSource, afterBackup: afterBackup)
+        try migrate(
+            at: url,
+            dryRun: dryRun,
+            afterReadingSource: afterReadingSource,
+            afterBackup: afterBackup,
+            beforeSync: beforeSync
+        )
     }
 
     private static func migrate(
         at url: URL,
         dryRun: Bool,
         afterReadingSource: (() -> Void)?,
-        afterBackup: (() -> Void)? = nil
+        afterBackup: (() -> Void)? = nil,
+        beforeSync: ((SyncPoint) throws -> Void)?
     ) throws -> ConfigurationMigrationReport {
         do {
             return try ManifestStoreLock.withLock(at: url) {
                 do {
-                    return try migrateLocked(at: url, dryRun: dryRun, afterReadingSource: afterReadingSource, afterBackup: afterBackup)
+                    return try migrateLocked(
+                        at: url,
+                        dryRun: dryRun,
+                        afterReadingSource: afterReadingSource,
+                        afterBackup: afterBackup,
+                        beforeSync: beforeSync
+                    )
                 } catch {
                     throw MigrationOperationFailure(underlying: error)
                 }
@@ -94,7 +115,8 @@ public enum ConfigurationMigration {
         at url: URL,
         dryRun: Bool,
         afterReadingSource: (() -> Void)?,
-        afterBackup: (() -> Void)?
+        afterBackup: (() -> Void)?,
+        beforeSync: ((SyncPoint) throws -> Void)?
     ) throws -> ConfigurationMigrationReport {
         let source: Data
         do {
@@ -114,20 +136,29 @@ public enum ConfigurationMigration {
         guard try Data(contentsOf: url) == source else {
             throw sourceChanged(at: url)
         }
-        let backupURL = dryRun ? nil : try makeBackup(of: url, source: source)
+        if !dryRun {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            try rejectUnsupportedOwnership(attributes, at: url)
+        }
+        let backupURL = dryRun ? nil : try makeBackup(of: url, source: source, beforeSync: beforeSync)
         afterBackup?()
 
         if !dryRun {
             do {
-                try atomicallyReplace(converted, at: url, expectedSource: source)
+                try atomicallyReplace(
+                    converted,
+                    at: url,
+                    expectedSource: source,
+                    backupURL: backupURL,
+                    beforeSync: beforeSync
+                )
             } catch let error as ConfigurationMigrationError {
-                if let backupURL { try? FileManager.default.removeItem(at: backupURL) }
                 throw error
             } catch {
                 throw ConfigurationMigrationError(
                     reasonCode: "configurationWriteFailed",
-                    message: "Could not write the migrated configuration at '\(url.path)'.",
-                    remediation: "Restore the original from '\(backupURL?.path ?? "the timestamped backup")' and check filesystem permissions before retrying."
+                    message: "Could not replace the configuration at '\(url.path)'; the original was not replaced.",
+                    remediation: "The backup remains at '\(backupURL?.path ?? "the timestamped backup")'. Check filesystem permissions and retry."
                 )
             }
         }
@@ -384,7 +415,11 @@ public enum ConfigurationMigration {
         }
     }
 
-    private static func makeBackup(of sourceURL: URL, source: Data) throws -> URL {
+    private static func makeBackup(
+        of sourceURL: URL,
+        source: Data,
+        beforeSync: ((SyncPoint) throws -> Void)?
+    ) throws -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -395,23 +430,47 @@ public enum ConfigurationMigration {
         do {
             try FileManager.default.copyItem(at: sourceURL, to: backupURL)
             guard try Data(contentsOf: backupURL) == source else {
-                try? FileManager.default.removeItem(at: backupURL)
                 throw CocoaError(.fileWriteUnknown)
             }
+            let sourceAttributes = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+            try preserveOwnership(from: sourceAttributes, on: backupURL)
+            if let mode = sourceAttributes[.posixPermissions] {
+                try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: backupURL.path)
+            }
+            guard try Data(contentsOf: backupURL) == source,
+                  try FileManager.default.attributesOfItem(atPath: backupURL.path)[.ownerAccountID] as? NSNumber
+                    == sourceAttributes[.ownerAccountID] as? NSNumber,
+                  try FileManager.default.attributesOfItem(atPath: backupURL.path)[.groupOwnerAccountID] as? NSNumber
+                    == sourceAttributes[.groupOwnerAccountID] as? NSNumber else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            let descriptor = open(backupURL.path, O_RDONLY)
+            guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            defer { _ = close(descriptor) }
+            try beforeSync?(.backupFile)
+            guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            try syncParentDirectory(of: sourceURL, point: .backupDirectory, beforeSync: beforeSync)
             return backupURL
         } catch {
             throw ConfigurationMigrationError(
                 reasonCode: "backupCreationFailed",
                 message: "Could not create a timestamped backup beside '\(sourceURL.path)'.",
-                remediation: "The source was not changed. Check directory permissions and available disk space, then retry."
+                remediation: "The source was not changed. Any backup created at '\(backupURL.path)' was retained; run as the configuration owner or check ownership, directory permissions, and available disk space, then retry."
             )
         }
     }
 
-    private static func atomicallyReplace(_ data: Data, at destination: URL, expectedSource: Data) throws {
+    private static func atomicallyReplace(
+        _ data: Data,
+        at destination: URL,
+        expectedSource: Data,
+        backupURL: URL?,
+        beforeSync: ((SyncPoint) throws -> Void)?
+    ) throws {
         let manager = FileManager.default
         let originalAttributes = try manager.attributesOfItem(atPath: destination.path)
-        let mode = originalAttributes[.posixPermissions]
+        try rejectUnsupportedOwnership(originalAttributes, at: destination)
+        let mode = originalAttributes[.posixPermissions] as? NSNumber
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).migration-\(UUID().uuidString).tmp")
         defer { try? manager.removeItem(at: temporary) }
@@ -432,8 +491,12 @@ public enum ConfigurationMigration {
                 offset += written
             }
         }
+        try preserveOwnership(from: originalAttributes, descriptor: descriptor)
+        if let mode, fchmod(descriptor, mode.uint32Value) != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try beforeSync?(.replacementFile)
         guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        if let mode { try manager.setAttributes([.posixPermissions: mode], ofItemAtPath: temporary.path) }
         guard try Data(contentsOf: destination) == expectedSource else {
             throw sourceChanged(at: destination)
         }
@@ -443,6 +506,53 @@ public enum ConfigurationMigration {
             }
         }
         guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        do {
+            try syncParentDirectory(of: destination, point: .replacementDirectory, beforeSync: beforeSync)
+        } catch {
+            throw ConfigurationMigrationError(
+                reasonCode: "replacementDurabilityUnconfirmed",
+                message: "The migrated configuration is visible at '\(destination.path)', but its directory sync failed.",
+                remediation: "Do not assume the replacement is durable after a power loss. The original backup remains at '\(backupURL?.path ?? "the timestamped backup")'. Check the filesystem and keep both files for recovery."
+            )
+        }
+    }
+
+    private static func preserveOwnership(from attributes: [FileAttributeKey: Any], on url: URL) throws {
+        let descriptor = open(url.path, O_RDONLY)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { _ = close(descriptor) }
+        try preserveOwnership(from: attributes, descriptor: descriptor)
+    }
+
+    private static func rejectUnsupportedOwnership(_ attributes: [FileAttributeKey: Any], at url: URL) throws {
+        guard let owner = attributes[.ownerAccountID] as? NSNumber,
+              owner.uint32Value != geteuid(), geteuid() != 0 else { return }
+        throw ConfigurationMigrationError(
+            reasonCode: "configurationOwnershipUnsupported",
+            message: "Cannot preserve the owner of '\(url.path)' when replacing it.",
+            remediation: "Run migration as the configuration owner or with permission to preserve its ownership. The source was not changed."
+        )
+    }
+
+    private static func preserveOwnership(from attributes: [FileAttributeKey: Any], descriptor: Int32) throws {
+        guard let owner = attributes[.ownerAccountID] as? NSNumber,
+              let group = attributes[.groupOwnerAccountID] as? NSNumber else { return }
+        guard fchown(descriptor, uid_t(owner.uint32Value), gid_t(group.uint32Value)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func syncParentDirectory(
+        of url: URL,
+        point: SyncPoint,
+        beforeSync: ((SyncPoint) throws -> Void)?
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        let descriptor = open(directory.path, O_RDONLY)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { _ = close(descriptor) }
+        try beforeSync?(point)
+        guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 
     private static func invalidEnvironmentMapping(_ name: String) -> ConfigurationMigrationError {
