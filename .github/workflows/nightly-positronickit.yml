@@ -20,7 +20,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   positronickit-main:
@@ -70,30 +69,3 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
-
-      - name: Report breakage
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          title="Nightly: PositronicKit main breaks Gnostic"
-          body=$(cat <<EOF
-          The nightly build and test against PositronicKit \`main\` failed.
-
-          - Run: $RUN_URL
-          - PositronicKit revision: ${POSITRONICKIT_REVISION:-unknown}
-
-          Reproduce by pointing Package.swift at \`main\`:
-          \`node Scripts/pin-positronickit-main.mjs main && make resolve && make verify\`.
-
-          Triage before the next PositronicKit release pins the breaking change.
-          EOF
-          )
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --search "$title in:title" --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
-          fi
