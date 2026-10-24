@@ -133,9 +133,7 @@ public final class GnosticWorkspaceClient {
     ///     resolve it from the session catalog.
     /// - Throws: ``GnosticWorkspaceClientError`` when approval is missing, the
     ///   Workspace or Timeline cannot be resolved, the addressed provider does
-    ///   not own the Timeline, the Timeline's Ascendant does not advertise
-    ///   ``GnosticCapability/workspaceAttachment``, or the serve rejected the
-    ///   attach.
+    ///   not own the Timeline, or the Node rejected the attach.
     public func attach(
         workspaceID: UUID,
         to timelineID: UUID,
@@ -146,8 +144,7 @@ public final class GnosticWorkspaceClient {
         _ = try await resolvedWorkspaceProvider(nil, for: workspaceID)
         let target = try await resolvedTimelineProvider(
             providerID,
-            for: timelineID,
-            requiredCapability: GnosticCapability.workspaceAttachment
+            for: timelineID
         )
         let result = try await channel.call(
             WorkspaceOpsProvider.attachOperation,
@@ -174,9 +171,8 @@ public final class GnosticWorkspaceClient {
     ///   - providerID: The expected provider that owns the Timeline, or `nil` to
     ///     resolve it from the session catalog.
     /// - Throws: ``GnosticWorkspaceClientError`` when the Timeline cannot be
-    ///   resolved, the addressed provider does not own it, its operating
-    ///   Ascendant does not advertise ``GnosticCapability/workspaceAttachment``,
-    ///   or the serve rejected the detach.
+    ///   resolved, the addressed provider does not own it, or the Node
+    ///   rejected the detach.
     public func detach(
         workspaceID: UUID,
         from timelineID: UUID,
@@ -184,8 +180,7 @@ public final class GnosticWorkspaceClient {
     ) async throws {
         let target = try await resolvedTimelineProvider(
             providerID,
-            for: timelineID,
-            requiredCapability: GnosticCapability.workspaceAttachment
+            for: timelineID
         )
         let result = try await channel.call(
             WorkspaceOpsProvider.detachOperation,
