@@ -101,6 +101,13 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     if (process.env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE) {
       await appendFile(process.env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE, `${JSON.stringify(params)}\n`);
     }
+    if (process.env.GNOSTIC_ACP_FIXTURE_ASSERT_AMBIGUOUS_JOURNAL_FILE) {
+      const journal = await readFile(process.env.GNOSTIC_ACP_FIXTURE_TIMELINE_JOURNAL_FILE, "utf8");
+      const priorSessionRecord = journal.trim().split("\n").reverse()
+        .find((record) => record.includes(JSON.stringify(params.sessionId)));
+      const state = priorSessionRecord?.includes('"ambiguous"') ? "ambiguous" : "not-ambiguous";
+      await writeFile(process.env.GNOSTIC_ACP_FIXTURE_ASSERT_AMBIGUOUS_JOURNAL_FILE, `${state}\n`);
+    }
     if (process.env.GNOSTIC_ACP_FIXTURE_EXIT_ON_RESUME === "1") process.exit(19);
     if (process.env.GNOSTIC_ACP_FIXTURE_INTERNAL_RESUME_ERROR === "1") {
       throw acp.RequestError.internalError({ details: "fixture resume failed" }, "Internal error");

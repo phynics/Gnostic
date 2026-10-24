@@ -385,6 +385,8 @@ public final class NodeRuntime {
             let message: String?
             if sessionState == .ambiguous {
                 message = "The Runtime Session outcome is ambiguous. Gnostic blocks prompts and Session creation for this Timeline."
+            } else if sessionState == .live {
+                message = "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified."
             } else if projection.hasLostSession {
                 message = "A prior Runtime Session was definitively lost. Gnostic did not reconstruct its context in a replacement Session."
             } else {

@@ -1175,6 +1175,7 @@ struct ACPAscendantBackendTests {
 
         let restartedBackend = try backend(settings: settings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [recorder])
         _ = try await restartedBackend.operatedTimelines()
+        #expect(try await store.timelineProjection(for: timelineID)?.latestSession?.state == .live)
         _ = try await restartedBackend.runTurn(.init(timelineID: timelineID, message: "continue", clientTurnID: "continue"), updates: RecordingUpdateSink())
         await restartedBackend.shutdown()
 
@@ -1185,59 +1186,54 @@ struct ACPAscendantBackendTests {
         #expect(try String(contentsOf: newSessions, encoding: .utf8).split(whereSeparator: \.isNewline).count == 1)
         #expect(try String(contentsOf: prompts, encoding: .utf8).split(whereSeparator: \.isNewline).count == 2)
         #expect(try await store.timelineProjection(for: timelineID)?.latestSession?.runtimeInstanceID == runtimeID)
+        let transitions = try await store.journal(for: timelineID).replay().compactMap { record -> TimelineJournalSessionState? in
+            guard case let .sessionTransition(sessionID, _, state, _, _) = record.payload,
+                  sessionID == previous.sessionID else { return nil }
+            return state
+        }
+        #expect(transitions.suffix(2) == [.ambiguous, .live])
     }
 
-    @Test("a definitive resume rejection journals loss and opens a clean Session on the same Timeline")
+    @Test("a failed journal write prevents native resume dispatch")
     @MainActor
-    func definitiveResumeRejectionCreatesSessionAfterDurableLoss() async throws {
+    func failedResumeStateJournalWriteBlocksDispatch() async throws {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
         let timelineID = UUID()
         let runtimeID = UUID()
-        let timeline = NodeManifest.Timeline(id: timelineID, title: "Definitive rejection")
-        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        let timeline = NodeManifest.Timeline(id: timelineID, title: "Resume journal failure")
+        let journalDirectory = stateHome.url.appendingPathComponent("journals")
+        let store = TimelineJournalStore(directoryURL: journalDirectory)
         try await store.ensureTimelineCreated(timelineID: timelineID, title: timeline.title, runtimeInstanceID: runtimeID, attachments: [])
         let resumeRequests = stateHome.url.appendingPathComponent("resume-requests.jsonl")
-        let newSessions = stateHome.url.appendingPathComponent("new-sessions.txt")
-        let prompts = stateHome.url.appendingPathComponent("prompts.txt")
-        let recorder = TimelineJournalRecorder(journals: store)
-        var firstSettings = try fixtureSettings(stateHome: stateHome.url)
-        firstSettings["env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE"] = .string(newSessions.path)
-        firstSettings["env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE"] = .string(prompts.path)
-        let firstBackend = try backend(settings: firstSettings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [recorder])
-        _ = try await firstBackend.runTurn(.init(timelineID: timelineID, message: "first", clientTurnID: "first"), updates: RecordingUpdateSink())
-        let previous = try #require(firstBackend.sessionBinding(for: timelineID))
-        await firstBackend.shutdown()
+        var settings = try fixtureSettings(stateHome: stateHome.url)
+        settings["env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE"] = .string(resumeRequests.path)
+        let initialBackend = try backend(settings: settings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [TimelineJournalRecorder(journals: store)])
+        _ = try await initialBackend.runTurn(.init(timelineID: timelineID, message: "first"), updates: RecordingUpdateSink())
+        await initialBackend.shutdown()
 
-        var rejectingSettings = try fixtureSettings(stateHome: stateHome.url)
-        rejectingSettings["env.GNOSTIC_ACP_FIXTURE_REJECT_RESUME"] = .string("1")
-        rejectingSettings["env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE"] = .string(resumeRequests.path)
-        rejectingSettings["env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE"] = .string(newSessions.path)
-        rejectingSettings["env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE"] = .string(prompts.path)
-        let restartedBackend = try backend(settings: rejectingSettings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [recorder])
-        _ = try await restartedBackend.operatedTimelines()
-        _ = try await restartedBackend.runTurn(.init(timelineID: timelineID, message: "continue", clientTurnID: "continue"), updates: RecordingUpdateSink())
-        let replacement = try #require(restartedBackend.sessionBinding(for: timelineID))
+        let journalURL = TimelineJournalStore.fileURL(for: timelineID, in: journalDirectory)
+        let journalFile = try FileHandle(forWritingTo: journalURL)
+        try journalFile.seekToEnd()
+        try journalFile.write(contentsOf: Data("not-json\n".utf8))
+        try journalFile.close()
+
+        let reopenedStore = TimelineJournalStore(directoryURL: journalDirectory)
+        let restartedBackend = try backend(
+            settings: settings,
+            timelines: [timeline],
+            ascendantID: runtimeID,
+            optionalCapabilities: [TimelineJournalRecorder(journals: reopenedStore)]
+        )
+        do {
+            _ = try await restartedBackend.operatedTimelines()
+            Issue.record("a quarantined journal must prevent native resume")
+        } catch { }
         await restartedBackend.shutdown()
-
-        let journal = try await store.journal(for: timelineID)
-        let transitions = try await journal.replay().compactMap { record -> (String, TimelineJournalSessionState)? in
-            guard case let .sessionTransition(sessionID, _, state, _, _) = record.payload else { return nil }
-            return (sessionID, state)
-        }
-        #expect(transitions.suffix(2).map(\.0) == [previous.sessionID, replacement.sessionID])
-        #expect(transitions.suffix(2).map(\.1) == [.lost, .live])
-        #expect(replacement.sessionID != previous.sessionID)
-        #expect(try await store.timelineProjection(for: timelineID)?.hasLostSession == true)
-        #expect(try String(contentsOf: newSessions, encoding: .utf8).split(whereSeparator: \.isNewline).count == 2)
-        #expect(try String(contentsOf: prompts, encoding: .utf8).split(whereSeparator: \.isNewline).count == 2)
-        let requestData = try Data(contentsOf: resumeRequests)
-        let request = try #require(try JSONSerialization.jsonObject(with: requestData) as? [String: Any])
-        #expect(request["sessionId"] as? String == previous.sessionID)
-        #expect(request["cwd"] as? String == previous.cwd)
+        #expect(!FileManager.default.fileExists(atPath: resumeRequests.path))
     }
 
-    @Test("an uncertain resume is journaled ambiguous and blocks Sessions and prompts across restart", arguments: ["transport", "server-error"])
+    @Test("a failed resume is durably ambiguous before dispatch and blocks Sessions and prompts across restart", arguments: ["transport", "server-error", "invalid-params"])
     @MainActor
     func uncertainResumeBlocksCreationAndPromptAfterRestart(_ failureKind: String) async throws {
         let stateHome = try makeTemporaryStateHome()
@@ -1245,11 +1241,13 @@ struct ACPAscendantBackendTests {
         let timelineID = UUID()
         let runtimeID = UUID()
         let timeline = NodeManifest.Timeline(id: timelineID, title: "Uncertain resume")
-        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        let journalDirectory = stateHome.url.appendingPathComponent("journals")
+        let store = TimelineJournalStore(directoryURL: journalDirectory)
         try await store.ensureTimelineCreated(timelineID: timelineID, title: timeline.title, runtimeInstanceID: runtimeID, attachments: [])
         let resumeRequests = stateHome.url.appendingPathComponent("resume-requests.jsonl")
         let newSessions = stateHome.url.appendingPathComponent("new-sessions.txt")
         let prompts = stateHome.url.appendingPathComponent("prompts.txt")
+        let ambiguousAtDispatch = stateHome.url.appendingPathComponent("ambiguous-at-dispatch.txt")
         let recorder = TimelineJournalRecorder(journals: store)
         var initialSettings = try fixtureSettings(stateHome: stateHome.url)
         initialSettings["env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE"] = .string(newSessions.path)
@@ -1262,10 +1260,14 @@ struct ACPAscendantBackendTests {
         var exitingSettings = try fixtureSettings(stateHome: stateHome.url)
         if failureKind == "transport" {
             exitingSettings["env.GNOSTIC_ACP_FIXTURE_EXIT_ON_RESUME"] = .string("1")
+        } else if failureKind == "invalid-params" {
+            exitingSettings["env.GNOSTIC_ACP_FIXTURE_REJECT_RESUME"] = .string("1")
         } else {
             exitingSettings["env.GNOSTIC_ACP_FIXTURE_INTERNAL_RESUME_ERROR"] = .string("1")
         }
         exitingSettings["env.GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE"] = .string(resumeRequests.path)
+        exitingSettings["env.GNOSTIC_ACP_FIXTURE_ASSERT_AMBIGUOUS_JOURNAL_FILE"] = .string(ambiguousAtDispatch.path)
+        exitingSettings["env.GNOSTIC_ACP_FIXTURE_TIMELINE_JOURNAL_FILE"] = .string(TimelineJournalStore.fileURL(for: timelineID, in: journalDirectory).path)
         exitingSettings["env.GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE"] = .string(newSessions.path)
         exitingSettings["env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE"] = .string(prompts.path)
         let uncertainBackend = try backend(settings: exitingSettings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [recorder])
@@ -1276,6 +1278,7 @@ struct ACPAscendantBackendTests {
         } catch { }
         await uncertainBackend.shutdown()
         #expect(try await recorder.sessionProjection(for: timelineID)?.state == .ambiguous)
+        #expect(try String(contentsOf: ambiguousAtDispatch, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "ambiguous")
 
         let restartedBackend = try backend(settings: initialSettings, timelines: [timeline], ascendantID: runtimeID, optionalCapabilities: [recorder])
         _ = try await restartedBackend.operatedTimelines()

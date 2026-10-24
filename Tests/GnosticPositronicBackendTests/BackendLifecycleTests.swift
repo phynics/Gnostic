@@ -867,6 +867,56 @@ struct BackendLifecycleTests {
         }
     }
 
+    @Test("diagnostics describe a journaled live Session as last confirmed, not currently connected")
+    @MainActor
+    func diagnosticsDescribeJournaledLiveSessionTruthfully() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000365")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000366")!
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000367")!
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("journaled-live-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let nodeJournalDirectory = stateDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let journals = TimelineJournalStore(directoryURL: nodeJournalDirectory)
+        try await journals.ensureTimelineCreated(
+            timelineID: timelineID,
+            title: "Journaled live Session",
+            runtimeInstanceID: ascendantID,
+            attachments: []
+        )
+        try await journals.appendSessionTransition(
+            timelineID: timelineID,
+            sessionID: "previous-runtime-session",
+            runtimeInstanceID: ascendantID,
+            state: .live,
+            projectKind: nil,
+            cwd: "/original/project"
+        )
+
+        let probe = LifecycleBackendProbe()
+        var adapters = NodeRuntimeAdapters.bundled
+        adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
+            LifecycleFixtureBackend(ascendant: ascendant, timelines: timelines, probe: probe, outcome: .success)
+        }
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "journaled-live-diagnostics"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+            timelines: [.init(id: timelineID, title: "Journaled live Session", operatingAscendantID: ascendantID)]
+        )
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: stateDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
+        #expect(timeline.sessionRecovery?.state == .live)
+        #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified.")
+    }
+
     @Test("a running Node serves capability-gated diagnostics to a consumer")
     @MainActor
     func runningNodeServesDiagnosticsToConsumer() async throws {
