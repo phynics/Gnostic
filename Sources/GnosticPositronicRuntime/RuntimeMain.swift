@@ -13,8 +13,7 @@ struct PositronicRuntimeMain {
             let runtime = try RuntimeModel.fromEnvironment()
             let sessions = try RuntimeSessions.fromEnvironment()
             try await ACPAgentServer(
-                model: runtime.model,
-                workspaceFactory: runtime.workspaceFactory,
+                runtime: runtime,
                 sessions: sessions
             ).run()
         } catch {
@@ -24,36 +23,46 @@ struct PositronicRuntimeMain {
     }
 }
 
-private struct RuntimeModel {
-    let model: PKRuntime
-    let workspaceFactory: MCPWorkspaceFactory
+private struct RuntimeModel: Sendable {
+    private let makeRuntime: @Sendable (MCPWorkspaceFactory) -> PKRuntime
 
     static func fromEnvironment() throws -> RuntimeModel {
-        let workspaceFactory = MCPWorkspaceFactory()
-        let persistence = PKRuntime.PersistenceConfiguration.inMemory()
-        let runtimeConfiguration = PKRuntime.RuntimeConfiguration(workspaceCreator: workspaceFactory)
-        let model: PKRuntime
         if ProcessInfo.processInfo.environment["GNOSTIC_PK_SCRIPTED"] == "1" {
-            model = PKRuntime(configuration: .init(
-                languageModel: ScriptedLLMClient(),
-                persistence: persistence,
-                runtime: runtimeConfiguration
-            ))
-        } else {
-            guard let apiKey = ProcessInfo.processInfo.environment["GNOSTIC_PK_API_KEY"], !apiKey.isEmpty else {
-                throw RuntimeConfigurationError.missingAPIKey
+            return RuntimeModel { workspaceFactory in
+                PKRuntime(configuration: .init(
+                    languageModel: ScriptedLLMClient(),
+                    persistence: .inMemory(),
+                    runtime: .init(workspaceCreator: workspaceFactory)
+                ))
             }
-            let modelName = ProcessInfo.processInfo.environment["GNOSTIC_PK_MODEL"] ?? "gpt-4o-mini"
-            let endpoint = ProcessInfo.processInfo.environment["GNOSTIC_PK_ENDPOINT"]
+        }
+
+        guard let apiKey = ProcessInfo.processInfo.environment["GNOSTIC_PK_API_KEY"], !apiKey.isEmpty else {
+            throw RuntimeConfigurationError.missingAPIKey
+        }
+        let modelName = ProcessInfo.processInfo.environment["GNOSTIC_PK_MODEL"] ?? "gpt-4o-mini"
+        let endpoint = ProcessInfo.processInfo.environment["GNOSTIC_PK_ENDPOINT"]
+        return RuntimeModel { workspaceFactory in
             let provider = PKOpenAI.makeConfiguredProvider(apiKey: apiKey, model: modelName, endpoint: endpoint)
-            model = PKRuntime(configuration: .init(
+            return PKRuntime(configuration: .init(
                 provider: provider,
-                persistence: persistence,
-                runtime: runtimeConfiguration
+                persistence: .inMemory(),
+                runtime: .init(workspaceCreator: workspaceFactory)
             ))
         }
-        return RuntimeModel(model: model, workspaceFactory: workspaceFactory)
     }
+
+    // RC2's resolver caches providers but PKRuntime exposes no resolver-close operation.
+    // Give each ACP session its own resolver lifetime so closing it releases that cache.
+    func makeSessionRuntime() -> RuntimeSessionRuntime {
+        let workspaceFactory = MCPWorkspaceFactory()
+        return RuntimeSessionRuntime(model: makeRuntime(workspaceFactory), workspaceFactory: workspaceFactory)
+    }
+}
+
+private struct RuntimeSessionRuntime: Sendable {
+    let model: PKRuntime
+    let workspaceFactory: MCPWorkspaceFactory
 }
 
 private struct ScriptedLLMClient: LLMStreamClient {
@@ -79,14 +88,15 @@ private struct ScriptedLLMClient: LLMStreamClient {
         audioOutput: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         let query = messages.last(where: { $0.role == .user })?.content ?? ""
+        let currentTurnToolOutput = latestTurnToolOutput(in: messages)
         if query.contains("[fixture:http-tool]") {
-            if let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+            if let toolOutput = currentTurnToolOutput {
                 return stream(text: "scripted response after HTTP tool: \(toolOutput)")
             }
             return stream(toolName: "call_tool", arguments: #"{"tool":"http_echo","arguments":{"value":"hello"}}"#)
         }
         if query.contains("[fixture:gateway-tool]") {
-            if let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+            if let toolOutput = currentTurnToolOutput {
                 return stream(text: "scripted response after Gnostic gateway tool: \(toolOutput)")
             }
             let toolName = ProcessInfo.processInfo.environment["GNOSTIC_PK_FIXTURE_TOOL_NAME"] ?? "fixture_echo"
@@ -97,16 +107,16 @@ private struct ScriptedLLMClient: LLMStreamClient {
             }
             return stream(toolName: "call_tool", arguments: arguments)
         }
-        if query.contains("[fixture:tool]"), let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+        if query.contains("[fixture:tool]"), let toolOutput = currentTurnToolOutput {
             return stream(text: "scripted response after tool: \(toolOutput)")
         }
-        if query.contains("[fixture:tool-after-resume]"), let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+        if query.contains("[fixture:tool-after-resume]"), let toolOutput = currentTurnToolOutput {
             let restoredToolContext = messages.contains { $0.role == .system && $0.content.contains("fixture MCP output: hello") }
             let contextMarker = restoredToolContext ? " [prior MCP tool context restored]" : ""
             return stream(text: "scripted response after tool: \(toolOutput)\(contextMarker)")
         }
         if (query.contains("[fixture:tool]") || query.contains("[fixture:tool-after-resume]")),
-           !messages.contains(where: { $0.role == .tool }) {
+           currentTurnToolOutput == nil {
             return stream(toolName: "call_tool", arguments: #"{"tool":"fixture_echo","arguments":{"value":"hello"}}"#)
         }
         let restored = messages.contains { $0.role == .system && $0.content.contains("persist this conversation") }
@@ -163,6 +173,14 @@ private struct ScriptedLLMClient: LLMStreamClient {
         }
     }
 
+    private func latestTurnToolOutput(in messages: [LLMMessage]) -> String? {
+        for message in messages.reversed() {
+            if message.role == .user { return nil }
+            if message.role == .tool { return message.content }
+        }
+        return nil
+    }
+
     private func stream(text: String, delayed: Bool = false) -> AsyncThrowingStream<LLMStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             guard delayed else {
@@ -197,15 +215,16 @@ private actor RuntimeOutput {
 }
 
 private actor ACPAgentServer {
-    private let model: PKRuntime
-    private let workspaceFactory: MCPWorkspaceFactory
+    private let runtime: RuntimeModel
+    private var sessionRuntimes: [String: RuntimeSessionRuntime] = [:]
+    private var sessionResumesInProgress: Set<String> = []
+    private var sessionClosesInProgress: Set<String> = []
     private var sessions: RuntimeSessions
     private var isInitialized = false
     private let output = RuntimeOutput()
 
-    init(model: PKRuntime, workspaceFactory: MCPWorkspaceFactory, sessions: RuntimeSessions) {
-        self.model = model
-        self.workspaceFactory = workspaceFactory
+    init(runtime: RuntimeModel, sessions: RuntimeSessions) {
+        self.runtime = runtime
         self.sessions = sessions
     }
 
@@ -240,8 +259,15 @@ private actor ACPAgentServer {
         let activeSessions = sessions.activeSessions
         for session in activeSessions {
             await session.cancelAndWait()
-            await detachMCPWorkspaces(session.workspaceIDs, timelineID: session.timelineID)
+            if let sessionRuntime = sessionRuntimes.removeValue(forKey: session.id) {
+                await detachMCPWorkspaces(
+                    session.workspaceIDs,
+                    timelineID: session.timelineID,
+                    using: sessionRuntime
+                )
+            }
         }
+        sessionRuntimes.removeAll()
         sessions.deactivateAll()
     }
 
@@ -269,12 +295,14 @@ private actor ACPAgentServer {
             case ACPv2Protocol.AgentMethod.sessionNew:
                 try requireInitialized()
                 let input = try decode(ACPNewSessionRequest.self, from: request.params)
-                let timeline = try await model.timelines.create(title: "ACP Session")
+                let sessionRuntime = runtime.makeSessionRuntime()
+                let timeline = try await sessionRuntime.model.timelines.create(title: "ACP Session")
                 let sessionID = UUID().uuidString.lowercased()
                 let workspaceIDs = try await attachMCPServers(
                     input.mcpServers ?? [],
                     sessionID: sessionID,
-                    timelineID: timeline.id
+                    timelineID: timeline.id,
+                    using: sessionRuntime
                 )
                 let session: RuntimeSession
                 do {
@@ -284,8 +312,9 @@ private actor ACPAgentServer {
                         timelineID: timeline.id,
                         workspaceIDs: workspaceIDs
                     )
+                    sessionRuntimes[session.id] = sessionRuntime
                 } catch {
-                    await detachMCPWorkspaces(workspaceIDs, timelineID: timeline.id)
+                    await detachMCPWorkspaces(workspaceIDs, timelineID: timeline.id, using: sessionRuntime)
                     throw error
                 }
                 result = try encode(ACPNewSessionResponse(sessionId: session.id))
@@ -297,6 +326,12 @@ private actor ACPAgentServer {
                 }
                 guard let session = sessions[sessionID: input.sessionId] else {
                     throw ACPError.invalidParams("Unknown sessionId")
+                }
+                guard !sessionClosesInProgress.contains(input.sessionId) else {
+                    throw ACPError.invalidParams("Session is closing")
+                }
+                guard let sessionRuntime = sessionRuntimes[input.sessionId] else {
+                    throw RuntimeSessionStoreError.missingRuntime
                 }
                 let systemInstructions = try sessions.systemInstructions(sessionID: input.sessionId)
                 guard await session.beginPrompt() else {
@@ -312,6 +347,7 @@ private actor ACPAgentServer {
                         text: promptText,
                         systemInstructions: systemInstructions,
                         in: session,
+                        using: sessionRuntime,
                         userMessageID: userMessageID
                     )
                 } catch {
@@ -325,11 +361,28 @@ private actor ACPAgentServer {
                 guard let session = sessions[sessionID: input.sessionId] else {
                     throw ACPError.invalidParams("Unknown sessionId")
                 }
-                await session.cancelAndWait()
-                guard try sessions.close(sessionID: input.sessionId) else {
-                    throw ACPError.invalidParams("Unknown sessionId")
+                guard let sessionRuntime = sessionRuntimes[input.sessionId] else {
+                    throw RuntimeSessionStoreError.missingRuntime
                 }
-                await detachMCPWorkspaces(session.workspaceIDs, timelineID: session.timelineID)
+                guard sessionClosesInProgress.insert(input.sessionId).inserted else {
+                    throw ACPError.invalidParams("Session is already closing")
+                }
+                defer { sessionClosesInProgress.remove(input.sessionId) }
+                await session.cancelAndWait()
+                do {
+                    guard try sessions.close(sessionID: input.sessionId) else {
+                        throw ACPError.invalidParams("Unknown sessionId")
+                    }
+                } catch {
+                    await session.resumeAfterCloseFailure()
+                    throw error
+                }
+                sessionRuntimes.removeValue(forKey: input.sessionId)
+                await detachMCPWorkspaces(
+                    session.workspaceIDs,
+                    timelineID: session.timelineID,
+                    using: sessionRuntime
+                )
                 result = try encode(ACPCloseSessionResponse())
             case ACPv2Protocol.AgentMethod.sessionResume:
                 try requireInitialized()
@@ -337,12 +390,21 @@ private actor ACPAgentServer {
                 guard sessions.canResume(sessionID: input.sessionId, cwd: input.cwd) else {
                     throw ACPError.invalidParams("Session not found for the requested cwd")
                 }
+                guard !sessionClosesInProgress.contains(input.sessionId) else {
+                    throw ACPError.invalidParams("Session is closing")
+                }
                 if sessions[sessionID: input.sessionId] == nil {
-                    let timeline = try await model.timelines.create(title: "Resumed ACP Session")
+                    guard sessionResumesInProgress.insert(input.sessionId).inserted else {
+                        throw ACPError.invalidParams("Session resume is already in progress")
+                    }
+                    defer { sessionResumesInProgress.remove(input.sessionId) }
+                    let sessionRuntime = runtime.makeSessionRuntime()
+                    let timeline = try await sessionRuntime.model.timelines.create(title: "Resumed ACP Session")
                     let workspaceIDs = try await attachMCPServers(
                         input.mcpServers ?? [],
                         sessionID: input.sessionId,
-                        timelineID: timeline.id
+                        timelineID: timeline.id,
+                        using: sessionRuntime
                     )
                     do {
                         try sessions.restore(
@@ -351,10 +413,14 @@ private actor ACPAgentServer {
                             timelineID: timeline.id,
                             workspaceIDs: workspaceIDs
                         )
+                        sessionRuntimes[input.sessionId] = sessionRuntime
                     } catch {
-                        await detachMCPWorkspaces(workspaceIDs, timelineID: timeline.id)
+                        await detachMCPWorkspaces(workspaceIDs, timelineID: timeline.id, using: sessionRuntime)
                         throw error
                     }
+                }
+                guard sessionRuntimes[input.sessionId] != nil else {
+                    throw RuntimeSessionStoreError.missingRuntime
                 }
                 result = try encode(ACPResumeSessionResponse())
             case ACPv2Protocol.AgentMethod.sessionList:
@@ -397,11 +463,12 @@ private actor ACPAgentServer {
         text prompt: String,
         systemInstructions: String,
         in session: RuntimeSession,
+        using sessionRuntime: RuntimeSessionRuntime,
         userMessageID: String
     ) async throws {
         var admittedTurn: TurnHandle?
         do {
-            let handle = try await model.timelines.open(session.timelineID).startDirectTurn(
+            let handle = try await sessionRuntime.model.timelines.open(session.timelineID).startDirectTurn(
                 prompt,
                 context: DirectTurnContext(systemInstructions: systemInstructions, contributor: .host)
             )
@@ -422,7 +489,8 @@ private actor ACPAgentServer {
                     updates,
                     handle: handle,
                     sessionID: input.sessionId,
-                    session: session
+                    session: session,
+                    sessionRuntime: sessionRuntime
                 )
             }
         } catch {
@@ -439,13 +507,14 @@ private actor ACPAgentServer {
         _ updates: AsyncStream<TurnEvent>,
         handle: TurnHandle,
         sessionID: String,
-        session: RuntimeSession
+        session: RuntimeSession,
+        sessionRuntime: RuntimeSessionRuntime
     ) async {
         do {
             let assistantMessageID = UUID().uuidString.lowercased()
             var assistantText = ""
             for await event in updates {
-                if case let .delta(.generation(text)) = event {
+                if let text = event.textContent {
                     assistantText += text
                     try await sendUpdate(
                         sessionID: sessionID,
@@ -458,7 +527,7 @@ private actor ACPAgentServer {
             }
             let outcome = try await handle.outcome()
             await session.clearActiveTurn()
-            let messages = try await model.timelines.messages(for: session.timelineID)
+            let messages = try await sessionRuntime.model.timelines.messages(for: session.timelineID)
             try sessions.replaceTranscript(
                 sessionID: sessionID,
                 messages: messages.map(RuntimeTranscriptMessage.init)
@@ -501,7 +570,8 @@ private actor ACPAgentServer {
     private func attachMCPServers(
         _ servers: [ACPMcpServer],
         sessionID: String,
-        timelineID: UUID
+        timelineID: UUID,
+        using sessionRuntime: RuntimeSessionRuntime
     ) async throws -> [UUID] {
         var workspaceIDs: [UUID] = []
         do {
@@ -515,42 +585,50 @@ private actor ACPAgentServer {
                 }
                 let client = try MCPClientFactory.make(server: server)
                 var currentWorkspaceID: UUID?
+                var providerRegistered = false
                 do {
                     let definitions = try await client.initialize()
-                    let workspace = try await model.workspaces.create(
+                    let workspace = try await sessionRuntime.model.workspaces.create(
                         uri: WorkspaceURI(host: "mcp-\(name)", path: "/sessions/\(sessionID)"),
                         location: .runtime
                     )
                     currentWorkspaceID = workspace.id
                     var configured = workspace
                     configured.tools = definitions.map(ToolReference.custom)
-                    try await model.workspaces.update(configured)
-                    try await model.timelines.attachWorkspace(configured.id, to: timelineID)
-                    workspaceFactory.register(MCPWorkspaceProvider(reference: configured, client: client))
+                    try await sessionRuntime.model.workspaces.update(configured)
+                    sessionRuntime.workspaceFactory.register(MCPWorkspaceProvider(reference: configured, client: client))
+                    providerRegistered = true
+                    try await sessionRuntime.model.timelines.attachWorkspace(configured.id, to: timelineID)
                     workspaceIDs.append(configured.id)
                     currentWorkspaceID = nil
                 } catch {
                     if let currentWorkspaceID {
-                        try? await model.timelines.detachWorkspace(currentWorkspaceID, from: timelineID)
-                        await workspaceFactory.remove(workspaceID: currentWorkspaceID)
-                        try? await model.workspaces.delete(currentWorkspaceID)
+                        try? await sessionRuntime.model.timelines.detachWorkspace(currentWorkspaceID, from: timelineID)
+                        if providerRegistered {
+                            await sessionRuntime.workspaceFactory.remove(workspaceID: currentWorkspaceID)
+                        }
+                        try? await sessionRuntime.model.workspaces.delete(currentWorkspaceID)
                     }
-                    await client.shutdown()
+                    if !providerRegistered { await client.shutdown() }
                     throw error
                 }
             }
             return workspaceIDs
         } catch {
-            await detachMCPWorkspaces(workspaceIDs, timelineID: timelineID)
+            await detachMCPWorkspaces(workspaceIDs, timelineID: timelineID, using: sessionRuntime)
             throw error
         }
     }
 
-    private func detachMCPWorkspaces(_ workspaceIDs: [UUID], timelineID: UUID) async {
+    private func detachMCPWorkspaces(
+        _ workspaceIDs: [UUID],
+        timelineID: UUID,
+        using sessionRuntime: RuntimeSessionRuntime
+    ) async {
         for workspaceID in workspaceIDs {
-            try? await model.timelines.detachWorkspace(workspaceID, from: timelineID)
-            await workspaceFactory.remove(workspaceID: workspaceID)
-            try? await model.workspaces.delete(workspaceID)
+            try? await sessionRuntime.model.timelines.detachWorkspace(workspaceID, from: timelineID)
+            await sessionRuntime.workspaceFactory.remove(workspaceID: workspaceID)
+            try? await sessionRuntime.model.workspaces.delete(workspaceID)
         }
     }
 
@@ -601,16 +679,18 @@ private struct RuntimeSession: Sendable {
     func endPrompt() async { await state.endPrompt() }
     func cancel() async { await state.cancel() }
     func cancelAndWait() async { await state.cancelAndWait() }
+    func resumeAfterCloseFailure() async { await state.resumeAfterCloseFailure() }
 }
 
 private actor RuntimeSessionState {
     private var turn: TurnHandle?
     private var isPrompting = false
+    private var isClosing = false
     private var cancelRequested = false
     private var promptWaiters: [CheckedContinuation<Void, Never>] = []
 
     func beginPrompt() -> Bool {
-        guard !isPrompting else { return false }
+        guard !isClosing, !isPrompting else { return false }
         isPrompting = true
         cancelRequested = false
         return true
@@ -636,6 +716,7 @@ private actor RuntimeSessionState {
     }
 
     func cancelAndWait() async {
+        isClosing = true
         cancelRequested = true
         if let turn { await turn.cancel() }
         guard isPrompting else { return }
@@ -646,6 +727,12 @@ private actor RuntimeSessionState {
                 continuation.resume()
             }
         }
+    }
+
+    func resumeAfterCloseFailure() {
+        guard !isPrompting else { return }
+        isClosing = false
+        cancelRequested = false
     }
 }
 
@@ -846,4 +933,5 @@ private struct RuntimeSessions {
 private enum RuntimeSessionStoreError: Error {
     case unsupportedVersion(Int)
     case unknownSession
+    case missingRuntime
 }

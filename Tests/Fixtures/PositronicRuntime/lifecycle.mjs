@@ -210,6 +210,7 @@ try {
   }
   assert(httpResponseSeen && httpToolText.includes("fixture HTTP MCP output: hello"), httpToolText);
   assert.equal(gatewayCalls.length, 1);
+  assert.deepEqual(gatewayCalls[0], { name: "http_echo", arguments: { value: "hello" } });
   assert.deepEqual(gatewayFailures, []);
 
   send("session/prompt", 7, {
@@ -244,6 +245,55 @@ try {
   const closed = await nextMessage();
   assert.equal(closed.id, 8);
   assert(!closed.error, JSON.stringify(closed.error));
+
+  send("session/new", 9, {
+    cwd: "/tmp",
+    mcpServers: [{
+      type: "stdio",
+      name: "fixture-gateway",
+      command: process.execPath,
+      args: [`${process.cwd()}/Tests/Fixtures/PositronicRuntime/mcp-server.mjs`],
+      env: [{ name: "GNOSTIC_GATEWAY_TOKEN", value: "runtime-private-token" }],
+    }, {
+      type: "http",
+      name: "fixture-http-gateway",
+      url: `http://127.0.0.1:${httpAddress.port}/mcp`,
+      headers: [{ name: "Authorization", value: "Bearer fixture-http-token" }],
+    }],
+  });
+  const reopened = await nextMessage();
+  assert.equal(reopened.id, 9);
+  assert(!reopened.error, JSON.stringify(reopened.error));
+  const reopenedSessionId = reopened.result.sessionId;
+
+  send("session/prompt", 10, {
+    sessionId: reopenedSessionId,
+    prompt: [{ type: "text", text: "[fixture:http-tool] use the HTTP MCP tool" }],
+  });
+  let reopenedResponseSeen = false;
+  let reopenedToolText = "";
+  let reopenedIdle = false;
+  while (!reopenedIdle) {
+    const message = await nextMessage();
+    if ("id" in message) {
+      assert.equal(message.id, 10);
+      assert(!message.error, JSON.stringify(message.error));
+      reopenedResponseSeen = true;
+      continue;
+    }
+    const update = message.params.update;
+    if (update.sessionUpdate === "agent_message_chunk") reopenedToolText += update.content.text;
+    if (update.sessionUpdate === "state_update" && update.state === "idle") reopenedIdle = true;
+  }
+  assert(reopenedResponseSeen && reopenedToolText.includes("fixture HTTP MCP output: hello"), reopenedToolText);
+  assert.equal(gatewayCalls.length, 2);
+  assert.deepEqual(gatewayCalls[1], { name: "http_echo", arguments: { value: "hello" } });
+
+  send("session/close", 11, { sessionId: reopenedSessionId });
+  const reopenedClosed = await nextMessage();
+  assert.equal(reopenedClosed.id, 11);
+  assert(!reopenedClosed.error, JSON.stringify(reopenedClosed.error));
+
   child.stdin.end();
   const [status] = await new Promise((resolve) => child.on("close", (...values) => resolve(values)));
   assert.equal(status, 0, stderr);
