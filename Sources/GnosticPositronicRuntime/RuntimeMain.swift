@@ -679,6 +679,7 @@ private struct RuntimeSession: Sendable {
     func endPrompt() async { await state.endPrompt() }
     func cancel() async { await state.cancel() }
     func cancelAndWait() async { await state.cancelAndWait() }
+    func resumeAfterCloseFailure() async { await state.resumeAfterCloseFailure() }
 }
 
 private actor RuntimeSessionState {

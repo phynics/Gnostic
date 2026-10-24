@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -125,9 +125,39 @@ try {
     }
   }
   assert(assistant.includes("fixture MCP output: hello") && assistant.includes("prior MCP tool context restored"), assistant);
+  const sessionFile = join(stateDir, "sessions.json");
+  const backupFile = join(stateDir, "sessions.json.close-failure-backup");
+  await rename(sessionFile, backupFile);
+  await mkdir(sessionFile);
   second.send("session/close", 5, { sessionId });
+  const closeFailure = await second.next();
+  assert.equal(closeFailure.id, 5);
+  assert(closeFailure.error, "session close must report a persistence failure");
+  await rm(sessionFile, { recursive: true });
+  await rename(backupFile, sessionFile);
+
+  second.send("session/prompt", 6, {
+    sessionId,
+    prompt: [{ type: "text", text: "[fixture:tool-after-resume] continue after failed close" }],
+  });
+  let recoveredAssistant = "";
+  let recoveredIdle = false;
+  while (!recoveredIdle) {
+    const message = await second.next();
+    if ("id" in message) {
+      assert.equal(message.id, 6);
+      assert(!message.error, JSON.stringify(message.error));
+    } else {
+      const update = message.params.update;
+      if (update.sessionUpdate === "agent_message_chunk") recoveredAssistant += update.content.text;
+      if (update.sessionUpdate === "state_update" && update.state === "idle") recoveredIdle = true;
+    }
+  }
+  assert(recoveredAssistant.includes("fixture MCP output: hello"), recoveredAssistant);
+
+  second.send("session/close", 7, { sessionId });
   const closed = await second.next();
-  assert.equal(closed.id, 5);
+  assert.equal(closed.id, 7);
   assert(!closed.error, JSON.stringify(closed.error));
   await second.stop();
   process.stdout.write("scripted Positronic Runtime session persistence passed\n");
