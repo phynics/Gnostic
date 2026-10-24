@@ -210,6 +210,7 @@ try {
   }
   assert(httpResponseSeen && httpToolText.includes("fixture HTTP MCP output: hello"), httpToolText);
   assert.equal(gatewayCalls.length, 1);
+  assert.deepEqual(gatewayCalls[0], { name: "http_echo", arguments: { value: "hello" } });
   assert.deepEqual(gatewayFailures, []);
 
   send("session/prompt", 7, {

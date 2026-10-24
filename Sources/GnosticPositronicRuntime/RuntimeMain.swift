@@ -79,14 +79,15 @@ private struct ScriptedLLMClient: LLMStreamClient {
         audioOutput: AudioOutputOptions?
     ) async -> AsyncThrowingStream<LLMStreamChunk, Error> {
         let query = messages.last(where: { $0.role == .user })?.content ?? ""
+        let currentTurnToolOutput = latestTurnToolOutput(in: messages)
         if query.contains("[fixture:http-tool]") {
-            if let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+            if let toolOutput = currentTurnToolOutput {
                 return stream(text: "scripted response after HTTP tool: \(toolOutput)")
             }
             return stream(toolName: "call_tool", arguments: #"{"tool":"http_echo","arguments":{"value":"hello"}}"#)
         }
         if query.contains("[fixture:gateway-tool]") {
-            if let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+            if let toolOutput = currentTurnToolOutput {
                 return stream(text: "scripted response after Gnostic gateway tool: \(toolOutput)")
             }
             let toolName = ProcessInfo.processInfo.environment["GNOSTIC_PK_FIXTURE_TOOL_NAME"] ?? "fixture_echo"
@@ -97,16 +98,16 @@ private struct ScriptedLLMClient: LLMStreamClient {
             }
             return stream(toolName: "call_tool", arguments: arguments)
         }
-        if query.contains("[fixture:tool]"), let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+        if query.contains("[fixture:tool]"), let toolOutput = currentTurnToolOutput {
             return stream(text: "scripted response after tool: \(toolOutput)")
         }
-        if query.contains("[fixture:tool-after-resume]"), let toolOutput = messages.last(where: { $0.role == .tool })?.content {
+        if query.contains("[fixture:tool-after-resume]"), let toolOutput = currentTurnToolOutput {
             let restoredToolContext = messages.contains { $0.role == .system && $0.content.contains("fixture MCP output: hello") }
             let contextMarker = restoredToolContext ? " [prior MCP tool context restored]" : ""
             return stream(text: "scripted response after tool: \(toolOutput)\(contextMarker)")
         }
         if (query.contains("[fixture:tool]") || query.contains("[fixture:tool-after-resume]")),
-           !messages.contains(where: { $0.role == .tool }) {
+           currentTurnToolOutput == nil {
             return stream(toolName: "call_tool", arguments: #"{"tool":"fixture_echo","arguments":{"value":"hello"}}"#)
         }
         let restored = messages.contains { $0.role == .system && $0.content.contains("persist this conversation") }
@@ -161,6 +162,14 @@ private struct ScriptedLLMClient: LLMStreamClient {
             continuation.yield(chunk)
             continuation.finish()
         }
+    }
+
+    private func latestTurnToolOutput(in messages: [LLMMessage]) -> String? {
+        for message in messages.reversed() {
+            if message.role == .user { return nil }
+            if message.role == .tool { return message.content }
+        }
+        return nil
     }
 
     private func stream(text: String, delayed: Bool = false) -> AsyncThrowingStream<LLMStreamChunk, Error> {
@@ -525,8 +534,8 @@ private actor ACPAgentServer {
                     var configured = workspace
                     configured.tools = definitions.map(ToolReference.custom)
                     try await model.workspaces.update(configured)
-                    try await model.timelines.attachWorkspace(configured.id, to: timelineID)
                     workspaceFactory.register(MCPWorkspaceProvider(reference: configured, client: client))
+                    try await model.timelines.attachWorkspace(configured.id, to: timelineID)
                     workspaceIDs.append(configured.id)
                     currentWorkspaceID = nil
                 } catch {
