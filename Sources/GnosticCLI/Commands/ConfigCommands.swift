@@ -17,10 +17,10 @@ struct ConfigCommand: AsyncParsableCommand {
 
         Example:
           gnostic config init
-          gnostic config ascendant add "Atlas" --kind positronic
+          gnostic config ascendant add "Agent" --kind acp-client
           gnostic config backend keys <ascendant-id>
-          gnostic config backend set <ascendant-id> provider openai
-          gnostic config backend set-secret <ascendant-id> apiKey   # reads stdin
+          gnostic config backend set <ascendant-id> command /path/to/acp-agent
+          gnostic config backend set-secret <ascendant-id> env-secret.API_TOKEN   # reads stdin
         """,
         subcommands: [
             Init.self, Show.self, Validate.self, Migrate.self, Path.self, Broker.self, Backend.self,
@@ -294,7 +294,7 @@ struct ConfigCommand: AsyncParsableCommand {
             Adding an Ascendant also creates the Timeline it operates, atomically.
 
               gnostic config ascendant add "Atlas"
-              gnostic config ascendant add "Atlas" --kind positronic
+              gnostic config ascendant add "Agent" --kind acp-client
               gnostic config ascendant update <id> --name "Atlas II"
             """,
             subcommands: [AscendantAdd.self, AscendantUpdate.self, AscendantRemove.self]
@@ -310,7 +310,7 @@ struct ConfigCommand: AsyncParsableCommand {
             @Option(name: .long, help: "Ascendant description.")
             var description: String = ""
             @Option(name: .long, help: "Backend kind. Must be registered; see 'config backend keys'.")
-            var kind: String = AscendantAdapterRegistry.positronicKind
+            var kind: String = "acp-client"
             @Flag(name: .customLong("dry-run"), help: "Print the resulting manifest diff without writing it.")
             var dryRun = false
             func run() async throws {
@@ -536,11 +536,9 @@ struct ConfigCommand: AsyncParsableCommand {
             commandName: "workspace",
             abstract: "Manage local Workspaces.",
             discussion: """
-            Local Workspaces are addressed by URI. Attach them to a Timeline \
-            with `config timeline attach-workspace`.
-
-              gnostic config workspace add "Scratch" --uri echo://scratch
-              gnostic config workspace update <id> --name "Scratch II"
+            A host must register a local Workspace adapter for the configured \
+            kind before it can serve that Workspace. The default `gnostic` host \
+            registers no local Workspace adapters.
             """,
             subcommands: [WorkspaceAdd.self, WorkspaceUpdate.self, WorkspaceRemove.self]
         )
@@ -675,7 +673,7 @@ public enum ConfigCommandLogic {
         let kind = manifest.ascendants[index].backend.kind
         guard let schema = composition.settingsSchema(for: kind) else {
             throw CLIConfigurationError.invalidArgument(
-                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList(composition))."
+                unavailableBackendKindMessage(kind, composition: composition)
             )
         }
         return (index, kind, schema)
@@ -683,6 +681,16 @@ public enum ConfigCommandLogic {
 
     private static func knownKindList(_ composition: BackendComposition) -> String {
         composition.registeredKinds.sorted().joined(separator: ", ")
+    }
+
+    private static func unavailableBackendKindMessage(
+        _ kind: String,
+        composition: BackendComposition
+    ) -> String {
+        if kind == "positronic" || kind == "letta" {
+            return "Backend kind '\(kind)' was removed. Configure an ACP v2 Runtime with `gnostic config ascendant add --kind acp-client`. Historical execution state is not converted."
+        }
+        return "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList(composition))."
     }
 
     /// Validates one key against the kind's advertised schema.
@@ -795,7 +803,7 @@ public enum ConfigCommandLogic {
     public static func addAscendant(
         name: String?,
         description: String,
-        kind: String = AscendantAdapterRegistry.positronicKind,
+        kind: String = "acp-client",
         store: CLIConfigurationStore,
         composition: BackendComposition = .default,
         writeOutput: (String) -> Void = { print($0) }
@@ -803,7 +811,7 @@ public enum ConfigCommandLogic {
         guard let name, !name.isEmpty else { throw CLIConfigurationError.invalidArgument("An Ascendant name is required.") }
         guard composition.registeredKinds.contains(kind) else {
             throw CLIConfigurationError.invalidArgument(
-                "Backend kind '\(kind)' is not registered. Known kinds: \(knownKindList(composition))."
+                unavailableBackendKindMessage(kind, composition: composition)
             )
         }
         let ascendantID = UUID.makeVersion4()
@@ -959,13 +967,16 @@ public enum ConfigCommandLogic {
     }
 
     private static func initializationSummary(_ manifest: NodeManifest) -> String {
-        [
+        var lines = [
             "Initialized configuration.",
             "node: \(manifest.node.id.uuidString.lowercased())",
             "ascendant: \(manifest.ascendants[0].id.uuidString.lowercased())",
             "timeline: \(manifest.timelines[0].id.uuidString.lowercased())",
-            "workspace: \(manifest.workspaces[0].id.uuidString.lowercased())",
-        ].joined(separator: "\n")
+        ]
+        if let workspace = manifest.workspaces.first {
+            lines.append("workspace: \(workspace.id.uuidString.lowercased())")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func humanDescription(_ manifest: NodeManifest) -> String {

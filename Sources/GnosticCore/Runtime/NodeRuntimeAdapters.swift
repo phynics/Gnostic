@@ -20,13 +20,6 @@ public struct AscendantAdapterRegistry: Sendable {
         schemas = [:]
     }
 
-    /// The manifest kind served by the bundled Positronic backend.
-    ///
-    /// The kernel advertises the constant so configuration and routing code can
-    /// name the kind without depending on the implementation. The bundled
-    /// implementation registers its factory from `GnosticPositronicBackend`.
-    public static let positronicKind = "positronic"
-
     /// Every backend kind this registry can build.
     public var registeredKinds: Set<String> { Set(factories.keys) }
 
@@ -41,9 +34,11 @@ public struct AscendantAdapterRegistry: Sendable {
         return schemas[kind] ?? .unspecified
     }
 
-    /// Registers a backend factory for one manifest `kind`.
+    /// Registers a backend factory for one manifest `kind` through host SPI.
     ///
-    /// This is the only supported selection point for a backend kind.
+    /// This seam is reserved for host composition and test fixtures. It is not
+    /// a supported in-process Runtime extension point; Runtime integrations
+    /// use ACP over stdio.
     /// Registering a kind that is already present replaces it.
     ///
     /// - Parameters:
@@ -51,6 +46,7 @@ public struct AscendantAdapterRegistry: Sendable {
     ///   - settings: The configuration keys this kind understands, so a
     ///     composition root can list and check them without knowing the kind.
     ///   - factory: Builds the backend for one Ascendant.
+    @_spi(RuntimeHost)
     public mutating func registerBackend(
         kind: String,
         settings: AscendantBackendSettingsSchema = .unspecified,

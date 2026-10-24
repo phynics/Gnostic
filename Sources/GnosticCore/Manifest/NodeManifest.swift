@@ -93,7 +93,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
             id: UUID,
             name: String,
             defaultTimelineID: UUID,
-            kind: String = "positronic",
+            kind: String = "acp-client",
             description: String = "",
             metadata: [String: String] = [:],
             backend: AscendantBackendConfiguration? = nil
@@ -114,7 +114,7 @@ public struct NodeManifest: Codable, Equatable, Sendable {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(UUID.self, forKey: .id)
-            kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "positronic"
+            kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "acp-client"
             name = try container.decode(String.self, forKey: .name)
             description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
             metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
@@ -242,8 +242,8 @@ public struct NodeManifest: Codable, Equatable, Sendable {
 
     public static func makeDefault(broker: Broker) -> Self {
         let node = UUID.makeVersion4(), ascendant = UUID.makeVersion4()
-        let timeline = UUID.makeVersion4(), workspace = UUID.makeVersion4()
-        return .init(broker: broker, node: .init(id: node), ascendants: [.init(id: ascendant, name: "Default Ascendant", defaultTimelineID: timeline, backend: .init(kind: "positronic"))], timelines: [.init(id: timeline, title: "Default Timeline", operatingAscendantID: ascendant)], workspaces: [.init(id: workspace, name: "Echo Workspace", uri: "echo://default")])
+        let timeline = UUID.makeVersion4()
+        return .init(broker: broker, node: .init(id: node), ascendants: [.init(id: ascendant, name: "Default Runtime", defaultTimelineID: timeline, backend: .init(kind: "acp-client"))], timelines: [.init(id: timeline, title: "Default Timeline", operatingAscendantID: ascendant)])
     }
 
     public static func empty(broker: Broker) -> Self { .init(broker: broker, node: .init(id: UUID.makeVersion4())) }

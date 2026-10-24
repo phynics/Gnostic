@@ -6,6 +6,7 @@ import Foundation
 public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case brokerUnreachable(String)
     case noServedAscendant
+    case noRuntime
     case workspaceUnavailable
     case workspaceAmbiguous
     case timelineNotAttached
@@ -13,7 +14,9 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case toolNotAdvertised
     case invalidWorkspaceURI
     case ambiguousAscendant
+    case ambiguousRuntime
     case ascendantUnavailable(UUID)
+    case runtimeUnavailable(UUID)
     case providerUnavailable(String)
     case providerOffline(String)
     case nodeUnavailable(UUID)
@@ -27,6 +30,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         switch self {
         case let .brokerUnreachable(detail): "Could not reach the MQTT broker: \(detail)"
         case .noServedAscendant: "No served Ascendant was discovered. Start `gnostic serve` first."
+        case .noRuntime: "No Runtime instance was discovered. Start `gnostic serve` first."
         case .workspaceUnavailable: "The workspace is not currently available."
         case .workspaceAmbiguous: "The workspace is advertised by more than one provider."
         case .timelineNotAttached: "The workspace is not attached to the requested timeline."
@@ -34,14 +38,16 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .toolNotAdvertised: "The requested tool is not advertised by the workspace."
         case .invalidWorkspaceURI: "The workspace advertised an invalid URI."
         case .ambiguousAscendant: "More than one Ascendant was discovered; select one explicitly."
+        case .ambiguousRuntime: "More than one Runtime instance was discovered; select one explicitly."
         case let .ascendantUnavailable(id): "Ascendant \(id.uuidString.lowercased()) was not discovered."
+        case let .runtimeUnavailable(id): "Runtime instance \(id.uuidString.lowercased()) was not discovered."
         case let .providerUnavailable(id): "Provider \(id.lowercased()) was not discovered."
         case let .providerOffline(id): "Provider \(id.lowercased()) went offline."
         case let .nodeUnavailable(id): "Node \(id.uuidString.lowercased()) was not discovered."
         case let .timelineUnavailable(id): "Timeline \(id.uuidString.lowercased()) was not discovered."
         case let .timelineAmbiguous(id): "Timeline \(id.uuidString.lowercased()) is advertised by more than one Node."
         case .providerMismatch: "The response came from a different provider than the addressed Node."
-        case let .missingCapability(capability): "The selected Ascendant does not advertise capability \(capability)."
+        case let .missingCapability(capability): "The selected Runtime instance does not advertise capability \(capability)."
         case .promptTooLarge:
             "The prompt exceeds the maximum size the Turn wire accepts. Shorten it and retry."
         }
@@ -52,6 +58,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         switch self {
         case .brokerUnreachable: "brokerUnreachable"
         case .noServedAscendant: "noServedAscendant"
+        case .noRuntime: "noRuntime"
         case .workspaceUnavailable: "workspaceUnavailable"
         case .workspaceAmbiguous: "workspaceAmbiguous"
         case .timelineNotAttached: "timelineNotAttached"
@@ -59,7 +66,9 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .toolNotAdvertised: "toolNotAdvertised"
         case .invalidWorkspaceURI: "invalidWorkspaceURI"
         case .ambiguousAscendant: "ambiguousAscendant"
+        case .ambiguousRuntime: "ambiguousRuntime"
         case .ascendantUnavailable: "ascendantUnavailable"
+        case .runtimeUnavailable: "runtimeUnavailable"
         case .providerUnavailable: "providerUnavailable"
         case .providerOffline: "providerOffline"
         case .nodeUnavailable: "nodeUnavailable"

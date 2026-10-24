@@ -2,12 +2,10 @@
 
 import GnosticCore
 
-/// The registry identity of every module whose provider-specific execution
-/// remains in the temporary legacy composition target.
+/// Static module descriptors used for configuration and registry reporting.
 ///
-/// The clean host knows the names and the registry identities, so config and
-/// doctor can report an existing manifest without loading PositronicKit into
-/// the host process. The clean host executes none of them.
+/// The host does not execute provider-specific model loops. Experiments that
+/// need one run behind an independent ACP Runtime process.
 enum KnownModuleCatalog {
     static let atlas = GnosticModule(
         name: "atlas",

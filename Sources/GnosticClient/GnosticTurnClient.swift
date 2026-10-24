@@ -16,16 +16,18 @@ import GnosticProtocol
 ///
 /// ## Target validation
 ///
-/// Every call resolves the addressed Timeline from the catalog and requires the
-/// Ascendant that owns it to advertise
-/// ``GnosticCapability/textTurnInput``. An explicit provider must be the one the
-/// catalog attributes to the Timeline. The catalog is consulted first; the
-/// client issues an active discover request only when the Timeline is absent.
+/// Every call resolves the addressed Timeline from the catalog and requires its
+/// operating identity to support text input. A canonical ACP Runtime satisfies
+/// this through ACP v2's required `session/prompt` method; legacy Ascendant
+/// advertisements use ``GnosticCapability/textTurnInput``. An explicit provider
+/// must be the one the catalog attributes to the Timeline. The catalog is
+/// consulted first; the client issues an active discover request only when the
+/// Timeline is absent.
 ///
-/// A refresh is keyed on the Timeline alone. When the Timeline is already
-/// present but its Ascendant projection has not been ingested yet, resolution
-/// reports ``GnosticTurnClientError/missingCapability(_:)`` without a second
-/// refresh; a caller can retry after the next catalog change.
+/// A refresh is keyed on the Timeline alone. When the Timeline is present but
+/// its operating identity is absent, resolution reports
+/// ``GnosticTurnClientError/missingCapability(_:)`` without a second refresh; a
+/// caller can retry after the next catalog change.
 ///
 /// ## Lifetime
 ///

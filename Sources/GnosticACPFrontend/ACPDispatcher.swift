@@ -9,15 +9,14 @@ import GnosticCore
 /// in the Gnostic object advertisements.
 @MainActor
 final class ACPDispatcher: Sendable {
-    /// The Ascendant this ACP process is pinned to.
+    /// The Runtime instance this ACP process is pinned to.
     ///
     /// `providerID` is the serve process that currently answers for it and is
     /// re-resolved after an eviction. `nodeID` is the manifest identity that
     /// outlives every such process, so it is what a session binds to.
-    private struct Ascendant {
-        let id: UUID
+    private struct RuntimeInstance {
+        let runtimeID: UUID
         let name: String
-        let timelineID: UUID
         let providerID: String
         let nodeID: UUID?
     }
@@ -41,12 +40,12 @@ final class ACPDispatcher: Sendable {
 
     private let client: RemoteTurnClient
     private let registry: ACPSessionRegistry
-    private let requestedAscendantID: UUID?
+    private let requestedRuntimeID: UUID?
     private let requestedProviderID: String?
     private let requestedNodeID: UUID?
     private let publish: @Sendable (String, GnosticJSONValue) -> Void
     private let requestPermission: @Sendable (GnosticJSONValue) async throws -> GnosticJSONValue
-    private var ascendant: Ascendant?
+    private var runtime: RuntimeInstance?
     private var requestedPermissionIDs: Set<String> = []
     private var activePrompts: [String: ActivePrompt] = [:]
     private var activePermissionRequests: [String: ActivePermissionRequest] = [:]
@@ -55,7 +54,7 @@ final class ACPDispatcher: Sendable {
     init(
         client: RemoteTurnClient,
         registry: ACPSessionRegistry,
-        requestedAscendantID: UUID?,
+        requestedRuntimeID: UUID?,
         requestedProviderID: String? = nil,
         requestedNodeID: UUID? = nil,
         publish: @escaping @Sendable (String, GnosticJSONValue) -> Void,
@@ -63,7 +62,7 @@ final class ACPDispatcher: Sendable {
     ) {
         self.client = client
         self.registry = registry
-        self.requestedAscendantID = requestedAscendantID
+        self.requestedRuntimeID = requestedRuntimeID
         self.requestedProviderID = requestedProviderID
         self.requestedNodeID = requestedNodeID
         self.publish = publish
@@ -71,7 +70,7 @@ final class ACPDispatcher: Sendable {
     }
 
     func initialize() async throws -> GnosticJSONValue {
-        ascendant = try await resolveAscendant()
+        runtime = try await resolveRuntime()
         return .dictionary([
             "protocolVersion": .integer(Int64(ACPProtocol.version)),
             "info": .dictionary([
@@ -91,9 +90,9 @@ final class ACPDispatcher: Sendable {
         } catch let error as RemoteTurnClientError {
             if case .providerOffline = error {
                 // The cached selection points at a provider that is gone. Drop
-                // it so the next request re-resolves the Ascendant instead of
+                // it so the next request re-resolves the Runtime instance instead of
                 // reusing the dead binding.
-                ascendant = nil
+                runtime = nil
             }
             throw error
         }
@@ -122,15 +121,15 @@ final class ACPDispatcher: Sendable {
         let input: ACPSessionParameters = try decode(params)
         let cwd = try canonicalCWD(input.cwd)
         try rejectMCP(input.mcpServers)
-        let selected = try await currentAscendant()
+        let selected = try await currentRuntime()
         let status = try await client.createTimeline(
             title: "ACP \(URL(fileURLWithPath: cwd).lastPathComponent)",
-            ascendantID: selected.id,
+            runtimeID: selected.runtimeID,
             providerID: selected.providerID
         )
         let record = try await registry.create(
             profileFingerprint: profileFingerprint(for: selected),
-            ascendantID: selected.id,
+            ascendantID: selected.runtimeID,
             timelineID: status.timelineID,
             cwd: cwd,
             title: status.title,
@@ -139,7 +138,7 @@ final class ACPDispatcher: Sendable {
         return .dictionary([
             "sessionId": .string(record.id),
             "_meta": .dictionary(sessionMetadata(cwd: cwd, status: status).merging([
-                "gnosticAscendantID": .string(selected.id.uuidString.lowercased()),
+                "gnosticRuntimeID": .string(selected.runtimeID.uuidString.lowercased()),
                 "gnosticTimelineID": .string(record.timelineID.uuidString.lowercased()),
             ]) { _, new in new }),
         ])
@@ -163,7 +162,7 @@ final class ACPDispatcher: Sendable {
     private func listSessions(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPListParameters = try decode(params ?? .dictionary([:]))
         let cwd = try input.cwd.map { try canonicalCWD($0) }
-        let selected = try await currentAscendant()
+        let selected = try await currentRuntime()
         let records = await registry.list(cwd: cwd)
         var sessions: [GnosticJSONValue] = []
         var unresolved: [ACPSessionRecord] = []
@@ -171,7 +170,7 @@ final class ACPDispatcher: Sendable {
         // Timeline must not be presented as resumable. A closed record or one
         // bound to a different Node is omitted outright; a record whose
         // Timeline cannot be read is unresolved so ADR 0008 can end it once
-        // absence is confirmed. The binding is namespace, Ascendant, and Node,
+        // absence is confirmed. The binding is namespace, Runtime instance, and Node,
         // so a record created by an earlier serve of the same Node resolves.
         for record in records where record.closedAt == nil && isBound(record, to: selected) {
             guard let status = try? await client.timelineStatus(timelineID: record.timelineID, providerID: selected.providerID) else {
@@ -485,7 +484,7 @@ final class ACPDispatcher: Sendable {
                 guard let approved = ACPPermissionBridge.approved(from: response) else {
                     throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
-                let providerID = try await currentAscendant().providerID
+                let providerID = try await currentRuntime().providerID
                 try client.respondToPermission(AscendantPermissionResponse(
                     correlationID: state.correlationID,
                     timelineID: timelineID,
@@ -507,7 +506,7 @@ final class ACPDispatcher: Sendable {
         timelineID: UUID,
         turnID: String
     ) async throws {
-        let providerID = try await currentAscendant().providerID
+        let providerID = try await currentRuntime().providerID
         try client.respondToPermission(AscendantPermissionResponse(
             correlationID: state.correlationID,
             timelineID: timelineID,
@@ -571,31 +570,35 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func resolveAscendant() async throws -> Ascendant {
+    private func resolveRuntime() async throws -> RuntimeInstance {
         do {
-            let selected = try await client.selectAscendant(
-                id: requestedAscendantID,
+            let selected = try await client.selectRuntime(
+                id: requestedRuntimeID,
                 providerID: requestedProviderID,
                 nodeID: requestedNodeID
             )
-            return Ascendant(
-                id: selected.id,
+            return RuntimeInstance(
+                runtimeID: selected.runtimeID,
                 name: selected.name,
-                timelineID: selected.timelineID,
                 providerID: selected.providerID,
                 nodeID: selected.nodeID ?? requestedNodeID
             )
         } catch let error as RemoteTurnClientError {
-            throw JSONRPCMethodError.invalidState(error.localizedDescription)
+            throw JSONRPCMethodError.invalidState(
+                RemoteTurnClient.discoveryFailureDescription(
+                    error: error,
+                    diagnostics: client.runtimeDiscoveryDiagnostics
+                )
+            )
         }
     }
 
-    /// Returns the cached Ascendant, re-resolving it when a provider eviction
+    /// Returns the cached Runtime instance, re-resolving it when a provider eviction
     /// cleared the selection.
-    private func currentAscendant() async throws -> Ascendant {
-        if let ascendant { return ascendant }
-        let resolved = try await resolveAscendant()
-        ascendant = resolved
+    private func currentRuntime() async throws -> RuntimeInstance {
+        if let runtime { return runtime }
+        let resolved = try await resolveRuntime()
+        runtime = resolved
         return resolved
     }
 
@@ -639,46 +642,46 @@ final class ACPDispatcher: Sendable {
     }
 
     private func requireBinding(of record: ACPSessionRecord) async throws {
-        guard isBound(record, to: try await currentAscendant()) else {
-            throw JSONRPCMethodError.invalidState("session is bound to a different Ascendant, Node, or namespace")
+        guard isBound(record, to: try await currentRuntime()) else {
+            throw JSONRPCMethodError.invalidState("session is bound to a different Runtime instance, Node, or namespace")
         }
     }
 
-    /// Whether a persisted record belongs to this process's Ascendant.
+    /// Whether a persisted record belongs to this process's Runtime instance.
     ///
-    /// The binding is namespace, Ascendant, and Node. It never includes the
+    /// The binding is namespace, Runtime instance, and Node. It never includes the
     /// provider identity, which changes with every serve process, so a record
     /// stays valid across a restart of its Node.
-    private func isBound(_ record: ACPSessionRecord, to ascendant: Ascendant) -> Bool {
-        guard record.ascendantID == ascendant.id else { return false }
-        if let recorded = record.nodeID, let current = ascendant.nodeID, recorded != current { return false }
-        return acceptsFingerprint(record.profileFingerprint, for: ascendant)
+    private func isBound(_ record: ACPSessionRecord, to runtime: RuntimeInstance) -> Bool {
+        guard record.ascendantID == runtime.runtimeID else { return false }
+        if let recorded = record.nodeID, let current = runtime.nodeID, recorded != current { return false }
+        return acceptsFingerprint(record.profileFingerprint, for: runtime)
     }
 
     /// Accepts this process's fingerprint and the shapes written before it.
     ///
     /// A record written before this contract carries a per-process provider
-    /// identity in its middle segment. The namespace and the Ascendant are the
+    /// identity in its middle segment. The namespace and Runtime instance are the
     /// parts that ever bound it, and the Node is checked separately, so an
     /// existing record keeps loading instead of failing on a stale provider.
-    private func acceptsFingerprint(_ fingerprint: String, for ascendant: Ascendant) -> Bool {
-        let ascendantID = ascendant.id.uuidString.lowercased()
-        if fingerprint == "\(client.namespace):\(ascendantID)" { return true }
-        return fingerprint.hasPrefix("\(client.namespace):") && fingerprint.hasSuffix(":\(ascendantID)")
+    private func acceptsFingerprint(_ fingerprint: String, for runtime: RuntimeInstance) -> Bool {
+        let runtimeID = runtime.runtimeID.uuidString.lowercased()
+        if fingerprint == "\(client.namespace):\(runtimeID)" { return true }
+        return fingerprint.hasPrefix("\(client.namespace):") && fingerprint.hasSuffix(":\(runtimeID)")
     }
 
-    private func profileFingerprint(for ascendant: Ascendant) -> String {
-        let ascendantID = ascendant.id.uuidString.lowercased()
-        guard let nodeID = ascendant.nodeID else { return "\(client.namespace):\(ascendantID)" }
-        return "\(client.namespace):node:\(nodeID.uuidString.lowercased()):\(ascendantID)"
+    private func profileFingerprint(for runtime: RuntimeInstance) -> String {
+        let runtimeID = runtime.runtimeID.uuidString.lowercased()
+        guard let nodeID = runtime.nodeID else { return "\(client.namespace):\(runtimeID)" }
+        return "\(client.namespace):node:\(nodeID.uuidString.lowercased()):\(runtimeID)"
     }
 
-    /// The provider that currently answers for a record's Ascendant.
+    /// The provider that currently answers for a record's Runtime instance.
     ///
     /// The record itself is not bound to a provider; this is the live serve
     /// process behind its Node, re-resolved after an eviction.
     private func boundProviderID(for record: ACPSessionRecord) async throws -> String {
-        try await currentAscendant().providerID
+        try await currentRuntime().providerID
     }
 
     private func canonicalCWD(_ cwd: String) throws -> String {

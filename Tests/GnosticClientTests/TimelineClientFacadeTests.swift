@@ -66,6 +66,29 @@ struct TimelineClientFacadeTests {
         }
     }
 
+    @Test("creates a Timeline for a canonical Runtime advertisement without an Ascendant projection")
+    func createsTimelineForCanonicalRuntime() async throws {
+        let namespace = namespaced("runtime-only")
+        let fixture = try await TimelineClientFacadeBridge.makeFixture(
+            namespace: namespace,
+            host: host,
+            port: port,
+            runtimeOnly: true
+        )
+        defer { fixture.teardown() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            let client = try session.timelineClient(timeout: .seconds(2))
+            let created = try await client.create(title: "Runtime Timeline", ascendantID: fixture.ascendantID)
+            let renamed = try await client.update(timelineID: fixture.timelineID, title: "Runtime Timeline Renamed")
+
+            #expect(created.timelineID == fixture.createdTimelineID)
+            #expect(renamed.timelineID == fixture.timelineID)
+            #expect(renamed.title == "Runtime Timeline Renamed")
+            #expect(await fixture.recorder.createTitles == ["Runtime Timeline"])
+        }
+    }
+
     @Test("status reads a discovered Timeline and can address a provider directly")
     func readsTimelineStatus() async throws {
         let namespace = namespaced("status")

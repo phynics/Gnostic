@@ -1,18 +1,16 @@
 # Gnostic
 
-Gnostic hosts Ascendant backends and exposes them over Axoloty. The shipped
-`gnostic` tool hosts the process-independent `letta` and `acp` Ascendant
-backends. The bundled `positronic` backend runs PositronicKit inside the host
-process, so it is transitional: it ships as the separate `gnostic-legacy`
-executable until #611 removes it. The bundled local Workspace backend is
-`echo`. The latest release is 0.4.2. The next release, 0.5.0, is the first
-supported line and is in development
+Gnostic hosts Runtime processes and exposes Timeline orchestration over
+Axoloty. Every Runtime uses ACP v2 over stdio. The standalone reference Runtime
+uses PositronicKit privately; the host does not. The 0.5.0 line is in
+development
 ([#551](https://github.com/phynics/Gnostic/issues/551)).
 
 The [0.5.0 compatibility declaration](Documentation/Compatibility/0.5.0.md)
 records what changes from 0.4.2. It is a source-breaking minor for Swift
-consumers: public types moved into new library products. It is
-wire-compatible with 0.4.2. The
+consumers: public types moved into new library products. It is wire-breaking
+from 0.4.2 and migrates operator configuration without converting execution
+history. The
 [0.4.2 compatibility declaration](Documentation/Compatibility/0.4.2.md)
 records the load-time cancellation-shield fix. The
 [0.4.1 declaration](Documentation/Compatibility/0.4.1.md) records the
@@ -45,11 +43,13 @@ The default manifest lives at `~/.gnostic/config.json`. Use `--config PATH` or
 `GNOSTIC_MQTT_PORT`, and `GNOSTIC_MQTT_NAMESPACE` override the broker values
 when a command reads the manifest.
 
-Start the Node after configuring an LLM provider and model:
+Configure an ACP Runtime command and its arguments, then start the Node. The
+Runtime owns its model and provider selection:
 
 ```sh
-gnostic config backend set <ASCENDANT_UUID> provider <PROVIDER>
-gnostic config backend set <ASCENDANT_UUID> model <MODEL>
+gnostic config backend set <ASCENDANT_UUID> command /path/to/acp-runtime
+gnostic config backend set <ASCENDANT_UUID> args '["--stdio"]'
+gnostic config validate
 gnostic serve
 ```
 
@@ -65,8 +65,11 @@ updates preserve existing IDs and validate references before writing:
 ```sh
 gnostic config ascendant add --name "Research"
 gnostic config timeline add --title "Research notes"
-gnostic config workspace add --name "Echo" --uri "echo://local"
 ```
+
+Workspace entries require a matching local Workspace adapter in the host. The
+default `gnostic` CLI build registers no local Workspace kinds, so its fresh
+configuration leaves `workspaces` empty.
 
 Inspect the objects that a running Node advertises:
 
@@ -129,11 +132,11 @@ mutating `config` subcommand accepts `--dry-run`, which prints a redacted diff
 of the resulting manifest and writes nothing.
 
 Run the offline diagnostics before starting the Node. `gnostic doctor` checks
-for a missing manifest, a missing provider or model tier, a module that needs a
-model service with no provider, missing secrets and executor helpers, and the
-registry status of each selected module. Add `--online` to also check broker
-reachability and the protocol major, or `--check-provider` to probe the
-provider endpoint:
+the manifest, backend-specific configuration, missing secrets, Workspace
+paths, module requirements, and executor helpers. ACP Runtime model selection
+stays in the Runtime configuration. Add `--online` to also check broker
+reachability and the protocol major, or `--check-provider` to probe endpoints
+for backend kinds that declare provider settings:
 
 ```sh
 gnostic doctor
@@ -384,15 +387,9 @@ Timelines created at runtime, so a later resume or prompt fails with
 `timelineUnavailable` and `session/list` omits the session (ADR 0008). The
 session record stays on disk for diagnostics, marked ended.
 
-For Ascendants on the transitional `positronic` backend of `gnostic-legacy`,
-runtime-created Timelines
-and their backend transcripts can survive a restart. Run `gnostic serve` with
-`GNOSTIC_STATE_HOME` set, or with `--turn-log PATH`, whose parent directory
-then serves as the state home. Serve keeps a durable Turn event log and a
-file-backed Timeline store under `<state home>/timelines` (ADR 0014,
-ADR 0015). External `acp-client` Ascendants keep the default behavior above.
-This durable mode is opt-in, and its on-disk formats will change before 0.5.0
-([#550](https://github.com/phynics/Gnostic/issues/550)).
+Configuration migration explicitly rejects the removed `positronic` and
+`letta` backend kinds and guides operators to an ACP v2 Runtime. Historical
+execution state is not converted or deleted.
 
 To create profiles for the generic
 [`pi-acp-client`](https://github.com/phynics/pi-acp-client), query a running
@@ -412,7 +409,7 @@ process and is needed only for a Node that advertises no identity.
 
 ## Extend Gnostic
 
-- [Implement an Ascendant backend](Documentation/Extending/ascendant-backends.md)
+- [Integrate an ACP Runtime](Documentation/Extending/ascendant-backends.md)
 - [Implement a Workspace adapter](Documentation/Extending/workspace-adapters.md)
 - [Build an experiment on the platform kit](Documentation/Extending/experiment-kit.md)
 

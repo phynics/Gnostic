@@ -1,0 +1,285 @@
+// Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
+
+import Foundation
+import Testing
+@testable import GnosticCLI
+
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
+
+@Suite("Serve subprocess signals", .serialized)
+struct ServeSubprocessSignalTests {
+    @Test("SIGTERM gracefully stops gnostic serve", .timeLimit(.minutes(1)))
+    @MainActor
+    func sigtermStopsServe() async throws {
+        try await assertGracefulStop(using: .terminate)
+    }
+
+    @Test("SIGINT gracefully stops gnostic serve", .timeLimit(.minutes(1)))
+    @MainActor
+    func sigintStopsServe() async throws {
+        try await assertGracefulStop(using: .interrupt)
+    }
+
+    @Test("SIGINT gracefully stops gnostic serve during startup", .timeLimit(.minutes(1)))
+    @MainActor
+    func sigintStopsServeDuringStartup() async throws {
+        let blackhole = try TCPBlackhole()
+        blackhole.start()
+        defer { blackhole.stop() }
+
+        try await assertGracefulStop(
+            using: .interrupt,
+            port: blackhole.port,
+            // Give the launched Swift process enough time to enter `run()` and
+            // install its signal sources; the local listener accepts the TCP
+            // connection but never sends an MQTT response.
+            signalDelay: .milliseconds(500),
+            requireOnlineBeforeSignal: false
+        )
+    }
+
+    @MainActor
+    private func assertGracefulStop(
+        using signal: TestSignal,
+        port: Int = 1883,
+        signalDelay: Duration = .seconds(1),
+        requireOnlineBeforeSignal: Bool = true
+    ) async throws {
+        let binary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let namespace = "serve-signal-\(UUID().uuidString.lowercased())"
+        let fixturePath = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let configDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-serve-config-\(UUID().uuidString)")
+        let fixtureDirectory = configDirectory.appendingPathComponent("fixture-state", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
+        let fixtureStateURL = fixtureDirectory.appendingPathComponent("sessions.json")
+        let fixtureInitializeURL = fixtureDirectory.appendingPathComponent("initialized")
+        let fixturePIDURL = fixtureDirectory.appendingPathComponent("process.pid")
+        let configStore = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
+        _ = try configStore.initializeManifest()
+        try configStore.mutateManifest { manifest in
+            let fixtureEnvironment = [
+                "GNOSTIC_ACP_FIXTURE_STATE": fixtureStateURL.path,
+                "GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE": fixtureInitializeURL.path,
+                "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePIDURL.path,
+            ]
+            manifest.ascendants[0].backend.settings["command"] = .string("node")
+            manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([fixturePath]))
+            manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = [
+            "serve", "--config", configStore.path().path,
+            "--host", "127.0.0.1", "--port", String(port), "--namespace", namespace,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path
+        process.environment = environment
+        let logURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-serve-\(UUID().uuidString).log")
+        #expect(FileManager.default.createFile(atPath: logURL.path, contents: nil))
+        let log = try FileHandle(forWritingTo: logURL)
+        process.standardOutput = log
+        process.standardError = log
+        try process.run()
+        defer {
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+            cleanupFixtureProcess(pidURL: fixturePIDURL)
+            try? log.close()
+            try? FileManager.default.removeItem(at: logURL)
+            try? FileManager.default.removeItem(at: configDirectory)
+        }
+
+        if requireOnlineBeforeSignal {
+            let manifest = try configStore.loadManifest()
+            let timelineID = try #require(manifest.timelines.first?.id)
+            try await waitForOnline(log: log, logURL: logURL, process: process, timelineID: timelineID)
+            try await waitForMarker(fixtureInitializeURL)
+            #expect(FileManager.default.fileExists(atPath: fixturePIDURL.path))
+        } else {
+            try await Task.sleep(for: signalDelay)
+        }
+        #expect(process.isRunning)
+        switch signal {
+        case .interrupt: process.interrupt()
+        case .terminate: process.terminate()
+        }
+
+        for _ in 0..<40 where process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let exited = !process.isRunning
+        if !exited { kill(process.processIdentifier, SIGKILL) }
+        process.waitUntilExit()
+
+        try log.synchronize()
+        let standardError = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(exited, "gnostic serve ignored \(signal)")
+        #expect(process.terminationReason == .exit, Comment(rawValue: standardError))
+        #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+        if FileManager.default.fileExists(atPath: fixturePIDURL.path) {
+            let fixtureStopped = await waitForFixtureStop(pidURL: fixturePIDURL)
+            #expect(fixtureStopped, "ACP fixture process remained alive after \(signal).")
+            #expect(!fixtureProcessIsRunning(pidURL: fixturePIDURL), "ACP fixture process remained alive after \(signal).")
+        }
+    }
+
+    private func jsonString<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        return try #require(String(data: data, encoding: .utf8))
+    }
+
+    @MainActor
+    private func waitForMarker(_ url: URL) async throws {
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: url.path) { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        Issue.record("Timed out waiting for ACP fixture marker at \(url.lastPathComponent).")
+    }
+
+    @MainActor
+    private func waitForFixtureStop(pidURL: URL) async -> Bool {
+        for _ in 0..<100 {
+            if !fixtureProcessIsRunning(pidURL: pidURL) { return true }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+
+    private func cleanupFixtureProcess(pidURL: URL) {
+        guard let rawPID = try? String(contentsOf: pidURL, encoding: .utf8).split(whereSeparator: \.isNewline).first,
+              let pid = Int32(String(rawPID)) else { return }
+        guard kill(pid, 0) == 0 || errno != ESRCH else { return }
+        kill(pid, SIGKILL)
+        for _ in 0..<50 {
+            if kill(pid, 0) != 0 && errno == ESRCH { return }
+            usleep(10_000)
+        }
+    }
+
+    private func fixtureProcessIsRunning(pidURL: URL) -> Bool {
+        guard let rawPID = try? String(contentsOf: pidURL, encoding: .utf8).split(whereSeparator: \.isNewline).first,
+              let pid = Int32(String(rawPID)) else { return false }
+        return kill(pid, 0) == 0 || errno != ESRCH
+    }
+
+    /// Polls the serve log until it advertises its object graph. A fixed delay
+    /// is too short when the suite runs in parallel: subprocess launch and the
+    /// broker connection can take well over a second under load, so signaling
+    /// early could hit the default handler before the monitor is installed.
+    @MainActor
+    private func waitForOnline(log: FileHandle, logURL: URL, process: Process, timelineID: UUID) async throws {
+        var sawOnline = false
+        for _ in 0..<150 {
+            try log.synchronize()
+            let startupLog = try String(contentsOf: logURL, encoding: .utf8)
+            if startupLog.contains("advertised objects"),
+               startupLog.contains("timeline=\(timelineID.uuidString.lowercased())") {
+                sawOnline = true
+                break
+            }
+            if !process.isRunning { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try log.synchronize()
+        let startupLog = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(sawOnline, Comment(rawValue: startupLog))
+    }
+}
+
+private enum TestSignal: String { case interrupt = "SIGINT", terminate = "SIGTERM" }
+
+/// A local TCP listener that accepts one connection and deliberately never
+/// speaks MQTT. This keeps the serve subprocess in transport startup without
+/// depending on an unroutable address or an external broker.
+private final class TCPBlackhole: @unchecked Sendable {
+    let port: Int
+
+    private let listener: Int32
+    private let lock = NSLock()
+    private var connection: Int32 = -1
+    private var acceptTask: Task<Void, Never>?
+
+    init() throws {
+        #if os(Linux)
+        let socketType = Int32(SOCK_STREAM.rawValue)
+        #else
+        let socketType = SOCK_STREAM
+        #endif
+        let listener = socket(AF_INET, socketType, 0)
+        guard listener >= 0 else { throw POSIXError(.init(rawValue: errno)!) }
+        self.listener = listener
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: in_addr_t(0x7F000001).bigEndian)
+        let bindResult = withUnsafePointer(to: &address) { address in
+            address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            close(listener)
+            throw POSIXError(.init(rawValue: errno)!)
+        }
+        guard listen(listener, 1) == 0 else {
+            close(listener)
+            throw POSIXError(.init(rawValue: errno)!)
+        }
+
+        var boundAddress = sockaddr_in()
+        var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { address in
+            address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(listener, $0, &addressLength)
+            }
+        }
+        guard nameResult == 0 else {
+            close(listener)
+            throw POSIXError(.init(rawValue: errno)!)
+        }
+        self.port = Int(UInt16(bigEndian: boundAddress.sin_port))
+    }
+
+    func start() {
+        acceptTask = Task.detached { [weak self] in
+            guard let self else { return }
+            var address = sockaddr_storage()
+            var addressLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let connection = withUnsafeMutablePointer(to: &address) { address in
+                address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    accept(self.listener, $0, &addressLength)
+                }
+            }
+            guard connection >= 0 else { return }
+            self.store(connection: connection)
+        }
+    }
+
+    func stop() {
+        acceptTask?.cancel()
+        acceptTask = nil
+        lock.lock()
+        let connection = self.connection
+        self.connection = -1
+        lock.unlock()
+        if connection >= 0 { close(connection) }
+        close(listener)
+    }
+
+    private func store(connection: Int32) {
+        lock.lock()
+        self.connection = connection
+        lock.unlock()
+    }
+}

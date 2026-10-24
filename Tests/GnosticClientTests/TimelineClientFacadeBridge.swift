@@ -3,6 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticCore
+import GnosticProtocol
 
 /// Test-only serve-side scaffolding for the public Timeline client tests.
 ///
@@ -47,7 +48,8 @@ enum TimelineClientFacadeBridge {
         namespace: String,
         host: String,
         port: Int,
-        options: Options = Options()
+        options: Options = Options(),
+        runtimeOnly: Bool = false
     ) async throws -> Fixture {
         let manager = try makeManager(name: "gnostic-timeline-client-provider", namespace: namespace, host: host, port: port)
         let ascendantID = UUID()
@@ -59,6 +61,7 @@ enum TimelineClientFacadeBridge {
             timelineID: timelineID,
             ascendantID: ascendantID,
             capabilities: options.capabilities,
+            runtimeOnly: runtimeOnly,
             on: manager
         )
 
@@ -272,20 +275,31 @@ enum TimelineClientFacadeBridge {
         timelineID: UUID,
         ascendantID: UUID,
         capabilities: Set<String>,
+        runtimeOnly: Bool = false,
         on manager: CommunicationManager
     ) {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
-            id: ascendantID,
-            name: "Timeline Ascendant",
-            description: "Offline Timeline provider.",
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
-            lastActiveAt: now,
-            createdAt: now,
-            updatedAt: now,
-            capabilities: AscendantBackendCapabilities(interoperability: capabilities)
-        )))
+        if runtimeOnly {
+            manager.publishAdvertise(GnosticRuntimeInstanceObject(
+                id: ascendantID,
+                name: "Timeline Runtime",
+                kind: "acp",
+                nodeID: UUID(),
+                rawCapabilities: ["session": .object([:])]
+            ))
+        } else {
+            manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
+                id: ascendantID,
+                name: "Timeline Ascendant",
+                description: "Offline Timeline provider.",
+                privateTimelineID: timelineID,
+                primaryWorkspaceID: nil,
+                lastActiveAt: now,
+                createdAt: now,
+                updatedAt: now,
+                capabilities: AscendantBackendCapabilities(interoperability: capabilities)
+            )))
+        }
         manager.publishAdvertise(GnosticTimelineObject(timeline: AscendantBackendTimeline(
             id: timelineID,
             title: "Timeline",

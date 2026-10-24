@@ -67,19 +67,6 @@ export GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs
 export GNOSTIC_SERVE_BINARY="$bin"
 export GNOSTIC_CLI_BINARY="$bin"
 
-# The transitional command line is only built for the transitional test
-# suites. The shipped binary is always exported as GNOSTIC_CLI_BINARY and
-# GNOSTIC_SERVE_BINARY.
-if [[ "$FILTER" == GnosticLegacyCLITests* ]]; then
-    swift build "${swift_flags[@]}" --product gnostic-legacy
-    legacy_bin="$(swift build "${swift_flags[@]}" --product gnostic-legacy --show-bin-path)/gnostic-legacy"
-    if [[ ! -x "$legacy_bin" ]]; then
-        echo "Could not locate built gnostic-legacy executable at $legacy_bin; diagnostics: $setup_log" >&2
-        exit 1
-    fi
-    export GNOSTIC_LEGACY_SERVE_BINARY="$legacy_bin"
-    export GNOSTIC_LEGACY_CLI_BINARY="$legacy_bin"
-fi
 export GNOSTIC_ACP_BINARY="$bin"
 runtime_bin_dir=$(timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" swift build "${swift_flags[@]}" --product gnostic-pk-runtime --show-bin-path 2>>"$setup_log") || exit $?
 export GNOSTIC_PK_RUNTIME_BINARY="$runtime_bin_dir/gnostic-pk-runtime"

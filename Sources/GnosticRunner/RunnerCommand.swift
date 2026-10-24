@@ -1,8 +1,15 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import ArgumentParser
+import Dispatch
 import Foundation
 import GnosticCore
+
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 /// The `gnostic-runner` executable.
 @main
@@ -29,6 +36,7 @@ struct GnosticRunner: AsyncParsableCommand {
 
     @MainActor
     func run() async throws {
+        let termination = RunnerTerminationMonitor()
         let configuration = try RunnerConfiguration.resolve(
             flags: RunnerParsingFlags(host: host, port: port, namespace: namespace, config: configPath, stateHome: stateHome),
             environment: ProcessInfo.processInfo.environment
@@ -41,8 +49,43 @@ struct GnosticRunner: AsyncParsableCommand {
             throw error
         }
         print("gnostic-runner online at \(configuration.host):\(configuration.port) namespace \(configuration.namespace)")
-        await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
-            _ = continuation
+        await termination.wait()
+        await runtime.shutdown()
+    }
+}
+
+/// Turns SIGINT and SIGTERM into an awaitable shutdown request.
+@MainActor
+private final class RunnerTerminationMonitor {
+    private let sources: [DispatchSourceSignal]
+    private let terminationSignals: AsyncStream<Void>
+
+    init() {
+        #if os(Linux)
+        _ = Glibc.signal(SIGINT, SIG_IGN)
+        _ = Glibc.signal(SIGTERM, SIG_IGN)
+        #else
+        _ = Darwin.signal(SIGINT, SIG_IGN)
+        _ = Darwin.signal(SIGTERM, SIG_IGN)
+        #endif
+        let pair = AsyncStream<Void>.makeStream()
+        terminationSignals = pair.stream
+        // These handlers inherit MainActor isolation from init; deliver them on its matching queue.
+        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        terminate.setEventHandler {
+            pair.continuation.yield(())
+            pair.continuation.finish()
         }
+        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        interrupt.setEventHandler {
+            pair.continuation.yield(())
+            pair.continuation.finish()
+        }
+        sources = [terminate, interrupt]
+        sources.forEach { $0.activate() }
+    }
+
+    func wait() async {
+        for await _ in terminationSignals { break }
     }
 }

@@ -154,6 +154,8 @@ public actor JSONRPCSession {
             let result = try await initializeHandler()
             state = .initialized
             respondIfNeeded(to: request, result: result)
+        } catch let error as JSONRPCMethodError {
+            respondIfNeeded(to: request, error: errorObject(for: error))
         } catch {
             respondIfNeeded(to: request, error: JSONRPCErrorObject(
                 code: JSONRPCErrorCode.internalError.rawValue,
@@ -277,8 +279,8 @@ public actor JSONRPCSession {
     private func errorObject(for error: RemoteTurnClientError) -> JSONRPCErrorObject {
         let code: JSONRPCErrorCode = switch error {
         case .brokerUnreachable: .internalError
-        case .noServedAscendant, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
-             .ambiguousAscendant, .ascendantUnavailable, .providerUnavailable, .providerOffline,
+        case .noServedAscendant, .noRuntime, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
+             .ambiguousAscendant, .ambiguousRuntime, .ascendantUnavailable, .runtimeUnavailable, .providerUnavailable, .providerOffline,
              .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
              .missingCapability: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI, .promptTooLarge: .invalidParams

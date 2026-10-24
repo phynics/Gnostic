@@ -4,11 +4,11 @@
     {
       "id": "GNO-MOD-ATLAS",
       "name": "Atlas continuity and context",
-      "targets": ["GnosticPositronicAtlas"],
+      "targets": [],
       "status": "parked",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/619",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/619", "https://github.com/phynics/Gnostic/issues/609"],
-      "runnable": true,
+      "runnable": false,
       "reviewBy": "2027-01-02"
     },
     {
@@ -30,8 +30,8 @@
     {
       "id": "GNO-MOD-LETTA",
       "name": "Letta Ascendant backend",
-      "targets": ["GnosticLettaBackend"],
-      "status": "parked",
+      "targets": [],
+      "status": "archived",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/611",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/611"],
       "runnable": false,
@@ -60,7 +60,7 @@
     {
       "id": "GNO-MOD-CONTEXT",
       "name": "Positronic semantic context compiler",
-      "targets": ["GnosticPositronicContext"],
+      "targets": [],
       "status": "parked",
       "owningIssue": "https://github.com/phynics/Gnostic/issues/618",
       "gateIssues": ["https://github.com/phynics/Gnostic/issues/618", "https://github.com/phynics/Gnostic/issues/609"],

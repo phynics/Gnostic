@@ -44,15 +44,14 @@ terminal observation decision listed above.
 
 - [ADR 0007 — Timeline-bound backend session contract disposition](ADRs/0007-timeline-bound-backend-session-contract-disposition.md)
 
-ADR 0010 records the Letta backend as an optional, experimental prototype. The
-`GnosticLettaBackend` target stays outside `GnosticCore` and is registered
-through the composition source; it is not production support.
+ADR 0010 records the retired Letta backend prototype. Its implementation and
+target were removed by #611; Letta can return only as an ACP Runtime.
 
 The compatibility declaration in development is [0.5.0](../Compatibility/0.5.0.md), a source-breaking minor over [0.4.2](../Compatibility/0.4.2.md). The released declarations are [0.4.2](../Compatibility/0.4.2.md), [0.4.1](../Compatibility/0.4.1.md), [0.4.0](../Compatibility/0.4.0.md) and the delivered 0.3 reset baseline [documented here](../Compatibility/0.3.0.md).
 
 ## Extension guides
 
-- [Implementing an Ascendant backend](../Extending/ascendant-backends.md)
+- [ACP Runtime integration](../Extending/ascendant-backends.md)
 - [Implementing a Workspace adapter](../Extending/workspace-adapters.md)
 - [Building an experiment on the platform kit](../Extending/experiment-kit.md)
 - [ACP SDK evaluation](ACP-SDK-Evaluation.md)
@@ -83,67 +82,27 @@ and #450 delivered those two wiring steps; once closed, the entries name the
 open umbrella epic #438 so the registry invariant holds.
 
 The platform kit boundary is enforced the same way. `GnosticCore` must not
-depend on or import `GnosticKit`; the kit must depend on `GnosticCore` and no
-other `Gnostic` target; and `Sources/GnosticKit` must not import a Positronic
-backend. The kernel therefore stays below the kit, so P7 can extract Positronic
-from `GnosticCore` without touching the kit.
+depend on or import `GnosticKit`; the kit depends on `GnosticCore` only; and
+`Sources/GnosticKit` imports no Runtime implementation.
 
-The package descriptions below describe the pre-v0.5 implementation. ADR 0021
-is the target contract. Issues #604 and #611 remove the transitional host
-composition and keep PositronicKit only in the standalone reference Runtime.
+`GnosticACPWire` contains the Gnostic-owned ACP v2 wire types and depends only
+on Foundation. The standalone reference Runtime uses this target without
+linking Axoloty. `GnosticACPAscendant` adapts a supervised stdio ACP process to
+the host's Runtime coordination. `GnosticHost`, `GnosticRunner`, and
+`GnosticCLI` compose this adapter. PositronicKit appears only in the standalone
+`GnosticPositronicRuntime` executable; no host or test target depends on it.
 
-`GnosticACPWire` contains the Gnostic-owned ACP v2 JSON-RPC and operation types.
-It depends only on Foundation, so the standalone PositronicKit Runtime can use
-ACP without linking Axoloty. `GnosticProtocol` remains the Axoloty wire boundary
-below `GnosticCore`. It depends on Axoloty, `AxolotyWire`, and `GnosticACPWire`.
-It re-exports the ACP type names for existing consumers, and `GnosticCore`
-re-exports `GnosticProtocol` for source compatibility. ADRs 0005 and 0019 record
-the boundaries and their fitness checks.
-
-`GnosticClient` is the consumer SDK above `GnosticCore`. It holds the consumer
-session and the typed Turn, Timeline, Workspace, and Diagnostics clients. It
-depends on `GnosticProtocol` and `GnosticCore`, declares no PositronicKit,
-`PKContracts`, or backend dependency, and imports no backend value. The kernel
-keeps the shared transport, subscription, and runtime-effect machinery and
-never depends on the client. ADR 0005 records the boundary and its fitness
-checks.
-
-`GnosticPositronicBackend` is the bundled Positronic backend above
-`GnosticCore`. It holds `PositronicAscendantAdapter`, the contribution seam,
-`AxolotyWorkspace`, `FileTimelineRuntimeRepository`,
-`DiscoveredWorkspaceAttachmentService`, `NetworkManagementTools`, the
-permission adapter, `EchoWorkspace`, and the Positronic projection. It depends
-on `GnosticCore`, `GnosticProtocol`, Axoloty, PositronicKit, and `PKContracts`.
-`GnosticCore` declares no PositronicKit, `PKContracts`, or `PKPrompt`
-dependency and imports none. A composition root installs the backend with
-`PositronicBackend.register(into:)`. ADR 0005 records the boundary and its
-fitness checks.
-
-`GnosticHost` is the shipped host composition. It registers the
-process-independent Letta and ACP backends and installs no provider-specific
-contribution, so the host process never links PositronicKit. The
-pre-firewall composition, which still installs the bundled Positronic backend,
-lives in the transitional `GnosticLegacyPositronicHost` target. The
-transitional `gnostic-legacy` executable keeps a copy of the command line
-that drives that composition; #611 deletes the target, the executable, and
-the copy.
+`GnosticClient` is the consumer SDK above the kernel. It exposes typed Turn,
+Timeline, Workspace, and Diagnostics clients over `GnosticProtocol` and
+`GnosticCore`. The host owns Timeline authority, admission, supervision, and
+Workspace authorization. ACP owns Runtime session behavior. ADR 0021 defines
+these roles and their fitness checks.
 
 `Tests/GnosticCoreTests/PositronicKitFirewallTests.swift` enforces the
-firewall. It parses `Package.swift` and the Swift sources, fails when a target
-outside the transitional set declares or imports a PositronicKit product
-(including `PKContracts` and `PKTestSupport`), and fails when a shipped target
-reaches one through a dependency closure. The check also detects a seeded
-illegal declaration, a seeded illegal import, and a seeded transitive path, so
-the rule cannot pass because it stopped looking. The transitional targets are
-recorded as the exception `GNO-EXC-0002`.
-
-`PositronicWorkspaceProjection` and `PositronicJSONValueBridge` are the only
-conversion points between Gnostic values and their PositronicKit equivalents.
-The projection converts Workspace references in both directions; the bridge
-converts JSON values. The adapter, the network invoker, and the attached proxy
-call these two types and do not carry private copies. One fallback applies per
-target enum: `.unknown` for the provider status, `.unavailable` for the
-effective backend status, and `.runtime` for the location.
+dependency rule. It parses `Package.swift` and Swift sources, permits PK only
+in the standalone Runtime executable, checks host dependency closure, and
+detects seeded illegal declarations, imports, and transitive paths. The
+transitional allowance GNO-EXC-0002 was removed with #611.
 
 Archived entries may name a closed owning issue: that is the expected terminal
 state, and the entry records the review decision rather than active ownership.
@@ -151,14 +110,11 @@ state, and the entry records the review decision rather than active ownership.
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. It records two accepted exceptions. `GNO-EXC-0001` covers the
+exception registry. It records one accepted exception. `GNO-EXC-0001` covers the
 Coaty vocabulary that `GnosticCore` still publishes through
 `Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift` and that
 `GnosticProtocol` publishes through
-`Sources/GnosticProtocol/CoatyObjectModel.swift`. `GNO-EXC-0002` covers the
-transitional targets that still declare a PositronicKit product until #611
-deletes them. Every
-exception must have a unique
+`Sources/GnosticProtocol/CoatyObjectModel.swift`. Every exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,
 packages, targets, or interfaces; wildcard target-wide exceptions are not

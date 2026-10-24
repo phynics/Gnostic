@@ -5,9 +5,7 @@ import Foundation
 
 /// The `gnostic` command-line tool.
 ///
-/// The shipped tool hosts only process-independent backends. The transitional
-/// host composition that still knows the bundled Positronic backend ships as
-/// the separate `gnostic-legacy` executable until #611 removes it.
+/// The host connects to Runtime processes through ACP v2 over stdio.
 @main
 struct GnosticCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

@@ -27,11 +27,9 @@ A module contributes four things:
 | A **case loader** that freezes scenario text to an approved digest | `ExperimentScenarioCaseSet` |
 | A **run record** that names the Regime and its metrics | `ExperimentRunRecord` |
 
-The kit names none of your backend types. Provider-specific adapters belong
-behind the Runtime process boundary. The old in-process bridge remains only in
-the transitional target at
-[`GnosticLegacyPositronicHost/ExperimentModelAdapters.swift`](../../Sources/GnosticLegacyPositronicHost/ExperimentModelAdapters.swift)
-until issue #611 removes it.
+The kit names none of your Runtime types. Provider-specific model loops run in
+independent ACP Runtime processes. The old in-process model bridge was removed
+with the legacy host composition in #611.
 
 ## Scenarios and frozen cases
 

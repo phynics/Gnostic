@@ -181,6 +181,17 @@ struct GnosticCatalogLookup {
         }
     }
 
+    /// ADR 0021 Runtime instances implement ACP v2, whose required Session
+    /// methods include `session/prompt`. The Runtime advertisement is the
+    /// canonical owner when its legacy Ascendant projection is absent.
+    static func runtimeInstanceExists(id: UUID, providerID: String, in entries: [NetworkCatalogEntry]) -> Bool {
+        entries.contains { entry in
+            entry.objectType == GnosticObjectType.runtimeInstance
+                && entry.objectID == id
+                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
+        }
+    }
+
     /// Returns the distinct provider identities whose Ascendant advertisements
     /// declare a capability. Matching is case-insensitive; the first
     /// encountered spelling of each provider is returned.

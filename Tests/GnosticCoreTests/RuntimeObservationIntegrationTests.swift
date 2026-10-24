@@ -3,7 +3,7 @@
 import Foundation
 import Testing
 
-@testable import GnosticCore
+@_spi(RuntimeHost) @testable import GnosticCore
 
 @Suite("Runtime terminal observation integration")
 struct RuntimeObservationIntegrationTests {
