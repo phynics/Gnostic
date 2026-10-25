@@ -367,7 +367,7 @@ struct BackendLifecycleTests {
         )
 
         do {
-            _ = try await service.resolveNetworkWorkspace(workspaceID)
+            _ = try await service.resolveNetworkWorkspace(workspaceID: workspaceID)
             Issue.record("warm duplicate Workspace owner was accepted")
         } catch let error as DiscoveredWorkspaceAttachmentError {
             #expect(error == .unavailable(.ambiguous))

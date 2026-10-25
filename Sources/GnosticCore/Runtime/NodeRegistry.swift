@@ -75,12 +75,20 @@ public actor NodeRegistry {
         }
     }
 
+    struct WorkspaceAdmissionSnapshot: Sendable, Equatable {
+        let workspaceID: UUID
+        let status: WorkspaceEffectiveStatus
+        let revision: UInt64
+        let lifecycleGeneration: UInt64
+    }
+
     private let nodeID: UUID
     private let ascendantIDs: Set<UUID>
     private let configuredAscendantIDs: [UUID]
     private let configuredWorkspaceIDs: [UUID]
     private var timelines: [UUID: TimelineRecord]
     private var workspaces: [UUID: WorkspaceRecord]
+    private var workspaceAdmissionRevisions: [UUID: UInt64]
     private var attachmentIntents: [UUID: [NodeManifest.WorkspaceAttachment]]
     private var timelineMetadata: [UUID: (kind: String, flags: Set<String>)]
     private var backendRevisions: [UUID: UInt64]
@@ -103,6 +111,7 @@ public actor NodeRegistry {
         configuredWorkspaceIDs = plan.workspaces.map(\.id)
         timelines = [:]
         workspaces = [:]
+        workspaceAdmissionRevisions = [:]
         timelineMetadata = [:]
         backendRevisions = [:]
         self.backendLeases = backendLeases
@@ -427,6 +436,40 @@ public actor NodeRegistry {
     public func workspace(id: UUID) -> WorkspaceRecord? { workspaces[id] }
     public func effectiveWorkspaceStatus(id: UUID) -> WorkspaceEffectiveStatus? { workspaces[id]?.status }
 
+    func workspaceAdmissionSnapshot(id: UUID) -> WorkspaceAdmissionSnapshot? {
+        guard let workspace = workspaces[id] else { return nil }
+        return WorkspaceAdmissionSnapshot(
+            workspaceID: id,
+            status: workspace.status,
+            revision: workspaceAdmissionRevisions[id, default: 0],
+            lifecycleGeneration: lifecycleGeneration
+        )
+    }
+
+    func isCurrent(_ snapshot: WorkspaceAdmissionSnapshot) -> Bool {
+        guard let workspace = workspaces[snapshot.workspaceID] else { return false }
+        return workspace.status == snapshot.status
+            && workspaceAdmissionRevisions[snapshot.workspaceID, default: 0] == snapshot.revision
+            && lifecycleGeneration == snapshot.lifecycleGeneration
+    }
+
+    func admitsWorkspaceInvocation(
+        id: UUID,
+        authorizeOwnerAndAttachment: @MainActor @Sendable () async -> Bool
+    ) async -> Bool {
+        guard let snapshot = workspaceAdmissionSnapshot(id: id),
+              snapshot.status == .available,
+              await authorizeOwnerAndAttachment(),
+              isCurrent(snapshot) else { return false }
+        return true
+    }
+
+    func authorizesLocalWorkspaceCall(sourceID: String?, expectedSourceID: UUID, workspaceID: UUID, timelineID: UUID) -> Bool {
+        guard let sourceID, UUID(uuidString: sourceID) == expectedSourceID,
+              timelines[timelineID] != nil else { return false }
+        return attachmentIntents[timelineID, default: []].contains { $0.workspaceID == workspaceID }
+    }
+
     /// Returns the authoritative attachment intent. Runtime health changes
     /// never remove this relationship; explicit attach/detach mutations do.
     public func attachmentIntent(for timelineID: UUID) -> [NodeManifest.WorkspaceAttachment] {
@@ -521,10 +564,12 @@ public actor NodeRegistry {
     public func resolveLazyWorkspace(id: UUID, uri: String, toolIDs: [String]) throws -> Bool {
         guard let current = workspaces[id] else {
             workspaces[id] = .init(id: id, uri: uri, status: .available, toolIDs: toolIDs.sorted())
+            advanceWorkspaceAdmissionRevision(id)
             return true
         }
         guard current.uri == uri else { return false }
         workspaces[id] = .init(id: id, uri: current.uri, status: .available, toolIDs: toolIDs.sorted())
+        advanceWorkspaceAdmissionRevision(id)
         return true
     }
 
@@ -534,6 +579,7 @@ public actor NodeRegistry {
     public func setWorkspaceStatus(id: UUID, status: WorkspaceEffectiveStatus) -> Bool {
         guard let current = workspaces[id] else { return false }
         workspaces[id] = .init(id: id, uri: current.uri, status: status, toolIDs: current.toolIDs)
+        advanceWorkspaceAdmissionRevision(id)
         return true
     }
 
@@ -550,6 +596,10 @@ public actor NodeRegistry {
 
     private func sortedTimelineRecords() -> [TimelineRecord] {
         timelines.values.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func advanceWorkspaceAdmissionRevision(_ id: UUID) {
+        workspaceAdmissionRevisions[id, default: 0] &+= 1
     }
 
     private func appendJournalEvents(timelineID: UUID, payloads: [TimelineJournalPayload]) async throws {

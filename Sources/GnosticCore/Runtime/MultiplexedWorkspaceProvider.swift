@@ -17,6 +17,7 @@ public actor MultiplexedWorkspaceProvider {
     private let workspaceStatus: @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?
     private let setWorkspaceStatus: @Sendable (UUID, NodeRegistry.WorkspaceEffectiveStatus) async -> Bool
     private let callerBoundAuthorization: @Sendable (String?, UUID?, UUID) async -> Bool
+    private let admitInvocation: @Sendable (String?, UUID?, UUID) async -> Bool
     private let isAvailable: @Sendable () async -> Bool
 
     /// Creates the handler with the host's authoritative Workspace status lookup.
@@ -33,6 +34,9 @@ public actor MultiplexedWorkspaceProvider {
         callerBoundAuthorization = { _, timelineID, workspaceID in
             await isAttached(timelineID, workspaceID)
         }
+        self.admitInvocation = { _, timelineID, workspaceID in
+            await isAttached(timelineID, workspaceID)
+        }
         self.isAvailable = isAvailable
     }
 
@@ -41,12 +45,14 @@ public actor MultiplexedWorkspaceProvider {
         workspaceStatus: @escaping @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?,
         setWorkspaceStatus: @escaping @Sendable (UUID, NodeRegistry.WorkspaceEffectiveStatus) async -> Bool,
         callerBoundAuthorization: @escaping @Sendable (String?, UUID?, UUID) async -> Bool,
+        admitInvocation: @escaping @Sendable (String?, UUID?, UUID) async -> Bool,
         isAvailable: @escaping @Sendable () async -> Bool
     ) {
         self.workspaces = workspaces
         self.workspaceStatus = workspaceStatus
         self.setWorkspaceStatus = setWorkspaceStatus
         self.callerBoundAuthorization = callerBoundAuthorization
+        self.admitInvocation = admitInvocation
         self.isAvailable = isAvailable
     }
 
@@ -54,7 +60,7 @@ public actor MultiplexedWorkspaceProvider {
         try await handle(parameters: parameters, expectedProviderID: expectedProviderID, callerSourceID: nil)
     }
 
-    private func handle(parameters: String?, expectedProviderID: String?, callerSourceID: String?) async throws -> CallHandlerResult {
+    func handle(parameters: String?, expectedProviderID: String?, callerSourceID: String?) async throws -> CallHandlerResult {
         do {
             guard await isAvailable() else { throw NodeRuntimeError.notRunning }
             try GnosticProtocol.validatePayload(parameters)
@@ -78,14 +84,19 @@ public actor MultiplexedWorkspaceProvider {
             guard !tool.requiresPermission || invocation.permissionApproved else {
                 return .failure(code: 403, reasonCode: "workspacePermissionRequired", message: "The Workspace tool requires an approved permission decision.")
             }
-            guard await callerBoundAuthorization(callerSourceID, invocation.timelineID, invocation.workspaceID) else {
+            // Health and effective status are settled before owner admission.
+            // The admission closure brackets the atomic owner/attachment check
+            // with a versioned registry snapshot; it is the invocation's
+            // linearization point. Changes after admission do not retroactively
+            // cancel arbitrary asynchronous provider code.
+            try await requireAvailable(workspaceID: invocation.workspaceID)
+            guard await admitInvocation(callerSourceID, invocation.timelineID, invocation.workspaceID) else {
+                // Preserve the structured unavailable response when a status
+                // change invalidated the admission snapshot; attachment-only
+                // denial remains a 403 after this authoritative status read.
+                try await requireAvailable(workspaceID: invocation.workspaceID)
                 return .failure(code: 403, reasonCode: "workspaceNotAttached", message: "The Workspace is not attached to the active Timeline.")
             }
-            // This final registry snapshot is the admission guard. It follows
-            // the last owner-bound caller check and there is no suspension
-            // between it and entering provider execution. Later revocation is
-            // not retroactive cancellation of an admitted provider call.
-            try await requireAvailable(workspaceID: invocation.workspaceID)
             try Task.checkCancellation()
             let result = try await workspace.executeTool(id: invocation.toolID, parameters: invocation.arguments)
             return .success(result: try Self.encodeResult(result))

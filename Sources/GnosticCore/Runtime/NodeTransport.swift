@@ -66,6 +66,7 @@ public final class NodeTransport {
         runtimeInstanceObjects: @escaping @MainActor () -> [GnosticRuntimeInstanceObject] = { [] },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
         workspaceAuthorization: @escaping @MainActor @Sendable (String?, UUID?, UUID) async -> Bool = { _, _, _ in false },
+        workspaceAdmission: @escaping @MainActor @Sendable (String?, UUID?, UUID) async -> Bool = { _, _, _ in false },
         localWorkspaces: [UUID: any LocalWorkspace] = [:],
         isAvailable: @escaping @MainActor () -> Bool,
         operations: any NodeOperations,
@@ -91,6 +92,9 @@ public final class NodeTransport {
             },
             callerBoundAuthorization: { sourceID, timelineID, workspaceID in
                 await workspaceAuthorization(sourceID, timelineID, workspaceID)
+            },
+            admitInvocation: { sourceID, timelineID, workspaceID in
+                await workspaceAdmission(sourceID, timelineID, workspaceID)
             },
             isAvailable: { await isAvailable() }
         )

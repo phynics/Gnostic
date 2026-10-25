@@ -178,6 +178,10 @@ public final class NodeRuntime {
                 guard let self else { return false }
                 return await self.authorizesWorkspace(workspaceID, forTimeline: timelineID, sourceID: sourceID)
             },
+            workspaceAdmission: { [weak self] sourceID, timelineID, workspaceID in
+                guard let self else { return false }
+                return await self.admitsWorkspace(workspaceID, forTimeline: timelineID, sourceID: sourceID)
+            },
             localWorkspaces: localWorkspaces,
             isAvailable: { [weak self] in self?.isRunning == true },
             operations: self
@@ -465,9 +469,13 @@ public final class NodeRuntime {
     func authorizesWorkspace(_ workspaceID: UUID, forTimeline timelineID: UUID?, sourceID: String?) async -> Bool {
         guard let timelineID, let sourceID, let callerID = UUID(uuidString: sourceID) else { return false }
         if await registry.timeline(id: timelineID) != nil {
-            guard let ownID = UUID(uuidString: runtimeHost.resources.communication.identity.objectId.string),
-                  callerID == ownID else { return false }
-            return await registry.attachmentIntent(for: timelineID).contains(where: { $0.workspaceID == workspaceID })
+            guard let ownID = UUID(uuidString: runtimeHost.resources.communication.identity.objectId.string) else { return false }
+            return await registry.authorizesLocalWorkspaceCall(
+                sourceID: callerID.uuidString,
+                expectedSourceID: ownID,
+                workspaceID: workspaceID,
+                timelineID: timelineID
+            )
         }
         // Axoloty sourceID is routing identity, not a cryptographic credential.
         // Bind it to Gnostic's unique Timeline-owner advertisement and
@@ -478,6 +486,20 @@ public final class NodeRuntime {
             workspaceID: workspaceID,
             to: timelineID
         )
+    }
+
+    func admitsWorkspace(_ workspaceID: UUID, forTimeline timelineID: UUID?, sourceID: String?) async -> Bool {
+        let admitted = await registry.admitsWorkspaceInvocation(id: workspaceID) { [weak self] in
+            guard let self, self.runtimeHost.isRunning,
+                  await self.authorizesWorkspace(workspaceID, forTimeline: timelineID, sourceID: sourceID),
+                  self.runtimeHost.isRunning else { return false }
+            return true
+        }
+        guard admitted else { return false }
+        // The owner/attachment check is the admission linearization point.
+        // The unchanged registry revision proves status and lifecycle remained
+        // valid across that catalog turn; later revocation is not retroactive.
+        return true
     }
 
     public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {

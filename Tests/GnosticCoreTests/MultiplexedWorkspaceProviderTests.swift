@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import Axoloty
 import Foundation
 @testable import GnosticCore
+import GnosticProtocol
 import GnosticWorkspaceTestSupport
 import Testing
 
@@ -93,16 +95,21 @@ struct MultiplexedWorkspaceProviderTests {
         #expect(workspace.invocationCount == 0)
     }
 
-    @Test("a status revocation during the last owner authorization check blocks admission")
-    func rejectsStatusRevokedDuringFinalAuthorization() async throws {
+    @Test("a status revision change across owner admission blocks execution")
+    func rejectsStatusRevokedAcrossAdmission() async throws {
         let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
         let registry = try registry(for: workspace)
-        let gate = WorkspaceInvocationAuthorizationGate(registry: registry, workspaceID: workspace.reference.id)
         let provider = MultiplexedWorkspaceProvider(
             workspaces: [workspace.reference.id: workspace],
             workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) },
             setWorkspaceStatus: { id, status in await registry.setWorkspaceStatus(id: id, status: status) },
-            callerBoundAuthorization: { _, _, _ in await gate.authorize() },
+            callerBoundAuthorization: { _, _, _ in true },
+            admitInvocation: { _, _, workspaceID in
+                await registry.admitsWorkspaceInvocation(id: workspaceID) {
+                    _ = await registry.setWorkspaceStatus(id: workspaceID, status: .unavailable)
+                    return true
+                }
+            },
             isAvailable: { true }
         )
 
@@ -112,9 +119,113 @@ struct MultiplexedWorkspaceProviderTests {
             reason: "workspaceUnavailable"
         )
 
-        #expect(await gate.authorizationCount == 2)
         #expect(await registry.effectiveWorkspaceStatus(id: workspace.reference.id) == .unavailable)
         #expect(workspace.invocationCount == 0)
+    }
+
+    @Test("a lifecycle generation change across owner admission blocks execution")
+    func rejectsLifecycleChangeAcrossAdmission() async throws {
+        let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
+        let registry = try registry(for: workspace)
+        await registry.setLifecycleGeneration(1)
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspace.reference.id: workspace],
+            workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) },
+            setWorkspaceStatus: { id, status in await registry.setWorkspaceStatus(id: id, status: status) },
+            callerBoundAuthorization: { _, _, _ in true },
+            admitInvocation: { _, _, workspaceID in
+                await registry.admitsWorkspaceInvocation(id: workspaceID) {
+                    await registry.setLifecycleGeneration(2)
+                    return true
+                }
+            },
+            isAvailable: { true }
+        )
+
+        try expectFailure(
+            try await provider.handle(parameters: payload(for: workspace)),
+            code: 403,
+            reason: "workspaceNotAttached"
+        )
+        #expect(workspace.invocationCount == 0)
+    }
+
+    @Test("a detach during the final status await is rejected by owner admission")
+    func rejectsDetachBeforeOwnerAdmission() async throws {
+        let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
+        let timelineID = UUID()
+        let callerID = UUID()
+        let registry = try registry(for: workspace)
+        let catalog = NetworkCatalog()
+        let statusGate = WorkspaceAdmissionStatusGate()
+        await catalog.ingest(AdvertiseEventSnapshot(
+            sourceId: callerID.uuidString.lowercased(),
+            object: timelineSnapshot(timelineID: timelineID, workspaceID: workspace.reference.id)
+        ))
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspace.reference.id: workspace],
+            workspaceStatus: { id in
+                await statusGate.pauseOnSecondRead()
+                return await registry.effectiveWorkspaceStatus(id: id)
+            },
+            setWorkspaceStatus: { id, status in await registry.setWorkspaceStatus(id: id, status: status) },
+            callerBoundAuthorization: { _, _, _ in true },
+            admitInvocation: { sourceID, timelineID, workspaceID in
+                await registry.admitsWorkspaceInvocation(id: workspaceID) {
+                    await catalog.authorizesWorkspaceCall(
+                        sourceID: sourceID ?? "",
+                        workspaceID: workspaceID,
+                        to: timelineID ?? UUID()
+                    )
+                }
+            },
+            isAvailable: { true }
+        )
+        let invocation = try payload(for: workspace, timelineID: timelineID)
+        let operation = Task {
+            try await provider.handle(
+                parameters: invocation,
+                expectedProviderID: nil,
+                callerSourceID: callerID.uuidString
+            )
+        }
+        await statusGate.waitUntilPaused()
+        await catalog.ingest(DeadvertiseEventSnapshot(
+            sourceId: callerID.uuidString.lowercased(),
+            objectIds: [timelineID.uuidString]
+        ))
+        await statusGate.release()
+
+        try expectFailure(try await operation.value, code: 403, reason: "workspaceNotAttached")
+        #expect(!(await catalog.authorizesWorkspaceCall(
+            sourceID: callerID.uuidString,
+            workspaceID: workspace.reference.id,
+            to: timelineID
+        )))
+        #expect(workspace.invocationCount == 0)
+    }
+
+    @Test("the enumerated permission definition remains the invocation policy snapshot")
+    func usesEnumeratedToolPolicySnapshot() async throws {
+        let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
+        let registry = try registry(for: workspace)
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspace.reference.id: workspace],
+            workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) },
+            setWorkspaceStatus: { id, status in await registry.setWorkspaceStatus(id: id, status: status) },
+            callerBoundAuthorization: { _, _, _ in true },
+            admitInvocation: { _, _, _ in
+                await MainActor.run { workspace.tools = [] }
+                return true
+            },
+            isAvailable: { true }
+        )
+
+        guard case .success = try await provider.handle(parameters: payload(for: workspace)) else {
+            Issue.record("the invocation's enumerated tool definition was not honored")
+            return
+        }
+        #expect(workspace.invocationCount == 1)
     }
 
     @Test("a stopped Node cannot dispatch a Workspace tool")
@@ -171,12 +282,26 @@ struct MultiplexedWorkspaceProviderTests {
         )
     }
 
-    private func payload(for workspace: WorkspaceInvocationTestWorkspace, toolID: String = "allowed", permissionApproved: Bool = true) throws -> String {
+    private func payload(for workspace: WorkspaceInvocationTestWorkspace, toolID: String = "allowed", permissionApproved: Bool = true, timelineID: UUID? = nil) throws -> String {
         String(decoding: try JSONEncoder().encode(WorkspaceInvocation(
+            timelineID: timelineID,
             permissionApproved: permissionApproved,
             workspaceID: workspace.reference.id,
             toolID: toolID
         )), as: UTF8.self)
+    }
+
+    private func timelineSnapshot(timelineID: UUID, workspaceID: UUID) -> CoatyObjectSnapshot {
+        let payload = """
+        {"protocolMajor":3,"objectId":"\(timelineID.uuidString.lowercased())","coreType":"CoatyObject","objectType":"\(GnosticObjectType.timeline)","name":"Remote timeline","title":"Remote timeline","isArchived":false,"attachedWorkspaceIDs":["\(workspaceID.uuidString.lowercased())"]}
+        """
+        return CoatyObjectSnapshot(
+            objectId: timelineID.uuidString.lowercased(),
+            coreType: .coatyObject,
+            objectType: GnosticObjectType.timeline,
+            name: "Remote timeline",
+            payload: payload
+        )
     }
 
     private func query(workspaceID: UUID, page: Any? = nil) throws -> QueryEventSnapshot {
@@ -201,21 +326,28 @@ struct MultiplexedWorkspaceProviderTests {
     }
 }
 
-private actor WorkspaceInvocationAuthorizationGate {
-    private let registry: NodeRegistry
-    private let workspaceID: UUID
-    private(set) var authorizationCount = 0
+private actor WorkspaceAdmissionStatusGate {
+    private var reads = 0
+    private var paused = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(registry: NodeRegistry, workspaceID: UUID) {
-        self.registry = registry
-        self.workspaceID = workspaceID
+    func pauseOnSecondRead() async {
+        reads += 1
+        guard reads == 2 else { return }
+        paused = true
+        for waiter in pauseWaiters { waiter.resume() }
+        pauseWaiters.removeAll()
+        await withCheckedContinuation { releaseContinuation = $0 }
     }
 
-    func authorize() async -> Bool {
-        authorizationCount += 1
-        if authorizationCount == 2 {
-            _ = await registry.setWorkspaceStatus(id: workspaceID, status: .unavailable)
-        }
-        return true
+    func waitUntilPaused() async {
+        guard !paused else { return }
+        await withCheckedContinuation { pauseWaiters.append($0) }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
     }
 }
