@@ -20,26 +20,6 @@ public actor MultiplexedWorkspaceProvider {
     private let admitInvocation: @Sendable (String?, UUID?, UUID) async -> Bool
     private let isAvailable: @Sendable () async -> Bool
 
-    /// Creates the handler with the host's authoritative Workspace status lookup.
-    /// A missing status rejects invocation, just like an unavailable Workspace.
-    public init(
-        workspaces: [UUID: any LocalWorkspace],
-        workspaceStatus: @escaping @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?,
-        isAttached: @escaping @Sendable (UUID?, UUID) async -> Bool = { _, _ in false },
-        isAvailable: @escaping @Sendable () async -> Bool = { true }
-    ) {
-        self.workspaces = workspaces
-        self.workspaceStatus = workspaceStatus
-        setWorkspaceStatus = { _, _ in false }
-        callerBoundAuthorization = { _, timelineID, workspaceID in
-            await isAttached(timelineID, workspaceID)
-        }
-        self.admitInvocation = { _, timelineID, workspaceID in
-            await isAttached(timelineID, workspaceID)
-        }
-        self.isAvailable = isAvailable
-    }
-
     init(
         workspaces: [UUID: any LocalWorkspace],
         workspaceStatus: @escaping @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?,

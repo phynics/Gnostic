@@ -234,7 +234,9 @@ struct MultiplexedWorkspaceProviderTests {
         let provider = MultiplexedWorkspaceProvider(
             workspaces: [workspace.reference.id: workspace],
             workspaceStatus: { _ in .available },
-            isAttached: { _, _ in true },
+            setWorkspaceStatus: { _, _ in false },
+            callerBoundAuthorization: { _, _, _ in true },
+            admitInvocation: { _, _, _ in true },
             isAvailable: { false }
         )
 
@@ -278,7 +280,10 @@ struct MultiplexedWorkspaceProviderTests {
         MultiplexedWorkspaceProvider(
             workspaces: [workspace.reference.id: workspace],
             workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) },
-            isAttached: { _, _ in true }
+            setWorkspaceStatus: { id, status in await registry.setWorkspaceStatus(id: id, status: status) },
+            callerBoundAuthorization: { _, _, _ in true },
+            admitInvocation: { _, _, _ in true },
+            isAvailable: { true }
         )
     }
 
