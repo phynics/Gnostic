@@ -35,6 +35,7 @@ public actor NetworkCatalog {
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
     private var completeWorkspaceToolCatalogs: [UUID: Set<String>] = [:]
     private var workspaceToolCatalogEpochs: [UUID: [String: UInt64]] = [:]
+    private var workspaceAdvertisementGenerations: [UUID: [String: UInt64]] = [:]
     private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
     private var providerEvictionContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var changeContinuations: [UUID: AsyncStream<NetworkCatalogChange>.Continuation] = [:]
@@ -94,6 +95,10 @@ public actor NetworkCatalog {
     ///
     /// - Parameter event: The immutable Axoloty advertisement snapshot.
     public func ingest(_ event: AdvertiseEventSnapshot) {
+        ingestAdvertisement(event, isLiveAdvertisement: true)
+    }
+
+    private func ingestAdvertisement(_ event: AdvertiseEventSnapshot, isLiveAdvertisement: Bool) {
         let snapshot = event.object
         guard GnosticObjectType.isSupported(snapshot.objectType),
               let objectID = UUID(uuidString: snapshot.objectId) else {
@@ -109,6 +114,9 @@ public actor NetworkCatalog {
             return
         }
         if snapshot.objectType == GnosticObjectType.workspace {
+            if isLiveAdvertisement {
+                advanceWorkspaceAdvertisementGeneration(workspaceID: objectID, providerID: providerID)
+            }
             advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
             removeWorkspaceToolPages(workspaceID: objectID, providerID: providerID)
             completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
@@ -159,7 +167,36 @@ public actor NetworkCatalog {
         let snapshots = event.objects ?? event.object.map { [$0] } ?? []
         for snapshot in snapshots {
             let object = Self.hydrateResponseObject(snapshot, from: event.payload)
-            ingest(AdvertiseEventSnapshot(sourceId: event.sourceId, object: object))
+            ingestAdvertisement(AdvertiseEventSnapshot(sourceId: event.sourceId, object: object), isLiveAdvertisement: false)
+        }
+    }
+
+    /// Captures live Workspace-advertisement generations before a correlated
+    /// Resolve sweep. Axoloty Resolve payloads have no revision field, so a
+    /// later-observed live advertisement takes precedence over an older
+    /// in-flight snapshot from that sweep.
+    func workspaceAdvertisementSnapshot() -> [UUID: [String: UInt64]] {
+        workspaceAdvertisementGenerations
+    }
+
+    /// Ingests Resolve snapshots unless a live Workspace advertisement from
+    /// that provider arrived after the correlated sweep started.
+    func ingestResolutionResponse(
+        _ event: ResponseEventSnapshot,
+        startedAt snapshot: [UUID: [String: UInt64]]
+    ) {
+        let providerID = event.sourceId ?? Self.anonymousProviderID
+        let providerKey = providerID.lowercased()
+        let snapshots = event.objects ?? event.object.map { [$0] } ?? []
+        for rawSnapshot in snapshots {
+            let object = Self.hydrateResponseObject(rawSnapshot, from: event.payload)
+            if object.objectType == GnosticObjectType.workspace,
+               let workspaceID = UUID(uuidString: object.objectId) {
+                let startedGeneration = snapshot[workspaceID]?[providerKey] ?? 0
+                let currentGeneration = workspaceAdvertisementGenerations[workspaceID]?[providerKey] ?? 0
+                guard startedGeneration == currentGeneration else { continue }
+            }
+            ingestAdvertisement(AdvertiseEventSnapshot(sourceId: providerID, object: object), isLiveAdvertisement: false)
         }
     }
 
@@ -216,6 +253,7 @@ public actor NetworkCatalog {
         for rawID in event.objectIds {
             guard let objectID = UUID(uuidString: rawID) else { continue }
             if entries[objectID]?[providerID]?.objectType == GnosticObjectType.workspace {
+                advanceWorkspaceAdvertisementGeneration(workspaceID: objectID, providerID: providerID)
                 advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
                 removeWorkspaceToolPages(workspaceID: objectID, providerID: providerID)
                 completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
@@ -248,6 +286,7 @@ public actor NetworkCatalog {
     /// Removes every record owned by one provider and notifies observers.
     private func evictProvider(_ providerID: String) {
         for (workspaceID, providers) in Array(entries) where providers[providerID]?.objectType == GnosticObjectType.workspace {
+            advanceWorkspaceAdvertisementGeneration(workspaceID: workspaceID, providerID: providerID)
             advanceWorkspaceToolCatalogGeneration(workspaceID: workspaceID, providerID: providerID)
             removeWorkspaceToolPages(workspaceID: workspaceID, providerID: providerID)
         }
@@ -320,6 +359,11 @@ public actor NetworkCatalog {
     private func advanceWorkspaceToolCatalogGeneration(workspaceID: UUID, providerID: String) {
         let key = providerID.lowercased()
         workspaceToolCatalogEpochs[workspaceID, default: [:]][key, default: 0] &+= 1
+    }
+
+    private func advanceWorkspaceAdvertisementGeneration(workspaceID: UUID, providerID: String) {
+        let key = providerID.lowercased()
+        workspaceAdvertisementGenerations[workspaceID, default: [:]][key, default: 0] &+= 1
     }
 
     private func removeWorkspaceToolPages(workspaceID: UUID, providerID: String) {

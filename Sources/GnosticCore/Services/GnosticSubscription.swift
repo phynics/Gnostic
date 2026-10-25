@@ -171,6 +171,7 @@ public final class GnosticSubscription {
         using communicationManager: CommunicationManager,
         deadline: ContinuousClock.Instant
     ) async {
+        let advertisementSnapshot = await catalog.workspaceAdvertisementSnapshot()
         let stream = await communicationManager.publishDiscover(
             DiscoverEvent.with(objectTypes: Self.objectTypes)
         )
@@ -178,7 +179,7 @@ public final class GnosticSubscription {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [catalog] in
                 for await response in stream {
-                    await catalog.ingest(response)
+                    await catalog.ingestResolutionResponse(response, startedAt: advertisementSnapshot)
                 }
             }
             group.addTask {
@@ -199,6 +200,7 @@ public final class GnosticSubscription {
         workspaceID: UUID,
         deadline: ContinuousClock.Instant
     ) async {
+        let advertisementSnapshot = await catalog.workspaceAdvertisementSnapshot()
         let stream = await communicationManager.publishDiscover(
             DiscoverEvent.with(objectTypes: [GnosticObjectType.workspace])
         )
@@ -206,7 +208,7 @@ public final class GnosticSubscription {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [catalog] in
                 for await response in stream {
-                    await catalog.ingest(response)
+                    await catalog.ingestResolutionResponse(response, startedAt: advertisementSnapshot)
                     if case .ambiguous = await catalog.workspaceAttachmentStatus(id: workspaceID) { return }
                 }
             }

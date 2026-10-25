@@ -251,7 +251,7 @@ struct BackendLifecycleTests {
                 ),
             ]
         )
-        let plan = manifest.compileLaunchPlan()
+        let plan = try manifest.compileLaunchPlan()
         let oldProbe = LifecycleBackendProbe()
         let replacementProbe = LifecycleBackendProbe()
         let provider = StubBackendSessionProvider(lifecycleGeneration: 1)
@@ -312,6 +312,69 @@ struct BackendLifecycleTests {
         #expect(await oldProbe.workspaceAttachCount == 0)
         #expect(await replacementProbe.workspaceAttachCount == 0)
         #expect(await registry.effectiveWorkspaceStatus(id: workspaceID) == .unavailable)
+        #expect(await service.reference(id: workspaceID) == nil)
+    }
+
+    @Test("warm Workspace resolution still discovers and rejects a competing owner")
+    @MainActor
+    func warmNetworkWorkspaceResolutionRejectsNewCompetingOwner() async throws {
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let workspaceID = UUID()
+        let uri = "workspace://warm-ambiguous"
+        let manifest = makeManifest(
+            ascendants: [.init(id: ascendantID, name: "Owner", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+            timelines: [.init(
+                id: timelineID,
+                title: "Owner Timeline",
+                operatingAscendantID: ascendantID,
+                attachments: [.network(workspaceID, uri: uri)]
+            )]
+        )
+        let plan = try manifest.compileLaunchPlan()
+        let probe = LifecycleBackendProbe()
+        let provider = StubBackendSessionProvider(lifecycleGeneration: 1)
+        let backend = LifecycleFixtureBackend(
+            ascendant: manifest.ascendants[0],
+            timelines: manifest.timelines,
+            probe: probe,
+            outcome: .success
+        )
+        _ = provider.install(backend, for: ascendantID, generation: 1)
+        let registry = try NodeRegistry(
+            plan: plan,
+            operatedTimelines: [AscendantBackendTimeline(
+                id: timelineID,
+                title: "Owner Timeline",
+                attachedWorkspaceIDs: [workspaceID],
+                ascendantID: ascendantID,
+                isArchived: false,
+                isPrivate: false,
+                createdAt: Date(),
+                updatedAt: Date()
+            )]
+        )
+        await registry.setLifecycleGeneration(1)
+        let discovery = WarmAmbiguousWorkspaceResolutionDiscovery(workspaceID: workspaceID, providerID: "peer", uri: uri)
+        let service = WorkspaceService(
+            plan: plan,
+            registry: registry,
+            discovery: discovery,
+            localWorkspaces: [:],
+            references: [:],
+            backendProvider: provider,
+            readvertiseTimeline: { _ in }
+        )
+
+        do {
+            _ = try await service.resolveNetworkWorkspace(workspaceID)
+            Issue.record("warm duplicate Workspace owner was accepted")
+        } catch let error as DiscoveredWorkspaceAttachmentError {
+            #expect(error == .unavailable(.ambiguous))
+        }
+
+        #expect(discovery.didDiscover)
+        #expect(await probe.workspaceAttachCount == 0)
         #expect(await service.reference(id: workspaceID) == nil)
     }
 
@@ -1725,6 +1788,43 @@ private final class SuspendedWorkspaceResolutionDiscovery: WorkspaceResolutionDi
             ))],
             toolsComplete: toolsComplete
         )
+    }
+}
+
+@MainActor
+private final class WarmAmbiguousWorkspaceResolutionDiscovery: WorkspaceResolutionDiscovery {
+    private let workspaceID: UUID
+    private let providerID: String
+    private let uri: String
+    private var status: WorkspaceAttachmentStatus
+    private(set) var didDiscover = false
+
+    init(workspaceID: UUID, providerID: String, uri: String) {
+        self.workspaceID = workspaceID
+        self.providerID = providerID
+        self.uri = uri
+        status = .available(providerID: providerID, uri: uri)
+    }
+
+    func discover(timeout _: Duration) async {}
+
+    func discoverForResolution(workspaceID _: UUID, deadline _: ContinuousClock.Instant) async {
+        didDiscover = true
+        status = .ambiguous
+    }
+
+    func objects() async -> [NetworkCatalogEntry] { [] }
+    func attachmentStatus(id _: UUID) async -> WorkspaceAttachmentStatus { status }
+    func queryTools(workspaceID _: UUID, timeout _: Duration) async {}
+
+    func queryToolsForResolution(
+        workspaceID _: UUID,
+        providerID _: String,
+        deadline _: ContinuousClock.Instant
+    ) async -> Bool { false }
+
+    func descriptor(workspaceID _: UUID, providerID _: String) async -> NetworkWorkspaceDescriptor? {
+        NetworkWorkspaceDescriptor(id: workspaceID, uri: uri, isAvailable: true, tools: [], toolsComplete: true)
     }
 }
 

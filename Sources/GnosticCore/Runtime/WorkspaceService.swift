@@ -19,7 +19,7 @@ public final class WorkspaceService {
     /// Axoloty resolve streams stay open until their timeout and have no
     /// terminal marker. Reserve a bounded discovery window to collect competing
     /// owners, then leave the rest of the attach budget for descriptor pages.
-    private static let coldCatalogDiscoveryWindow: Duration = .seconds(1)
+    private static let catalogDiscoveryWindow: Duration = .seconds(1)
 
     private let plan: NodeLaunchPlan
     private let registry: NodeRegistry
@@ -241,28 +241,25 @@ public final class WorkspaceService {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         var status = await discovery.attachmentStatus(id: workspaceID)
         try requireCurrentGeneration(generation)
-        if case .available = status {
-            // The observed owner advertisement is already sufficient for resolution.
-            // A full discover sweep here consumes the same deadline as the caller's
-            // attach call, even though the Workspace is already in the catalog.
-        } else {
-            guard let remaining = Self.remaining(until: deadline) else {
-                throw DiscoveredWorkspaceAttachmentError.unavailable(status)
-            }
-            let discoveryWindow = min(remaining, Self.coldCatalogDiscoveryWindow)
-            if let resolutionDiscovery = discovery as? any WorkspaceResolutionDiscovery {
-                let discoveryDeadline = min(
-                    deadline,
-                    ContinuousClock.now.advanced(by: discoveryWindow)
-                )
-                await resolutionDiscovery.discoverForResolution(workspaceID: workspaceID, deadline: discoveryDeadline)
-            } else {
-                await discovery.discover(timeout: discoveryWindow)
-            }
-            try requireCurrentGeneration(generation)
-            status = await discovery.attachmentStatus(id: workspaceID)
-            try requireCurrentGeneration(generation)
+        guard let remaining = Self.remaining(until: deadline) else {
+            throw DiscoveredWorkspaceAttachmentError.unavailable(status)
         }
+        // Cached availability identifies a candidate but cannot establish
+        // uniqueness. Cold and warm paths collect the same bounded Resolve
+        // window under the caller's original deadline.
+        let discoveryWindow = min(remaining, Self.catalogDiscoveryWindow)
+        if let resolutionDiscovery = discovery as? any WorkspaceResolutionDiscovery {
+            let discoveryDeadline = min(
+                deadline,
+                ContinuousClock.now.advanced(by: discoveryWindow)
+            )
+            await resolutionDiscovery.discoverForResolution(workspaceID: workspaceID, deadline: discoveryDeadline)
+        } else {
+            await discovery.discover(timeout: discoveryWindow)
+        }
+        try requireCurrentGeneration(generation)
+        status = await discovery.attachmentStatus(id: workspaceID)
+        try requireCurrentGeneration(generation)
         guard case let .available(providerID, uri) = status else {
             if await registry.workspace(id: workspaceID) != nil {
                 try requireCurrentGeneration(generation)

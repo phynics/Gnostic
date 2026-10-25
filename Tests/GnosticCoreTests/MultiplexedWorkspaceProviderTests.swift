@@ -93,6 +93,30 @@ struct MultiplexedWorkspaceProviderTests {
         #expect(workspace.invocationCount == 0)
     }
 
+    @Test("a status revocation during the last owner authorization check blocks admission")
+    func rejectsStatusRevokedDuringFinalAuthorization() async throws {
+        let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
+        let registry = try registry(for: workspace)
+        let gate = WorkspaceInvocationAuthorizationGate(registry: registry, workspaceID: workspace.reference.id)
+        let provider = MultiplexedWorkspaceProvider(
+            workspaces: [workspace.reference.id: workspace],
+            workspaceStatus: { id in await registry.effectiveWorkspaceStatus(id: id) },
+            setWorkspaceStatus: { id, status in await registry.setWorkspaceStatus(id: id, status: status) },
+            callerBoundAuthorization: { _, _, _ in await gate.authorize() },
+            isAvailable: { true }
+        )
+
+        try expectFailure(
+            try await provider.handle(parameters: payload(for: workspace)),
+            code: 409,
+            reason: "workspaceUnavailable"
+        )
+
+        #expect(await gate.authorizationCount == 2)
+        #expect(await registry.effectiveWorkspaceStatus(id: workspace.reference.id) == .unavailable)
+        #expect(workspace.invocationCount == 0)
+    }
+
     @Test("a stopped Node cannot dispatch a Workspace tool")
     func rejectsStoppedNode() async throws {
         let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition])
@@ -174,5 +198,24 @@ struct MultiplexedWorkspaceProviderTests {
         #expect(failure.reasonCode == reason)
         #expect(failure.protocolMajor == GnosticProtocol.currentMajor)
         return failure
+    }
+}
+
+private actor WorkspaceInvocationAuthorizationGate {
+    private let registry: NodeRegistry
+    private let workspaceID: UUID
+    private(set) var authorizationCount = 0
+
+    init(registry: NodeRegistry, workspaceID: UUID) {
+        self.registry = registry
+        self.workspaceID = workspaceID
+    }
+
+    func authorize() async -> Bool {
+        authorizationCount += 1
+        if authorizationCount == 2 {
+            _ = await registry.setWorkspaceStatus(id: workspaceID, status: .unavailable)
+        }
+        return true
     }
 }

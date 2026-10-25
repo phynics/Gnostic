@@ -247,6 +247,50 @@ struct ProtocolV2Tests {
         #expect(entries.first?.protocolMajor == GnosticProtocol.currentMajor)
     }
 
+    @Test("a delayed Resolve cannot replace a newer unavailable Workspace advertisement")
+    func delayedResolveDoesNotOverrideNewWorkspaceStatus() async throws {
+        let workspaceID = UUID()
+        let providerID = UUID().uuidString.lowercased()
+        let catalog = NetworkCatalog()
+        let available = GnosticWorkspaceObject(workspace: GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://status-order",
+            status: .active,
+            effectiveStatus: .available
+        ))
+        let unavailable = GnosticWorkspaceObject(workspace: GnosticWorkspaceReference(
+            id: workspaceID,
+            uri: "workspace://status-order",
+            status: .unknown,
+            effectiveStatus: .unavailable
+        ))
+        func snapshot(_ object: GnosticWorkspaceObject) throws -> CoatyObjectSnapshot {
+            let payload = try JSONEncoder().encode(object)
+            return CoatyObjectSnapshot(
+                objectId: object.objectId.string,
+                coreType: .coatyObject,
+                objectType: GnosticObjectType.workspace,
+                name: object.name,
+                payload: String(decoding: payload, as: UTF8.self)
+            )
+        }
+
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: try snapshot(available)))
+        let discoverStart = await catalog.workspaceAdvertisementSnapshot()
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: try snapshot(unavailable)))
+        let delayedResolve = ResponseEventSnapshot(
+            eventType: "resolve",
+            sourceId: providerID,
+            correlationId: UUID().uuidString.lowercased(),
+            payload: "{}",
+            object: try snapshot(available)
+        )
+
+        await catalog.ingestResolutionResponse(delayedResolve, startedAt: discoverStart)
+
+        #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
+    }
+
     @Test("a partial Workspace tool query stays incomplete until the owner sends its terminal page")
     func workspaceToolCatalogRequiresTerminalPage() async throws {
         let workspaceID = UUID()

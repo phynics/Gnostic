@@ -78,11 +78,14 @@ public actor MultiplexedWorkspaceProvider {
             guard !tool.requiresPermission || invocation.permissionApproved else {
                 return .failure(code: 403, reasonCode: "workspacePermissionRequired", message: "The Workspace tool requires an approved permission decision.")
             }
-            // Tool enumeration can suspend while the host changes availability.
-            try await requireAvailable(workspaceID: invocation.workspaceID)
             guard await callerBoundAuthorization(callerSourceID, invocation.timelineID, invocation.workspaceID) else {
                 return .failure(code: 403, reasonCode: "workspaceNotAttached", message: "The Workspace is not attached to the active Timeline.")
             }
+            // This final registry snapshot is the admission guard. It follows
+            // the last owner-bound caller check and there is no suspension
+            // between it and entering provider execution. Later revocation is
+            // not retroactive cancellation of an admitted provider call.
+            try await requireAvailable(workspaceID: invocation.workspaceID)
             try Task.checkCancellation()
             let result = try await workspace.executeTool(id: invocation.toolID, parameters: invocation.arguments)
             return .success(result: try Self.encodeResult(result))
@@ -95,16 +98,17 @@ public actor MultiplexedWorkspaceProvider {
 
     private func requireAvailable(workspaceID: UUID) async throws {
         guard await isAvailable() else { throw NodeRuntimeError.notRunning }
-        var status = await workspaceStatus(workspaceID)
         if let workspace = workspaces[workspaceID],
            let healthy = await MainActor.run(body: { (workspace as? any LocalWorkspaceHealth)?.isHealthy }),
-           !healthy, status == .available {
+           !healthy, await workspaceStatus(workspaceID) == .available {
             // Persist an owner-local health revocation in the authoritative registry.
             guard await setWorkspaceStatus(workspaceID, .unavailable) else {
                 throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
             }
-            status = await workspaceStatus(workspaceID)
         }
+        // Re-read after health and registry awaits so a revocation during
+        // either suspension is included in the admission decision.
+        let status = await workspaceStatus(workspaceID)
         guard status == .available else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status == .unsupported ? .unsupported : .unavailable)
         }
