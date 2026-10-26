@@ -480,7 +480,10 @@ public final class NodeRuntime {
         // Axoloty sourceID is routing identity, not a cryptographic credential.
         // Bind it to Gnostic's unique Timeline-owner advertisement and
         // attachment in one catalog actor turn, so ownership cannot change
-        // between those authorization checks.
+        // between those authorization checks. A peer's cached advertisement
+        // can lag its attachment update, so refresh the catalog with one
+        // bounded discovery request before deciding.
+        await workspaceDiscovery.discover(timeout: .milliseconds(250))
         return await runtimeHost.resources.catalog.authorizesWorkspaceCall(
             sourceID: sourceID,
             workspaceID: workspaceID,
