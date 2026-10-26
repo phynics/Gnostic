@@ -104,6 +104,78 @@ public final class GnosticTurnClient {
         }
     }
 
+    /// Runs an identified Turn through a router Node.
+    ///
+    /// The router Node is expected to forward the request to the Timeline
+    /// owner and relay the owner's updates under its own provider identity.
+    /// Use ``updates(for:timelineID:providerID:)`` with `routerID` to observe
+    /// the relayed updates. Unlike ``run(message:timelineID:clientTurnID:providerID:)``,
+    /// this method does not require the addressed provider to own the
+    /// Timeline.
+    ///
+    /// - Parameters:
+    ///   - message: The text prompt.
+    ///   - timelineID: The addressed Timeline.
+    ///   - clientTurnID: A stable caller-supplied identifier, required to
+    ///     correlate the owner's relayed updates.
+    ///   - routerID: The provider that routes the Turn to the owner.
+    /// - Returns: The Turn result reported by the owner.
+    /// - Throws: ``GnosticTurnClientError`` when the router rejects the call
+    ///   or the call fails. ``GnosticWirePayload/Error/tooLarge(context:actualBytes:maximumBytes:)``
+    ///   when the prompt exceeds ``GnosticWirePayload/maximumTurnMessageBytes``.
+    public func runRouted(
+        message: String,
+        timelineID: UUID,
+        clientTurnID: String,
+        routerID: String
+    ) async throws -> AscendantTurnResult {
+        try Self.requireRouterID(routerID)
+        return try await callWithProviderEviction(providerID: routerID) {
+            try await self.channel.call(
+                AscendantTurnProvider.turnOperation,
+                request: AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "ascendant.turn request",
+                providerID: routerID,
+                timeout: self.promptTimeout,
+                returning: AscendantTurnResult.self
+            )
+        }
+    }
+
+    /// Requests cancellation of one admitted identified Turn through a router
+    /// Node.
+    ///
+    /// The router is expected to forward the cancellation to the Timeline
+    /// owner. A `true` result means the owner accepted cancellation for the
+    /// matching in-flight Turn.
+    public func cancelRouted(
+        timelineID: UUID,
+        clientTurnID: String,
+        routerID: String
+    ) async throws -> Bool {
+        try Self.requireRouterID(routerID)
+        return try await callWithProviderEviction(providerID: routerID) {
+            try await self.channel.call(
+                AscendantTurnProvider.cancelOperation,
+                request: AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "ascendant.turn.cancel request",
+                providerID: routerID,
+                timeout: self.timeout,
+                returning: AscendantTurnCancellationResult.self
+            ).cancelled
+        }
+    }
+
+    private static func requireRouterID(_ routerID: String) throws {
+        guard !routerID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GnosticTurnClientError.callFailed(
+                reasonCode: "invalidRouterID",
+                statusCode: 400,
+                retryable: false
+            )
+        }
+    }
+
     /// Requests cancellation of one admitted identified Turn.
     ///
     /// The request is scoped by both Timeline and client Turn identity. A

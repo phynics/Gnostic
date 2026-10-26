@@ -490,6 +490,7 @@ public final class CommunicationManager {
             TimelinePermissionProvider.responseOperation,
             AscendantTurnProvider.turnOperation,
             AscendantTurnProvider.replayOperation,
+            AscendantTurnProvider.cancelOperation,
             AscendantPermissionProvider.responseOperation,
             WorkspaceOpsProvider.listOperation,
             WorkspaceOpsProvider.attachOperation,

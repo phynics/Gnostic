@@ -11,17 +11,20 @@ public final class TurnService {
     private let coordinator: AscendantTurnCoordinator
     private let updates: AscendantTurnUpdateStore
     private let backendProvider: any BackendSessionProviding
+    private let remoteRouter: RemoteTurnRouter
 
     init(
         registry: NodeRegistry,
         coordinator: AscendantTurnCoordinator,
         updates: AscendantTurnUpdateStore,
-        backendProvider: any BackendSessionProviding
+        backendProvider: any BackendSessionProviding,
+        remoteRouter: RemoteTurnRouter
     ) {
         self.registry = registry
         self.coordinator = coordinator
         self.updates = updates
         self.backendProvider = backendProvider
+        self.remoteRouter = remoteRouter
     }
 
     func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
@@ -38,7 +41,12 @@ public final class TurnService {
         } else {
             turnRequest = request
         }
-        let ascendantID = try await registry.requireOperatingAscendant(for: turnRequest.timelineID)
+        guard let record = await registry.timeline(id: turnRequest.timelineID) else {
+            return try await remoteRouter.turn(turnRequest)
+        }
+        guard let ascendantID = record.operatorID else {
+            throw NodeRuntimeError.noOperatingAscendant(turnRequest.timelineID)
+        }
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         let generation = backendProvider.lifecycleGeneration
         let validatedClientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID?
@@ -107,7 +115,10 @@ public final class TurnService {
     }
 
     func cancelTurn(timelineID: UUID, clientTurnID: String) async -> Bool {
-        await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: clientTurnID)
+        if await registry.timeline(id: timelineID) != nil {
+            return await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: clientTurnID)
+        }
+        return await remoteRouter.cancel(timelineID: timelineID, clientTurnID: clientTurnID)
     }
 }
 

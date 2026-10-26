@@ -26,6 +26,7 @@ final class NodeRuntimeHost {
     let lifecycleCoordinator: RuntimeLifecycleCoordinator
     let lifetime: NodeRuntimeLifetime
     let resources: NodeAssembly.Infrastructure
+    let remoteTurnRouter: RemoteTurnRouter
 
     private let adapters: NodeRuntimeAdapters
     private let turnUpdates: AscendantTurnUpdateStore
@@ -53,6 +54,11 @@ final class NodeRuntimeHost {
         self.lifecycleCoordinator = lifecycleCoordinator
         lifetime = lifecycleCoordinator.lifetime
         self.resources = resources
+        remoteTurnRouter = RemoteTurnRouter(
+            communication: resources.communication, catalog: resources.catalog,
+            subscription: resources.subscription,
+            isRunning: { lifecycleCoordinator.lifetime.isRunning }
+        )
         self.adapters = adapters
         self.turnUpdates = turnUpdates
         self.permissionCoordinator = permissionCoordinator
@@ -202,6 +208,7 @@ final class NodeRuntimeHost {
     }
 
     private func performCleanup() async {
+        await remoteTurnRouter.shutdown()
         guard let registry, let backendSupervisor, let transport else { return }
         await registry.fenceBackendLeases(at: lifetime.generation)
         await permissionCoordinator.denyAll(reason: .connectionLost)

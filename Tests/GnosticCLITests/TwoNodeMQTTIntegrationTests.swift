@@ -59,9 +59,351 @@ struct TwoNodeMQTTIntegrationTests {
         await first.shutdown()
     }
 
-    @Test("abrupt owner loss ends the in-flight Turn and transfers no authority")
+    @Test("a Node routes a remote Turn to the owner and relays observation")
     @MainActor
-    func abruptOwnerLossEndsTurnWithoutAuthorityTransfer() async throws {
+    func nodeRoutesRemoteTurnAndRelaysObservation() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "routed-turn-\(UUID().uuidString.lowercased())"
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-routed-turn-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let router = try await launchNode(
+            name: "router",
+            namespace: namespace,
+            serveBinary: serveBinary,
+            agentFixture: agentFixture,
+            scratch: scratch
+        )
+        let promptStarted = scratch.appendingPathComponent("routed-prompt-started")
+        let owner: NodeProcess
+        do {
+            owner = try await launchNode(
+                name: "owner",
+                namespace: namespace,
+                serveBinary: serveBinary,
+                agentFixture: agentFixture,
+                scratch: scratch,
+                fixtureEnvironment: ["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE": promptStarted.path]
+            )
+        } catch {
+            await router.shutdown()
+            throw error
+        }
+
+        let session = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(3)
+        )
+        do {
+            try await session.start()
+            try await session.discover(timeout: .seconds(3))
+            let routerProvider = try #require(
+                await providerID(for: router.timelineID, session: session),
+                "The router Node did not advertise its Timeline."
+            )
+            let ownerProvider = try #require(
+                await providerID(for: owner.timelineID, session: session),
+                "The owner Node did not advertise its Timeline."
+            )
+            #expect(routerProvider != ownerProvider)
+
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(25))
+            let clientTurnID = "routed-\(UUID().uuidString.lowercased())"
+            let message = "hello routed"
+            let updates = try await client.updates(
+                for: clientTurnID,
+                timelineID: owner.timelineID,
+                providerID: routerProvider
+            )
+            let observation = Task {
+                var received: [AscendantTurnUpdate] = []
+                for await update in updates {
+                    received.append(update)
+                    if update.terminal { break }
+                }
+                return received
+            }
+
+            let result: AscendantTurnResult
+            do {
+                result = try await client.runRouted(
+                    message: message,
+                    timelineID: owner.timelineID,
+                    clientTurnID: clientTurnID,
+                    routerID: routerProvider
+                )
+            } catch {
+                observation.cancel()
+                await session.stop()
+                await owner.shutdown()
+                await router.shutdown()
+                throw error
+            }
+
+            let received = await observation.value
+            #expect(result.text == "fixture reply: \(message)")
+            #expect(received.map(\.text).compactMap { $0 }.joined() == "fixture reply: \(message)")
+            #expect(received.last?.kind == AscendantTurnUpdateKind.completion.rawValue)
+            #expect(received.last?.terminal == true)
+
+            // A completed retry must retain the owner's event identity.
+            let ownerReplay = try await client.replay(
+                timelineID: owner.timelineID, clientTurnID: clientTurnID, providerID: ownerProvider
+            )
+            let ownerTerminal = try #require(ownerReplay.updates.last { $0.terminal })
+            let retryUpdates = try await client.updates(
+                for: clientTurnID, timelineID: owner.timelineID, providerID: routerProvider
+            )
+            let completedRetryCollector = PeerLossUpdateCollector()
+            let completedRetryObservation = Task { @MainActor in
+                for await update in retryUpdates { completedRetryCollector.received.append(update) }
+            }
+            defer { completedRetryObservation.cancel() }
+            let completedRetry = try await client.runRouted(
+                message: message, timelineID: owner.timelineID,
+                clientTurnID: clientTurnID, routerID: routerProvider
+            )
+            #expect(completedRetry.replayed)
+            let retryDeadline = ContinuousClock.now + .seconds(3)
+            while completedRetryCollector.received.last?.terminal != true && ContinuousClock.now < retryDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(completedRetryCollector.received.last == ownerTerminal)
+
+            let attributedOwners = await session.networkObjects().filter {
+                $0.objectType == GnosticObjectType.timeline && $0.objectID == owner.timelineID
+            }.map(\.providerID)
+            #expect(attributedOwners == [ownerProvider])
+
+            let activeID = "routed-active"
+            let activeUpdates = try await client.updates(
+                for: activeID, timelineID: owner.timelineID, providerID: routerProvider
+            )
+            let collector = PeerLossUpdateCollector()
+            let activeObservation = Task { @MainActor in
+                for await update in activeUpdates { collector.received.append(update) }
+            }
+            defer { activeObservation.cancel() }
+            let active = Task { @MainActor in
+                try await client.runRouted(
+                    message: "[fixture:wait]", timelineID: owner.timelineID,
+                    clientTurnID: activeID, routerID: routerProvider
+                )
+            }
+            try await waitForFile(promptStarted, timeout: .seconds(5))
+            let retry = Task { @MainActor in
+                try await client.runRouted(
+                    message: "[fixture:wait]", timelineID: owner.timelineID,
+                    clientTurnID: activeID, routerID: routerProvider
+                )
+            }
+            do {
+                _ = try await client.runRouted(
+                    message: "conflicting prompt", timelineID: owner.timelineID,
+                    clientTurnID: activeID, routerID: routerProvider
+                )
+                Issue.record("A conflicting routed retry succeeded.")
+            } catch let error as GnosticTurnClientError {
+                #expect(error.reasonCode == "turnConflict")
+            }
+            // Wait past the old relay's one-second fallback terminal deadline.
+            try await Task.sleep(for: .milliseconds(1200))
+            #expect(!collector.received.contains { $0.terminal }, "A rejected retry terminated the active Turn.")
+            #expect(try await client.cancelRouted(
+                timelineID: owner.timelineID, clientTurnID: activeID, routerID: routerProvider
+            ))
+            let cancellationStarted = ContinuousClock.now
+            for task in [active, retry] {
+                do {
+                    _ = try await task.value
+                    Issue.record("A cancelled routed Turn completed successfully.")
+                } catch let error as GnosticTurnClientError {
+                    #expect(error.reasonCode == "turnCancelled")
+                }
+            }
+            #expect(ContinuousClock.now - cancellationStarted < .seconds(5))
+            let terminalDeadline = ContinuousClock.now + .seconds(3)
+            while collector.received.last?.terminal != true && ContinuousClock.now < terminalDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(collector.received.last?.terminal == true)
+            #expect(collector.received.last?.reasonCode != "turnConflict")
+            let sequences = collector.received.map(\.sequence)
+            #expect(Set(sequences).count == sequences.count, "Identical retries duplicated relayed updates.")
+
+            let cancelledReplay = try await client.replay(
+                timelineID: owner.timelineID, clientTurnID: activeID, providerID: ownerProvider
+            )
+            let cancelledTerminal = try #require(cancelledReplay.updates.last { $0.terminal })
+            let failedRetryUpdates = try await client.updates(
+                for: activeID, timelineID: owner.timelineID, providerID: routerProvider
+            )
+            let failedRetryCollector = PeerLossUpdateCollector()
+            let failedRetryObservation = Task { @MainActor in
+                for await update in failedRetryUpdates { failedRetryCollector.received.append(update) }
+            }
+            defer { failedRetryObservation.cancel() }
+            do {
+                _ = try await client.runRouted(
+                    message: "[fixture:wait]", timelineID: owner.timelineID,
+                    clientTurnID: activeID, routerID: routerProvider
+                )
+                Issue.record("A completed cancelled retry succeeded.")
+            } catch let error as GnosticTurnClientError {
+                #expect(error.reasonCode == "turnCancelled")
+            }
+            let failedRetryDeadline = ContinuousClock.now + .seconds(3)
+            while failedRetryCollector.received.last?.terminal != true && ContinuousClock.now < failedRetryDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(failedRetryCollector.received.last == cancelledTerminal)
+
+            let missingTimeline = UUID()
+            let missingID = "missing-\(UUID().uuidString.lowercased())"
+            let missingUpdates = try await client.updates(
+                for: missingID, timelineID: missingTimeline, providerID: routerProvider
+            )
+            let missingCollector = PeerLossUpdateCollector()
+            let missingObservation = Task { @MainActor in
+                for await update in missingUpdates { missingCollector.received.append(update) }
+            }
+            defer { missingObservation.cancel() }
+            do {
+                _ = try await client.runRouted(
+                    message: "hello nowhere",
+                    timelineID: missingTimeline,
+                    clientTurnID: missingID,
+                    routerID: routerProvider
+                )
+                Issue.record("The router accepted a Turn for an owner-less Timeline.")
+            } catch let error as GnosticTurnClientError {
+                guard case let .callFailed(reasonCode, statusCode, _) = error else {
+                    Issue.record("Unexpected routed failure: \(error)")
+                    await session.stop()
+                    await owner.shutdown()
+                    await router.shutdown()
+                    return
+                }
+                #expect(reasonCode == "missingTimeline")
+                #expect(statusCode == 404)
+            }
+
+            let missingDeadline = ContinuousClock.now + .seconds(2)
+            while missingCollector.received.last?.terminal != true && ContinuousClock.now < missingDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(missingCollector.received.last?.reasonCode == "missingTimeline")
+            #expect(missingCollector.received.last?.terminal == true)
+
+            await session.stop()
+        } catch {
+            await session.stop()
+            await owner.shutdown()
+            await router.shutdown()
+            throw error
+        }
+
+        await owner.shutdown()
+        await router.shutdown()
+    }
+
+    @Test("router shutdown settles its public remote call without cancelling the owner's Turn")
+    @MainActor
+    func routerShutdownSettlesRemoteCall() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "router-shutdown-\(UUID().uuidString.lowercased())"
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(namespace, isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let promptStarted = scratch.appendingPathComponent("prompt-started")
+        let owner = try await launchNode(
+            name: "owner", namespace: namespace, serveBinary: serveBinary,
+            agentFixture: agentFixture, scratch: scratch,
+            fixtureEnvironment: ["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE": promptStarted.path]
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            node: .init(id: UUID()), ascendants: [], timelines: [], workspaces: []
+        )
+        let router = try await NodeRuntime(plan: manifest.compileLaunchPlan())
+        let session = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3), discoverTimeout: .seconds(3)
+        )
+        do {
+            try await router.start()
+            try await session.start()
+            try await session.discover(timeout: .seconds(3))
+            let ownerProvider = try #require(await providerID(for: owner.timelineID, session: session))
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(25))
+            let completion = RoutedCallCompletion()
+            let request = AscendantTurnRequest(
+                message: "[fixture:wait]", timelineID: owner.timelineID, clientTurnID: "shutdown-turn"
+            )
+            let pending = Task { @MainActor in
+                do {
+                    _ = try await router.turn(request)
+                    completion.succeeded = true
+                } catch { completion.failed = true }
+                completion.finished = true
+            }
+            defer { pending.cancel() }
+            try await waitForFile(promptStarted, timeout: .seconds(8))
+            let started = ContinuousClock.now
+            await router.shutdown()
+            let deadline = ContinuousClock.now + .seconds(2)
+            while !completion.finished && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(ContinuousClock.now - started < .seconds(5))
+            #expect(completion.finished, "Shutdown left a public routed call pending.")
+            #expect(completion.failed)
+            #expect(!completion.succeeded)
+            let replay = try await client.replay(
+                timelineID: owner.timelineID, clientTurnID: "shutdown-turn", providerID: ownerProvider
+            )
+            #expect(!replay.terminal, "Router shutdown cancelled the owner's admitted Turn.")
+            #expect(try await client.cancel(
+                timelineID: owner.timelineID, clientTurnID: "shutdown-turn", providerID: ownerProvider
+            ))
+            pending.cancel()
+            await pending.value
+        } catch {
+            await router.shutdown()
+            await session.stop()
+            await owner.shutdown()
+            throw error
+        }
+        await session.stop()
+        await owner.shutdown()
+    }
+
+    @MainActor
+    private func providerID(
+        for timelineID: UUID,
+        session: GnosticConsumerSession
+    ) async -> String? {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(5)
+        while clock.now < deadline {
+            if let entry = await session.networkObjects().first(where: {
+                $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
+            }) {
+                return entry.providerID
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
+    }
+
+    @Test("abrupt owner loss ends direct and routed Turns without authority transfer", arguments: [false, true])
+    @MainActor
+    func abruptOwnerLossEndsTurnWithoutAuthorityTransfer(routed: Bool) async throws {
         let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
         let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
         let namespace = "peer-loss-\(UUID().uuidString.lowercased())"
@@ -118,12 +460,14 @@ struct TwoNodeMQTTIntegrationTests {
                 try? await Task.sleep(for: .milliseconds(100))
             }
             let ownerProvider = try #require(advertised?.providerID)
+            let routerProvider = try #require(await providerID(for: survivor.timelineID, session: session))
+            let observedProvider = routed ? routerProvider : ownerProvider
             let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(20))
             let clientTurnID = "peer-loss-turn"
             let updates = try await client.updates(
                 for: clientTurnID,
                 timelineID: owner.timelineID,
-                providerID: ownerProvider
+                providerID: observedProvider
             )
             let collector = PeerLossUpdateCollector()
             let observation = Task { @MainActor in
@@ -134,7 +478,13 @@ struct TwoNodeMQTTIntegrationTests {
             }
             defer { observation.cancel() }
             let run = Task { @MainActor in
-                try await client.run(
+                if routed {
+                    return try await client.runRouted(
+                        message: "[fixture:wait]", timelineID: owner.timelineID,
+                        clientTurnID: clientTurnID, routerID: routerProvider
+                    )
+                }
+                return try await client.run(
                     message: "[fixture:wait]",
                     timelineID: owner.timelineID,
                     clientTurnID: clientTurnID,
@@ -1012,4 +1362,11 @@ private func fixtureProcessIsRunning(pid: Int32) -> Bool {
 private enum TwoNodeIntegrationError: Error {
     case nodeFailedToStart(String)
     case thirdPeerInvocationSucceeded
+}
+
+@MainActor
+private final class RoutedCallCompletion {
+    var finished = false
+    var failed = false
+    var succeeded = false
 }

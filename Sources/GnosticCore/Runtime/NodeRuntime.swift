@@ -49,7 +49,8 @@ public final class NodeRuntime {
         registry: registry,
         coordinator: turnCoordinator,
         updates: turnUpdates,
-        backendProvider: backendSupervisor
+        backendProvider: backendSupervisor,
+        remoteRouter: runtimeHost.remoteTurnRouter
     )
     private lazy var timelineService = TimelineService(
         ascendantIDs: Set(plan.ascendants.map(\.id)),
