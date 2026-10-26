@@ -212,22 +212,36 @@ struct TwoNodeMQTTIntegrationTests {
                 providerID: providerID
             )
             trace.record("workspace.attach.returned")
-            let timelineAfterAttach = await session.networkObjects().first {
-                $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
+            var attachmentAdvertisementReady = false
+            for attempt in 1...12 {
+                try await session.discover(timeout: .milliseconds(250))
+                let timelineAdvertisement = await session.networkObjects().first {
+                    $0.objectType == GnosticObjectType.timeline
+                        && $0.objectID == timelineID
+                        && $0.providerID == providerID
+                }
+                let attachedWorkspaceIDs: Set<UUID>
+                if case let .array(values)? = timelineAdvertisement?.knownProperties["attachedWorkspaceIDs"] {
+                    attachedWorkspaceIDs = Set(values.compactMap { value in
+                        guard case let .string(id) = value else { return nil }
+                        return UUID(uuidString: id)
+                    })
+                } else {
+                    attachedWorkspaceIDs = []
+                }
+                attachmentAdvertisementReady = attachedWorkspaceIDs.contains(workspaceID)
+                trace.record("workspace.attach.advertisement-poll", [
+                    "attempt": String(attempt),
+                    "timelineProviderID": timelineAdvertisement?.providerID ?? "missing",
+                    "workspaceAdvertised": String(attachmentAdvertisementReady),
+                ])
+                if attachmentAdvertisementReady { break }
             }
-            let attachedWorkspaceIDs: String
-            if case let .array(values)? = timelineAfterAttach?.knownProperties["attachedWorkspaceIDs"] {
-                attachedWorkspaceIDs = values.compactMap { value in
-                    guard case let .string(id) = value else { return nil }
-                    return id
-                }.joined(separator: ",")
-            } else {
-                attachedWorkspaceIDs = "missing"
-            }
-            trace.record("workspace.attach.catalog-snapshot", [
-                "timelineProviderID": timelineAfterAttach?.providerID ?? "missing",
-                "attachedWorkspaceIDs": attachedWorkspaceIDs,
+            trace.record("workspace.attach.advertisement-ready", [
+                "ready": String(attachmentAdvertisementReady),
+                "meaning": "consumer-visible-catalog-only",
             ])
+            try #require(attachmentAdvertisementReady)
 
             let beforeStatus = await workspaceClient.effectiveStatus(workspaceID: workspaceID)
             trace.record("workspace.owner-status.before-revocation.returned", [
@@ -397,6 +411,7 @@ struct TwoNodeMQTTIntegrationTests {
                     "kind": update.kind,
                     "terminal": String(update.terminal),
                     "hasPermissionState": String(update.permissionState != nil),
+                    "permissionStatus": update.permissionState?.status ?? "",
                     "reasonCode": update.reasonCode ?? "",
                     "statusCode": update.statusCode.map { String($0) } ?? "",
                 ])
@@ -523,6 +538,9 @@ struct TwoNodeMQTTIntegrationTests {
             let fixtureEnvironment = [
                 "GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path,
                 "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePID.path,
+                "GNOSTIC_ACP_FIXTURE_MCP_DIAGNOSTICS_FILE": requestedTimelineID == nil
+                    ? ""
+                    : configDirectory.appendingPathComponent("mcp-diagnostics.jsonl").path,
                 "GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT": requestedTimelineID == nil ? "1" : "17",
                 "GNOSTIC_ACP_FIXTURE_MCP": requestedTimelineID == nil ? "0" : "1",
                 "GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_SUFFIX": requestedTimelineID == nil ? "" : "__search",
@@ -767,6 +785,7 @@ private final class WorkspaceScenarioTrace {
 
         let allowlistedFiles: [(source: String, destination: String)] = [
             ("runtime-owner/serve.log", "runtime-owner-serve.log"),
+            ("runtime-owner/mcp-diagnostics.jsonl", "runtime-owner-mcp-diagnostics.jsonl"),
             ("workspace-owner/serve.log", "workspace-owner-serve.log"),
             ("workspace-owner/workspace-invocations.txt", "workspace-invocations.txt"),
             ("workspace-owner/workspace-health.txt", "workspace-health.txt"),

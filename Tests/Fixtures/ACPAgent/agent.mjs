@@ -166,6 +166,43 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       const server = sessions.get(params.sessionId)?.mcpServers?.[0];
       assert(server?.url && server.headers, "Gnostic did not provide an authenticated MCP server");
       const protocolVersion = "2025-03-26";
+      const publicFailureCategories = new Map([
+        ["invalidWorkspaceInvocationPayload", "owner-invalid-invocation"],
+        ["notRunning", "owner-not-running"],
+        ["workspaceInvocationFailed", "owner-invocation-failed"],
+        ["workspaceNotAttached", "owner-workspace-not-attached"],
+        ["workspacePermissionRequired", "owner-permission-required"],
+        ["workspaceToolNotAdvertised", "owner-tool-not-advertised"],
+        ["workspaceUnavailable", "owner-workspace-unavailable"],
+      ]);
+      const gatewayFailureCategories = new Map([
+        ["Workspace tool is not attached or is unavailable.", "gateway-tool-unavailable"],
+        ["Workspace is not attached to this Timeline.", "gateway-workspace-not-attached"],
+        ["Workspace tool requires an active, approved Turn.", "gateway-turn-not-approved"],
+        ["Workspace permission could not be committed.", "gateway-permission-commit-failed"],
+        ["Workspace tool permission was not approved.", "gateway-permission-not-approved"],
+        ["Workspace attachment or availability changed before dispatch.", "gateway-attachment-changed"],
+      ]);
+      const errorCategory = (error) => {
+        const publicFailure = (() => {
+          if (error?.data && typeof error.data === "object") return error.data;
+          if (typeof error?.message !== "string") return undefined;
+          try {
+            const parsed = JSON.parse(error.message);
+            return parsed && typeof parsed === "object" ? parsed : undefined;
+          } catch {
+            return undefined;
+          }
+        })();
+        if (typeof publicFailure?.reasonCode === "string") {
+          const category = publicFailureCategories.get(publicFailure.reasonCode);
+          if (category) return category;
+        }
+        if (typeof error?.message === "string") {
+          return gatewayFailureCategories.get(error.message) ?? "unclassified";
+        }
+        return "unclassified";
+      };
       const mcp = async (id, method, requestParams = {}, allowError = false) => {
         const headers = {
           "content-type": "application/json",
@@ -173,16 +210,60 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
           ...Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
         };
         if (method !== "initialize") headers["MCP-Protocol-Version"] = protocolVersion;
-        const response = await fetch(server.url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ jsonrpc: "2.0", id, method, params: requestParams }),
-        });
-        assert.equal(response.status, 200, `MCP ${method} returned HTTP ${response.status}`);
-        const message = await response.json();
+        const diagnosticsPath = process.env.GNOSTIC_ACP_FIXTURE_MCP_DIAGNOSTICS_FILE;
+        const recordDiagnostic = async (fields) => {
+          if (!diagnosticsPath) return;
+          await appendFile(diagnosticsPath, `${JSON.stringify({ method, ...fields })}\n`);
+        };
+        let response;
+        try {
+          response = await fetch(server.url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ jsonrpc: "2.0", id, method, params: requestParams }),
+          });
+        } catch (error) {
+          await recordDiagnostic({ outcome: "no-response", errorName: error?.name ?? "unknown" });
+          throw error;
+        }
+        if (response.status !== 200) {
+          await recordDiagnostic({ outcome: "http-error", httpStatus: response.status });
+          assert.equal(response.status, 200, `MCP ${method} returned HTTP ${response.status}`);
+        }
+        let message;
+        try {
+          message = await response.json();
+        } catch (error) {
+          await recordDiagnostic({
+            outcome: "invalid-response",
+            httpStatus: response.status,
+            errorName: error?.name ?? "unknown",
+          });
+          throw error;
+        }
         if (allowError) {
           assert(message.error, `MCP ${method} was expected to fail`);
+          await recordDiagnostic({
+            outcome: "json-rpc-error",
+            httpStatus: response.status,
+            errorCode: message.error.code,
+            errorCategory: errorCategory(message.error),
+          });
           return { error: message.error };
+        }
+        if (message.error) {
+          await recordDiagnostic({
+            outcome: "json-rpc-error",
+            httpStatus: response.status,
+            errorCode: message.error.code,
+            errorCategory: errorCategory(message.error),
+          });
+        } else {
+          await recordDiagnostic({
+            outcome: "success",
+            httpStatus: response.status,
+            ...(method === "tools/list" ? { toolCount: message.result?.tools?.length ?? null } : {}),
+          });
         }
         assert.equal(message.error, undefined, `MCP ${method} failed: ${JSON.stringify(message.error)}`);
         return message.result;
