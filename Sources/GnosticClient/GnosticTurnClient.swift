@@ -44,6 +44,7 @@ import GnosticProtocol
 @MainActor
 public final class GnosticTurnClient {
     private let manager: CommunicationManager
+    private let catalog: NetworkCatalog
     private let resolver: CatalogTargetResolver
     private let channel: GnosticCallChannel<GnosticTurnClientError>
     private let timeout: Duration
@@ -57,6 +58,7 @@ public final class GnosticTurnClient {
         promptTimeout: Duration
     ) {
         self.manager = manager
+        self.catalog = catalog
         resolver = CatalogTargetResolver(lookup: GnosticCatalogLookup(
             manager: manager,
             catalog: catalog,
@@ -90,14 +92,16 @@ public final class GnosticTurnClient {
         providerID: String? = nil
     ) async throws -> AscendantTurnResult {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        return try await channel.call(
-            AscendantTurnProvider.turnOperation,
-            request: AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
-            context: "ascendant.turn request",
-            providerID: target,
-            timeout: promptTimeout,
-            returning: AscendantTurnResult.self
-        )
+        return try await callWithProviderEviction(providerID: target) {
+            try await self.channel.call(
+                AscendantTurnProvider.turnOperation,
+                request: AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "ascendant.turn request",
+                providerID: target,
+                timeout: self.promptTimeout,
+                returning: AscendantTurnResult.self
+            )
+        }
     }
 
     /// Requests cancellation of one admitted identified Turn.
@@ -112,14 +116,16 @@ public final class GnosticTurnClient {
         providerID: String? = nil
     ) async throws -> Bool {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        return try await channel.call(
-            AscendantTurnProvider.cancelOperation,
-            request: AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
-            context: "ascendant.turn.cancel request",
-            providerID: target,
-            timeout: timeout,
-            returning: AscendantTurnCancellationResult.self
-        ).cancelled
+        return try await callWithProviderEviction(providerID: target) {
+            try await self.channel.call(
+                AscendantTurnProvider.cancelOperation,
+                request: AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "ascendant.turn.cancel request",
+                providerID: target,
+                timeout: self.timeout,
+                returning: AscendantTurnCancellationResult.self
+            ).cancelled
+        }
     }
 
     /// Reads the retained updates for an identified Turn.
@@ -150,19 +156,21 @@ public final class GnosticTurnClient {
         providerID: String? = nil
     ) async throws -> AscendantTurnReplay {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
-        return try await channel.call(
-            AscendantTurnProvider.replayOperation,
-            request: AscendantTurnReplayRequest(
-                timelineID: timelineID,
-                clientTurnID: clientTurnID,
-                message: message,
-                afterSequence: afterSequence
-            ),
-            context: "ascendant.turn.replay request",
-            providerID: target,
-            timeout: timeout,
-            returning: AscendantTurnReplay.self
-        )
+        return try await callWithProviderEviction(providerID: target) {
+            try await self.channel.call(
+                AscendantTurnProvider.replayOperation,
+                request: AscendantTurnReplayRequest(
+                    timelineID: timelineID,
+                    clientTurnID: clientTurnID,
+                    message: message,
+                    afterSequence: afterSequence
+                ),
+                context: "ascendant.turn.replay request",
+                providerID: target,
+                timeout: self.timeout,
+                returning: AscendantTurnReplay.self
+            )
+        }
     }
 
     /// Streams the live updates for one identified Turn.
@@ -192,11 +200,19 @@ public final class GnosticTurnClient {
     ) async throws -> AsyncStream<AscendantTurnUpdate> {
         let expected = try GnosticWirePayload.canonicalClientTurnID(clientTurnID)
         let events = try await updateEvents(providerID: providerID)
+        let watchedProvider: String?
+        if let providerID {
+            watchedProvider = providerID
+        } else {
+            watchedProvider = await catalog.timelineOwnerID(id: timelineID)
+        }
         return AsyncStream(bufferingPolicy: .bufferingNewest(64)) { continuation in
-            let task = Task {
+            let sequence = TurnUpdateSequence()
+            let eventTask = Task { @MainActor in
                 for await event in events {
                     guard event.timelineID == timelineID,
                           event.clientTurnID == expected else { continue }
+                    sequence.advance(to: event.update.sequence)
                     continuation.yield(event.update)
                     if event.update.terminal {
                         continuation.finish()
@@ -205,7 +221,64 @@ public final class GnosticTurnClient {
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            let evictionTask = Task { @MainActor [catalog] in
+                guard let watchedProvider else { return }
+                let evictions = await catalog.providerEvictionStream()
+                for await evicted in evictions
+                where evicted.caseInsensitiveCompare(watchedProvider) == .orderedSame {
+                    continuation.yield(AscendantTurnUpdate(
+                        sequence: sequence.next,
+                        kind: AscendantTurnUpdateKind.error.rawValue,
+                        text: "The Timeline owner left the network before the Turn completed.",
+                        terminal: true,
+                        reasonCode: "providerOffline",
+                        statusCode: 503,
+                        retryable: true
+                    ))
+                    continuation.finish()
+                    return
+                }
+            }
+            continuation.onTermination = { _ in
+                eventTask.cancel()
+                evictionTask.cancel()
+            }
+        }
+    }
+
+    /// Runs one provider-addressed call and fails as soon as the catalog
+    /// evicts that provider, instead of waiting for the call timeout.
+    private func callWithProviderEviction<Value: Sendable>(
+        providerID: String,
+        _ operation: @escaping @MainActor @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let evicted = ProviderEvictionFlag()
+        let call = Task { @MainActor in try await operation() }
+        let eviction = Task { @MainActor [catalog] in
+            let evictions = await catalog.providerEvictionStream()
+            for await evictedID in evictions
+            where evictedID.caseInsensitiveCompare(providerID) == .orderedSame {
+                evicted.mark()
+                call.cancel()
+                return
+            }
+        }
+        defer { eviction.cancel() }
+        do {
+            return try await withTaskCancellationHandler {
+                try await call.value
+            } onCancel: {
+                call.cancel()
+            }
+        } catch {
+            if evicted.isMarked {
+                throw GnosticTurnClientError.callFailed(
+                    reasonCode: "providerOffline",
+                    statusCode: 503,
+                    retryable: true
+                )
+            }
+            throw error
         }
     }
 
@@ -267,4 +340,19 @@ public final class GnosticTurnClient {
         case let .missingCapability(capability): .missingCapability(capability)
         }
     }
+}
+
+@MainActor
+private final class ProviderEvictionFlag {
+    private(set) var isMarked = false
+
+    func mark() { isMarked = true }
+}
+
+@MainActor
+private final class TurnUpdateSequence {
+    private var last = 0
+
+    func advance(to sequence: Int) { last = max(last, sequence) }
+    var next: Int { last + 1 }
 }

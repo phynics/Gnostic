@@ -435,6 +435,12 @@ public actor NetworkCatalog {
         }
     }
 
+    /// The provider that currently owns a Timeline, or `nil` when the catalog
+    /// has no single compatible, non-archived owner.
+    public func timelineOwnerID(id: UUID) -> String? {
+        currentTimelineOwner(id: id)?.providerID
+    }
+
     /// The sole compatible, non-archived current advertisement for a Timeline.
     private func currentTimelineOwner(id: UUID) -> NetworkCatalogEntry? {
         guard let candidates = entries[id] else { return nil }
