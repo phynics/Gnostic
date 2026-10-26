@@ -33,6 +33,9 @@ public actor NetworkCatalog {
 
     private var entries: [UUID: [String: NetworkCatalogEntry]] = [:]
     private var workspaceTools: [UUID: [String: [String: GnosticWorkspaceTool]]] = [:]
+    private var completeWorkspaceToolCatalogs: [UUID: Set<String>] = [:]
+    private var workspaceToolCatalogEpochs: [UUID: [String: UInt64]] = [:]
+    private var workspaceAdvertisementGenerations: [UUID: [String: UInt64]] = [:]
     private var workspaceToolOwners: [UUID: (workspaceID: UUID, providerID: String, toolID: String)] = [:]
     private var providerEvictionContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var changeContinuations: [UUID: AsyncStream<NetworkCatalogChange>.Continuation] = [:]
@@ -92,6 +95,10 @@ public actor NetworkCatalog {
     ///
     /// - Parameter event: The immutable Axoloty advertisement snapshot.
     public func ingest(_ event: AdvertiseEventSnapshot) {
+        ingestAdvertisement(event, isLiveAdvertisement: true)
+    }
+
+    private func ingestAdvertisement(_ event: AdvertiseEventSnapshot, isLiveAdvertisement: Bool) {
         let snapshot = event.object
         guard GnosticObjectType.isSupported(snapshot.objectType),
               let objectID = UUID(uuidString: snapshot.objectId) else {
@@ -105,6 +112,17 @@ public actor NetworkCatalog {
             // after a full resolve response. Never let that transport
             // projection evict a provider-scoped, protocol-valid object.
             return
+        }
+        if snapshot.objectType == GnosticObjectType.workspace {
+            if isLiveAdvertisement {
+                advanceWorkspaceAdvertisementGeneration(workspaceID: objectID, providerID: providerID)
+            }
+            advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
+            removeWorkspaceToolPages(workspaceID: objectID, providerID: providerID)
+            completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
+            if completeWorkspaceToolCatalogs[objectID]?.isEmpty == true {
+                completeWorkspaceToolCatalogs[objectID] = nil
+            }
         }
         let protocolMajor = Self.protocolMajor(from: snapshot)
         let isProtocolCompatible = GnosticProtocol.isCompatible(protocolMajor)
@@ -149,8 +167,72 @@ public actor NetworkCatalog {
         let snapshots = event.objects ?? event.object.map { [$0] } ?? []
         for snapshot in snapshots {
             let object = Self.hydrateResponseObject(snapshot, from: event.payload)
-            ingest(AdvertiseEventSnapshot(sourceId: event.sourceId, object: object))
+            ingestAdvertisement(AdvertiseEventSnapshot(sourceId: event.sourceId, object: object), isLiveAdvertisement: false)
         }
+    }
+
+    /// Captures live Workspace-advertisement generations before a correlated
+    /// Resolve sweep. Axoloty Resolve payloads have no revision field, so a
+    /// later-observed live advertisement takes precedence over an older
+    /// in-flight snapshot from that sweep.
+    func workspaceAdvertisementSnapshot() -> [UUID: [String: UInt64]] {
+        workspaceAdvertisementGenerations
+    }
+
+    /// Ingests Resolve snapshots unless a live Workspace advertisement from
+    /// that provider arrived after the correlated sweep started.
+    func ingestResolutionResponse(
+        _ event: ResponseEventSnapshot,
+        startedAt snapshot: [UUID: [String: UInt64]]
+    ) {
+        let providerID = event.sourceId ?? Self.anonymousProviderID
+        let providerKey = providerID.lowercased()
+        let snapshots = event.objects ?? event.object.map { [$0] } ?? []
+        for rawSnapshot in snapshots {
+            let object = Self.hydrateResponseObject(rawSnapshot, from: event.payload)
+            if object.objectType == GnosticObjectType.workspace,
+               let workspaceID = UUID(uuidString: object.objectId) {
+                let startedGeneration = snapshot[workspaceID]?[providerKey] ?? 0
+                let currentGeneration = workspaceAdvertisementGenerations[workspaceID]?[providerKey] ?? 0
+                guard startedGeneration == currentGeneration else { continue }
+            }
+            ingestAdvertisement(AdvertiseEventSnapshot(sourceId: providerID, object: object), isLiveAdvertisement: false)
+        }
+    }
+
+    func workspaceToolCatalogGenerations(id: UUID) -> [String: UInt64] {
+        guard let providers = entries[id] else { return [:] }
+        var generations: [String: UInt64] = [:]
+        for entry in providers.values where entry.objectType == GnosticObjectType.workspace {
+            let key = entry.providerID.lowercased()
+            generations[key] = workspaceToolCatalogEpochs[id]?[key] ?? 0
+        }
+        return generations
+    }
+
+    func ingestWorkspaceToolQueryResponse(
+        _ event: ResponseEventSnapshot,
+        workspaceID: UUID,
+        providerID: String,
+        generation: UInt64
+    ) -> Bool {
+        let providerKey = providerID.lowercased()
+        guard (workspaceToolCatalogEpochs[workspaceID]?[providerKey] ?? 0) == generation,
+              entries[workspaceID]?[providerID]?.objectType == GnosticObjectType.workspace,
+              event.sourceId?.caseInsensitiveCompare(providerID) == .orderedSame else { return false }
+        let snapshots = event.objects ?? event.object.map { [$0] } ?? []
+        let hydrated = snapshots.map { Self.hydrateResponseObject($0, from: event.payload) }
+        guard hydrated.allSatisfy({ snapshot in
+            guard snapshot.objectType == GnosticObjectType.workspaceTool,
+                  let payload = snapshot.payload,
+                  let object = try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8))
+            else { return false }
+            return object.workspaceID == workspaceID
+        }) else { return false }
+        for snapshot in hydrated {
+            ingest(AdvertiseEventSnapshot(sourceId: providerID, object: snapshot))
+        }
+        return true
     }
 
     /// Ingests a deadvertisement and removes only entries owned by its provider.
@@ -170,6 +252,20 @@ public actor NetworkCatalog {
         }
         for rawID in event.objectIds {
             guard let objectID = UUID(uuidString: rawID) else { continue }
+            if entries[objectID]?[providerID]?.objectType == GnosticObjectType.workspace {
+                advanceWorkspaceAdvertisementGeneration(workspaceID: objectID, providerID: providerID)
+                advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
+                removeWorkspaceToolPages(workspaceID: objectID, providerID: providerID)
+                completeWorkspaceToolCatalogs[objectID]?.remove(providerID)
+                if completeWorkspaceToolCatalogs[objectID]?.isEmpty == true {
+                    completeWorkspaceToolCatalogs[objectID] = nil
+                }
+                for toolObjectID in Array(workspaceToolOwners.keys)
+                    where workspaceToolOwners[toolObjectID]?.workspaceID == objectID
+                        && workspaceToolOwners[toolObjectID]?.providerID == providerID {
+                    workspaceToolOwners[toolObjectID] = nil
+                }
+            }
             if let owner = workspaceToolOwners.removeValue(forKey: objectID) {
                 workspaceTools[owner.workspaceID]?[owner.providerID]?[owner.toolID] = nil
                 if workspaceTools[owner.workspaceID]?[owner.providerID]?.isEmpty == true {
@@ -189,6 +285,11 @@ public actor NetworkCatalog {
 
     /// Removes every record owned by one provider and notifies observers.
     private func evictProvider(_ providerID: String) {
+        for (workspaceID, providers) in Array(entries) where providers[providerID]?.objectType == GnosticObjectType.workspace {
+            advanceWorkspaceAdvertisementGeneration(workspaceID: workspaceID, providerID: providerID)
+            advanceWorkspaceToolCatalogGeneration(workspaceID: workspaceID, providerID: providerID)
+            removeWorkspaceToolPages(workspaceID: workspaceID, providerID: providerID)
+        }
         for objectID in Array(entries.keys) where entries[objectID]?[providerID] != nil {
             entries[objectID]?[providerID] = nil
             if entries[objectID]?.isEmpty == true {
@@ -199,6 +300,12 @@ public actor NetworkCatalog {
             workspaceTools[workspaceID]?[providerID] = nil
             if workspaceTools[workspaceID]?.isEmpty == true {
                 workspaceTools[workspaceID] = nil
+            }
+        }
+        for workspaceID in Array(completeWorkspaceToolCatalogs.keys) {
+            completeWorkspaceToolCatalogs[workspaceID]?.remove(providerID)
+            if completeWorkspaceToolCatalogs[workspaceID]?.isEmpty == true {
+                completeWorkspaceToolCatalogs[workspaceID] = nil
             }
         }
         for objectID in Array(workspaceToolOwners.keys) where workspaceToolOwners[objectID]?.providerID == providerID {
@@ -240,6 +347,37 @@ public actor NetworkCatalog {
         }
     }
 
+    /// Records the provider's explicit terminal empty page for its tool query.
+    func markWorkspaceToolCatalogComplete(id: UUID, providerID: String, generation: UInt64) -> Bool {
+        let providerKey = providerID.lowercased()
+        guard entries[id]?[providerID]?.workspace != nil,
+              (workspaceToolCatalogEpochs[id]?[providerKey] ?? 0) == generation else { return false }
+        completeWorkspaceToolCatalogs[id, default: []].insert(providerID)
+        return true
+    }
+
+    private func advanceWorkspaceToolCatalogGeneration(workspaceID: UUID, providerID: String) {
+        let key = providerID.lowercased()
+        workspaceToolCatalogEpochs[workspaceID, default: [:]][key, default: 0] &+= 1
+    }
+
+    private func advanceWorkspaceAdvertisementGeneration(workspaceID: UUID, providerID: String) {
+        let key = providerID.lowercased()
+        workspaceAdvertisementGenerations[workspaceID, default: [:]][key, default: 0] &+= 1
+    }
+
+    private func removeWorkspaceToolPages(workspaceID: UUID, providerID: String) {
+        workspaceTools[workspaceID]?[providerID] = nil
+        if workspaceTools[workspaceID]?.isEmpty == true { workspaceTools[workspaceID] = nil }
+        for objectID in Array(workspaceToolOwners.keys)
+            where workspaceToolOwners[objectID]?.workspaceID == workspaceID
+                && workspaceToolOwners[objectID]?.providerID == providerID {
+            workspaceToolOwners[objectID] = nil
+            entries[objectID]?[providerID] = nil
+            if entries[objectID]?.isEmpty == true { entries[objectID] = nil }
+        }
+    }
+
     /// Returns whether a workspace can be attached without ambiguity.
     ///
     /// - Parameter id: The workspace identifier.
@@ -266,15 +404,44 @@ public actor NetworkCatalog {
     /// Whether one currently catalogued Timeline advertisement includes a Workspace attachment.
     /// Ambiguous, incompatible, missing, and archived Timelines fail closed.
     public func isWorkspaceAttached(_ workspaceID: UUID, to timelineID: UUID) -> Bool {
-        guard let candidates = entries[timelineID] else { return false }
-        let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline && $0.isProtocolCompatible }
-        guard owners.count == 1, let owner = owners.first else { return false }
-        if case .bool(true)? = owner.knownProperties["isArchived"] { return false }
+        guard let owner = currentTimelineOwner(id: timelineID) else { return false }
+        return Self.attaches(workspaceID, to: owner)
+    }
+
+    /// Authorizes one remote Workspace invocation against a single current
+    /// catalog state. Caller identity, unique Timeline ownership, and the
+    /// Timeline's Workspace attachment are checked synchronously in this actor
+    /// turn so lifecycle ingestion cannot replace the owner between checks.
+    func authorizesWorkspaceCall(
+        sourceID: String,
+        workspaceID: UUID,
+        to timelineID: UUID
+    ) -> Bool {
+        guard let callerID = UUID(uuidString: sourceID),
+              let owner = currentTimelineOwner(id: timelineID),
+              let ownerID = UUID(uuidString: owner.providerID),
+              callerID == ownerID,
+              Self.attaches(workspaceID, to: owner) else {
+            return false
+        }
+        return true
+    }
+
+    private static func attaches(_ workspaceID: UUID, to owner: NetworkCatalogEntry) -> Bool {
         guard case let .array(attached)? = owner.knownProperties["attachedWorkspaceIDs"] else { return false }
         return attached.contains { value in
             guard case let .string(rawID) = value else { return false }
             return UUID(uuidString: rawID) == workspaceID
         }
+    }
+
+    /// The sole compatible, non-archived current advertisement for a Timeline.
+    private func currentTimelineOwner(id: UUID) -> NetworkCatalogEntry? {
+        guard let candidates = entries[id] else { return nil }
+        let owners = candidates.values.filter { $0.objectType == GnosticObjectType.timeline }
+        guard owners.count == 1, let owner = owners.first, owner.isProtocolCompatible else { return nil }
+        if case .bool(true)? = owner.knownProperties["isArchived"] { return nil }
+        return owner
     }
 
     private func dynamicProperties(from snapshot: CoatyObjectSnapshot) -> [String: NetworkDynamicValue] {
@@ -384,7 +551,7 @@ public actor NetworkCatalog {
             status: descriptor.status,
             effectiveStatus: descriptor.effectiveStatus,
             tools: descriptor.tools + queried.filter { !known.contains($0.id) },
-            toolsComplete: descriptor.toolsComplete || !queried.isEmpty,
+            toolsComplete: descriptor.toolsComplete || completeWorkspaceToolCatalogs[id]?.contains(providerID) == true,
             createdAt: descriptor.createdAt
         )
     }

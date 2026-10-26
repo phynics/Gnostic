@@ -43,18 +43,3 @@ public final class WorkspaceInvocationTestWorkspace: LocalWorkspace, LocalWorksp
         return try await execute(id, parameters)
     }
 }
-
-@MainActor
-public func makeWorkspaceInvocationProvider(
-    workspaceID: UUID,
-    tools: [GnosticWorkspaceToolDefinition],
-    isAttached: @escaping @Sendable (UUID?, UUID) async -> Bool = { _, _ in true },
-    execute: @escaping @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
-) -> MultiplexedWorkspaceProvider {
-    let workspace = WorkspaceInvocationTestWorkspace(id: workspaceID, tools: tools, execute: execute)
-    return MultiplexedWorkspaceProvider(
-        workspaces: [workspaceID: workspace],
-        workspaceStatus: { _ in .available },
-        isAttached: isAttached
-    )
-}

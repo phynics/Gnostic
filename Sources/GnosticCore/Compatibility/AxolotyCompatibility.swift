@@ -280,6 +280,9 @@ public final class ObjectLifecycleController {
         communication?.publishAdvertise(object)
     }
     public func readvertiseDiscoverableObject(object: CoatyObject) { communication?.publishAdvertise(object) }
+    func readvertiseDiscoverableObjectAndWait(object: CoatyObject) async {
+        await communication?.readvertiseDiscoverableObjectAndWait(object)
+    }
     public func deadvertiseDiscoverableObject(object: CoatyObject) { communication?.publishDeadvertise(object) }
 
     func deadvertiseDiscoverableObjectAndWait(object: CoatyObject) async {
@@ -706,6 +709,15 @@ public final class CommunicationManager {
         Task { await dispatch.storeAdvertisedObject(object) }
         guard isRuntimeReady else { return }
         Task { _ = await runtime.publish(.advertise(payload)) }
+    }
+
+    fileprivate func readvertiseDiscoverableObjectAndWait(_ object: CoatyObject) async {
+        guard let data = try? jsonRaw(object), let raw = try? JSONSerialization.jsonObject(with: Data(data)) else { return }
+        guard let payload = try? jsonObject(["object": raw]) else { return }
+        pendingAdvertisements[object.objectId.string] = payload
+        await dispatch.storeAdvertisedObject(object)
+        guard isRuntimeReady else { return }
+        _ = await runtime.publish(.advertise(payload))
     }
     fileprivate func publishDeadvertise(_ object: CoatyObject) {
         pendingAdvertisements[object.objectId.string] = nil

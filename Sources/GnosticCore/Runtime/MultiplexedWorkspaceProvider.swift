@@ -15,24 +15,32 @@ public actor MultiplexedWorkspaceProvider {
 
     private let workspaces: [UUID: any LocalWorkspace]
     private let workspaceStatus: @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?
-    private let isAttached: @Sendable (UUID?, UUID) async -> Bool
+    private let setWorkspaceStatus: @Sendable (UUID, NodeRegistry.WorkspaceEffectiveStatus) async -> Bool
+    private let callerBoundAuthorization: @Sendable (String?, UUID?, UUID) async -> Bool
+    private let admitInvocation: @Sendable (String?, UUID?, UUID) async -> Bool
     private let isAvailable: @Sendable () async -> Bool
 
-    /// Creates the handler with the host's authoritative Workspace status lookup.
-    /// A missing status rejects invocation, just like an unavailable Workspace.
-    public init(
+    init(
         workspaces: [UUID: any LocalWorkspace],
         workspaceStatus: @escaping @Sendable (UUID) async -> NodeRegistry.WorkspaceEffectiveStatus?,
-        isAttached: @escaping @Sendable (UUID?, UUID) async -> Bool = { _, _ in false },
-        isAvailable: @escaping @Sendable () async -> Bool = { true }
+        setWorkspaceStatus: @escaping @Sendable (UUID, NodeRegistry.WorkspaceEffectiveStatus) async -> Bool,
+        callerBoundAuthorization: @escaping @Sendable (String?, UUID?, UUID) async -> Bool,
+        admitInvocation: @escaping @Sendable (String?, UUID?, UUID) async -> Bool,
+        isAvailable: @escaping @Sendable () async -> Bool
     ) {
         self.workspaces = workspaces
         self.workspaceStatus = workspaceStatus
-        self.isAttached = isAttached
+        self.setWorkspaceStatus = setWorkspaceStatus
+        self.callerBoundAuthorization = callerBoundAuthorization
+        self.admitInvocation = admitInvocation
         self.isAvailable = isAvailable
     }
 
     public func handle(parameters: String?, expectedProviderID: String? = nil) async throws -> CallHandlerResult {
+        try await handle(parameters: parameters, expectedProviderID: expectedProviderID, callerSourceID: nil)
+    }
+
+    func handle(parameters: String?, expectedProviderID: String?, callerSourceID: String?) async throws -> CallHandlerResult {
         do {
             guard await isAvailable() else { throw NodeRuntimeError.notRunning }
             try GnosticProtocol.validatePayload(parameters)
@@ -45,7 +53,7 @@ public actor MultiplexedWorkspaceProvider {
             guard let workspace = workspaces[invocation.workspaceID] else {
                 throw WorkspaceServiceError.workspaceNotFound
             }
-            guard await isAttached(invocation.timelineID, invocation.workspaceID) else {
+            guard await callerBoundAuthorization(callerSourceID, invocation.timelineID, invocation.workspaceID) else {
                 return .failure(code: 403, reasonCode: "workspaceNotAttached", message: "The Workspace is not attached to the active Timeline.")
             }
             try await requireAvailable(workspaceID: invocation.workspaceID)
@@ -56,9 +64,17 @@ public actor MultiplexedWorkspaceProvider {
             guard !tool.requiresPermission || invocation.permissionApproved else {
                 return .failure(code: 403, reasonCode: "workspacePermissionRequired", message: "The Workspace tool requires an approved permission decision.")
             }
-            // Tool enumeration can suspend while the host changes availability.
+            // Health and effective status are settled before owner admission.
+            // The admission closure brackets the atomic owner/attachment check
+            // with a versioned registry snapshot; it is the invocation's
+            // linearization point. Changes after admission do not retroactively
+            // cancel arbitrary asynchronous provider code.
             try await requireAvailable(workspaceID: invocation.workspaceID)
-            guard await isAttached(invocation.timelineID, invocation.workspaceID) else {
+            guard await admitInvocation(callerSourceID, invocation.timelineID, invocation.workspaceID) else {
+                // Preserve the structured unavailable response when a status
+                // change invalidated the admission snapshot; attachment-only
+                // denial remains a 403 after this authoritative status read.
+                try await requireAvailable(workspaceID: invocation.workspaceID)
                 return .failure(code: 403, reasonCode: "workspaceNotAttached", message: "The Workspace is not attached to the active Timeline.")
             }
             try Task.checkCancellation()
@@ -73,13 +89,19 @@ public actor MultiplexedWorkspaceProvider {
 
     private func requireAvailable(workspaceID: UUID) async throws {
         guard await isAvailable() else { throw NodeRuntimeError.notRunning }
+        if let workspace = workspaces[workspaceID],
+           let healthy = await MainActor.run(body: { (workspace as? any LocalWorkspaceHealth)?.isHealthy }),
+           !healthy, await workspaceStatus(workspaceID) == .available {
+            // Persist an owner-local health revocation in the authoritative registry.
+            guard await setWorkspaceStatus(workspaceID, .unavailable) else {
+                throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
+            }
+        }
+        // Re-read after health and registry awaits so a revocation during
+        // either suspension is included in the admission decision.
         let status = await workspaceStatus(workspaceID)
         guard status == .available else {
             throw DiscoveredWorkspaceAttachmentError.unavailable(status == .unsupported ? .unsupported : .unavailable)
-        }
-        if let workspace = workspaces[workspaceID],
-           await MainActor.run(body: { (workspace as? any LocalWorkspaceHealth)?.isHealthy == false }) {
-            throw DiscoveredWorkspaceAttachmentError.unavailable(.unavailable)
         }
     }
 
@@ -117,7 +139,7 @@ public actor MultiplexedWorkspaceProvider {
     public func register(on communication: CommunicationManager) async throws -> CallHandlerRegistration {
         let providerID = communication.identity.objectId.string
         return try await communication.registerCallHandler(operation: Self.invocationOperation, context: communication.identity) { [self] request in
-            try await handle(parameters: request.parameters, expectedProviderID: providerID)
+            try await handle(parameters: request.parameters, expectedProviderID: providerID, callerSourceID: request.sourceId)
         }
     }
 

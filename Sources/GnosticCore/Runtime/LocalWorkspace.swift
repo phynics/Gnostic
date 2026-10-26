@@ -14,6 +14,13 @@ public protocol LocalWorkspace: Sendable {
     var reference: BackendWorkspaceReference { get }
     /// Lists the tools the Workspace currently advertises.
     ///
+    /// The returned definitions are the policy snapshot for an invocation
+    /// being prepared: membership and `requiresPermission` are evaluated from
+    /// this value. A catalog change after this result applies to subsequent
+    /// enumerations; the current invocation continues with this definition,
+    /// subject to owner admission. Once admitted, it is not retroactively
+    /// cancelled.
+    ///
     /// - Returns: The advertised tools.
     /// - Throws: When the Workspace cannot enumerate them.
     func listTools() async throws -> [BackendWorkspaceTool]

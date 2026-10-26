@@ -162,33 +162,140 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
-    if (promptText.includes("[fixture:workspace-tool]")) {
+    if (promptText.includes("[fixture:workspace-tool]") || promptText.includes("[fixture:workspace-tool-rejected]")) {
       const server = sessions.get(params.sessionId)?.mcpServers?.[0];
       assert(server?.url && server.headers, "Gnostic did not provide an authenticated MCP server");
       const protocolVersion = "2025-03-26";
-      const mcp = async (id, method, requestParams = {}) => {
+      const publicFailureCategories = new Map([
+        ["invalidWorkspaceInvocationPayload", "owner-invalid-invocation"],
+        ["notRunning", "owner-not-running"],
+        ["workspaceInvocationFailed", "owner-invocation-failed"],
+        ["workspaceNotAttached", "owner-workspace-not-attached"],
+        ["workspacePermissionRequired", "owner-permission-required"],
+        ["workspaceToolNotAdvertised", "owner-tool-not-advertised"],
+        ["workspaceUnavailable", "owner-workspace-unavailable"],
+      ]);
+      const gatewayFailureCategories = new Map([
+        ["Workspace tool is not attached or is unavailable.", "gateway-tool-unavailable"],
+        ["Workspace is not attached to this Timeline.", "gateway-workspace-not-attached"],
+        ["Workspace tool requires an active, approved Turn.", "gateway-turn-not-approved"],
+        ["Workspace permission could not be committed.", "gateway-permission-commit-failed"],
+        ["Workspace tool permission was not approved.", "gateway-permission-not-approved"],
+        ["Workspace attachment or availability changed before dispatch.", "gateway-attachment-changed"],
+      ]);
+      const errorCategory = (error) => {
+        const publicFailure = (() => {
+          if (error?.data && typeof error.data === "object") return error.data;
+          if (typeof error?.message !== "string") return undefined;
+          try {
+            const parsed = JSON.parse(error.message);
+            return parsed && typeof parsed === "object" ? parsed : undefined;
+          } catch {
+            return undefined;
+          }
+        })();
+        if (typeof publicFailure?.reasonCode === "string") {
+          const category = publicFailureCategories.get(publicFailure.reasonCode);
+          if (category) return category;
+        }
+        if (typeof error?.message === "string") {
+          return gatewayFailureCategories.get(error.message) ?? "unclassified";
+        }
+        return "unclassified";
+      };
+      const mcp = async (id, method, requestParams = {}, allowError = false) => {
         const headers = {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
           ...Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
         };
         if (method !== "initialize") headers["MCP-Protocol-Version"] = protocolVersion;
-        const response = await fetch(server.url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ jsonrpc: "2.0", id, method, params: requestParams }),
-        });
-        assert.equal(response.status, 200, `MCP ${method} returned HTTP ${response.status}`);
-        const message = await response.json();
+        const diagnosticsPath = process.env.GNOSTIC_ACP_FIXTURE_MCP_DIAGNOSTICS_FILE;
+        const recordDiagnostic = async (fields) => {
+          if (!diagnosticsPath) return;
+          await appendFile(diagnosticsPath, `${JSON.stringify({ method, ...fields })}\n`);
+        };
+        let response;
+        try {
+          response = await fetch(server.url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ jsonrpc: "2.0", id, method, params: requestParams }),
+          });
+        } catch (error) {
+          await recordDiagnostic({ outcome: "no-response", errorName: error?.name ?? "unknown" });
+          throw error;
+        }
+        if (response.status !== 200) {
+          await recordDiagnostic({ outcome: "http-error", httpStatus: response.status });
+          assert.equal(response.status, 200, `MCP ${method} returned HTTP ${response.status}`);
+        }
+        let message;
+        try {
+          message = await response.json();
+        } catch (error) {
+          await recordDiagnostic({
+            outcome: "invalid-response",
+            httpStatus: response.status,
+            errorName: error?.name ?? "unknown",
+          });
+          throw error;
+        }
+        if (allowError) {
+          assert(message.error, `MCP ${method} was expected to fail`);
+          await recordDiagnostic({
+            outcome: "json-rpc-error",
+            httpStatus: response.status,
+            errorCode: message.error.code,
+            errorCategory: errorCategory(message.error),
+          });
+          return { error: message.error };
+        }
+        if (message.error) {
+          await recordDiagnostic({
+            outcome: "json-rpc-error",
+            httpStatus: response.status,
+            errorCode: message.error.code,
+            errorCategory: errorCategory(message.error),
+          });
+        } else {
+          await recordDiagnostic({
+            outcome: "success",
+            httpStatus: response.status,
+            ...(method === "tools/list" ? { toolCount: message.result?.tools?.length ?? null } : {}),
+          });
+        }
         assert.equal(message.error, undefined, `MCP ${method} failed: ${JSON.stringify(message.error)}`);
         return message.result;
       };
       await mcp(1, "initialize", { protocolVersion, capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
       const listed = await mcp(2, "tools/list");
-      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]") ? 0 : 1;
+      const expectedToolCount = promptText.includes("[fixture:workspace-tool-empty]")
+        ? 0
+        : Number(process.env.GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT ?? 1);
       assert.equal(listed.tools.length, expectedToolCount, "tools/list must reflect current Timeline attachments");
       if (listed.tools.length > 0) {
-        await mcp(3, "tools/call", { name: listed.tools[0].name, arguments: { query: "fixture" } });
+        const requiredToolSuffix = process.env.GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_SUFFIX;
+        const invocationTool = requiredToolSuffix
+          ? listed.tools.find((tool) => tool.name.endsWith(requiredToolSuffix))
+          : listed.tools[0];
+        assert(invocationTool, `tools/list must include the configured permission tool ${requiredToolSuffix}`);
+        const expectsRejection = promptText.includes("[fixture:workspace-tool-rejected]");
+        const result = await mcp(
+          3,
+          "tools/call",
+          { name: invocationTool.name, arguments: { query: "fixture" } },
+          expectsRejection,
+        );
+        if (expectsRejection) {
+          assert.equal(result.error.code, -32003, "the owner must reject the revoked Workspace invocation");
+          sessions.get(params.sessionId).workspaceCallOutcome = `workspace call rejected (${result.error.code})`;
+        } else {
+          sessions.get(params.sessionId).workspaceCallOutcome = result.content
+            ?.map((block) => block.type === "text" ? block.text : "")
+            .filter(Boolean)
+            .join(" ") ?? "";
+        }
       }
     }
     const userMessageId = "fixture-user-1";
@@ -340,7 +447,10 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         update: {
           sessionUpdate: "agent_message_chunk",
           messageId,
-          content: { type: "text", text: `reply: ${prompt}` },
+          content: {
+            type: "text",
+            text: `reply: ${prompt}${sessions.get(params.sessionId)?.workspaceCallOutcome ? ` | ${sessions.get(params.sessionId).workspaceCallOutcome}` : ""}`,
+          },
         },
       });
     }

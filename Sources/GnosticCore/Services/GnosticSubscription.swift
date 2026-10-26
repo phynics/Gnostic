@@ -161,17 +161,59 @@ public final class GnosticSubscription {
         using communicationManager: CommunicationManager,
         timeout: Duration = .seconds(5)
     ) async {
+        await discover(
+            using: communicationManager,
+            deadline: ContinuousClock.now.advanced(by: timeout)
+        )
+    }
+
+    func discover(
+        using communicationManager: CommunicationManager,
+        deadline: ContinuousClock.Instant
+    ) async {
+        let advertisementSnapshot = await catalog.workspaceAdvertisementSnapshot()
         let stream = await communicationManager.publishDiscover(
             DiscoverEvent.with(objectTypes: Self.objectTypes)
         )
+        guard let remaining = Self.remaining(until: deadline) else { return }
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [catalog] in
                 for await response in stream {
-                    await catalog.ingest(response)
+                    await catalog.ingestResolutionResponse(response, startedAt: advertisementSnapshot)
                 }
             }
             group.addTask {
-                try? await Task.sleep(for: timeout)
+                try? await Task.sleep(for: remaining)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// Resolves an attachment from a correlated discovery stream. Discovery
+    /// has no terminal event, so an available result must use the bounded
+    /// collection window to rule out a competing owner. Ambiguity is already
+    /// terminal and can return immediately; all other paths honor the shared
+    /// deadline and leave its remaining budget for tool pages.
+    func discoverForResolution(
+        using communicationManager: CommunicationManager,
+        workspaceID: UUID,
+        deadline: ContinuousClock.Instant
+    ) async {
+        let advertisementSnapshot = await catalog.workspaceAdvertisementSnapshot()
+        let stream = await communicationManager.publishDiscover(
+            DiscoverEvent.with(objectTypes: [GnosticObjectType.workspace])
+        )
+        guard let remaining = Self.remaining(until: deadline) else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [catalog] in
+                for await response in stream {
+                    await catalog.ingestResolutionResponse(response, startedAt: advertisementSnapshot)
+                    if case .ambiguous = await catalog.workspaceAttachmentStatus(id: workspaceID) { return }
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: remaining)
             }
             _ = await group.next()
             group.cancelAll()
@@ -187,39 +229,116 @@ public final class GnosticSubscription {
         workspaceID: UUID,
         timeout: Duration = .seconds(5)
     ) async {
+        _ = await queryTools(
+            using: communicationManager,
+            workspaceID: workspaceID,
+            providerID: nil,
+            timeout: timeout
+        )
+    }
+
+    /// Retrieves the complete tool catalog for one resolved provider within
+    /// one total deadline. Each page receives only the budget that remains.
+    func queryTools(
+        using communicationManager: CommunicationManager,
+        workspaceID: UUID,
+        providerID: String?,
+        timeout: Duration
+    ) async -> Bool {
+        await queryTools(
+            using: communicationManager,
+            workspaceID: workspaceID,
+            providerID: providerID,
+            deadline: ContinuousClock.now.advanced(by: timeout)
+        )
+    }
+
+    func queryTools(
+        using communicationManager: CommunicationManager,
+        workspaceID: UUID,
+        providerID: String?,
+        deadline: ContinuousClock.Instant
+    ) async -> Bool {
+        let generations = await catalog.workspaceToolCatalogGenerations(id: workspaceID)
         for page in 0..<64 {
+            guard let remaining = Self.remaining(until: deadline) else { return false }
             let stream = await communicationManager.publishQuery(
                 QueryEvent.with(
                     objectTypes: [GnosticObjectType.workspaceTool],
                     objectFilter: GnosticWorkspaceToolQuery.filter(workspaceID: workspaceID, page: page)
                 ),
-                timeout: timeout
+                timeout: remaining
             )
-            let received = await receiveOne(from: stream, timeout: timeout)
-            guard received else { break }
+            guard let remaining = Self.remaining(until: deadline) else { return false }
+            switch await receiveOne(
+                from: stream,
+                workspaceID: workspaceID,
+                providerID: providerID,
+                generations: generations,
+                timeout: remaining
+            ) {
+            case .objects:
+                continue
+            case let .empty(owner, generation):
+                return await catalog.markWorkspaceToolCatalogComplete(
+                    id: workspaceID,
+                    providerID: owner,
+                    generation: generation
+                )
+            case .stale:
+                return false
+            case .timedOut:
+                return false
+            }
         }
+        return false
     }
 
-    /// Ingests the first response and reports whether it carried objects. An
-    /// empty response is the provider's terminal page; a timeout means no
-    /// provider answered.
-    private func receiveOne(from stream: AsyncStream<ResponseEventSnapshot>, timeout: Duration) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
+    private enum WorkspaceToolPageResult: Sendable {
+        case objects
+        case empty(providerID: String, generation: UInt64)
+        case stale
+        case timedOut
+    }
+
+    private func receiveOne(
+        from stream: AsyncStream<ResponseEventSnapshot>,
+        workspaceID: UUID,
+        providerID: String?,
+        generations: [String: UInt64],
+        timeout: Duration
+    ) async -> WorkspaceToolPageResult {
+        await withTaskGroup(of: WorkspaceToolPageResult.self) { group in
             group.addTask { [catalog] in
                 for await response in stream {
-                    await catalog.ingest(response)
-                    return !(response.objects ?? response.object.map { [$0] } ?? []).isEmpty
+                    guard let sourceID = response.sourceId,
+                          let generation = generations[sourceID.lowercased()] else { continue }
+                    if let providerID,
+                       sourceID.caseInsensitiveCompare(providerID) != .orderedSame { continue }
+                    guard await catalog.ingestWorkspaceToolQueryResponse(
+                        response,
+                        workspaceID: workspaceID,
+                        providerID: sourceID,
+                        generation: generation
+                    ) else { return .stale }
+                    let objects = response.objects ?? response.object.map { [$0] } ?? []
+                    return objects.isEmpty ? .empty(providerID: sourceID, generation: generation) : .objects
                 }
-                return false
+                return .timedOut
             }
             group.addTask {
                 try? await Task.sleep(for: timeout)
-                return false
+                return .timedOut
             }
-            let result = await group.next() ?? false
+            let result = await group.next() ?? .timedOut
             group.cancelAll()
             return result
         }
+    }
+
+    private static func remaining(until deadline: ContinuousClock.Instant) -> Duration? {
+        let remaining = ContinuousClock.now.duration(to: deadline)
+        return remaining > .zero ? remaining : nil
     }
 
     /// Cancels active subscription loops and waits for their scope cleanup,
