@@ -59,6 +59,141 @@ struct TwoNodeMQTTIntegrationTests {
         await first.shutdown()
     }
 
+    @Test("abrupt owner loss ends the in-flight Turn and transfers no authority")
+    @MainActor
+    func abruptOwnerLossEndsTurnWithoutAuthorityTransfer() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "peer-loss-\(UUID().uuidString.lowercased())"
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-peer-loss-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let session = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(3)
+        )
+        do {
+            try await session.start()
+        } catch {
+            await session.stop()
+            throw error
+        }
+
+        let survivor = try await launchNode(
+            name: "survivor",
+            namespace: namespace,
+            serveBinary: serveBinary,
+            agentFixture: agentFixture,
+            scratch: scratch
+        )
+        let promptStarted = scratch.appendingPathComponent("owner-prompt-started")
+        let owner: NodeProcess
+        do {
+            owner = try await launchNode(
+                name: "owner",
+                namespace: namespace,
+                serveBinary: serveBinary,
+                agentFixture: agentFixture,
+                scratch: scratch,
+                fixtureEnvironment: ["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE": promptStarted.path]
+            )
+        } catch {
+            await session.stop()
+            await survivor.shutdown()
+            throw error
+        }
+
+        do {
+            let advertisementClock = ContinuousClock()
+            let advertisementDeadline = advertisementClock.now + .seconds(5)
+            var advertised: NetworkCatalogEntry?
+            while advertisementClock.now < advertisementDeadline {
+                advertised = await session.networkObjects().first {
+                    $0.objectType == GnosticObjectType.timeline && $0.objectID == owner.timelineID
+                }
+                if advertised != nil { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let ownerProvider = try #require(advertised?.providerID)
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(20))
+            let clientTurnID = "peer-loss-turn"
+            let updates = try await client.updates(
+                for: clientTurnID,
+                timelineID: owner.timelineID,
+                providerID: ownerProvider
+            )
+            let collector = PeerLossUpdateCollector()
+            let observation = Task { @MainActor in
+                for await update in updates {
+                    collector.received.append(update)
+                    if update.terminal { break }
+                }
+            }
+            defer { observation.cancel() }
+            let run = Task { @MainActor in
+                try await client.run(
+                    message: "[fixture:wait]",
+                    timelineID: owner.timelineID,
+                    clientTurnID: clientTurnID,
+                    providerID: ownerProvider
+                )
+            }
+
+            try await waitForFile(promptStarted, timeout: .seconds(10))
+            let clock = ContinuousClock()
+            let started = clock.now
+            _ = kill(owner.process.processIdentifier, SIGKILL)
+            owner.process.waitUntilExit()
+            if let fixturePIDURL = owner.fixturePIDURL {
+                await stopFixtureProcess(at: fixturePIDURL)
+            }
+
+            var runFailure: (any Error)?
+            do {
+                _ = try await run.value
+                Issue.record("The Turn succeeded after its owner was killed.")
+            } catch {
+                runFailure = error
+            }
+            let elapsed = clock.now - started
+            #expect(elapsed < .seconds(8), "The Turn waited \(elapsed) for a dead owner.")
+            let failureReason = (runFailure as? GnosticTurnClientError)?.reasonCode
+            #expect(
+                failureReason == "providerOffline" || failureReason == "transportFailure",
+                Comment(rawValue: "Unexpected failure: \(String(describing: runFailure))")
+            )
+
+            let observationClock = ContinuousClock()
+            let observationDeadline = observationClock.now + .seconds(10)
+            while observationClock.now < observationDeadline,
+                  collector.received.last?.terminal != true {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let terminal = try #require(collector.received.last)
+            #expect(terminal.terminal == true)
+            #expect(terminal.reasonCode == "providerOffline")
+
+            try await session.discover(timeout: .seconds(2))
+            let remaining = await session.networkObjects().filter { $0.objectID == owner.timelineID }
+            #expect(remaining.isEmpty, "A surviving peer took authority for the lost Timeline.")
+            let survivorTimeline = await session.networkObjects().contains {
+                $0.objectType == GnosticObjectType.timeline && $0.objectID == survivor.timelineID
+            }
+            #expect(survivorTimeline)
+        } catch {
+            await session.stop()
+            await owner.shutdown()
+            await survivor.shutdown()
+            throw error
+        }
+        await session.stop()
+        await owner.shutdown()
+        await survivor.shutdown()
+    }
+
     @Test("Node A ACP Runtime reaches Node B Workspace through the gateway and honors owner revocation")
     @MainActor
     func runtimeInvokesRemoteWorkspaceAndOwnerRevocationBlocksNextCall() async throws {
@@ -519,7 +654,8 @@ struct TwoNodeMQTTIntegrationTests {
         serveBinary: String,
         agentFixture: String,
         scratch: URL,
-        timelineID requestedTimelineID: UUID? = nil
+        timelineID requestedTimelineID: UUID? = nil,
+        fixtureEnvironment extraFixtureEnvironment: [String: String] = [:]
     ) async throws -> NodeProcess {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -535,7 +671,7 @@ struct TwoNodeMQTTIntegrationTests {
         let fixtureState = configDirectory.appendingPathComponent("fixture-sessions.json")
         try store.mutateManifest { manifest in
             let fixturePID = configDirectory.appendingPathComponent("fixture-process.pid")
-            let fixtureEnvironment = [
+            var fixtureEnvironment = [
                 "GNOSTIC_ACP_FIXTURE_STATE": fixtureState.path,
                 "GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE": fixturePID.path,
                 "GNOSTIC_ACP_FIXTURE_MCP_DIAGNOSTICS_FILE": requestedTimelineID == nil
@@ -545,6 +681,7 @@ struct TwoNodeMQTTIntegrationTests {
                 "GNOSTIC_ACP_FIXTURE_MCP": requestedTimelineID == nil ? "0" : "1",
                 "GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_SUFFIX": requestedTimelineID == nil ? "" : "__search",
             ]
+            fixtureEnvironment.merge(extraFixtureEnvironment) { _, new in new }
             manifest.ascendants[0].backend.settings["command"] = .string("node")
             manifest.ascendants[0].backend.settings["args"] = .string(try jsonString([agentFixture]))
             manifest.ascendants[0].backend.settings["env"] = .string(try jsonString(fixtureEnvironment))
@@ -819,6 +956,23 @@ private final class WorkspaceScenarioTrace {
         try data.write(to: artifact.appendingPathComponent("context.json"), options: .atomic)
         return artifact
     }
+}
+
+@MainActor
+private final class PeerLossUpdateCollector {
+    var received: [AscendantTurnUpdate] = []
+}
+
+@MainActor
+private func waitForFile(_ url: URL, timeout: Duration) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
+        if FileManager.default.fileExists(atPath: url.path) { return }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    Issue.record("Timed out waiting for \(url.path).")
+    throw TwoNodeIntegrationError.nodeFailedToStart("fixture prompt start")
 }
 
 @MainActor
