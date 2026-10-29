@@ -54,12 +54,17 @@ struct GnosticSoakDriver: AsyncParsableCommand {
 
         if turns > 0 {
             for index in 1...turns {
+                let clock = ContinuousClock()
+                let started = clock.now
                 let result = try await client.run(
                     message: "soak turn \(index)",
                     timelineID: timelineID,
                     clientTurnID: "soak-\(index)"
                 )
-                print("soak turn \(index) ok chars=\(result.text.count) replayed=\(result.replayed)")
+                let elapsed = started.duration(to: clock.now).components
+                let durationMilliseconds = Double(elapsed.seconds) * 1_000 + Double(elapsed.attoseconds) / 1_000_000_000_000_000
+                let line = "soak turn \(index) ok chars=\(result.text.count) replayed=\(result.replayed) duration_ms=\(durationMilliseconds)\n"
+                try FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
                 if intervalMilliseconds > 0 {
                     try await Task.sleep(for: .milliseconds(intervalMilliseconds))
                 }

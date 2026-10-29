@@ -445,9 +445,12 @@ intermittent failure.
 
 `make soak` runs `gnostic serve` with the deterministic ACP fixture agent and
 drives scripted Turns for a configurable duration. It samples the serve
-process's resident size and thread count and the bounded Turn-ledger sizes
-`gnostic serve --metrics-file` reports, and fails when a bound is exceeded. It
-is not part of `make verify`.
+process's RSS, threads, file descriptors, authoritative journal bytes, and bounded
+Turn-ledger sizes. The driver records each Turn's latency in milliseconds. The
+run fails when a configured bound is exceeded, metrics are invalid, the driver
+fails, metrics stop updating for more than three effective writer intervals,
+or no Turns complete. The writer interval has a one-second minimum. It is separate from
+`make verify`.
 
 ```sh
 make soak
@@ -455,10 +458,28 @@ SOAK_DURATION_SECONDS=300 SOAK_MAX_RSS_KB=2097152 make soak
 ```
 
 `SOAK_MAX_RSS_KB`, `SOAK_MAX_THREADS`, `SOAK_DURATION_SECONDS`,
-`SOAK_TURNS`, and `SOAK_TURN_INTERVAL_MS` tune the run. PositronicKit's
-in-memory message store exposes no count, so the retained Turn ledger is the
-recorded in-memory growth proxy; admitted identified Turns are capped per
-serve lifetime by the coordinator's identity capacity.
+`SOAK_TURNS`, and `SOAK_TURN_INTERVAL_MS` tune the run. These settings are
+forwarded into the pinned container. Each run retains its logs, raw samples,
+state, dependency lockfile, source revision, and exit status under a unique
+`.testing/soak/run-*` directory. `SOAK_ARTIFACT_ROOT` selects a different parent
+inside the mounted worktree. The TSV columns are timestamp, RSS KB, threads,
+in-flight Turns, retained Timelines, retained identities, retained completions,
+tombstones, completed bytes, identity capacity, completion capacity, file
+descriptors, and journal bytes. Build logs and failing runs are retained too.
+
+An eight-hour candidate run requires `CONTAINER_TIMEOUT` above 28,800 seconds.
+This example submits a finite identified workload and observes resources for eight
+hours:
+
+```sh
+CONTAINER_TIMEOUT=30000 SOAK_DURATION_SECONDS=28800 SOAK_TURNS=512 make soak
+```
+ Choose a Turn count below the configured identity capacity; exceeding it
+is an expected admission failure, not a successful soak. This command alone
+does not satisfy owner manual acceptance or external-peer conformance.
+
+The retained ledger metrics describe Gnostic admission state. Runtime memory
+and model context remain Runtime-owned.
 
 ### Run the RLM scenario live stages
 

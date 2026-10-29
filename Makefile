@@ -108,6 +108,7 @@ harness-test:
 	@./Tests/Support/test-run-container.sh
 	@./Tests/Support/test-gnostic-container.sh
 	@./Tests/Support/test-build-isolation.sh
+	@./Tests/Support/test-soak.sh
 
 runner-smoke: require-package require-build-configuration image
 	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; npm ci --prefix Tests/Fixtures/ACPAgent --cache .build/npm-cache; /workspace/Scripts/runner-smoke.sh'
@@ -133,7 +134,7 @@ container-smoke: image
 # Long-running resource-bound run over the deterministic ACP fixture agent. It
 # is not part of verify; run it deliberately and read the summary.
 soak: require-package image
-	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh /workspace/Scripts/soak.sh
+	@GNOSTIC_BUILD_REVISION="$$(git rev-parse HEAD)" SWIFT_FLAGS="$(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS)" $(CONTAINER_RUN_ENV) EXTRA_CONTAINER_ENV="$(EXTRA_CONTAINER_ENV) -e SOAK_DURATION_SECONDS -e SOAK_TURNS -e SOAK_TURN_INTERVAL_MS -e SOAK_SAMPLE_INTERVAL_SECONDS -e SOAK_MAX_RSS_KB -e SOAK_MAX_THREADS -e SOAK_TURN_TIMEOUT_SECONDS -e SOAK_BROKER_HOST -e SOAK_BROKER_PORT -e SOAK_NAMESPACE -e SOAK_ARTIFACT_ROOT" ./.devcontainer/run.sh /workspace/Scripts/soak.sh
 
 macos-rlm-smoke: require-package
 	@bash Scripts/macos-rlm-smoke.sh

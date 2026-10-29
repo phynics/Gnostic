@@ -9,7 +9,7 @@
 # bound is exceeded.
 #
 # Invoked by `make soak`, which supplies the container and build environment.
-# Runnable directly where mosquitto and node are present.
+# Direct runs also require Linux /proc, mosquitto, node, and the pinned toolchain.
 #
 # Environment:
 #   SOAK_DURATION_SECONDS       wall-clock duration (default 60)
@@ -19,6 +19,7 @@
 #   SOAK_SAMPLE_INTERVAL_SECONDS  sampling cadence (default 2)
 #   SOAK_MAX_RSS_KB             resident-size bound (default 1048576)
 #   SOAK_MAX_THREADS            thread-count bound (default 512)
+#   SOAK_ARTIFACT_ROOT          retained per-run evidence parent (.testing/soak)
 
 set -euo pipefail
 
@@ -40,26 +41,55 @@ swift_cache_args=()
 if [ -d /workspace/.swiftpm-cache ]; then
     swift_cache_args=(--cache-path /workspace/.swiftpm-cache)
 fi
-swift_flags=("${swift_cache_args[@]}" --build-system native --quiet -Xswiftc -warnings-as-errors)
+swift_flags=("${swift_cache_args[@]}" --disable-automatic-resolution --build-system native --quiet -Xswiftc -warnings-as-errors)
 
+artifact_root=${SOAK_ARTIFACT_ROOT:-"$repo_root/.testing/soak"}
+mkdir -p "$artifact_root"
+scratch=$(mktemp -d "$artifact_root/run-XXXXXXXX")
+echo "Soak artifacts: $scratch"
+serve_pid=""
+driver_pid=""
+stop_process() {
+    local pid=$1
+    [ -n "$pid" ] || return 0
+    local status=0 sent_term=0 sent_kill=0
+    if kill -TERM "$pid" 2>/dev/null; then sent_term=1; fi
+    for _ in {1..50}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        if kill -KILL "$pid" 2>/dev/null; then sent_kill=1; fi
+    fi
+    wait "$pid" 2>/dev/null || status=$?
+    if [ "$status" = 143 ] && [ "$sent_term" = 1 ]; then return 0; fi
+    if [ "$status" = 137 ] && [ "$sent_kill" = 1 ]; then return 0; fi
+    return "$status"
+}
+cleanup() {
+    local status=$?
+    trap - EXIT INT TERM
+    stop_process "$driver_pid" || true
+    stop_process "$serve_pid" || true
+    printf '%s\n' "$status" > "$scratch/status.txt"
+    echo "Soak artifacts retained: $scratch"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ -n "${SWIFT_FLAGS:-}" ]; then read -r -a swift_flags <<< "$SWIFT_FLAGS"; fi
 echo "Building the serve binary and soak driver…" >&2
-swift build "${swift_flags[@]}" --product gnostic
-swift build "${swift_flags[@]}" --product gnostic-soak-driver
+swift build "${swift_flags[@]}" --product gnostic 2>&1 | tee "$scratch/build.log"
+swift build "${swift_flags[@]}" --product gnostic-soak-driver 2>&1 | tee -a "$scratch/build.log"
 bin_dir=$(swift build "${swift_flags[@]}" --show-bin-path)
 serve_bin="$bin_dir/gnostic"
 driver_bin="$bin_dir/gnostic-soak-driver"
 test -x "$serve_bin" || { echo "missing gnostic at $serve_bin" >&2; exit 1; }
 test -x "$driver_bin" || { echo "missing gnostic-soak-driver at $driver_bin" >&2; exit 1; }
-
-scratch=$(mktemp -d)
-serve_pid=""
-driver_pid=""
-cleanup() {
-    [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null || true
-    [ -n "$serve_pid" ] && kill -TERM "$serve_pid" 2>/dev/null || true
-    rm -rf "$scratch"
-}
-trap cleanup EXIT INT TERM
+cp Package.resolved "$scratch/Package.resolved"
+printf '%s\n' "${GNOSTIC_BUILD_REVISION:-unknown}" > "$scratch/revision.txt"
 
 # The container's deterministic Mosquitto when present; otherwise a private
 # anonymous listener for a direct run.
@@ -132,7 +162,7 @@ require("fs").writeFileSync(path, JSON.stringify(manifest, null, 2));
 JS
 
 echo "Starting gnostic serve (namespace $namespace, duration ${duration}s)…" >&2
-"$serve_bin" serve --config "$manifest" --metrics-file "$metrics" --metrics-interval "$sample_interval" \
+GNOSTIC_STATE_HOME="$scratch/state" "$serve_bin" serve --config "$manifest" --metrics-file "$metrics" --metrics-interval "$sample_interval" \
     > "$serve_log" 2>&1 &
 serve_pid=$!
 
@@ -141,6 +171,15 @@ for _ in $(seq 1 120); do
     kill -0 "$serve_pid" 2>/dev/null || { echo "serve exited during startup:" >&2; cat "$serve_log" >&2; exit 1; }
     sleep 0.5
 done
+
+test -r "$metrics" || {
+    for _ in $(seq 1 120); do
+        test -r "$metrics" && break
+        kill -0 "$serve_pid" 2>/dev/null || { cat "$serve_log" >&2; exit 1; }
+        sleep 0.5
+    done
+}
+test -r "$metrics" || { echo "FAIL: serve produced no metrics" >&2; exit 7; }
 
 echo "Driving Turns…" >&2
 "$driver_bin" --host "$broker_host" --port "$broker_port" --namespace "$namespace" \
@@ -160,11 +199,34 @@ sample() {
     local ledger="-"
     if [ -r "$metrics" ]; then
         ledger=$(node -e '
-            const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-            process.stdout.write([m.inFlightTurns, m.retainedTimelineCount, m.retainedIdentityCount,
+            const fs = require("fs"), path = require("path");
+            const maximumAge = Math.max(1, Number(process.argv[4])) * 3000;
+            if (Date.now() - fs.statSync(process.argv[1]).mtimeMs > maximumAge) {
+                console.error("Metrics snapshot is stale."); process.exit(7);
+            }
+            const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            function bytes(directory) {
+                if (!fs.existsSync(directory)) return 0;
+                return fs.readdirSync(directory, {withFileTypes: true}).reduce((total, entry) => {
+                    const file = path.join(directory, entry.name);
+                    return total + (entry.isDirectory() ? bytes(file) : fs.statSync(file).size);
+                }, 0);
+            }
+            const descriptors = fs.readdirSync(`/proc/${process.argv[2]}/fd`).length;
+            const values = [m.inFlightTurns, m.retainedTimelineCount, m.retainedIdentityCount,
                 m.retainedCompletedCount, m.retainedTombstoneCount, m.retainedCompletedBytes,
-                m.identityCapacity, m.completedCapacity].join("\t"));
-        ' "$metrics" 2>/dev/null || echo "-")
+                m.identityCapacity, m.completedCapacity, descriptors, bytes(process.argv[3])];
+            if (!values.every(value => Number.isSafeInteger(value) && value >= 0)) {
+                console.error("Metrics snapshot contains invalid counters."); process.exit(7);
+            }
+            process.stdout.write(values.join("\t"));
+        ' "$metrics" "$serve_pid" "$scratch/state/timeline-journals" "$sample_interval") || {
+            echo "FAIL: invalid or stale soak metrics" >&2
+            exit 7
+        }
+    else
+        echo "FAIL: soak metrics disappeared" >&2
+        exit 7
     fi
     printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "${rss_kb:-?}" "${threads:-?}" "$ledger" >> "$samples"
 }
@@ -173,19 +235,32 @@ deadline=$(( $(date +%s) + duration ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
     sample
     kill -0 "$serve_pid" 2>/dev/null || { echo "serve exited during the soak:" >&2; cat "$serve_log" >&2; exit 1; }
+    if [ -n "$driver_pid" ] && ! kill -0 "$driver_pid" 2>/dev/null; then
+        if wait "$driver_pid"; then
+            driver_pid=""
+        else
+            driver_pid=""
+            echo "FAIL: the soak driver exited unsuccessfully" >&2
+            tail -20 "$driver_log" >&2
+            exit 6
+        fi
+    fi
     sleep "$sample_interval"
 done
 sample
 
-kill "$driver_pid" 2>/dev/null || true
-wait "$driver_pid" 2>/dev/null || true
+if ! stop_process "$driver_pid"; then
+    driver_pid=""
+    echo "FAIL: the soak driver exited unsuccessfully" >&2
+    tail -20 "$driver_log" >&2
+    exit 6
+fi
 driver_pid=""
-kill -TERM "$serve_pid" 2>/dev/null || true
-wait "$serve_pid" 2>/dev/null || true
+stop_process "$serve_pid"
 serve_pid=""
 
 turns_run=$(grep -c "soak turn .* ok" "$driver_log" 2>/dev/null || true)
-driver_errors=$(grep -c "error\|failed" "$driver_log" 2>/dev/null || true)
+driver_errors=$(grep -ic "error\|failed" "$driver_log" 2>/dev/null || true)
 
 echo ""
 echo "Soak summary"
@@ -204,7 +279,11 @@ awk -F'\t' '
         identity_capacity = $10
         completed_capacity = $11
     }
+    NR == 1 { journal_first = $13 + 0 }
+    { journal_last = $13 + 0; if ($12 + 0 > descriptor_max) descriptor_max = $12 + 0 }
     END {
+        printf "  peak file descriptors %d\n", descriptor_max
+        printf "  journal bytes       %d (growth %d)\n", journal_last, journal_last - journal_first
         printf "  peak RSS (KB)       %d\n", rss_max
         printf "  peak threads        %d\n", threads_max
         printf "  peak ledger         timelines=%d identities=%d completed=%d bytes=%d (capacities identities=%s completed=%s)\n",
@@ -214,11 +293,13 @@ awk -F'\t' '
 
 status=0
 awk -v rss_max="$max_rss_kb" -v thread_max="$max_threads" -F'\t' '
-    $2 ~ /^[0-9]+$/ && $2 + 0 > rss_max { exit 1 }
-    $3 ~ /^[0-9]+$/ && $3 + 0 > thread_max { exit 2 }
-    $6 ~ /^[0-9]+$/ && $10 ~ /^[0-9]+$/ && $6 + 0 > $10 + 0 { exit 3 }
-    $7 ~ /^[0-9]+$/ && $11 ~ /^[0-9]+$/ && $7 + 0 > $11 + 0 { exit 4 }
-    END { exit 0 }
+    NF != 13 { status = 7; exit }
+    { for (i = 1; i <= NF; i++) if ($i !~ /^[0-9]+$/) { status = 7; exit } }
+    $2 + 0 > rss_max { status = 1; exit }
+    $3 + 0 > thread_max { status = 2; exit }
+    $6 + 0 > $10 + 0 { status = 3; exit }
+    $7 + 0 > $11 + 0 { status = 4; exit }
+    END { if (NR == 0) status = 7; exit status }
 ' "$samples" || status=$?
 
 case "$status" in
@@ -227,6 +308,7 @@ case "$status" in
     2) echo "FAIL: peak thread count exceeded ${max_threads}" >&2 ;;
     3) echo "FAIL: retained identified Turns exceeded capacity" >&2 ;;
     4) echo "FAIL: retained completed Turns exceeded capacity" >&2 ;;
+    7) echo "FAIL: incomplete or invalid soak samples" >&2 ;;
 esac
 [ "$turns_run" -gt 0 ] || { echo "FAIL: the driver completed no Turns" >&2; status=5; }
 [ "$driver_errors" -eq 0 ] || { echo "FAIL: the driver reported errors" >&2; status=6; }
@@ -236,4 +318,10 @@ if [ "$status" -ne 0 ]; then
     tail -20 "$driver_log" >&2
     exit "$status"
 fi
+awk '
+    /duration_ms=/ { for (i = 1; i <= NF; i++) if ($i ~ /^duration_ms=/) {
+        split($i, value, "="); total += value[2]; count++; if (value[2] + 0 > peak) peak = value[2] + 0
+    } }
+    END { if (count > 0) printf "  Turn latency (ms)   mean=%.3f peak=%.3f samples=%d\n", total/count, peak, count }
+' "$driver_log"
 echo "Soak bounds held."
