@@ -480,19 +480,28 @@ final class ACPDispatcher: Sendable {
                 }
             }
             do {
-                let response = try await permissionTask.value
-                guard let approved = ACPPermissionBridge.approved(from: response) else {
+                guard let response = try await ACPPermissionBridge.boundedAnswer(from: permissionTask) else {
+                    try await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "permissionUnanswered")
+                    continue
+                }
+                guard let answer = ACPPermissionBridge.answer(from: response) else {
                     throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
+                }
+                // Only a client's explicit choice is a decision (ADR 0019 §4).
+                guard answer != .undecided else {
+                    try await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "clientCancelled")
+                    continue
                 }
                 let providerID = try await currentRuntime().providerID
                 try client.respondToPermission(AscendantPermissionResponse(
                     correlationID: state.correlationID,
                     timelineID: timelineID,
                     clientTurnID: turnID,
-                    approved: approved
+                    approved: answer == .approved
                 ), providerID: providerID)
             } catch {
-                try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
+                let reason = error is CancellationError ? "sessionClosed" : "clientRequestFailed"
+                try? await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: reason)
                 if error is CancellationError {
                     throw JSONRPCMethodError.invalidState("ACP session was closed")
                 }
@@ -501,17 +510,20 @@ final class ACPDispatcher: Sendable {
         }
     }
 
-    private func denyPermission(
+    /// Tells the Node that the client made no decision. It is not a denial.
+    private func withholdPermission(
         _ state: AscendantPermissionState,
         timelineID: UUID,
-        turnID: String
+        turnID: String,
+        reason: String
     ) async throws {
         let providerID = try await currentRuntime().providerID
         try client.respondToPermission(AscendantPermissionResponse(
             correlationID: state.correlationID,
             timelineID: timelineID,
             clientTurnID: turnID,
-            approved: false
+            approved: false,
+            unavailableReason: reason
         ), providerID: providerID)
     }
 

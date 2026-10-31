@@ -465,8 +465,9 @@ public actor TimelineTurnCoordinator {
 
     /// Mediates a host permission request crossing Node boundaries with a timeout bound.
     ///
-    /// If unresponded within timeout, returns JSON-RPC error code -32800 and records
-    /// the decision as "unavailable". Replay preserves the recorded decision and never prompts again.
+    /// If the client does not answer within the timeout, or its prompt fails, records the decision as
+    /// "unavailable" and returns it. This ends the one request, never the Turn, and it is not a denial
+    /// (ADR 0019 T3). Replay preserves the recorded decision and never prompts again.
     public func mediatePermission(
         request: TimelinePermissionRequest,
         timeout: Duration = .seconds(5),
@@ -515,8 +516,14 @@ public actor TimelineTurnCoordinator {
                 approved: false,
                 recordedAt: Date()
             )
-            // Error code -32800 (requestCancelled).
-            throw ACPError.requestCancelled("Permission request timed out; decision recorded as unavailable")
+            return TimelinePermissionResponse(
+                correlationID: request.correlationID,
+                timelineID: request.timelineID,
+                clientTurnID: request.clientTurnID,
+                approved: false,
+                decision: "unavailable",
+                protocolMajor: GnosticProtocol.currentMajor
+            )
         }
 
         let decision = response.decision ?? (response.approved ? "approved" : "denied")

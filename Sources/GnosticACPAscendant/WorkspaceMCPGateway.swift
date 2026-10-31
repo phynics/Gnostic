@@ -108,6 +108,15 @@ final class WorkspaceMCPGateway {
               case let .string(name)? = params["name"] else {
             return error(request.id, code: ACPv2Protocol.ErrorCode.invalidParams, "tools/call requires a tool name.")
         }
+        let arguments: [String: ManifestJSONValue]
+        switch params["arguments"] {
+        case nil:
+            arguments = [:]
+        case let .object(values)?:
+            arguments = values.mapValues(Self.manifestValue)
+        default:
+            return error(request.id, code: ACPv2Protocol.ErrorCode.invalidParams, "tools/call arguments must be an object.")
+        }
         guard let tool = await availableTools().first(where: { $0.gatewayName == name }) else {
             return error(request.id, code: -32003, "Workspace tool is not attached or is unavailable.")
         }
@@ -151,12 +160,6 @@ final class WorkspaceMCPGateway {
               await availableTools().contains(where: { $0.gatewayName == name }) else {
             return error(request.id, code: -32003, "Workspace attachment or availability changed before dispatch.")
         }
-        let arguments: [String: ManifestJSONValue]
-        if case let .object(values)? = params["arguments"] {
-            arguments = values.mapValues(Self.manifestValue)
-        } else {
-            arguments = [:]
-        }
         do {
             let result = try await workspaceService.invoke(BackendWorkspaceInvocation(
                 timelineID: timelineID,
@@ -169,7 +172,8 @@ final class WorkspaceMCPGateway {
                 "content": .array([.object(["type": .string("text"), "text": .string(Self.outputText(result))])]),
                 "isError": .bool(!result.isSuccess),
             ]
-            if let value = result.value {
+            // MCP defines structured content as an object. Other values stay in the text content.
+            if case .object? = result.value, let value = result.value {
                 fields["structuredContent"] = Self.acpValue(value)
             }
             return response(id: request.id, result: .object(fields))

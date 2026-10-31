@@ -58,8 +58,8 @@ public enum ACPv2Protocol {
         public static let invalidParams = -32602
         /// Internal JSON-RPC error (-32603).
         public static let internalError = -32603
-        /// Unanswered permission timeout or executing party internal cancellation (-32800).
-        /// Required by ADR 0019 Decision T3.
+        /// Executing party internal cancellation (-32800). An unanswered permission request
+        /// uses the `cancelled` outcome instead (ADR 0019 Decision T3).
         public static let requestCancelled = -32800
         /// Timeline busy error code (-32001).
         /// Required by ADR 0021 Section 4.

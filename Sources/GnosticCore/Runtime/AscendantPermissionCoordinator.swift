@@ -28,10 +28,22 @@ public actor AscendantPermissionCoordinator {
     private let updates: AscendantTurnUpdateStore
     private let logger: Logger
     private var pending: [String: Pending] = [:]
+    private let unansweredBound: Duration
     private var acceptingResponses = true
 
-    public init(updates: AscendantTurnUpdateStore) {
+    /// The default wait for a client answer. It leaves a person time to decide,
+    /// and it stays inside the 300-second Turn call limit of `gnostic acp`.
+    public static let defaultUnansweredBound: Duration = .seconds(120)
+
+    /// Creates a coordinator.
+    ///
+    /// - Parameters:
+    ///   - updates: The Turn update store that carries permission state.
+    ///   - unansweredBound: How long to wait for a client answer before the
+    ///     request resolves as unavailable (ADR 0019 §4).
+    public init(updates: AscendantTurnUpdateStore, unansweredBound: Duration = defaultUnansweredBound) {
         self.updates = updates
+        self.unansweredBound = unansweredBound
         self.logger = ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).permission")
     }
 
@@ -43,7 +55,8 @@ public actor AscendantPermissionCoordinator {
     /// - Returns: ``AscendantPermissionDecision/approved`` or
     ///   ``AscendantPermissionDecision/denied`` when the client answered, and
     ///   ``AscendantPermissionDecision/unavailable(reason:)`` when the host
-    ///   could not ask. A host failure is never reported as a denial.
+    ///   could not ask or no client answered within the bound. Neither is
+    ///   reported as a denial.
     public func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
         guard acceptingResponses else {
             return .unavailable(reason: "permissionMediationStopped")
@@ -64,8 +77,34 @@ public actor AscendantPermissionCoordinator {
         let (decisions, continuation) = AsyncStream<AscendantPermissionDecision>.makeStream()
         pending[request.correlationID] = Pending(request: request, clientTurnID: clientTurnID, continuation: continuation)
         await append(request, clientTurnID: clientTurnID, status: .pending)
-        var iterator = decisions.makeAsyncIterator()
-        return await iterator.next() ?? .unavailable(reason: "decisionStreamEnded")
+        let bound = unansweredBound
+        let correlationID = request.correlationID
+        let expiry = Task { [weak self] in
+            try await Task.sleep(for: bound)
+            await self?.expire(correlationID: correlationID)
+        }
+        defer { expiry.cancel() }
+        return await withTaskCancellationHandler {
+            var iterator = decisions.makeAsyncIterator()
+            return await iterator.next() ?? .unavailable(reason: "decisionStreamEnded")
+        } onCancel: {
+            // A cancelled caller stops listening, so nothing else would clear this request.
+            Task { await self.expire(correlationID: correlationID, reason: "turnCancelled") }
+        }
+    }
+
+    private func expire(correlationID: String, reason: String = "permissionUnanswered") async {
+        guard let value = pending.removeValue(forKey: correlationID) else { return }
+        logger.warning("permission request ended without a decision: \(reason)")
+        await resolveUnavailable(value, reason: reason, status: .unavailable)
+    }
+
+    private func resolveUnavailable(_ value: Pending, reason: String, status: AscendantPermissionStatus) async {
+        try? await updates.recordPermissionDecision(request: value.request, decision: .unavailable(reason: reason))
+        await append(value.request, clientTurnID: value.clientTurnID, status: status)
+        await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
+        value.continuation.yield(.unavailable(reason: reason))
+        value.continuation.finish()
     }
 
     @discardableResult
@@ -73,7 +112,8 @@ public actor AscendantPermissionCoordinator {
         correlationID: String,
         timelineID: UUID,
         clientTurnID: String,
-        approved: Bool
+        approved: Bool,
+        unavailableReason: String? = nil
     ) async -> Bool {
         guard acceptingResponses else { return false }
         guard let responseClientTurnID = try? await updates.validatedClientTurnID(clientTurnID) else {
@@ -84,6 +124,10 @@ public actor AscendantPermissionCoordinator {
               value.request.timelineID == timelineID,
               value.request.clientTurnID == responseClientTurnID.rawValue else { return false }
         pending[correlationID] = nil
+        if let unavailableReason {
+            await resolveUnavailable(value, reason: unavailableReason, status: .unavailable)
+            return true
+        }
         do {
             try await updates.recordPermissionDecision(request: value.request, decision: approved ? .approved : .denied)
         } catch {
@@ -110,11 +154,7 @@ public actor AscendantPermissionCoordinator {
         let values = Array(pending.values)
         pending.removeAll()
         for value in values {
-            try? await updates.recordPermissionDecision(request: value.request, decision: .unavailable(reason: reason.rawValue))
-            await append(value.request, clientTurnID: value.clientTurnID, status: reason)
-            await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
-            value.continuation.yield(.unavailable(reason: reason.rawValue))
-            value.continuation.finish()
+            await resolveUnavailable(value, reason: reason.rawValue, status: reason)
         }
     }
 

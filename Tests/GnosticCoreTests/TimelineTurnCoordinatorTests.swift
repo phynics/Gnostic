@@ -441,7 +441,7 @@ struct TimelineTurnCoordinatorTests {
         #expect(retryResult.terminalOutcome == .insertionUnknown)
     }
 
-    @Test("Unanswered permission request returns -32800 and records decision as unavailable; replay preserves decision")
+    @Test("Unanswered permission request resolves as unavailable without failing the caller; replay preserves decision")
     func permissionTimeoutMediation() async throws {
         let coordinator = makeCoordinator()
         let timelineID = UUID()
@@ -456,22 +456,20 @@ struct TimelineTurnCoordinatorTests {
             protocolMajor: GnosticProtocol.currentMajor
         )
 
-        // Time out with short timeout duration
-        do {
-            _ = try await coordinator.mediatePermission(request: request, timeout: .milliseconds(50)) { _ in
-                try await Task.sleep(for: .milliseconds(500))
-                return TimelinePermissionResponse(
-                    correlationID: correlationID,
-                    timelineID: timelineID,
-                    clientTurnID: "turn-p1",
-                    approved: true,
-                    protocolMajor: GnosticProtocol.currentMajor
-                )
-            }
-            Issue.record("Expected timeout cancellation error")
-        } catch let error as ACPError {
-            #expect(error.errorCode == -32800)
+        // ADR 0019 T3: the timeout ends this one request. It is not an error, and it is not a denial.
+        let unanswered = try await coordinator.mediatePermission(request: request, timeout: .milliseconds(50)) { _ in
+            try await Task.sleep(for: .milliseconds(500))
+            return TimelinePermissionResponse(
+                correlationID: correlationID,
+                timelineID: timelineID,
+                clientTurnID: "turn-p1",
+                approved: true,
+                protocolMajor: GnosticProtocol.currentMajor
+            )
         }
+        #expect(unanswered.approved == false)
+        #expect(unanswered.decision == "unavailable")
+        #expect(unanswered.correlationID == correlationID)
 
         // Replay of the timed-out permission request returns recorded decision as unavailable and NEVER prompts again
         let promptedAgain = SafeFlag()

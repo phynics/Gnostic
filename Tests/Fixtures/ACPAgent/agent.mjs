@@ -376,6 +376,7 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
 
     if (process.env.GNOSTIC_ACP_FIXTURE_PERMISSION === "1") {
+      const permissionStartedAt = Date.now();
       const permission = await client.request(acp.methods.client.session.requestPermission, {
         sessionId: params.sessionId,
         title: "Inspect fixture input",
@@ -403,6 +404,14 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
               { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
               { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
             ],
+      }).catch(async (error) => {
+        if (process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE) {
+          await writeFile(
+            process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE,
+            `rejected after ${Date.now() - permissionStartedAt} ms: ${error?.code} ${error?.message}`,
+          );
+        }
+        throw error;
       });
       if (process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE) {
         await writeFile(process.env.GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE, JSON.stringify(permission.outcome));

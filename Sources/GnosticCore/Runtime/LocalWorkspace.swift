@@ -28,7 +28,9 @@ public protocol LocalWorkspace: Sendable {
     ///
     /// - Parameters:
     ///   - id: The advertised tool identifier.
-    ///   - parameters: The tool arguments, matching its declared schema.
+    ///   - parameters: The tool arguments. The MCP gateway forwards them without
+    ///     checking them against the declared schema, so the Workspace must
+    ///     validate them and report a failure for arguments it cannot accept.
     /// - Returns: The tool result.
     /// - Throws: When the tool is unknown or rejects the call.
     func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
