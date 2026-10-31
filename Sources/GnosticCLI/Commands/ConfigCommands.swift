@@ -537,7 +537,8 @@ struct ConfigCommand: AsyncParsableCommand {
             discussion: """
             A host must register a local Workspace adapter for the configured \
             kind before it can serve that Workspace. The default `gnostic` host \
-            registers no local Workspace adapters.
+            registers the read-only `filesystem` kind. Set `kind` and a root \
+            directory `uri` in the manifest to use it.
             """,
             subcommands: [WorkspaceAdd.self, WorkspaceUpdate.self, WorkspaceRemove.self]
         )

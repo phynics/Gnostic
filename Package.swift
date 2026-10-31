@@ -326,6 +326,13 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GnosticHostTests",
+            dependencies: [
+                "GnosticCore",
+                "GnosticHost",
+            ]
+        ),
+        .testTarget(
             name: "GnosticExperimentCLITests",
             dependencies: [
                 "GnosticExperimentCLI",

@@ -11,7 +11,8 @@ import GnosticACPAscendant
 /// is known to configuration commands and to a running Node, with the same
 /// settings schema.
 ///
-/// The production host registers the ACP process adapter. PositronicKit is
+/// The production host registers the ACP process adapter and the read-only
+/// `filesystem` Workspace kind. PositronicKit is
 /// deliberately absent: the reference Runtime runs behind the standalone ACP
 /// process boundary, so the host cannot materialize its model loop here.
 ///
@@ -65,6 +66,7 @@ public struct BackendComposition: Sendable {
     /// for source compatibility; ACP adapter composition is manifest-neutral.
     public func makeAdapters(for _: [NodeManifest.Ascendant]) -> NodeRuntimeAdapters {
         var workspaces = WorkspaceAdapterRegistry()
+        FilesystemWorkspace.register(in: &workspaces)
         #if DEBUG
         DebugWorkspaceFixtures.register(in: &workspaces, environment: ProcessInfo.processInfo.environment)
         #endif
