@@ -52,7 +52,17 @@ Session transitions, Project changes, Turn admission and completion, permission
 decisions, and ACP updates. A Session transition stores the session ID, Runtime instance ID,
 state, Project kind, and exact `cwd`. A Turn admission stores its canonical
 prompt digest, ACP version tag, content blocks, Turn sequence, and
-`clientTurnID`. An ACP update stores the `ACPSessionUpdate` value as received.
+`clientTurnID`.
+
+The admission digest is the lowercase hexadecimal SHA-256 of the RFC 8785
+canonical form of the document
+`{"acpVersionTag": <tag>, "prompt": <content blocks>}`. The version tag is
+`ACPv2Protocol.versionTag`. The Turn sequence is one more than the highest
+sequence the Timeline has admitted, so it increases in admission order. A reader
+recomputes the digest from the stored prompt and tag, and it quarantines the
+Timeline when they disagree. A Turn completion stores the Turn's outcome:
+`completed`, `endedUnspecified`, `cancelled`, `failed`, `insertionUnknown`, or
+`unavailable`. An ACP update stores the `ACPSessionUpdate` value as received.
 That value keeps `_meta` and unknown update kinds.
 
 A `projectChanged` event stores the desired `Project` and retires the latest
@@ -70,7 +80,8 @@ Session updates received while a new Session binding is being committed are
 queued, then synced and forwarded in receipt order after the Session transition.
 An idle update alone does not confirm prompt insertion. Without a committed
 completion, recovery retains `insertionUnknown` and never dispatches that
-admission again.
+admission again. A completion with the outcome `insertionUnknown` is the same
+state, recorded when the Runtime's response to the prompt was lost.
 
 The Turn event log remains a separate digest-only ledger. It does not replace
 the Timeline journal or contain conversation content.
@@ -88,6 +99,17 @@ journal remains byte-for-byte unchanged.
 `replay(after:)` accepts a cursor only when its sequence and replay epoch match
 one committed record. It rejects a cursor from a different epoch. Sequence
 numbers do not restart when a new epoch begins.
+
+## Format version 1 before release
+
+Format version 1 is not yet released. Gnostic changed the Turn admission digest
+from FNV-1a over the message to the SHA-256 form above, and it replaced the
+`legacy-text-v1` version tag with the ACP version tag, without a version bump.
+The frame and the payload fields did not change. A journal that an earlier
+development build wrote fails the digest check when Gnostic opens it, so the
+Timeline is quarantined and nothing is rewritten. Discard such a journal.
+After the first release, a digest change needs a new format version and a
+migration.
 
 ## Schema changes
 
