@@ -3230,6 +3230,36 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("a prompt that times out without a response is insertionUnknown and is not sent again")
+    @MainActor
+    func promptTimeoutIsInsertionUnknown() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let promptRequests = stateHome.url.appendingPathComponent("prompt-requests.txt")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, promptRequestFile: promptRequests),
+            timelines: [.init(id: timelineID, title: "Prompt timeout")],
+            promptTimeoutSeconds: 1
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "[fixture:drop-prompt-response]", clientTurnID: "timeout-1"),
+                updates: RecordingUpdateSink()
+            )
+        }
+        let outcome = await settle(turn, seconds: 8)
+        guard case let .failure(error)? = outcome, case let AscendantBackendError.insertionUnknown(failure) = error else {
+            Issue.record("Expected insertionUnknown, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        // The timeout also marks the connection unusable, so the host retires it.
+        #expect(failure?.code == "acpTransportUnusable")
+        #expect(wireEvents(promptRequests).count == 1)
+        await backend.shutdown()
+    }
+
     @Test("cancelling after insertion sends session/cancel and never $/cancel_request")
     @MainActor
     func cancelAfterInsertionSendsSessionCancelOnly() async throws {

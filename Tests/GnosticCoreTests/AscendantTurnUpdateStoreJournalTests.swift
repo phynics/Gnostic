@@ -314,6 +314,41 @@ struct AscendantTurnUpdateStoreJournalTests {
         }
     }
 
+    @Test("a recorded insertionUnknown survives a restart that recovers the event log beside the Timeline journal")
+    func recordedInsertionUnknownSurvivesCombinedRecovery() async throws {
+        // Production runs the Turn event log together with the Timeline journal.
+        // After a restart the event log's identity and outcome answer admission,
+        // so the outcome's reason code is the only thing that keeps the Turn
+        // insertionUnknown rather than unavailable.
+        let url = makeURL()
+        let journalDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("turn-insertion-unknown-combined-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: journalDirectory))
+        try await writer.enableDurability(at: url)
+        let writerID = try await writer.validatedClientTurnID("admit-unknown")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
+        try await writer.recordOutcome(
+            timelineID: timelineID,
+            clientTurnID: writerID,
+            outcome: .failed(.insertionUnknown(timelineID: timelineID, clientTurnID: "admit-unknown"))
+        )
+
+        let reader = AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: journalDirectory))
+        try await reader.enableDurability(at: url)
+        let readerID = try await reader.validatedClientTurnID("admit-unknown")
+        for attempt in 1...2 {
+            let admission = try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello")
+            guard case let .replay(.failed(error)) = admission else {
+                Issue.record("Attempt \(attempt) expected the recorded insertionUnknown, observed \(admission).")
+                continue
+            }
+            #expect(error.reasonCode == "insertionUnknown")
+            #expect(!error.retryable)
+        }
+    }
+
     @Test("a recovered failed Turn is unavailable rather than rerun")
     func recoveredFailureIsUnavailable() async throws {
         let url = makeURL()
