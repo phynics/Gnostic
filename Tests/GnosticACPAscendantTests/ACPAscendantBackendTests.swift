@@ -3260,6 +3260,60 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    /// Reads the Timeline journal each time the backend forwards assistant text,
+    /// so the test sees whether the update was already durable.
+    private actor DurabilityProbeSink: AscendantBackendUpdateSink {
+        private let store: TimelineJournalStore
+        private let timelineID: UUID
+        private(set) var forwarded: [String] = []
+        private(set) var notYetDurable: [String] = []
+
+        init(store: TimelineJournalStore, timelineID: UUID) {
+            self.store = store
+            self.timelineID = timelineID
+        }
+
+        func append(_ update: AscendantBackendUpdate) async throws {
+            guard update.kind == .assistantText, let text = update.text else { return }
+            forwarded.append(text)
+            let records = try await store.journal(for: timelineID).replay()
+            let durable = records.contains { record in
+                if case let .acpUpdate(_, journaled) = record.payload,
+                   case let .agentMessageChunk(chunk) = journaled.update,
+                   case let .text(content) = chunk.content {
+                    return content.text == text
+                }
+                return false
+            }
+            if !durable { notYetDurable.append(text) }
+        }
+    }
+
+    @Test("an ACP update is durable in the Timeline journal before the backend forwards it")
+    @MainActor
+    func acpUpdateIsDurableBeforeForwarding() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        try await store.ensureTimelineCreated(timelineID: timelineID, title: "Durable", runtimeInstanceID: runtimeID, attachments: [])
+        let instance = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url),
+            timelines: [NodeManifest.Timeline(id: timelineID, title: "Durable")],
+            ascendantID: runtimeID,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
+        )
+        let sink = DurabilityProbeSink(store: store, timelineID: timelineID)
+        _ = try await instance.runTurn(.init(timelineID: timelineID, message: "durable first", clientTurnID: "durable-1"), updates: sink)
+
+        let forwarded = await sink.forwarded
+        let notYetDurable = await sink.notYetDurable
+        #expect(forwarded.count == 2, "observed \(forwarded)")
+        #expect(notYetDurable.isEmpty, "Forwarded before it was durable: \(notYetDurable)")
+        await instance.shutdown()
+    }
+
     @Test("cancelling after insertion sends session/cancel and never $/cancel_request")
     @MainActor
     func cancelAfterInsertionSendsSessionCancelOnly() async throws {
