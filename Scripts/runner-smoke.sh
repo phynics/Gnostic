@@ -51,7 +51,7 @@ cleanup() {
     if [ "$status" -ne 0 ]; then
         local diagnostics="/workspace/.testing/runner-smoke-failure-$(date +%s)-$$"
         mkdir -p "$diagnostics" || true
-        for name in runner.log mosquitto.log client.stderr fixture-initialize fixture-new-session fixture-prompt fixture-pid; do
+        for name in runner.log mosquitto.log client.stderr fixture-initialize fixture-new-session fixture-prompt fixture-permission fixture-pid; do
             if [ -f "$scratch/$name" ]; then cp "$scratch/$name" "$diagnostics/$name" || true; fi
         done
         printf 'Runner smoke diagnostics saved to %s\n' "$diagnostics" >&2
@@ -189,6 +189,7 @@ manifest.ascendants[0].backend.settings.env = JSON.stringify({
   GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE: `${scratch}/fixture-pid`,
   GNOSTIC_ACP_FIXTURE_PERMISSION: "1",
   GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME: "cancelled",
+  GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE: `${scratch}/fixture-permission`,
 });
 fs.writeFileSync(manifestPath, JSON.stringify(manifest));
 NODE
