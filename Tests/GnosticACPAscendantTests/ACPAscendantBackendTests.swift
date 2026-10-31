@@ -1649,8 +1649,12 @@ struct ACPAscendantBackendTests {
         } catch {
             Issue.record("The unrelated Timeline Turn failed after scoped cancellation: \(error).")
         }
-        let cancellationIDs = (try? String(contentsOf: cancelFile, encoding: .utf8))?
-            .split(whereSeparator: \.isNewline).map(String.init) ?? []
+        // The Runtime records `session/cancel` as it processes it, after the
+        // Turn ended, so wait for the record instead of racing it.
+        for _ in 0..<200 where wireEvents(cancelFile).isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let cancellationIDs = wireEvents(cancelFile)
         let sessionsData = try Data(contentsOf: stateHome.url.appendingPathComponent("\(backend.identity.id.uuidString).json"))
         let sessions = try #require(JSONSerialization.jsonObject(with: sessionsData) as? [String: [String: Any]])
         let targetSessionID = try #require(sessions[firstTimelineID.uuidString]?["sessionID"] as? String)
@@ -1721,7 +1725,7 @@ struct ACPAscendantBackendTests {
         #expect(kill(-processGroupID, 0) != 0 && errno == ESRCH, "Recorded ACP process group survived backend retirement")
     }
 
-    @Test("an ACP process crash is reported as lifecycle unusable")
+    @Test("an ACP process crash during a prompt is insertionUnknown and makes the lifecycle unusable")
     @MainActor
     func crashIsLifecycleUnusable() async throws {
         let stateHome = try makeTemporaryStateHome()
@@ -1736,9 +1740,12 @@ struct ACPAscendantBackendTests {
 
         do {
             _ = try await backend.runTurn(.init(timelineID: timelineID, message: "crash"), updates: RecordingUpdateSink())
-            Issue.record("Expected a crashed ACP process to make its lifecycle unusable.")
-        } catch let AscendantBackendError.lifecycleUnusable(failure) {
-            #expect(!failure.message.contains(secret))
+            Issue.record("Expected a crashed ACP process to leave the prompt's insertion unknown.")
+        } catch let AscendantBackendError.insertionUnknown(failure) {
+            // The prompt response was lost with the process, so the prompt may
+            // have been inserted. The same failure retires the backend.
+            #expect(failure?.code == "acpTransportUnusable")
+            #expect(failure?.message.contains(secret) == false)
         }
         await backend.shutdown()
     }
@@ -1781,9 +1788,10 @@ struct ACPAscendantBackendTests {
 
         do {
             _ = try await runtime.turn(.init(message: "crash", timelineID: timelineID, clientTurnID: "crash-once"))
-            Issue.record("Expected the first ACP Turn to fail with a lifecycle error.")
-        } catch let AscendantTurnError.lifecycleUnusable(failedTimelineID, _, _) {
+            Issue.record("Expected the first ACP Turn to end insertionUnknown.")
+        } catch let AscendantTurnError.insertionUnknown(failedTimelineID, failedClientTurnID) {
             #expect(failedTimelineID == timelineID)
+            #expect(failedClientTurnID == "crash-once")
         } catch {
             await runtime.shutdown()
             throw error
@@ -2501,9 +2509,12 @@ struct ACPAscendantBackendTests {
                 return
             }
         }
-        let cancellationCount = (try? String(contentsOf: cancelFile, encoding: .utf8))?
-            .split(whereSeparator: \.isNewline).count ?? 0
-        #expect(cancellationCount == 1)
+        // The Runtime records `session/cancel` as it processes it, after the
+        // Turn ended, so wait for the record instead of racing it.
+        for _ in 0..<200 where wireEvents(cancelFile).isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(wireEvents(cancelFile).count == 1)
         await backend.shutdown()
     }
 
@@ -2802,6 +2813,8 @@ struct ACPAscendantBackendTests {
         promptProgressIntervalMilliseconds: Int? = nil,
         promptStartedFile: URL? = nil,
         cancellationFile: URL? = nil,
+        wireLogFile: URL? = nil,
+        promptRequestFile: URL? = nil,
         initializeProtocolVersion: Int? = nil,
         initializeExtraCapabilities: String? = nil
     ) throws -> [String: ManifestJSONValue] {
@@ -2862,6 +2875,12 @@ struct ACPAscendantBackendTests {
         if let cancellationFile {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_CANCEL_FILE"] = cancellationFile.path
         }
+        if let wireLogFile {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_WIRE_LOG_FILE"] = wireLogFile.path
+        }
+        if let promptRequestFile {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE"] = promptRequestFile.path
+        }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
             "command": .string("/usr/bin/node"),
@@ -2900,6 +2919,365 @@ struct ACPAscendantBackendTests {
             }
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    // MARK: - ADR 0019 section 5 and ADR 0021 Turn semantics
+
+    /// The ordered wire events the fixture recorded, for example
+    /// `["prompt 4", "cancel_request 4"]`.
+    private func wireEvents(_ file: URL) -> [String] {
+        ((try? String(contentsOf: file, encoding: .utf8)) ?? "")
+            .split(whereSeparator: \.isNewline).map(String.init)
+    }
+
+    private func waitForWireEvents(_ file: URL, count: Int) async throws {
+        for _ in 0..<500 where wireEvents(file).count < count {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Runs `body`, or reports `nil` when it has not settled within `seconds`.
+    /// A regression that waits on the fixture instead of cancelling fails fast
+    /// rather than holding the suite for the fixture's own deadline.
+    private func settle<T: Sendable>(
+        _ task: Task<T, any Error>,
+        seconds: Int = 8
+    ) async -> Result<T, any Error>? {
+        let box = SettleBox<T>()
+        let watcher = Task {
+            do { await box.set(.success(try await task.value)) } catch { await box.set(.failure(error)) }
+        }
+        for _ in 0..<(seconds * 100) {
+            if let result = await box.value { return result }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        watcher.cancel()
+        return await box.value
+    }
+
+    private actor SettleBox<T: Sendable> {
+        private(set) var value: Result<T, any Error>?
+
+        func set(_ result: Result<T, any Error>) { value = result }
+    }
+
+    @Test("cancelling while insertion is pending sends $/cancel_request and a -32800 answer ends the Turn cancelled without session/cancel")
+    @MainActor
+    func cancelRequestPreventsInsertion() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Cancel before insertion")]
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "[fixture:hold-before-insertion]", clientTurnID: "hold-1"),
+                updates: RecordingUpdateSink()
+            )
+        }
+        try await waitForWireEvents(wireLog, count: 1)
+        await backend.cancelTurn(timelineID: timelineID, clientTurnID: "hold-1")
+
+        let outcome = await settle(turn)
+        guard case let .failure(error)? = outcome, case AscendantBackendError.cancelled = error else {
+            Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        let events = wireEvents(wireLog)
+        let promptID = try #require(events.first?.split(separator: " ").last.map(String.init))
+        #expect(events == ["prompt \(promptID)", "cancel_request \(promptID)"])
+        await backend.shutdown()
+    }
+
+    @Test("a success answer to $/cancel_request is followed by session/cancel")
+    @MainActor
+    func insertedDespiteCancelRequestIsFollowedBySessionCancel() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Inserted despite cancel request")]
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(
+                    timelineID: timelineID,
+                    message: "[fixture:hold-before-insertion] [fixture:insert-despite-cancel-request] [fixture:wait]",
+                    clientTurnID: "insert-anyway-1"
+                ),
+                updates: RecordingUpdateSink()
+            )
+        }
+        try await waitForWireEvents(wireLog, count: 1)
+        await backend.cancelTurn(timelineID: timelineID, clientTurnID: "insert-anyway-1")
+
+        let outcome = await settle(turn)
+        guard case let .failure(error)? = outcome, case AscendantBackendError.cancelled = error else {
+            Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        try await waitForWireEvents(wireLog, count: 3)
+        let events = wireEvents(wireLog)
+        let promptID = try #require(events.first?.split(separator: " ").last.map(String.init))
+        #expect(events.count == 3)
+        #expect(events.first == "prompt \(promptID)")
+        #expect(events.dropFirst().first == "cancel_request \(promptID)")
+        #expect(events.last?.hasPrefix("session_cancel ") == true)
+        await backend.shutdown()
+    }
+
+    @Test("cancelling after insertion sends session/cancel and never $/cancel_request")
+    @MainActor
+    func cancelAfterInsertionSendsSessionCancelOnly() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let promptStarted = stateHome.url.appendingPathComponent("prompt-started")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, promptStartedFile: promptStarted, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Cancel after insertion")]
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "[fixture:wait]", clientTurnID: "after-insertion-1"),
+                updates: RecordingUpdateSink()
+            )
+        }
+        for _ in 0..<500 where !FileManager.default.fileExists(atPath: promptStarted.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Let the prompt response reach the backend, so insertion is confirmed.
+        try await Task.sleep(for: .milliseconds(300))
+        await backend.cancelTurn(timelineID: timelineID, clientTurnID: "after-insertion-1")
+
+        let outcome = await settle(turn)
+        guard case let .failure(error)? = outcome, case AscendantBackendError.cancelled = error else {
+            Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        let events = wireEvents(wireLog)
+        #expect(events.count == 2)
+        #expect(events.first?.hasPrefix("prompt ") == true)
+        #expect(events.last?.hasPrefix("session_cancel ") == true)
+        await backend.shutdown()
+    }
+
+    @Test("a Turn cancelled before dispatch never sends session/prompt")
+    @MainActor
+    func turnCancelledBeforeDispatchSendsNoPrompt() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(
+                stateHome: stateHome.url,
+                initializeDelayMilliseconds: 600,
+                wireLogFile: wireLog
+            ),
+            timelines: [.init(id: timelineID, title: "Cancel before dispatch")]
+        )
+        let turn = Task {
+            try await backend.runTurn(
+                .init(timelineID: timelineID, message: "never sent", clientTurnID: "before-dispatch-1"),
+                updates: RecordingUpdateSink()
+            )
+        }
+        // The Runtime is still initializing, so the prompt has not been dispatched.
+        try await Task.sleep(for: .milliseconds(150))
+        turn.cancel()
+
+        let outcome = await settle(turn, seconds: 15)
+        if case .success? = outcome { Issue.record("A Turn cancelled before dispatch completed.") }
+        #expect(outcome != nil)
+        // Give a misbehaving backend time to dispatch before asserting silence.
+        try await Task.sleep(for: .milliseconds(900))
+        #expect(wireEvents(wireLog).isEmpty)
+        await backend.shutdown()
+    }
+
+    @Test("a prompt response lost to a Runtime crash is insertionUnknown and the Turn is never dispatched again")
+    @MainActor
+    func lostPromptResponseIsInsertionUnknown() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let promptRequests = stateHome.url.appendingPathComponent("prompt-requests.txt")
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url, crashOnPrompt: true, promptRequestFile: promptRequests)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-lost-prompt-\(UUID().uuidString.lowercased())"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: ascendantID, name: "Lost response", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Lost response", operatingAscendantID: ascendantID, project: .local(stateHome.url.path))]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals")
+        let request = AscendantTurnRequest(message: "lose the response", timelineID: timelineID, clientTurnID: "lost-response-1")
+        var runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+
+        for attempt in 1...2 {
+            do {
+                _ = try await runtime.turn(request)
+                Issue.record("Attempt \(attempt) unexpectedly returned a result.")
+            } catch let error as AscendantTurnError {
+                #expect(error.reasonCode == "insertionUnknown", "attempt \(attempt) observed \(error.reasonCode)")
+                #expect(!error.retryable)
+            }
+        }
+        await runtime.shutdown()
+
+        // A restarted Node answers from the Timeline journal and still sends nothing.
+        runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        do {
+            _ = try await runtime.turn(request)
+            Issue.record("The restarted Node unexpectedly returned a result.")
+        } catch let error as AscendantTurnError {
+            #expect(error.reasonCode == "insertionUnknown", "after restart observed \(error.reasonCode)")
+        }
+        await runtime.shutdown()
+
+        #expect(wireEvents(promptRequests).count == 1, "session/prompt was sent \(wireEvents(promptRequests).count) times")
+        let nodeDirectory = journalDirectory.appendingPathComponent(manifest.node.id.uuidString.lowercased())
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeDirectory)
+        let completions = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan().records.map(\.payload.payload)
+            .compactMap { payload -> TimelineTurnTerminalOutcome? in
+                if case let .turnCompleted("lost-response-1", outcome, _) = payload { return outcome }
+                return nil
+            }
+        #expect(completions == [.insertionUnknown])
+    }
+
+    @Test("an idle update without a stop reason ends the Turn endedUnspecified in the journal")
+    @MainActor
+    func idleWithoutStopReasonIsEndedUnspecified() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-unspecified-\(UUID().uuidString.lowercased())"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: ascendantID, name: "Unspecified", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Unspecified", operatingAscendantID: ascendantID, project: .local(stateHome.url.path))]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals")
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+
+        let result = try await runtime.turn(.init(
+            message: "[fixture:idle-without-stop-reason]",
+            timelineID: timelineID,
+            clientTurnID: "unspecified-1"
+        ))
+        #expect(result.text.contains("reply"))
+        await runtime.shutdown()
+
+        let nodeDirectory = journalDirectory.appendingPathComponent(manifest.node.id.uuidString.lowercased())
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeDirectory)
+        let completions = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan().records.map(\.payload.payload)
+            .compactMap { payload -> TimelineTurnTerminalOutcome? in
+                if case let .turnCompleted("unspecified-1", outcome, _) = payload { return outcome }
+                return nil
+            }
+        #expect(completions == [.endedUnspecified])
+    }
+
+    @Test("a successful prompt response binds the Turn to the Runtime's messageId in the journal")
+    @MainActor
+    func promptResponseBindsTheRuntimeMessageID() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-message-binding-\(UUID().uuidString.lowercased())"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: ascendantID, name: "Binding", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Binding", operatingAscendantID: ascendantID, project: .local(stateHome.url.path))]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals")
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        _ = try await runtime.turn(.init(message: "bind me", timelineID: timelineID, clientTurnID: "bound-1"))
+        await runtime.shutdown()
+
+        let nodeDirectory = journalDirectory.appendingPathComponent(manifest.node.id.uuidString.lowercased())
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeDirectory)
+        let completions = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
+            .scan().records.map(\.payload.payload)
+            .compactMap { payload -> String? in
+                if case let .turnCompleted("bound-1", _, messageID) = payload { return messageID }
+                return nil
+            }
+        #expect(completions == ["fixture-user-1"])
     }
 
     private actor RecordingUpdateSink: AscendantBackendUpdateSink {

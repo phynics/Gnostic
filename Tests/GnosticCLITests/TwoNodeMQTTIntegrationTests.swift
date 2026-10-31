@@ -210,6 +210,41 @@ struct TwoNodeMQTTIntegrationTests {
             } catch let error as GnosticTurnClientError {
                 #expect(error.reasonCode == "turnConflict")
             }
+            // ADR 0021: a distinct Turn on the owner's busy Timeline is rejected before
+            // `session/prompt`, with the same structured failure whether it arrives
+            // through the router or directly. Neither rejection is queued, and the
+            // router publishes no terminal update for a Turn that was never admitted.
+            let busyID = "routed-busy"
+            let busyUpdates = try await client.updates(
+                for: busyID, timelineID: owner.timelineID, providerID: routerProvider
+            )
+            let busyCollector = PeerLossUpdateCollector()
+            let busyObservation = Task { @MainActor in
+                for await update in busyUpdates { busyCollector.received.append(update) }
+            }
+            defer { busyObservation.cancel() }
+            let routedBusy = await rejectionWithin(.seconds(6)) {
+                try await client.runRouted(
+                    message: "busy routed", timelineID: owner.timelineID,
+                    clientTurnID: busyID, routerID: routerProvider
+                )
+            }
+            let directBusy = await rejectionWithin(.seconds(6)) {
+                try await client.run(
+                    message: "busy direct", timelineID: owner.timelineID,
+                    clientTurnID: "direct-busy", providerID: ownerProvider
+                )
+            }
+            for (label, outcome) in [("routed", routedBusy), ("direct", directBusy)] {
+                guard case let .failure(error)? = outcome, let failure = error as? GnosticTurnClientError else {
+                    Issue.record("The \(label) distinct Turn was queued instead of rejected: \(String(describing: outcome)).")
+                    continue
+                }
+                #expect(failure == .callFailed(reasonCode: "timelineBusy", statusCode: 409, retryable: true), "\(label)")
+            }
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(busyCollector.received.isEmpty, "A busy rejection published updates for a Turn that was not admitted.")
+
             // Wait past the old relay's one-second fallback terminal deadline.
             try await Task.sleep(for: .milliseconds(1200))
             #expect(!collector.received.contains { $0.terminal }, "A rejected retry terminated the active Turn.")
@@ -1311,6 +1346,31 @@ private final class WorkspaceScenarioTrace {
 @MainActor
 private final class PeerLossUpdateCollector {
     var received: [AscendantTurnUpdate] = []
+}
+
+/// Runs `operation` and reports its result, or `nil` when it has not settled
+/// within `timeout`. A regression that queues the Turn then fails fast instead
+/// of waiting for the call's own multi-second deadline.
+@MainActor
+private func rejectionWithin(
+    _ timeout: Duration,
+    _ operation: @escaping @MainActor () async throws -> AscendantTurnResult
+) async -> Result<AscendantTurnResult, any Error>? {
+    let box = RejectionOutcomeBox()
+    let task = Task { @MainActor in
+        do { box.outcome = .success(try await operation()) } catch { box.outcome = .failure(error) }
+    }
+    let deadline = ContinuousClock.now + timeout
+    while box.outcome == nil && ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+    if box.outcome == nil { task.cancel() }
+    return box.outcome
+}
+
+@MainActor
+private final class RejectionOutcomeBox {
+    var outcome: Result<AscendantTurnResult, any Error>?
 }
 
 @MainActor

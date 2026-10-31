@@ -551,24 +551,65 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 await Self.forward(eventStream, to: updates, activeTurn: activeTurn)
             }
             do {
+                // A Turn cancelled before dispatch never sends `session/prompt`
+                // (ADR 0019 section 5).
+                if Task.isCancelled || activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
                 // ACP v2 acknowledges insertion, not completion. The turn is
                 // finished by the idle state update, which the forwarding task
                 // consumes before it returns.
-                _ = try await withTaskCancellationHandler {
+                let response = try await withTaskCancellationHandler {
                     try await connection.prompt(
                         request: ACPPromptRequest(
                             sessionId: sessionID,
                             prompt: [.text(ACPTextContent(text: request.message))]
                         ),
-                        timeoutSeconds: promptTimeoutSeconds
+                        timeoutSeconds: promptTimeoutSeconds,
+                        didSend: { requestID in
+                            // The prompt is pending insertion from here. A cancel
+                            // that arrived while it was being sent reaches the
+                            // Runtime now, after the request it cancels.
+                            if await activeTurn.promptSent(requestID) {
+                                try? await connection.cancelRequest(requestId: requestID)
+                            }
+                        }
                     )
                 } onCancel: {
                     Task { @MainActor in activeTurn.isCancelled = true }
+                }
+                activeTurn.insertion = .inserted
+                // A successful response binds the Turn to the Runtime's message.
+                await updates.bindMessage(response.messageId)
+                // The Runtime inserted the prompt although cancellation was
+                // requested while it was pending, so `session/cancel` follows
+                // the successful response (ADR 0019 section 5).
+                if activeTurn.isTurnCancelled {
+                    try? await connection.sendNotification(
+                        method: ACPv2Protocol.AgentMethod.sessionCancel,
+                        params: ACPCancelSessionNotification(sessionId: sessionID)
+                    )
                 }
             } catch {
                 updateRouter.endTurn(sessionID: sessionID)
                 let outcome = await forwardingTask.value
                 if let updateError = outcome.error { throw updateError }
+                // `-32800` answers `$/cancel_request` and confirms that the
+                // prompt was not inserted. The Turn is cancelled, with no
+                // `session/cancel` to send.
+                if activeTurn.isTurnCancelled,
+                   case let ACPError.custom(code, _, _) = error,
+                   code == ACPv2Protocol.ErrorCode.requestCancelled {
+                    throw AscendantBackendError.cancelled
+                }
+                // A response that never arrived leaves insertion unknown. The
+                // backend neither guesses nor sends the prompt again (ADR 0019
+                // section 2), whether or not a cancel was requested.
+                if error is ACPTransportError {
+                    var failure: AscendantBackendLifecycleFailure?
+                    if case let .lifecycleUnusable(unusable) = map(error, context: "ACP prompt") {
+                        failure = unusable
+                    }
+                    throw AscendantBackendError.insertionUnknown(failure)
+                }
                 if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
                 throw error
             }
@@ -595,10 +636,15 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     throw AscendantBackendError.terminal(.init(code: "acpTurnStopped", message: message))
                 }
             }
-            // An idle without a stop reason ends the Turn with an unspecified
-            // reason, which is neither success nor failure (ADR 0019 §2). The
-            // Turn completes with the text the agent reported.
-            try await updates.append(.init(kind: .completion, terminal: true))
+            // An idle without a stop reason ends the Turn `endedUnspecified`,
+            // which is neither success nor failure (ADR 0019 section 2). The
+            // completion carries that reason code so the ledger, the journal,
+            // and the client record the Turn as unspecified.
+            try await updates.append(.init(
+                kind: .completion,
+                terminal: true,
+                reasonCode: outcome.stopReason == nil ? TimelineTurnTerminalOutcome.endedUnspecified.rawValue : nil
+            ))
             return outcome.text
         } catch let error as AscendantBackendError {
             throw error
@@ -611,30 +657,48 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     public func cancel() async {
         // Backend-wide cancellation must actually reach every live ACP session:
         // marking the turn alone leaves the agent running until its own deadline
-        // (GNO-PLAT-060 conformance, #452).
+        // (GNO-PLAT-060 conformance, #452). Retirement does not wait for a
+        // pending prompt to be answered, so it sends `session/cancel` as well.
         let connection = self.connection
         for activeTurn in activeTurns.values {
             activeTurn.cancelTurn()
             if let connection {
+                if case let .pending(requestID) = activeTurn.insertion {
+                    try? await connection.cancelRequest(requestId: requestID)
+                }
                 try? await connection.sendNotification(
-                    method: "session/cancel",
+                    method: ACPv2Protocol.AgentMethod.sessionCancel,
                     params: ACPCancelSessionNotification(sessionId: activeTurn.sessionID)
                 )
             }
         }
     }
 
-    /// Sends ACP `session/cancel` only for the matching Timeline Turn.
+    /// Cancels only the matching Timeline Turn, as ADR 0019 section 5 orders.
+    ///
+    /// - Before dispatch, nothing is sent: the Turn sends no prompt.
+    /// - While the prompt is pending insertion, `$/cancel_request` names it. The
+    ///   prompt's answer decides what follows: `-32800` ends the Turn cancelled,
+    ///   and a success is followed by `session/cancel`.
+    /// - After insertion, `session/cancel`.
     public func cancelTurn(timelineID: UUID, clientTurnID: String) async {
         guard let canonicalClientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else { return }
         guard let activeTurn = activeTurns[timelineID],
-              activeTurn.clientTurnID == canonicalClientTurnID,
-              let connection else { return }
+              activeTurn.clientTurnID == canonicalClientTurnID else { return }
+        let insertion = activeTurn.insertion
         activeTurn.cancelTurn()
-        try? await connection.sendNotification(
-            method: "session/cancel",
-            params: ACPCancelSessionNotification(sessionId: activeTurn.sessionID)
-        )
+        guard let connection else { return }
+        switch insertion {
+        case .notDispatched:
+            break
+        case let .pending(requestID):
+            try? await connection.cancelRequest(requestId: requestID)
+        case .inserted:
+            try? await connection.sendNotification(
+                method: ACPv2Protocol.AgentMethod.sessionCancel,
+                params: ACPCancelSessionNotification(sessionId: activeTurn.sessionID)
+            )
+        }
     }
 
     /// Closes the ACP transport and terminates the child process.
@@ -1871,12 +1935,29 @@ private final class ACPActiveTurn {
     private var timelineUpdateSequence = 0
     var isCancelled = false
     var isTurnCancelled = false
+    /// Where the Turn's `session/prompt` stands. It decides how a cancel is sent.
+    enum Insertion {
+        case notDispatched
+        /// The prompt was sent and its response has not arrived.
+        case pending(ACPRequestId)
+        /// The Runtime answered the prompt with success.
+        case inserted
+    }
+    var insertion = Insertion.notDispatched
     private var permissionContinuations: [UUID: CheckedContinuation<AscendantPermissionDecision, Never>] = [:]
     private var permissionTasks: [UUID: Task<Void, Never>] = [:]
 
     init(clientTurnID: String, sessionID: String) {
         self.clientTurnID = clientTurnID
         self.sessionID = sessionID
+    }
+
+    /// Records that the prompt request is on the wire. Returns whether a cancel
+    /// is already waiting for the request ID, so the caller sends it now.
+    func promptSent(_ requestID: ACPRequestId) -> Bool {
+        guard case .notDispatched = insertion else { return false }
+        insertion = .pending(requestID)
+        return isTurnCancelled
     }
 
     func nextTimelineUpdateSequence() -> Int {

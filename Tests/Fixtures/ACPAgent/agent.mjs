@@ -30,6 +30,15 @@ let sessionCounter = 0;
 let sessionListCount = 0;
 const cancelledSessions = new Set();
 
+// Ordered record of what the fixture received on the wire, one line per event:
+// `prompt <requestId>`, `cancel_request <requestId>`, and `session_cancel <sessionId>`.
+// A test asserts this file so cancellation order is observed, not inferred.
+async function recordWire(line) {
+  if (process.env.GNOSTIC_ACP_FIXTURE_WIRE_LOG_FILE) {
+    await appendFile(process.env.GNOSTIC_ACP_FIXTURE_WIRE_LOG_FILE, `${line}\n`);
+  }
+}
+
 const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   .onRequest(acp.methods.agent.initialize, async () => {
     if (process.env.GNOSTIC_ACP_FIXTURE_INITIALIZE_FILE) {
@@ -136,11 +145,16 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
   })
   .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {
     cancelledSessions.add(params.sessionId);
+    await recordWire(`session_cancel ${params.sessionId}`);
     if (process.env.GNOSTIC_ACP_FIXTURE_CANCEL_FILE) {
       await appendFile(process.env.GNOSTIC_ACP_FIXTURE_CANCEL_FILE, `${params.sessionId}\n`);
     }
   })
-  .onRequest(acp.methods.agent.session.prompt, async ({ params, client }) => {
+  .onRequest(acp.methods.agent.session.prompt, async ({ params, client, signal, requestId }) => {
+    await recordWire(`prompt ${requestId}`);
+    signal.addEventListener("abort", () => {
+      void recordWire(`cancel_request ${requestId}`);
+    }, { once: true });
     if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE) {
       await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE, `${params.sessionId}\n`);
     }
@@ -299,6 +313,19 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       }
     }
     const userMessageId = "fixture-user-1";
+    // Hold the prompt before insertion until Gnostic sends `$/cancel_request`. A bare
+    // hold answers the cancelled request with -32800 (not inserted, ADR 0019 section 5).
+    // With `[fixture:insert-despite-cancel-request]` the prompt is inserted anyway and
+    // answered with a success response, which Gnostic must follow with `session/cancel`.
+    if (promptText.includes("[fixture:hold-before-insertion]")) {
+      const holdDeadline = Date.now() + 20_000;
+      while (!signal.aborted && Date.now() < holdDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (signal.aborted && !promptText.includes("[fixture:insert-despite-cancel-request]")) {
+        throw acp.RequestError.requestCancelled({ requestId });
+      }
+    }
     if (promptText.includes("[fixture:unknown-update]")) {
       await client.notify(acp.methods.client.session.update, {
         sessionId: params.sessionId,
@@ -321,29 +348,39 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       sessionId: params.sessionId,
       update: { sessionUpdate: "state_update", state: "running" },
     });
+    if (promptText.includes("[fixture:drop-prompt-response]")) {
+      // The prompt was inserted, but its response never arrives.
+      await new Promise(() => {});
+    }
     if (promptText.includes("[fixture:wait]")) {
       if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
         await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE, `${params.sessionId}\n`);
       }
-      const deadline = Date.now() + 20_000;
-      while (!cancelledSessions.has(params.sessionId) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      if (cancelledSessions.has(params.sessionId)) {
+      // ACP v2 acknowledges insertion before the Turn ends. Answer the prompt now and
+      // finish the Turn in the background, as a real Runtime does.
+      void (async () => {
+        const deadline = Date.now() + 20_000;
+        while (!cancelledSessions.has(params.sessionId) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (cancelledSessions.has(params.sessionId)) {
+          await client.notify(acp.methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              messageId: "late-after-cancel",
+              content: { type: "text", text: "late update" },
+            },
+          });
+        }
         await client.notify(acp.methods.client.session.update, {
           sessionId: params.sessionId,
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            messageId: "late-after-cancel",
-            content: { type: "text", text: "late update" },
-          },
+          update: cancelledSessions.has(params.sessionId)
+            ? { sessionUpdate: "state_update", state: "idle", stopReason: "cancelled" }
+            : { sessionUpdate: "state_update", state: "idle", stopReason: "end_turn" },
         });
-        await client.notify(acp.methods.client.session.update, {
-          sessionId: params.sessionId,
-          update: { sessionUpdate: "state_update", state: "idle", stopReason: "cancelled" },
-        });
-        return { messageId: userMessageId };
-      }
+      })().catch((error) => process.stderr.write(`fixture wait failed: ${error}\n`));
+      return { messageId: userMessageId };
     }
     if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_DELAY_MS) {
       if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
