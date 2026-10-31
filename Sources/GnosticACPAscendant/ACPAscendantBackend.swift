@@ -709,16 +709,19 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     }
 
     /// Cancels one Turn once. Cancelling the Turn's task reaches this too, so a
-    /// repeated cancel sends nothing more. The Runtime has
-    /// ``cancellationSettleSeconds`` to settle the Turn.
+    /// repeated cancel sends nothing more.
+    ///
+    /// The Runtime gets ``cancellationSettleSeconds`` to settle the Turn, in up
+    /// to two bounds that each start when Gnostic sends something the Runtime
+    /// can answer. The first starts here and bounds the answer to a pending
+    /// prompt. The second starts when `session/cancel` is sent and bounds the
+    /// `idle` that follows. A cancel that finds the prompt inserted starts only
+    /// the second bound. The Turn therefore ends within twice
+    /// ``cancellationSettleSeconds`` of the cancel, plus the time to send
+    /// `session/cancel`.
     private func cancelActiveTurn(_ activeTurn: ACPActiveTurn) async {
         guard let insertion = activeTurn.beginCancellation() else { return }
-        let settleSeconds = cancellationSettleSeconds
-        activeTurn.cancellationDeadline = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(settleSeconds))
-            guard !Task.isCancelled else { return }
-            await self?.expireCancellation(of: activeTurn)
-        }
+        startCancellationBound(for: activeTurn)
         guard let connection else { return }
         switch insertion {
         case .notDispatched:
@@ -730,8 +733,24 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
     }
 
+    /// Starts a cancellation bound of ``cancellationSettleSeconds``, replacing
+    /// the one that is running.
+    private func startCancellationBound(for activeTurn: ACPActiveTurn) {
+        activeTurn.cancellationDeadline?.cancel()
+        let settleSeconds = cancellationSettleSeconds
+        activeTurn.cancellationDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(settleSeconds))
+            guard !Task.isCancelled else { return }
+            await self?.expireCancellation(of: activeTurn)
+        }
+    }
+
     private func sendSessionCancel(for activeTurn: ACPActiveTurn) async {
-        guard activeTurn.claimSessionCancel(), let connection else { return }
+        guard activeTurn.claimSessionCancel() else { return }
+        // The Runtime has the full bound to idle, counted from this cancel
+        // rather than from the earlier one it may already have outlasted.
+        if !activeTurn.isFinished { startCancellationBound(for: activeTurn) }
+        guard let connection else { return }
         try? await connection.sendNotification(
             method: ACPv2Protocol.AgentMethod.sessionCancel,
             params: ACPCancelSessionNotification(sessionId: activeTurn.sessionID)
@@ -742,6 +761,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     ///
     /// - A prompt whose answer is still missing leaves insertion unknown: the
     ///   wait ends as a timeout, which the Turn records as `insertionUnknown`.
+    /// - A prompt whose answer reached the protocol layer in the meantime is no
+    ///   longer abandoned. The Turn is about to record insertion and send
+    ///   `session/cancel`, so it gets the second bound, which also covers a
+    ///   Turn that never gets that far.
     /// - An inserted prompt whose Turn never reported `idle` ends with a
     ///   lifecycle failure. The Runtime may still be working, and a later Turn
     ///   must not start beside that work, so the failure retires the backend.
@@ -749,9 +772,21 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     ///   not confirm it (ADR 0021).
     private func expireCancellation(of activeTurn: ACPActiveTurn) async {
         guard !activeTurn.isFinished else { return }
-        if case let .pending(requestID) = activeTurn.insertion {
-            await connection?.abandonRequest(id: requestID, error: ACPTransportError.timeout)
+        let insertion = activeTurn.insertion
+        if case let .pending(requestID) = insertion,
+           await connection?.abandonRequest(id: requestID, error: ACPTransportError.timeout) == true {
             return
+        }
+        // The prompt was answered, but `session/cancel` has not gone out. Its
+        // bound starts when it does, so this one is extended at most once.
+        switch insertion {
+        case .notDispatched:
+            break
+        case .pending, .inserted:
+            if activeTurn.extendBoundForSessionCancel() {
+                startCancellationBound(for: activeTurn)
+                return
+            }
         }
         let failure = AscendantBackendLifecycleFailure(
             code: "acpCancellationUnconfirmed",
@@ -2011,6 +2046,7 @@ private final class ACPActiveTurn {
     var cancellationFailure: AscendantBackendLifecycleFailure?
     var isFinished = false
     private var sessionCancelSent = false
+    private var hasExtendedBound = false
     private var permissionContinuations: [UUID: CheckedContinuation<AscendantPermissionDecision, Never>] = [:]
     private var permissionTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -2040,6 +2076,14 @@ private final class ACPActiveTurn {
     func claimSessionCancel() -> Bool {
         guard !sessionCancelSent else { return false }
         sessionCancelSent = true
+        return true
+    }
+
+    /// Whether an expired bound may wait once more for `session/cancel` to go
+    /// out. It may when none was sent yet and no earlier bound waited for it.
+    func extendBoundForSessionCancel() -> Bool {
+        guard !sessionCancelSent, !hasExtendedBound else { return false }
+        hasExtendedBound = true
         return true
     }
 

@@ -139,15 +139,22 @@ public actor ACPProtocolLayer {
         pendingRequests[id] = continuation
     }
 
-    private func cancelPendingRequest(id: String, error: any Error) {
-        pendingRequests.removeValue(forKey: id)?.resume(throwing: error)
+    @discardableResult
+    private func cancelPendingRequest(id: String, error: any Error) -> Bool {
+        guard let continuation = pendingRequests.removeValue(forKey: id) else { return false }
+        continuation.resume(throwing: error)
+        return true
     }
 
     /// Stops waiting for a sent request: its caller receives `error`, and a
-    /// response that arrives later is ignored.
-    package func abandonRequest(id: ACPRequestId, error: any Error) {
-        guard let key = id.stringValue else { return }
-        cancelPendingRequest(id: key, error: error)
+    /// response that arrives later is ignored. Returns whether the request was
+    /// still waiting. It is not when its response already reached this layer,
+    /// so the caller is already resuming with that response and `error` was
+    /// not delivered.
+    @discardableResult
+    package func abandonRequest(id: ACPRequestId, error: any Error) -> Bool {
+        guard let key = id.stringValue else { return false }
+        return cancelPendingRequest(id: key, error: error)
     }
 
     public func request<Req: Encodable, Resp: Decodable>(

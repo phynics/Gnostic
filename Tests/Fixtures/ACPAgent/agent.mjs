@@ -363,12 +363,34 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       if (process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE) {
         await appendFile(process.env.GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE, `${params.sessionId}\n`);
       }
+      // With `[fixture:answer-late]` the Runtime inserts the prompt, reports progress, and
+      // then holds the answer until Gnostic sends `$/cancel_request`, which it answers with
+      // success 1.5 s later. It sends nothing else until `session/cancel`.
+      if (promptText.includes("[fixture:answer-late]")) {
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "answer-late-progress",
+            content: { type: "text", text: "working" },
+          },
+        });
+        const holdDeadline = Date.now() + 20_000;
+        while (!signal.aborted && Date.now() < holdDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+      }
       // ACP v2 acknowledges insertion before the Turn ends. Answer the prompt now and
       // finish the Turn in the background, as a real Runtime does.
       void (async () => {
         const deadline = Date.now() + 20_000;
         while (!cancelledSessions.has(params.sessionId) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        // With `[fixture:idle-late]` the idle follows `session/cancel` by 1 s.
+        if (cancelledSessions.has(params.sessionId) && promptText.includes("[fixture:idle-late]")) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
         }
         if (cancelledSessions.has(params.sessionId)) {
           await client.notify(acp.methods.client.session.update, {

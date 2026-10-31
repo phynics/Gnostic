@@ -3044,7 +3044,8 @@ struct ACPAscendantBackendTests {
         backend: ACPAscendantBackend,
         timelineID: UUID,
         message: String,
-        clientTurnID: String
+        clientTurnID: String,
+        updates: RecordingUpdateSink = RecordingUpdateSink()
     ) -> Task<AscendantTurnResult, any Error> {
         Task {
             try await coordinator.execute(
@@ -3054,7 +3055,7 @@ struct ACPAscendantBackendTests {
             ) {
                 try await backend.runTurn(
                     .init(timelineID: timelineID, message: message, clientTurnID: clientTurnID),
-                    updates: RecordingUpdateSink()
+                    updates: updates
                 )
             }
         }
@@ -3157,13 +3158,15 @@ struct ACPAscendantBackendTests {
             cancellationSettleSeconds: 1
         )
         let coordinator = AscendantTurnCoordinator()
+        let sink = RecordingUpdateSink()
         let turn = coordinatedTurn(
             coordinator, backend: backend, timelineID: timelineID,
-            message: "[fixture:ignore-cancel]", clientTurnID: "ignore-cancel-1"
+            message: "[fixture:ignore-cancel]", clientTurnID: "ignore-cancel-1", updates: sink
         )
         try await waitForWireEvents(wireLog, count: 1)
-        // Let the prompt's answer reach the backend, so insertion is confirmed.
-        try await Task.sleep(for: .milliseconds(300))
+        // Cancel only once the prompt's answer reached the backend, so the
+        // cancel finds the prompt inserted and sends `session/cancel` alone.
+        try await sink.waitForInsertion()
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "ignore-cancel-1"))
 
         // The Runtime never reports `idle`. The Turn ends without claiming it
@@ -3188,6 +3191,48 @@ struct ACPAscendantBackendTests {
             return
         }
         #expect(wireEvents(wireLog) == events)
+        await backend.shutdown()
+    }
+
+    @Test("a Runtime that answers the prompt late still gets a full bound to idle after session/cancel")
+    @MainActor
+    func lateAnswerGetsAFreshBoundFromSessionCancel() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        // The answer follows the cancel by 1.5 s and the idle follows
+        // `session/cancel` by 1 s: 2.5 s after the cancel, past a 2 s bound that
+        // started at the cancel, and inside one that starts at `session/cancel`.
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Late answer, late idle")],
+            cancellationSettleSeconds: 2
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let sink = RecordingUpdateSink()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:answer-late] [fixture:wait] [fixture:idle-late]",
+            clientTurnID: "late-answer-1", updates: sink
+        )
+        // The Runtime's progress reaches the backend while the prompt is still
+        // unanswered. Any update after the cancel ends the Turn, so the cancel
+        // waits until the Runtime has nothing in flight.
+        try await sink.waitForUpdate()
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "late-answer-1"))
+
+        let outcome = await settle(turn, seconds: 8)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
+            Issue.record("Expected the Runtime's late idle to end the Turn cancelled, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        let events = wireEvents(wireLog)
+        #expect(events.count == 3)
+        #expect(events.first?.hasPrefix("prompt ") == true)
+        #expect(events.dropFirst().first?.hasPrefix("cancel_request ") == true)
+        #expect(events.last?.hasPrefix("session_cancel ") == true)
         await backend.shutdown()
     }
 
@@ -3326,17 +3371,19 @@ struct ACPAscendantBackendTests {
             settings: fixtureSettings(stateHome: stateHome.url, promptStartedFile: promptStarted, wireLogFile: wireLog),
             timelines: [.init(id: timelineID, title: "Cancel after insertion")]
         )
+        let sink = RecordingUpdateSink()
         let turn = Task {
             try await backend.runTurn(
                 .init(timelineID: timelineID, message: "[fixture:wait]", clientTurnID: "after-insertion-1"),
-                updates: RecordingUpdateSink()
+                updates: sink
             )
         }
         for _ in 0..<500 where !FileManager.default.fileExists(atPath: promptStarted.path) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        // Let the prompt response reach the backend, so insertion is confirmed.
-        try await Task.sleep(for: .milliseconds(300))
+        // Cancel only once the prompt response reached the backend, so the
+        // cancel finds the prompt inserted.
+        try await sink.waitForInsertion()
         await backend.cancelTurn(timelineID: timelineID, clientTurnID: "after-insertion-1")
 
         let outcome = await settle(turn)
@@ -3563,9 +3610,31 @@ struct ACPAscendantBackendTests {
 
     private actor RecordingUpdateSink: AscendantBackendUpdateSink {
         private(set) var updates: [AscendantBackendUpdate] = []
+        private(set) var boundMessageIDs: [String] = []
 
         func append(_ update: AscendantBackendUpdate) async throws {
             updates.append(update)
+        }
+
+        func bindMessage(_ messageID: String) async {
+            boundMessageIDs.append(messageID)
+        }
+
+        /// Waits until the backend forwarded an update.
+        func waitForUpdate() async throws {
+            for _ in 0..<500 where updates.isEmpty {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!updates.isEmpty, "The Runtime sent no update.")
+        }
+
+        /// Waits until the Runtime's success response for the prompt reached
+        /// the backend, which records insertion before it binds the message.
+        func waitForInsertion() async throws {
+            for _ in 0..<500 where boundMessageIDs.isEmpty {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!boundMessageIDs.isEmpty, "The prompt was not inserted.")
         }
     }
 }
