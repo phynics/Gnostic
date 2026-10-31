@@ -62,11 +62,11 @@ struct AscendantTurnUpdateStoreJournalTests {
             return
         }
         #expect(prompt == [.text(ACPTextContent(text: "prompt digest source"))])
-        #expect(acpVersionTag == "legacy-text-v1")
-        #expect(digest == TimelineTurnEnvelope.computeAdmissionDigest(
+        #expect(acpVersionTag == ACPv2Protocol.versionTag)
+        #expect(digest == (try TurnAdmissionDigest.hex(
             prompt: [.text(ACPTextContent(text: "prompt digest source"))],
-            acpVersionTag: "legacy-text-v1"
-        ))
+            acpVersionTag: ACPv2Protocol.versionTag
+        )))
         try await store.recordOutcome(
             timelineID: timelineID,
             clientTurnID: clientTurnID,
@@ -88,6 +88,49 @@ struct AscendantTurnUpdateStoreJournalTests {
             clientTurnID: restartedID,
             message: "prompt digest source"
         ) == .unavailable)
+    }
+
+    @Test("a Turn admission records the ACP version tag and the RFC 8785 SHA-256 digest of its prompt")
+    func admissionDigestIsCanonicalSHA256() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("turn-admission-digest-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let timelineID = UUID()
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let store = AscendantTurnUpdateStore(timelineJournals: journals)
+        let clientTurnID = try await store.validatedClientTurnID("turn-digest-form")
+        _ = try await store.admit(timelineID: timelineID, clientTurnID: clientTurnID, message: "caf\u{e9} \"quoted\"")
+
+        let records = try await journals.journal(for: timelineID).replay()
+        let admission = try #require(records.compactMap { record -> (String, String)? in
+            if case let .turnAdmitted(_, digest, _, tag, _) = record.payload { return (digest, tag) }
+            return nil
+        }.first)
+        #expect(admission.1 == ACPv2Protocol.versionTag)
+        // The canonical form is written out by hand, so the expectation does
+        // not share an implementation with the code under test.
+        let canonical = #"{"acpVersionTag":"\#(ACPv2Protocol.versionTag)","prompt":[{"text":"café \"quoted\"","type":"text"}]}"#
+        #expect(admission.0 == SHA256.hexDigest(canonical))
+    }
+
+    @Test("Turn sequence numbers follow the Timeline's admission order")
+    func admissionSequenceIncreases() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("turn-admission-sequence-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let timelineID = UUID()
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let store = AscendantTurnUpdateStore(timelineJournals: journals)
+        for name in ["sequence-1", "sequence-2", "sequence-3"] {
+            let id = try await store.validatedClientTurnID(name)
+            #expect(try await store.admit(timelineID: timelineID, clientTurnID: id, message: name) == .new)
+            try await store.recordOutcome(timelineID: timelineID, clientTurnID: id, outcome: .succeeded(text: name))
+        }
+        let sequences = try await journals.journal(for: timelineID).replay().compactMap { record -> Int? in
+            if case let .turnAdmitted(_, _, sequence, _, _) = record.payload { return sequence }
+            return nil
+        }
+        #expect(sequences == [1, 2, 3])
     }
 
     @Test("recovery preserves compaction")
@@ -245,8 +288,8 @@ struct AscendantTurnUpdateStoreJournalTests {
         #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "different") == .conflict)
     }
 
-    @Test("a recovered Turn without a terminal record is unavailable and never reruns")
-    func recoveredTurnWithoutOutcomeIsUnavailable() async throws {
+    @Test("a recovered Turn without a terminal record is insertionUnknown and never reruns")
+    func recoveredTurnWithoutOutcomeIsInsertionUnknown() async throws {
         let url = makeURL()
         let timelineID = UUID()
         let writer = AscendantTurnUpdateStore()
@@ -255,11 +298,20 @@ struct AscendantTurnUpdateStoreJournalTests {
         #expect(try await writer.admit(timelineID: timelineID, clientTurnID: writerID, message: "hello") == .new)
         _ = try await writer.append(timelineID: timelineID, clientTurnID: "admit-2", kind: "assistant_text", text: "partial")
 
+        // The restart may have lost the prompt response, so the ledger cannot
+        // know whether the prompt was inserted. It never dispatches it again.
         let reader = AscendantTurnUpdateStore()
         try await reader.enableDurability(at: url)
         let readerID = try await reader.validatedClientTurnID("admit-2")
-        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .unavailable)
-        #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello") == .unavailable)
+        for _ in 0..<2 {
+            let admission = try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "hello")
+            guard case let .replay(.failed(error)) = admission else {
+                Issue.record("Expected the recorded insertionUnknown state, observed \(admission).")
+                continue
+            }
+            #expect(error.reasonCode == "insertionUnknown")
+            #expect(!error.retryable)
+        }
     }
 
     @Test("a recovered failed Turn is unavailable rather than rerun")
@@ -327,14 +379,14 @@ struct AscendantTurnUpdateStoreJournalTests {
     func recordRoundTrip() throws {
         let timelineID = UUID()
         let records: [TurnEventRecord] = [
-            TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .started(messageDigest: 42)),
+            TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .started(messageDigest: "digest-42")),
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .update(
                 AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")
             )),
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .finished),
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .checkpoint(
                 TurnJournalCheckpoint(
-                    messageDigest: 42,
+                    messageDigest: "digest-42",
                     nextSequence: 2,
                     updates: [AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")],
                     compacted: false,

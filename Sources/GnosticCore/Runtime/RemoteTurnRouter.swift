@@ -143,7 +143,10 @@ final class RemoteTurnRouter {
             } else { error }
             // A rejected request does not determine the admitted Turn's outcome.
             // In particular a conflicting retry cannot finish its shared relay.
-            if (mapped as? AscendantTurnError)?.reasonCode != "turnConflict" {
+            // A busy rejection admitted no Turn at all (ADR 0021), so the relay
+            // publishes no terminal update for an identity that never ran.
+            let rejection = (mapped as? AscendantTurnError)?.reasonCode
+            if rejection != "turnConflict", rejection != "timelineBusy" {
                 relay.failure = mapped
                 if let failure = error as? RemoteTurnRouteFailure, case .remote = failure {
                     relay.ownerResponded = true

@@ -101,6 +101,12 @@ public final class TurnService {
                 if case let .lifecycleUnusable(failure) = error {
                     await self.backendProvider.markLifecycleFailure(session, failure: failure)
                 }
+                // A lost prompt response can also mean the Runtime is gone.
+                // The Turn still ends insertionUnknown; the host retires the
+                // backend as it does for any other unusable lifecycle.
+                if case let .insertionUnknown(failure?) = error {
+                    await self.backendProvider.markLifecycleFailure(session, failure: failure)
+                }
                 throw error
             }
         }
@@ -141,5 +147,10 @@ private struct BackendTurnUpdateSink: AscendantBackendUpdateSink {
             statusCode: update.statusCode,
             retryable: update.retryable
         )
+    }
+
+    func bindMessage(_ messageID: String) async {
+        guard let clientTurnID else { return }
+        await store.bindMessageID(timelineID: request.timelineID, clientTurnID: clientTurnID, messageID: messageID)
     }
 }

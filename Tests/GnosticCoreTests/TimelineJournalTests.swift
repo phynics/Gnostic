@@ -39,10 +39,7 @@ struct TimelineJournalTests {
         let turnID = "turn-\(UUID().uuidString)"
         let prompt: [ACPContentBlock] = [.text(ACPTextContent(text: "prompt"))]
         let acpVersionTag = "v2"
-        let admissionDigest = TimelineTurnEnvelope.computeAdmissionDigest(
-            prompt: prompt,
-            acpVersionTag: acpVersionTag
-        )
+        let admissionDigest = try TurnAdmissionDigest.hex(prompt: prompt, acpVersionTag: acpVersionTag)
         let update = TimelineTurnUpdate(
             timelineID: timelineID,
             clientTurnID: turnID,

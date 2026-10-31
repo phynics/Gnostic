@@ -99,77 +99,6 @@ struct AscendantTurnCoordinatorTests {
         #expect(await probe.starts == 1)
     }
 
-    @Test("turns on one Timeline serialize while different Timelines run in parallel")
-    func timelineLanes() async throws {
-        let coordinator = AscendantTurnCoordinator()
-        let probe = TurnProbe()
-        let timelineID = UUID()
-        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
-        let secondRequest = AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-2")
-        let otherRequest = AscendantTurnRequest(message: "other", timelineID: UUID(), clientTurnID: "turn-3")
-
-        let first = Task {
-            try await coordinator.execute(firstRequest, ascendantID: UUID()) {
-                await probe.enter("first")
-                // Hold this lane until the independent Timeline has actually
-                // entered, instead of relying on scheduler timing.
-                await probe.waitForStarts(2)
-                await probe.leave()
-                return "first"
-            }
-        }
-        await probe.waitForStarts(1)
-
-        let second = Task {
-            try await coordinator.execute(secondRequest, ascendantID: UUID()) {
-                await probe.enter("second")
-                await probe.leave()
-                return "second"
-            }
-        }
-        let other = Task {
-            try await coordinator.execute(otherRequest, ascendantID: UUID()) {
-                await probe.enter("other")
-                await probe.leave()
-                return "other"
-            }
-        }
-
-        _ = try await (first.value, second.value, other.value)
-        #expect(await probe.maxActive == 2)
-        #expect(await probe.order == ["first", "other", "second"])
-    }
-
-    @Test("legacy turns without ids still share the Timeline lane")
-    func legacyTurnsSerialize() async throws {
-        let coordinator = AscendantTurnCoordinator()
-        let probe = TurnProbe()
-        let timelineID = UUID()
-        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID)
-        let secondRequest = AscendantTurnRequest(message: "second", timelineID: timelineID)
-
-        let first = Task {
-            try await coordinator.execute(firstRequest, ascendantID: UUID()) {
-                await probe.enter("first")
-                try await Task.sleep(for: .milliseconds(80))
-                await probe.leave()
-                return "first"
-            }
-        }
-        await probe.waitForStarts(1)
-        let second = Task {
-            try await coordinator.execute(secondRequest, ascendantID: UUID()) {
-                await probe.enter("second")
-                await probe.leave()
-                return "second"
-            }
-        }
-
-        _ = try await (first.value, second.value)
-        #expect(await probe.maxActive == 1)
-        #expect(await probe.order == ["first", "second"])
-    }
-
     @Test("canceling a caller does not duplicate an admitted turn")
     func lostCallerDoesNotRetryTheTurn() async throws {
         let coordinator = AscendantTurnCoordinator()
@@ -420,14 +349,14 @@ struct AscendantTurnCoordinatorTests {
         #expect(await coordinator.retainedTimelineCount == 0)
     }
 
-    @Test("cancelling queued work skips its backend operation")
-    func queuedCancellationSkipsBackend() async throws {
+    @Test("a busy rejection leaves nothing in flight, so shutdown settles only the active Turn")
+    func busyRejectionIsNotLeftInFlight() async throws {
         let coordinator = AscendantTurnCoordinator()
         let gate = TurnGate()
         let probe = TurnProbe()
         let timelineID = UUID()
         let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "first")
-        let queuedRequest = AscendantTurnRequest(message: "queued", timelineID: timelineID, clientTurnID: "queued")
+        let rejectedRequest = AscendantTurnRequest(message: "rejected", timelineID: timelineID, clientTurnID: "rejected")
 
         let first = Task {
             try await coordinator.execute(firstRequest, ascendantID: UUID()) {
@@ -438,23 +367,20 @@ struct AscendantTurnCoordinatorTests {
             }
         }
         await probe.waitForStarts(1)
-        let queued = Task {
-            try await coordinator.execute(queuedRequest, ascendantID: UUID()) {
-                await probe.enter("queued")
+        await #expect(throws: AscendantTurnError.timelineBusy(timelineID: timelineID, clientTurnID: "rejected")) {
+            _ = try await coordinator.execute(rejectedRequest, ascendantID: UUID()) {
+                await probe.enter("rejected")
                 return "must-not-run"
             }
         }
-        for _ in 0..<100 {
-            if await coordinator.inFlightCount == 2 { break }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        #expect(await coordinator.inFlightCount == 2)
+        #expect(await coordinator.inFlightCount == 1)
 
         await coordinator.cancelAll(waitForCompletion: false)
         await gate.release()
         _ = try? await first.value
-        _ = try? await queued.value
         #expect(await probe.order == ["first"])
+        #expect(await coordinator.inFlightCount == 0)
+        #expect(await coordinator.retainedTimelineCount == 0)
     }
 
     @Test("original success is observed once with stable identity after replay commit")

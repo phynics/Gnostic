@@ -25,6 +25,12 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case providerMismatch
     case missingCapability(String)
     case promptTooLarge
+    /// The Timeline has an active Turn, so Gnostic rejected this one before it
+    /// reached the Runtime. The prompt was not queued and not inserted.
+    case timelineBusy
+    /// The Runtime did not confirm whether it inserted the prompt, and Gnostic
+    /// does not send it again.
+    case insertionUnknown
 
     public var errorDescription: String? {
         switch self {
@@ -50,6 +56,9 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case let .missingCapability(capability): "The selected Runtime instance does not advertise capability \(capability)."
         case .promptTooLarge:
             "The prompt exceeds the maximum size the Turn wire accepts. Shorten it and retry."
+        case .timelineBusy: "Timeline is busy"
+        case .insertionUnknown:
+            "The Runtime did not confirm whether it inserted the prompt, and Gnostic does not send it again."
         }
     }
 
@@ -77,6 +86,8 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .providerMismatch: "providerMismatch"
         case .missingCapability: "missingCapability"
         case .promptTooLarge: "promptTooLarge"
+        case .timelineBusy: "timelineBusy"
+        case .insertionUnknown: "insertionUnknown"
         }
     }
 }

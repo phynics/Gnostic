@@ -35,7 +35,9 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
     public let permissionState: AscendantPermissionState?
     /// Whether this update ends the Turn.
     public let terminal: Bool
-    /// A stable, low-cardinality failure reason, for a terminal failure.
+    /// A stable, low-cardinality reason. A terminal failure names its failure
+    /// here. A completion names `endedUnspecified` when the Runtime's idle update
+    /// carried no stop reason.
     public let reasonCode: String?
     /// The failure status code, for a terminal failure.
     public let statusCode: Int?
@@ -151,6 +153,20 @@ public protocol AscendantBackendUpdateSink: Sendable {
     /// - Throws: When the host cannot accept the update, for example because
     ///   update retention is full.
     func append(_ update: AscendantBackendUpdate) async throws
+
+    /// Binds the Turn to the Runtime's identifier for its user message.
+    ///
+    /// A backend calls this once, when the Runtime's successful response to the
+    /// prompt confirms insertion (ADR 0019 section 2). The host records the
+    /// identifier with the Turn's outcome. A sink that keeps no such record
+    /// ignores the call.
+    ///
+    /// - Parameter messageID: The Runtime's message identifier.
+    func bindMessage(_ messageID: String) async
+}
+
+extension AscendantBackendUpdateSink {
+    public func bindMessage(_ messageID: String) async {}
 }
 
 /// A generic, backend-neutral description of a Workspace capability.
@@ -495,6 +511,12 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
     case cancelled
     /// The backend can no longer serve its Ascendant.
     case lifecycleUnusable(AscendantBackendLifecycleFailure)
+    /// The Runtime's response to the Turn's prompt was lost, so the backend
+    /// cannot tell whether the prompt was inserted. The backend never sends it
+    /// again and never guesses (ADR 0019 section 2). When the loss also made the
+    /// backend unusable, the associated failure says so and the host retires the
+    /// backend as it does for ``lifecycleUnusable(_:)``.
+    case insertionUnknown(AscendantBackendLifecycleFailure?)
     /// A Core operation required an optional surface the backend does not
     /// declare, or declares but does not implement. This is the single
     /// absent-capability outcome.
@@ -508,6 +530,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case let .terminal(failure): failure.message
         case .cancelled: "The backend turn was cancelled."
         case let .lifecycleUnusable(failure): failure.message
+        case .insertionUnknown: "The Runtime did not confirm whether it inserted the prompt."
         case .capabilityUnavailable: "The backend does not provide the requested optional capability."
         }
     }
@@ -520,6 +543,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case .terminal(let failure): return failure.code
         case .cancelled: return "cancelled"
         case .lifecycleUnusable(let failure): return failure.code
+        case .insertionUnknown: return "insertionUnknown"
         case .capabilityUnavailable: return "capabilityUnavailable"
         }
     }
@@ -539,6 +563,7 @@ public enum AscendantBackendError: Error, Sendable, Equatable, LocalizedError {
         case .terminal: return 500
         case .cancelled: return 499
         case .lifecycleUnusable: return 503
+        case .insertionUnknown: return 502
         case .capabilityUnavailable: return 501
         }
     }

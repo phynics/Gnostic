@@ -3,13 +3,18 @@
 import Foundation
 import GnosticProtocol
 
-/// Serializes and deduplicates stateful Ascendant Timeline turns for one serve
+/// Admits and deduplicates stateful Ascendant Timeline turns for one serve
 /// lifetime. A caller may disappear after admission; the coordinator-owned task
 /// remains the single owner of the model/tool loop and its terminal outcome.
 ///
+/// A Timeline has at most one active foreground Turn (ADR 0021). A distinct
+/// Turn that arrives while another is active is rejected with
+/// ``AscendantTurnError/timelineBusy(timelineID:clientTurnID:)`` before the
+/// ledger admits it or the backend sees it. It is never queued.
+///
 /// Admission identity, the message digest, and terminal outcomes live in the
 /// Turn ledger (``AscendantTurnUpdateStore``). The coordinator keeps only
-/// scheduling: lanes, in-flight tasks, and observers.
+/// scheduling: the active Turn per Timeline, in-flight tasks, and observers.
 public actor AscendantTurnCoordinator {
     public typealias TurnOperation = @Sendable () async throws -> String
 
@@ -24,10 +29,10 @@ public actor AscendantTurnCoordinator {
         let cancel: @Sendable () async -> Void
     }
 
-    private struct Lane: Sendable {
-        let id: UUID
+    /// The one active foreground Turn on a Timeline.
+    private struct ActiveTurn: Sendable {
+        let operationID: String
         let task: Task<String, Error>
-        let tail: Task<Void, Never>
     }
 
     private let ledger: AscendantTurnUpdateStore
@@ -35,10 +40,12 @@ public actor AscendantTurnCoordinator {
     private let observationDrainTimeout: Duration
     private let observationScope: RuntimeEffectScope
     private var inFlight: [Key: InFlight] = [:]
-    /// Keys whose ledger admission is in progress. A duplicate waits here so it
-    /// always observes the task the admitted request registered.
-    private var admissions: [Key: [CheckedContinuation<Void, Never>]] = [:]
-    private var timelineTails: [UUID: Lane] = [:]
+    /// Timelines whose admission is being classified. A request waits here so it
+    /// always observes the active Turn that an earlier admission registered, and
+    /// two distinct Turns cannot both be admitted to one Timeline.
+    private var admittingTimelines: Set<UUID> = []
+    private var admissionWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    private var activeTurns: [UUID: ActiveTurn] = [:]
     private var acceptingTurns = true
     /// Set when the bounded shutdown fence closes. Terminal outcomes committed
     /// after this point remain domain state, but cannot start observer work after
@@ -64,7 +71,7 @@ public actor AscendantTurnCoordinator {
         get async { await ledger.admissionCapacities }
     }
 
-    internal var retainedTimelineCount: Int { timelineTails.count }
+    internal var retainedTimelineCount: Int { activeTurns.count }
 
     internal var inFlightCount: Int { inFlight.count }
 
@@ -119,16 +126,13 @@ public actor AscendantTurnCoordinator {
     /// `observationDrainTimeout` and dispose the scope.
     public func cancelAll(waitForCompletion: Bool = true) async {
         acceptingTurns = false
-        let turns = inFlight.values.map(\.task) + timelineTails.values.map(\.task)
-        let tails = timelineTails.values.map(\.tail)
+        let turns = Array(activeTurns.values.map(\.task) + inFlight.values.map(\.task))
         turns.forEach { $0.cancel() }
-        tails.forEach { $0.cancel() }
 
         if waitForCompletion {
             for turn in turns { _ = await turn.result }
-            for tail in tails { await tail.value }
         } else {
-            await awaitSettlement(turns: turns, tails: tails, timeout: observationDrainTimeout)
+            await awaitSettlement(turns: turns, timeout: observationDrainTimeout)
         }
         // Close observer admission only after that window. A turn that settles
         // later still commits its replay state, but its observer delivery is
@@ -154,22 +158,20 @@ public actor AscendantTurnCoordinator {
         return true
     }
 
-    /// Waits up to `timeout` for cancelled Turn and lane tasks to settle, so
+    /// Waits up to `timeout` for cancelled Turn tasks to settle, so
     /// cooperative work commits its terminal record while observer admission
     /// is still open. A task that outlives the window is abandoned rather than
     /// awaited: it holds no shutdown resource, and its later delivery is the
     /// case the observation fence exists for.
     private func awaitSettlement(
         turns: [Task<String, Error>],
-        tails: [Task<Void, Never>],
         timeout: Duration
     ) async {
-        guard !turns.isEmpty || !tails.isEmpty else { return }
+        guard !turns.isEmpty else { return }
         // Both tasks are actor-isolated, so neither can resolve the wait
         // before the continuation below is registered.
         let settlement = Task { [weak self] in
             for turn in turns { _ = await turn.result }
-            for tail in tails { await tail.value }
             await self?.resolveSettlement()
         }
         let deadline = Task { [weak self] in
@@ -234,7 +236,8 @@ public actor AscendantTurnCoordinator {
 
     /// Admits one turn. Requests without a client id use the compatibility path
     /// and are intentionally not deduplicated, while identified requests share
-    /// one task per `(timelineID, clientTurnID)` key.
+    /// one task per `(timelineID, clientTurnID)` key. A distinct request is
+    /// rejected as busy while another Turn is active on the Timeline.
     public func execute(
         _ request: AscendantTurnRequest,
         ascendantID: UUID,
@@ -243,187 +246,239 @@ public actor AscendantTurnCoordinator {
     ) async throws -> AscendantTurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         guard acceptingTurns else {
-            throw AscendantTurnError.backendUnavailable(
-                timelineID: request.timelineID,
-                clientTurnID: request.clientTurnID ?? "",
-                detail: "The Ascendant turn coordinator is shutting down."
+            throw Self.shuttingDown(for: request)
+        }
+        // The wire edge canonicalizes the client turn ID once; the ledger
+        // receives the same canonical value.
+        let canonicalRequest = AscendantTurnRequest(
+            message: request.message,
+            timelineID: request.timelineID,
+            clientTurnID: try request.clientTurnID.map { try GnosticWirePayload.canonicalClientTurnID($0) },
+            protocolMajor: request.protocolMajor
+        )
+        let admitted = try await admit(
+            canonicalRequest,
+            ascendantID: ascendantID,
+            operationID: Self.makeOperationID(),
+            cancel: cancel,
+            operation: operation
+        )
+        switch admitted {
+        case let .replayed(result):
+            return result
+        case let .attached(task):
+            return try await replay(task, request: canonicalRequest)
+        case let .started(task):
+            let text = try await task.value
+            return AscendantTurnResult(
+                clientTurnID: canonicalRequest.clientTurnID ?? UUID().uuidString.lowercased(),
+                text: text,
+                replayed: false
             )
         }
-        let operationID = Self.makeOperationID()
-        guard let rawClientTurnID = request.clientTurnID else {
-            let lane = enqueue(timelineID: request.timelineID, operation: operation, completion: { [weak self] result in
+    }
+
+    private enum Admitted {
+        /// The coordinator started this request's Turn.
+        case started(Task<String, Error>)
+        /// An identical retry that waits on the active Turn.
+        case attached(Task<String, Error>)
+        /// An identical retry answered from the ledger.
+        case replayed(AscendantTurnResult)
+    }
+
+    /// Classifies one request while holding its Timeline's admission, so two
+    /// distinct Turns can never both be admitted to one Timeline. A `.started`
+    /// result has already registered the active Turn before admission ends.
+    private func admit(
+        _ request: AscendantTurnRequest,
+        ascendantID: UUID,
+        operationID: String,
+        cancel: @escaping @Sendable () async -> Void,
+        operation: @escaping TurnOperation
+    ) async throws -> Admitted {
+        let timelineID = request.timelineID
+        await acquireAdmission(timelineID)
+        defer { releaseAdmission(timelineID) }
+        guard acceptingTurns else { throw Self.shuttingDown(for: request) }
+        let timelineIsBusy = activeTurns[timelineID] != nil
+
+        guard let clientTurnID = request.clientTurnID else {
+            guard !timelineIsBusy else {
+                throw AscendantTurnError.timelineBusy(timelineID: timelineID, clientTurnID: "")
+            }
+            return .started(start(
+                request, key: nil, ascendantID: ascendantID, operationID: operationID,
+                cancel: cancel, operation: operation
+            ))
+        }
+
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID)
+        let admission: TurnLedgerAdmission
+        do {
+            admission = try await ledger.admit(
+                timelineID: timelineID,
+                clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID(rawValue: clientTurnID),
+                message: request.message,
+                admitNew: !timelineIsBusy
+            )
+        } catch AscendantTurnUpdateStore.Error.capacityExceeded {
+            throw AscendantTurnError.capacityExceeded(timelineID: timelineID, clientTurnID: clientTurnID)
+        }
+        switch admission {
+        case .new:
+            return .started(start(
+                request, key: key, ascendantID: ascendantID, operationID: operationID,
+                cancel: cancel, operation: operation
+            ))
+        case .inFlight:
+            guard let existing = inFlight[key] else {
+                // Admitted but unregistered without a coordinator task: fail
+                // closed rather than rerun the identity.
+                throw AscendantTurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+            }
+            return .attached(existing.task)
+        case let .replay(.succeeded(text)):
+            return .replayed(AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: true))
+        case let .replay(.failed(error)):
+            throw error
+        case .conflict:
+            throw AscendantTurnError.conflict(timelineID: timelineID, clientTurnID: clientTurnID)
+        case .unavailable:
+            throw AscendantTurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+        case .busy:
+            throw AscendantTurnError.timelineBusy(timelineID: timelineID, clientTurnID: clientTurnID)
+        }
+    }
+
+    /// Starts the Turn's task and registers it as the Timeline's active Turn.
+    /// Nothing suspends between creating the task and registering it, so the
+    /// task's completion always finds its registration.
+    private func start(
+        _ request: AscendantTurnRequest,
+        key: Key?,
+        ascendantID: UUID,
+        operationID: String,
+        cancel: @escaping @Sendable () async -> Void,
+        operation: @escaping TurnOperation
+    ) -> Task<String, Error> {
+        let timelineID = request.timelineID
+        let clientTurnID = request.clientTurnID ?? ""
+        let task = Task<String, Error> { [weak self] in
+            let result: Result<String, any Error>
+            do {
+                try Task.checkCancellation()
+                result = .success(try await Self.run(
+                    operation, mappingFailures: key != nil, timelineID: timelineID, clientTurnID: clientTurnID
+                ))
+            } catch {
+                result = .failure(error)
+            }
+            do {
                 try await self?.recordCompletion(
-                    key: nil,
+                    key: key,
                     request: request,
                     ascendantID: ascendantID,
                     operationID: operationID,
                     result: result
                 )
-            })
-            do {
-                let text = try await lane.task.value
-                removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
-                return AscendantTurnResult(clientTurnID: UUID().uuidString.lowercased(), text: text)
             } catch {
-                removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
+                await self?.releaseTimeline(timelineID, operationID: operationID)
                 throw error
             }
+            await self?.releaseTimeline(timelineID, operationID: operationID)
+            return try result.get()
         }
-        // The wire edge canonicalizes the client turn ID once; the ledger
-        // receives the same canonical value.
-        let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
-        let canonicalRequest = AscendantTurnRequest(
-            message: request.message,
-            timelineID: request.timelineID,
-            clientTurnID: clientTurnID,
-            protocolMajor: request.protocolMajor
-        )
-        let key = Key(timelineID: request.timelineID, clientTurnID: clientTurnID)
-
-        let admission = try await admit(key: key, request: canonicalRequest)
-        switch admission {
-        case .new:
-            break
-        case .inFlight:
-            guard let existing = inFlight[key] else {
-                // Admitted but unregistered without a coordinator task: fail
-                // closed rather than rerun the identity.
-                releaseAdmission(key)
-                throw AscendantTurnError.replayUnavailable(
-                    timelineID: request.timelineID,
-                    clientTurnID: clientTurnID
-                )
-            }
-            releaseAdmission(key)
-            return try await replay(existing.task, request: canonicalRequest)
-        case let .replay(.succeeded(text)):
-            releaseAdmission(key)
-            return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: true)
-        case let .replay(.failed(error)):
-            releaseAdmission(key)
-            throw error
-        case .conflict:
-            releaseAdmission(key)
-            throw AscendantTurnError.conflict(timelineID: request.timelineID, clientTurnID: clientTurnID)
-        case .unavailable:
-            releaseAdmission(key)
-            throw AscendantTurnError.replayUnavailable(timelineID: request.timelineID, clientTurnID: clientTurnID)
+        activeTurns[timelineID] = ActiveTurn(operationID: operationID, task: task)
+        if let key {
+            inFlight[key] = InFlight(operationID: operationID, task: task, cancel: cancel)
         }
+        return task
+    }
 
-        let lane = enqueue(
-            timelineID: request.timelineID,
-            operation: {
-                do {
-                    return try await operation()
-                } catch is CancellationError {
-                    throw AscendantTurnError.cancelled(
-                        timelineID: request.timelineID,
-                        clientTurnID: clientTurnID
-                    )
-                } catch let error as AscendantBackendError {
-                    if case .cancelled = error {
-                        throw AscendantTurnError.cancelled(
-                            timelineID: request.timelineID,
-                            clientTurnID: clientTurnID
-                        )
-                    }
-                    if case let .lifecycleUnusable(failure) = error {
-                        throw AscendantTurnError.lifecycleUnusable(
-                            timelineID: request.timelineID,
-                            clientTurnID: clientTurnID,
-                            detail: failure.message
-                        )
-                    }
-                    if case let .terminal(failure) = error {
-                        throw AscendantTurnError.terminal(
-                            timelineID: request.timelineID,
-                            clientTurnID: clientTurnID,
-                            code: failure.code,
-                            detail: failure.message,
-                            retryable: failure.retryable,
-                            statusCode: 500
-                        )
-                    }
-                    throw AscendantTurnError.terminal(
-                        timelineID: request.timelineID,
-                        clientTurnID: clientTurnID,
-                        code: error.reasonCode,
-                        detail: error.localizedDescription,
-                        retryable: false,
-                        statusCode: error.statusCode
-                    )
-                } catch let error as AscendantTurnError {
-                    throw error
-                } catch {
-                    throw AscendantTurnError.failed(
-                        timelineID: request.timelineID,
-                        clientTurnID: clientTurnID,
-                        detail: String(describing: error)
-                    )
-                }
-            },
-            completion: { [weak self] result in
-                try await self?.recordCompletion(
-                    key: key,
-                    request: canonicalRequest,
-                    ascendantID: ascendantID,
-                    operationID: operationID,
-                    result: result
-                )
-            }
-        )
-
-        let task = lane.task
-        inFlight[key] = InFlight(
-            operationID: operationID,
-            task: task,
-            cancel: cancel
-        )
-        // The task is registered before the key is released, so a waiting
-        // duplicate always finds it.
-        releaseAdmission(key)
-
+    /// Runs the backend operation and maps its failures onto the Turn errors a
+    /// client sees. An unidentified compatibility Turn keeps the raw error.
+    private static func run(
+        _ operation: TurnOperation,
+        mappingFailures: Bool,
+        timelineID: UUID,
+        clientTurnID: String
+    ) async throws -> String {
+        guard mappingFailures else { return try await operation() }
         do {
-            let text = try await task.value
-            removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
-            return AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: false)
-        } catch {
-            removeTimelineTail(timelineID: request.timelineID, laneID: lane.id)
+            return try await operation()
+        } catch is CancellationError {
+            throw AscendantTurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+        } catch let error as AscendantBackendError {
+            if case .cancelled = error {
+                throw AscendantTurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+            }
+            if case let .lifecycleUnusable(failure) = error {
+                throw AscendantTurnError.lifecycleUnusable(
+                    timelineID: timelineID,
+                    clientTurnID: clientTurnID,
+                    detail: failure.message
+                )
+            }
+            if case .insertionUnknown = error {
+                throw AscendantTurnError.insertionUnknown(timelineID: timelineID, clientTurnID: clientTurnID)
+            }
+            if case let .terminal(failure) = error {
+                throw AscendantTurnError.terminal(
+                    timelineID: timelineID,
+                    clientTurnID: clientTurnID,
+                    code: failure.code,
+                    detail: failure.message,
+                    retryable: failure.retryable,
+                    statusCode: 500
+                )
+            }
+            throw AscendantTurnError.terminal(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                code: error.reasonCode,
+                detail: error.localizedDescription,
+                retryable: false,
+                statusCode: error.statusCode
+            )
+        } catch let error as AscendantTurnError {
             throw error
+        } catch {
+            throw AscendantTurnError.failed(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                detail: String(describing: error)
+            )
         }
     }
 
-    /// Asks the ledger for admission while holding the key, so duplicates of
-    /// one identity are classified one at a time. On success the caller owns
-    /// the key and must release it after registering or classifying the request.
-    private func admit(key: Key, request: AscendantTurnRequest) async throws -> TurnLedgerAdmission {
-        while admissions[key] != nil {
+    private static func shuttingDown(for request: AscendantTurnRequest) -> AscendantTurnError {
+        .backendUnavailable(
+            timelineID: request.timelineID,
+            clientTurnID: request.clientTurnID ?? "",
+            detail: "The Ascendant turn coordinator is shutting down."
+        )
+    }
+
+    private func acquireAdmission(_ timelineID: UUID) async {
+        while admittingTimelines.contains(timelineID) {
             await withCheckedContinuation { continuation in
-                admissions[key, default: []].append(continuation)
+                admissionWaiters[timelineID, default: []].append(continuation)
             }
         }
-        admissions[key] = []
-        do {
-            return try await ledger.admit(
-                timelineID: request.timelineID,
-                clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID(rawValue: key.clientTurnID),
-                message: request.message
-            )
-        } catch AscendantTurnUpdateStore.Error.capacityExceeded {
-            releaseAdmission(key)
-            throw AscendantTurnError.capacityExceeded(
-                timelineID: request.timelineID,
-                clientTurnID: key.clientTurnID
-            )
-        } catch {
-            releaseAdmission(key)
-            throw error
-        }
+        admittingTimelines.insert(timelineID)
     }
 
-    private func releaseAdmission(_ key: Key) {
-        let waiters = admissions.removeValue(forKey: key) ?? []
+    private func releaseAdmission(_ timelineID: UUID) {
+        admittingTimelines.remove(timelineID)
+        let waiters = admissionWaiters.removeValue(forKey: timelineID) ?? []
         waiters.forEach { $0.resume() }
+    }
+
+    /// Frees the Timeline once its Turn has committed its outcome.
+    private func releaseTimeline(_ timelineID: UUID, operationID: String) {
+        guard activeTurns[timelineID]?.operationID == operationID else { return }
+        activeTurns.removeValue(forKey: timelineID)
     }
 
     private func replay(
@@ -583,40 +638,10 @@ public actor AscendantTurnCoordinator {
             return .backendUnavailable(timelineID: timelineID, clientTurnID: clientTurnID, detail: GnosticWirePayload.prefix(detail, maximumBytes: 1_200))
         case let .replayUnavailable(timelineID, clientTurnID):
             return .replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .timelineBusy(timelineID, clientTurnID):
+            return .timelineBusy(timelineID: timelineID, clientTurnID: clientTurnID)
+        case let .insertionUnknown(timelineID, clientTurnID):
+            return .insertionUnknown(timelineID: timelineID, clientTurnID: clientTurnID)
         }
-    }
-
-    private func enqueue(
-        timelineID: UUID,
-        operation: @escaping TurnOperation,
-        completion: @escaping @Sendable (Result<String, Error>) async throws -> Void
-    ) -> Lane {
-        let predecessor = timelineTails[timelineID]?.tail
-        let task = Task<String, Error> {
-            let result: String
-            do {
-                _ = await predecessor?.value
-                try Task.checkCancellation()
-                result = try await operation()
-            } catch {
-                try await completion(.failure(error))
-                throw error
-            }
-            try await completion(.success(result))
-            return result
-        }
-        let laneID = UUID()
-        let tail = Task { [weak self] in
-            _ = await task.result
-            await self?.removeTimelineTail(timelineID: timelineID, laneID: laneID)
-        }
-        let lane = Lane(id: laneID, task: task, tail: tail)
-        timelineTails[timelineID] = lane
-        return lane
-    }
-
-    private func removeTimelineTail(timelineID: UUID, laneID: UUID) {
-        guard timelineTails[timelineID]?.id == laneID else { return }
-        timelineTails.removeValue(forKey: timelineID)
     }
 }

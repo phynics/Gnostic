@@ -46,7 +46,7 @@ struct TurnLogReport: Codable, Equatable {
         var compacted = false
         var startedAt: Date?
         var lastRecordedAt: Date?
-        var messageDigest: UInt64?
+        var messageDigest: String?
         var lastSequence: Int?
         var terminal: Bool?
     }
@@ -154,7 +154,7 @@ struct TurnSummary: Codable, Equatable {
     /// When the Turn's last record was written.
     let lastRecordedAt: String?
     /// The prompt digest, when a `.started` record carried one.
-    let messageDigest: UInt64?
+    let messageDigest: String?
     /// The highest update sequence observed.
     let lastSequence: Int?
     /// Whether the last update marked the Turn terminal.
@@ -203,7 +203,7 @@ extension TurnSummary {
             detail += " terminal"
         }
         if let messageDigest {
-            detail += " digest=\(String(messageDigest, radix: 16))"
+            detail += " digest=\(messageDigest)"
         }
         return "  \(timelineID) turn \(clientTurnID): \(detail)"
     }

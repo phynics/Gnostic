@@ -277,12 +277,21 @@ public actor JSONRPCSession {
     }
 
     private func errorObject(for error: RemoteTurnClientError) -> JSONRPCErrorObject {
+        // ADR 0021: a busy Timeline answers with the structured error the Turn
+        // semantics define, not with a Gnostic-specific envelope.
+        if case .timelineBusy = error {
+            return JSONRPCErrorObject(
+                code: ACPv2Protocol.ErrorCode.timelineBusy,
+                message: "Timeline is busy",
+                data: .dictionary(["code": .string("timelineBusy"), "retryable": .boolean(true)])
+            )
+        }
         let code: JSONRPCErrorCode = switch error {
         case .brokerUnreachable: .internalError
         case .noServedAscendant, .noRuntime, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
              .ambiguousAscendant, .ambiguousRuntime, .ascendantUnavailable, .runtimeUnavailable, .providerUnavailable, .providerOffline,
              .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
-             .missingCapability: .invalidState
+             .missingCapability, .insertionUnknown, .timelineBusy: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI, .promptTooLarge: .invalidParams
         }
         return JSONRPCErrorObject(
