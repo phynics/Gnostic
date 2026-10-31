@@ -197,6 +197,16 @@ struct FilesystemWorkspaceTests {
         }
     }
 
+    @Test("a file path with a trailing slash is not a file")
+    func readRejectsTrailingSlash() async throws {
+        let fixture = try Fixture(); defer { fixture.tearDown() }
+        let files = try workspace(at: fixture.root.path)
+
+        let result = try await call(files, "read_file", ["path": .string("hello.txt/")])
+
+        #expect(!result.isSuccess)
+    }
+
     @Test("accepts a file URL as the root")
     func fileURLRoot() async throws {
         let fixture = try Fixture(); defer { fixture.tearDown() }

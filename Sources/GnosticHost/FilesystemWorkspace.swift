@@ -255,6 +255,9 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
     }
 
     private func readFile(_ relative: String) -> BackendWorkspaceResult {
+        guard !relative.hasSuffix("/") else {
+            return .failure("The path is not a regular file.")
+        }
         let resolved: String
         switch resolve(relative) {
         case let .failure(failure): return .failure(failure.message)
@@ -285,7 +288,8 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
             }
             count += received
         }
-        let size = Int(info.st_size)
+        // A concurrent append can outgrow the size read before the bytes were.
+        let size = max(Int(info.st_size), count)
         let fileTruncated = size > count
         var bytes = Array(buffer[..<count])
         if bytes.contains(0) { return .failure("The file is not UTF-8 text.") }
