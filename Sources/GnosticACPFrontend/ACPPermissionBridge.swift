@@ -52,4 +52,30 @@ enum ACPPermissionBridge {
         default: return nil
         }
     }
+
+    /// Waits for a client's answer no longer than the Node's own bound, so a
+    /// silent client cannot hold the prompt after the Node has moved on.
+    ///
+    /// - Returns: The answer, or `nil` when the bound passed. The caller stops
+    ///   waiting, but the client is not told, and a later answer is dropped.
+    /// - Throws: The request's failure, including a cancellation from a session close.
+    static func boundedAnswer(
+        from request: Task<GnosticJSONValue, any Error>,
+        bound: Duration = AscendantPermissionCoordinator.defaultUnansweredBound
+    ) async throws -> GnosticJSONValue? {
+        let expiry = Task { () -> Bool in
+            guard (try? await Task.sleep(for: bound)) != nil else { return false }
+            request.cancel()
+            return true
+        }
+        defer { expiry.cancel() }
+        do {
+            return try await request.value
+        } catch is CancellationError {
+            // Only the bound withdraws quietly. A session close still ends the prompt.
+            expiry.cancel()
+            guard await expiry.value else { throw CancellationError() }
+            return nil
+        }
+    }
 }

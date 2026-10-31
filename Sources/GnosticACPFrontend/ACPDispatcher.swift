@@ -480,7 +480,7 @@ final class ACPDispatcher: Sendable {
                 }
             }
             do {
-                guard let response = try await Self.boundedAnswer(from: permissionTask) else {
+                guard let response = try await ACPPermissionBridge.boundedAnswer(from: permissionTask) else {
                     try await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "permissionUnanswered")
                     continue
                 }
@@ -500,35 +500,13 @@ final class ACPDispatcher: Sendable {
                     approved: answer == .approved
                 ), providerID: providerID)
             } catch {
-                try? await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "clientRequestFailed")
+                let reason = error is CancellationError ? "sessionClosed" : "clientRequestFailed"
+                try? await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: reason)
                 if error is CancellationError {
                     throw JSONRPCMethodError.invalidState("ACP session was closed")
                 }
                 throw error
             }
-        }
-    }
-
-    /// Waits for the client's answer no longer than the Node's own bound, so a
-    /// silent client cannot hold the prompt after the Node has moved on.
-    /// Returns `nil`, and withdraws the client request, when the bound passes.
-    private static func boundedAnswer(
-        from request: Task<GnosticJSONValue, any Error>,
-        bound: Duration = AscendantPermissionCoordinator.defaultUnansweredBound
-    ) async throws -> GnosticJSONValue? {
-        let expiry = Task { () -> Bool in
-            guard (try? await Task.sleep(for: bound)) != nil else { return false }
-            request.cancel()
-            return true
-        }
-        defer { expiry.cancel() }
-        do {
-            return try await request.value
-        } catch is CancellationError {
-            // Only the bound withdraws quietly. A session close still ends the prompt.
-            expiry.cancel()
-            guard await expiry.value else { throw CancellationError() }
-            return nil
         }
     }
 

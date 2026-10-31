@@ -29,4 +29,49 @@ struct ACPPermissionBridgeTests {
         #expect(ACPPermissionBridge.answer(from: response(outcome: "selected")) == nil)
         #expect(ACPPermissionBridge.answer(from: .dictionary([:])) == nil)
     }
+
+    private func silentClient() -> Task<GnosticJSONValue, any Error> {
+        Task {
+            try await Task.sleep(for: .seconds(60))
+            return .dictionary([:])
+        }
+    }
+
+    @Test("a silent client stops holding the prompt when the bound passes")
+    func silentClientIsBounded() async throws {
+        let answer = try await ACPPermissionBridge.boundedAnswer(from: silentClient(), bound: .milliseconds(20))
+
+        #expect(answer == nil)
+    }
+
+    @Test("a session close during the wait still ends the prompt")
+    func sessionCloseIsNotAQuietExpiry() async {
+        let request = silentClient()
+        request.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await ACPPermissionBridge.boundedAnswer(from: request, bound: .seconds(30))
+        }
+    }
+
+    @Test("an answer inside the bound is returned")
+    func answerInsideTheBound() async throws {
+        let answer = try await ACPPermissionBridge.boundedAnswer(
+            from: Task { self.response(outcome: "cancelled") },
+            bound: .seconds(30)
+        )
+
+        #expect(answer == response(outcome: "cancelled"))
+    }
+
+    @Test("a client failure is not a quiet expiry")
+    func clientFailureIsThrown() async {
+        struct ClientFailure: Error {}
+        await #expect(throws: ClientFailure.self) {
+            _ = try await ACPPermissionBridge.boundedAnswer(
+                from: Task { throw ClientFailure() },
+                bound: .seconds(30)
+            )
+        }
+    }
 }

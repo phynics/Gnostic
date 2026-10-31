@@ -102,9 +102,18 @@ struct AscendantPermissionCoordinatorTests {
         let waiting = Task { await coordinator.requestApproval(for: request) }
         try await waitUntil { await coordinator.pendingCount == 1 }
         waiting.cancel()
-        _ = await waiting.value
+        #expect(!(await waiting.value).isApproved)
         try await waitUntil { await coordinator.pendingCount == 0 }
-        #expect(await coordinator.pendingCount == 0)
+
+        let reused = Task { await coordinator.requestApproval(for: request) }
+        try await waitUntil { await coordinator.pendingCount == 1 }
+        #expect(await coordinator.respond(
+            correlationID: request.correlationID,
+            timelineID: request.timelineID,
+            clientTurnID: "turn-cancelled",
+            approved: true
+        ))
+        #expect(await reused.value == .approved)
     }
 
     @Test("a client that makes no decision settles the request at once as unavailable")
@@ -129,6 +138,34 @@ struct AscendantPermissionCoordinatorTests {
             approved: false,
             unavailableReason: "clientCancelled"
         ))
+
+        #expect(await decision.value == .unavailable(reason: "clientCancelled"))
+    }
+
+    @Test("the provider forwards a withheld decision from the wire")
+    func providerForwardsWithheldDecision() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates, unansweredBound: .seconds(30))
+        let provider = AscendantPermissionProvider(coordinator: coordinator)
+        let timelineID = UUID()
+        let request = BackendPermissionRequest(
+            correlationID: "permission-wire",
+            timelineID: timelineID,
+            clientTurnID: "turn-wire",
+            toolCallID: "call-wire",
+            title: "Write file"
+        )
+
+        let decision = Task { await coordinator.requestApproval(for: request) }
+        try await waitUntil { await coordinator.pendingCount == 1 }
+        let parameters = try String(decoding: JSONEncoder().encode(AscendantPermissionResponse(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: "turn-wire",
+            approved: false,
+            unavailableReason: "clientCancelled"
+        )), as: UTF8.self)
+        _ = try await provider.handle(parameters: parameters)
 
         #expect(await decision.value == .unavailable(reason: "clientCancelled"))
     }
