@@ -20,7 +20,11 @@ final class ACPFrontendHarness {
     private let runtime: NodeRuntime
     private let client: RemoteTurnClient
     private let session: JSONRPCSession
+    private let registry: ACPSessionRegistry
+    private let namespace: String
+    private let runtimeID: UUID
     private var nextRequestID = 100
+    private var secondConnections: [SecondConnection] = []
 
     /// Starts a Node with one fixture-backed Timeline and opens an ACP session on it.
     ///
@@ -107,13 +111,15 @@ final class ACPFrontendHarness {
             return nil
         }
         return ACPFrontendHarness(
-            scratch: scratch, wire: wire, sessionID: sessionID, runtime: runtime, client: client, session: session
+            scratch: scratch, wire: wire, sessionID: sessionID, runtime: runtime, client: client, session: session,
+            registry: registry, namespace: namespace, runtimeID: runtimeID
         )
     }
 
     private init(
         scratch: URL, wire: ACPWireCapture, sessionID: String,
-        runtime: NodeRuntime, client: RemoteTurnClient, session: JSONRPCSession
+        runtime: NodeRuntime, client: RemoteTurnClient, session: JSONRPCSession,
+        registry: ACPSessionRegistry, namespace: String, runtimeID: UUID
     ) {
         self.scratch = scratch
         self.wire = wire
@@ -121,6 +127,62 @@ final class ACPFrontendHarness {
         self.runtime = runtime
         self.client = client
         self.session = session
+        self.registry = registry
+        self.namespace = namespace
+        self.runtimeID = runtimeID
+    }
+
+    /// A second `gnostic acp` connection to the same Node that resolves this
+    /// harness's session to the same Timeline. Its dispatcher holds no prompt
+    /// reservation for the session, so a prompt on it reaches the Node's
+    /// coordinator instead of the dispatcher's per-session guard.
+    @MainActor
+    final class SecondConnection {
+        let wire: ACPWireCapture
+        fileprivate let client: RemoteTurnClient
+        fileprivate let session: JSONRPCSession
+        private let sessionID: String
+        private var nextRequestID = 500
+
+        fileprivate init(wire: ACPWireCapture, client: RemoteTurnClient, session: JSONRPCSession, sessionID: String) {
+            self.wire = wire
+            self.client = client
+            self.session = session
+            self.sessionID = sessionID
+        }
+
+        /// Sends `session/prompt` for `text` and returns the ID its response will carry.
+        @discardableResult
+        func prompt(_ text: String) async -> Int {
+            nextRequestID += 1
+            let id = nextRequestID
+            await session.receive(Data(
+                #"{"jsonrpc":"2.0","id":\#(id),"method":"session/prompt","params":{"sessionId":"\#(sessionID)","prompt":[{"type":"text","text":"\#(text)"}]}}"#.utf8 + [0x0A]
+            ))
+            return id
+        }
+    }
+
+    func openSecondConnection() async throws -> SecondConnection {
+        let secondClient = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        try await secondClient.connect()
+        let secondWire = ACPWireCapture()
+        let dispatcher = ACPDispatcher(
+            client: secondClient,
+            registry: registry,
+            requestedRuntimeID: runtimeID,
+            publish: { method, params in secondWire.record(notification: method, params: params) },
+            requestPermission: { _ in throw CancellationError() }
+        )
+        let secondSession = JSONRPCSession(
+            handler: { request in try await dispatcher.handle(request) },
+            output: { data in secondWire.record(frame: data) },
+            initialize: { try await dispatcher.initialize() }
+        )
+        await secondSession.receive(Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}"#.utf8 + [0x0A]))
+        let connection = SecondConnection(wire: secondWire, client: secondClient, session: secondSession, sessionID: sessionID)
+        secondConnections.append(connection)
+        return connection
     }
 
     /// Sends a request and returns the ID its response will carry.
@@ -145,6 +207,10 @@ final class ACPFrontendHarness {
     }
 
     func tearDown() async {
+        for connection in secondConnections {
+            await connection.session.finish()
+            await connection.client.stop()
+        }
         await session.finish()
         await client.stop()
         await runtime.shutdown()
