@@ -31,6 +31,10 @@ process.stdin.on("end", () => {
 });
 '
 
+# --show-bin-path prints a path without building. Build both products here so
+# that the smoke never runs an older binary from a restored build cache.
+swift build "${swift_flags[@]}" --product gnostic-runner
+swift build "${swift_flags[@]}" --product gnostic
 bin=$(swift build "${swift_flags[@]}" --product gnostic-runner --show-bin-path)/gnostic-runner
 cli_bin=$(swift build "${swift_flags[@]}" --product gnostic --show-bin-path)/gnostic
 help=$("$bin" --help 2>&1)
