@@ -23,8 +23,13 @@ const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(chil
 
 try {
   const updates = [];
+  let permissionRequests = 0;
   await acp.client({ name: "gnostic-runner-smoke-client" })
     .onNotification(acp.methods.client.session.update, ({ params }) => updates.push(params))
+    .onRequest(acp.methods.client.session.requestPermission, () => {
+      permissionRequests += 1;
+      return { outcome: { outcome: "cancelled" } };
+    })
     .connectWith(stream, async (ctx) => {
       const initialized = await ctx.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
@@ -49,6 +54,7 @@ try {
       assert(prompted.messageId);
       await waitForIdle(updates, start);
       assert(JSON.stringify(updates.slice(start)).includes("reply: runner smoke turn"));
+      assert.equal(permissionRequests, 1, "the client must receive the Runtime's permission request");
 
       await ctx.request(acp.methods.agent.session.close, { sessionId: created.sessionId });
       process.stdout.write("runner ACP initialization, session, and turn passed\n");

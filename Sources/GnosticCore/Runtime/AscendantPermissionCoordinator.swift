@@ -32,8 +32,8 @@ public actor AscendantPermissionCoordinator {
     private var acceptingResponses = true
 
     /// The default wait for a client answer. It leaves a person time to decide,
-    /// and it stays well inside the ACP prompt deadline.
-    public static let defaultUnansweredBound: Duration = .seconds(300)
+    /// and it stays inside the 300-second Turn call limit of `gnostic acp`.
+    public static let defaultUnansweredBound: Duration = .seconds(120)
 
     /// Creates a coordinator.
     ///
@@ -84,14 +84,19 @@ public actor AscendantPermissionCoordinator {
             await self?.expire(correlationID: correlationID)
         }
         defer { expiry.cancel() }
-        var iterator = decisions.makeAsyncIterator()
-        return await iterator.next() ?? .unavailable(reason: "decisionStreamEnded")
+        return await withTaskCancellationHandler {
+            var iterator = decisions.makeAsyncIterator()
+            return await iterator.next() ?? .unavailable(reason: "decisionStreamEnded")
+        } onCancel: {
+            // A cancelled caller stops listening, so nothing else would clear this request.
+            Task { await self.expire(correlationID: correlationID, reason: "turnCancelled") }
+        }
     }
 
-    private func expire(correlationID: String) async {
+    private func expire(correlationID: String, reason: String = "permissionUnanswered") async {
         guard let value = pending.removeValue(forKey: correlationID) else { return }
-        logger.warning("permission request unanswered within its bound")
-        await resolveUnavailable(value, reason: "permissionUnanswered", status: .unavailable)
+        logger.warning("permission request ended without a decision: \(reason)")
+        await resolveUnavailable(value, reason: reason, status: .unavailable)
     }
 
     private func resolveUnavailable(_ value: Pending, reason: String, status: AscendantPermissionStatus) async {
@@ -107,7 +112,8 @@ public actor AscendantPermissionCoordinator {
         correlationID: String,
         timelineID: UUID,
         clientTurnID: String,
-        approved: Bool
+        approved: Bool,
+        unavailableReason: String? = nil
     ) async -> Bool {
         guard acceptingResponses else { return false }
         guard let responseClientTurnID = try? await updates.validatedClientTurnID(clientTurnID) else {
@@ -118,6 +124,10 @@ public actor AscendantPermissionCoordinator {
               value.request.timelineID == timelineID,
               value.request.clientTurnID == responseClientTurnID.rawValue else { return false }
         pending[correlationID] = nil
+        if let unavailableReason {
+            await resolveUnavailable(value, reason: unavailableReason, status: .unavailable)
+            return true
+        }
         do {
             try await updates.recordPermissionDecision(request: value.request, decision: approved ? .approved : .denied)
         } catch {

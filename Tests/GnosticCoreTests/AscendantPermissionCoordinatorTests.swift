@@ -87,6 +87,52 @@ struct AscendantPermissionCoordinatorTests {
         #expect(await decision.value == .approved)
     }
 
+    @Test("a cancelled caller clears its request, so its correlation ID can be used again")
+    func cancelledCallerClearsPending() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates, unansweredBound: .seconds(30))
+        let request = BackendPermissionRequest(
+            correlationID: "permission-cancelled",
+            timelineID: UUID(),
+            clientTurnID: "turn-cancelled",
+            toolCallID: "call-cancelled",
+            title: "Write file"
+        )
+
+        let waiting = Task { await coordinator.requestApproval(for: request) }
+        try await waitUntil { await coordinator.pendingCount == 1 }
+        waiting.cancel()
+        _ = await waiting.value
+        try await waitUntil { await coordinator.pendingCount == 0 }
+        #expect(await coordinator.pendingCount == 0)
+    }
+
+    @Test("a client that makes no decision settles the request at once as unavailable")
+    func clientWithheldDecision() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates, unansweredBound: .seconds(30))
+        let timelineID = UUID()
+        let request = BackendPermissionRequest(
+            correlationID: "permission-withheld",
+            timelineID: timelineID,
+            clientTurnID: "turn-withheld",
+            toolCallID: "call-withheld",
+            title: "Write file"
+        )
+
+        let decision = Task { await coordinator.requestApproval(for: request) }
+        try await waitUntil { await coordinator.pendingCount == 1 }
+        #expect(await coordinator.respond(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: "turn-withheld",
+            approved: false,
+            unavailableReason: "clientCancelled"
+        ))
+
+        #expect(await decision.value == .unavailable(reason: "clientCancelled"))
+    }
+
     @Test("an explicit client denial is reported as a denial")
     func explicitDenialIsADenial() async throws {
         let updates = AscendantTurnUpdateStore()

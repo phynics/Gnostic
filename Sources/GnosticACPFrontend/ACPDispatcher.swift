@@ -480,13 +480,18 @@ final class ACPDispatcher: Sendable {
                 }
             }
             do {
-                let response = try await permissionTask.value
+                guard let response = try await Self.boundedAnswer(from: permissionTask) else {
+                    try await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "permissionUnanswered")
+                    continue
+                }
                 guard let answer = ACPPermissionBridge.answer(from: response) else {
                     throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
-                // Only a client's explicit choice is a decision. Without one, the
-                // Node's bound resolves the request as unavailable (ADR 0019 §4).
-                guard answer != .undecided else { return }
+                // Only a client's explicit choice is a decision (ADR 0019 §4).
+                guard answer != .undecided else {
+                    try await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "clientCancelled")
+                    continue
+                }
                 let providerID = try await currentRuntime().providerID
                 try client.respondToPermission(AscendantPermissionResponse(
                     correlationID: state.correlationID,
@@ -495,12 +500,53 @@ final class ACPDispatcher: Sendable {
                     approved: answer == .approved
                 ), providerID: providerID)
             } catch {
+                try? await withholdPermission(state, timelineID: timelineID, turnID: turnID, reason: "clientRequestFailed")
                 if error is CancellationError {
                     throw JSONRPCMethodError.invalidState("ACP session was closed")
                 }
                 throw error
             }
         }
+    }
+
+    /// Waits for the client's answer no longer than the Node's own bound, so a
+    /// silent client cannot hold the prompt after the Node has moved on.
+    /// Returns `nil`, and withdraws the client request, when the bound passes.
+    private static func boundedAnswer(
+        from request: Task<GnosticJSONValue, any Error>,
+        bound: Duration = AscendantPermissionCoordinator.defaultUnansweredBound
+    ) async throws -> GnosticJSONValue? {
+        let expiry = Task { () -> Bool in
+            guard (try? await Task.sleep(for: bound)) != nil else { return false }
+            request.cancel()
+            return true
+        }
+        defer { expiry.cancel() }
+        do {
+            return try await request.value
+        } catch is CancellationError {
+            // Only the bound withdraws quietly. A session close still ends the prompt.
+            expiry.cancel()
+            guard await expiry.value else { throw CancellationError() }
+            return nil
+        }
+    }
+
+    /// Tells the Node that the client made no decision. It is not a denial.
+    private func withholdPermission(
+        _ state: AscendantPermissionState,
+        timelineID: UUID,
+        turnID: String,
+        reason: String
+    ) async throws {
+        let providerID = try await currentRuntime().providerID
+        try client.respondToPermission(AscendantPermissionResponse(
+            correlationID: state.correlationID,
+            timelineID: timelineID,
+            clientTurnID: turnID,
+            approved: false,
+            unavailableReason: reason
+        ), providerID: providerID)
     }
 
     private func publishUserMessage(

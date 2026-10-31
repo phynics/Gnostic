@@ -187,6 +187,8 @@ manifest.ascendants[0].backend.settings.env = JSON.stringify({
   GNOSTIC_ACP_FIXTURE_NEW_SESSION_FILE: `${scratch}/fixture-new-session`,
   GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE: `${scratch}/fixture-prompt`,
   GNOSTIC_ACP_FIXTURE_PROCESS_PID_FILE: `${scratch}/fixture-pid`,
+  GNOSTIC_ACP_FIXTURE_PERMISSION: "1",
+  GNOSTIC_ACP_FIXTURE_PERMISSION_OUTCOME: "cancelled",
 });
 fs.writeFileSync(manifestPath, JSON.stringify(manifest));
 NODE
