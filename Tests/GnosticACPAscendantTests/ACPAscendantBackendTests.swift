@@ -118,7 +118,8 @@ struct ACPAscendantBackendTests {
         workspace: (any AscendantBackendWorkspaceService)? = nil,
         optionalCapabilities: [any AscendantBackendOptionalCapability] = [],
         protocolTimeoutSeconds: TimeInterval = 30,
-        promptTimeoutSeconds: TimeInterval = 60 * 60
+        promptTimeoutSeconds: TimeInterval = 60 * 60,
+        cancellationSettleSeconds: TimeInterval = ACPAscendantBackend.defaultCancellationSettleSeconds
     ) throws -> ACPAscendantBackend {
         let ascendant = NodeManifest.Ascendant(
             id: ascendantID,
@@ -136,7 +137,8 @@ struct ACPAscendantBackendTests {
             ),
             timelines: timelines,
             protocolTimeoutSeconds: protocolTimeoutSeconds,
-            promptTimeoutSeconds: promptTimeoutSeconds
+            promptTimeoutSeconds: promptTimeoutSeconds,
+            cancellationSettleSeconds: cancellationSettleSeconds
         )
     }
 
@@ -3030,6 +3032,201 @@ struct ACPAscendantBackendTests {
         #expect(events.first == "prompt \(promptID)")
         #expect(events.dropFirst().first == "cancel_request \(promptID)")
         #expect(events.last?.hasPrefix("session_cancel ") == true)
+        await backend.shutdown()
+    }
+
+    /// Runs one Turn the way `TurnService` does: through the coordinator, whose
+    /// cancel closure reaches the backend before the coordinator cancels the
+    /// Turn's task.
+    @MainActor
+    private func coordinatedTurn(
+        _ coordinator: AscendantTurnCoordinator,
+        backend: ACPAscendantBackend,
+        timelineID: UUID,
+        message: String,
+        clientTurnID: String
+    ) -> Task<AscendantTurnResult, any Error> {
+        Task {
+            try await coordinator.execute(
+                AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+                ascendantID: UUID(),
+                cancel: { await backend.cancelTurn(timelineID: timelineID, clientTurnID: clientTurnID) }
+            ) {
+                try await backend.runTurn(
+                    .init(timelineID: timelineID, message: message, clientTurnID: clientTurnID),
+                    updates: RecordingUpdateSink()
+                )
+            }
+        }
+    }
+
+    @Test("a coordinator cancel that finds the prompt inserted anyway sends $/cancel_request, then session/cancel")
+    @MainActor
+    func coordinatorCancelFollowsASuccessAnswerWithSessionCancel() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Coordinator cancel, inserted")]
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:hold-before-insertion] [fixture:insert-despite-cancel-request] [fixture:wait]",
+            clientTurnID: "coordinated-insert-1"
+        )
+        try await waitForWireEvents(wireLog, count: 1)
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "coordinated-insert-1"))
+
+        let outcome = await settle(turn)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
+            Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        try await waitForWireEvents(wireLog, count: 3)
+        let events = wireEvents(wireLog)
+        let promptID = try #require(events.first?.split(separator: " ").last.map(String.init))
+        #expect(events.count == 3)
+        #expect(events.first == "prompt \(promptID)")
+        #expect(events.dropFirst().first == "cancel_request \(promptID)")
+        #expect(events.last?.hasPrefix("session_cancel ") == true)
+        await backend.shutdown()
+    }
+
+    @Test("a coordinator cancel answered -32800 ends the Turn cancelled with no session/cancel")
+    @MainActor
+    func coordinatorCancelAnsweredRequestCancelledSendsNoSessionCancel() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Coordinator cancel, not inserted")]
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:hold-before-insertion]", clientTurnID: "coordinated-hold-1"
+        )
+        try await waitForWireEvents(wireLog, count: 1)
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "coordinated-hold-1"))
+
+        let outcome = await settle(turn)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
+            Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        // Give a misbehaving backend time to send the follow-up before asserting silence.
+        try await Task.sleep(for: .milliseconds(500))
+        let events = wireEvents(wireLog)
+        let promptID = try #require(events.first?.split(separator: " ").last.map(String.init))
+        #expect(events == ["prompt \(promptID)", "cancel_request \(promptID)"])
+        await backend.shutdown()
+    }
+
+    /// Starts a distinct Turn on a Timeline whose earlier Turn ended, and
+    /// returns how the coordinator answered it.
+    @MainActor
+    private func nextTurnError(
+        _ coordinator: AscendantTurnCoordinator,
+        backend: ACPAscendantBackend,
+        timelineID: UUID
+    ) async -> AscendantTurnError? {
+        let next = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID, message: "next Turn", clientTurnID: "next-1"
+        )
+        guard case let .failure(error)? = await settle(next, seconds: 4) else { return nil }
+        return error as? AscendantTurnError
+    }
+
+    @Test("a Runtime that ignores session/cancel cannot hold the Timeline busy past the cancellation bound")
+    @MainActor
+    func runtimeIgnoringSessionCancelReleasesTheTimeline() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Runtime ignores cancel")],
+            cancellationSettleSeconds: 1
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:ignore-cancel]", clientTurnID: "ignore-cancel-1"
+        )
+        try await waitForWireEvents(wireLog, count: 1)
+        // Let the prompt's answer reach the backend, so insertion is confirmed.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "ignore-cancel-1"))
+
+        // The Runtime never reports `idle`. The Turn ends without claiming it
+        // stopped, and the failure retires the backend.
+        let outcome = await settle(turn, seconds: 6)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+            Issue.record("Expected a lifecycleUnusable end within the bound, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        let events = wireEvents(wireLog)
+        #expect(events.count == 2)
+        #expect(events.first?.hasPrefix("prompt ") == true)
+        #expect(events.last?.hasPrefix("session_cancel ") == true)
+
+        // The Timeline is free: the next Turn is rejected by the retired
+        // backend, not by `timelineBusy`, and nothing reaches the Runtime.
+        let next = await nextTurnError(coordinator, backend: backend, timelineID: timelineID)
+        guard case .lifecycleUnusable? = next else {
+            Issue.record("Expected the next Turn to meet the retired backend, observed \(String(describing: next)).")
+            await backend.shutdown()
+            return
+        }
+        #expect(wireEvents(wireLog) == events)
+        await backend.shutdown()
+    }
+
+    @Test("a Runtime that never answers $/cancel_request ends the Turn insertionUnknown within the cancellation bound")
+    @MainActor
+    func unansweredCancelRequestEndsInsertionUnknown() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Runtime ignores cancel request")],
+            cancellationSettleSeconds: 1
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:hold-before-insertion] [fixture:ignore-cancel-request]",
+            clientTurnID: "unanswered-cancel-1"
+        )
+        try await waitForWireEvents(wireLog, count: 1)
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "unanswered-cancel-1"))
+
+        let outcome = await settle(turn, seconds: 6)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.insertionUnknown = error else {
+            Issue.record("Expected insertionUnknown within the bound, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        let events = wireEvents(wireLog)
+        let promptID = try #require(events.first?.split(separator: " ").last.map(String.init))
+        #expect(events == ["prompt \(promptID)", "cancel_request \(promptID)"])
+        let next = await nextTurnError(coordinator, backend: backend, timelineID: timelineID)
+        guard case .lifecycleUnusable? = next else {
+            Issue.record("Expected the next Turn to meet the retired backend, observed \(String(describing: next)).")
+            await backend.shutdown()
+            return
+        }
         await backend.shutdown()
     }
 

@@ -143,6 +143,13 @@ public actor ACPProtocolLayer {
         pendingRequests.removeValue(forKey: id)?.resume(throwing: error)
     }
 
+    /// Stops waiting for a sent request: its caller receives `error`, and a
+    /// response that arrives later is ignored.
+    package func abandonRequest(id: ACPRequestId, error: any Error) {
+        guard let key = id.stringValue else { return }
+        cancelPendingRequest(id: key, error: error)
+    }
+
     public func request<Req: Encodable, Resp: Decodable>(
         method: String,
         params: Req,

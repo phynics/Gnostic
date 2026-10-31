@@ -317,7 +317,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     // hold answers the cancelled request with -32800 (not inserted, ADR 0019 section 5).
     // With `[fixture:insert-despite-cancel-request]` the prompt is inserted anyway and
     // answered with a success response, which Gnostic must follow with `session/cancel`.
+    // With `[fixture:ignore-cancel-request]` the prompt is never answered, whatever Gnostic sends.
     if (promptText.includes("[fixture:hold-before-insertion]")) {
+      if (promptText.includes("[fixture:ignore-cancel-request]")) await new Promise(() => {});
       const holdDeadline = Date.now() + 20_000;
       while (!signal.aborted && Date.now() < holdDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -348,6 +350,11 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
       sessionId: params.sessionId,
       update: { sessionUpdate: "state_update", state: "running" },
     });
+    if (promptText.includes("[fixture:ignore-cancel]")) {
+      // The prompt is inserted and answered, and the Turn never ends: `session/cancel`
+      // is recorded and ignored, so no `idle` follows.
+      return { messageId: userMessageId };
+    }
     if (promptText.includes("[fixture:drop-prompt-response]")) {
       // The prompt was inserted, but its response never arrives.
       await new Promise(() => {});

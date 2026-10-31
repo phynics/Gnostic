@@ -27,6 +27,12 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private nonisolated static let defaultProtocolTimeoutSeconds: TimeInterval = 30
     // #418: allow long Turns; revisit if Turns exceed 1h and consider a settings key.
     private nonisolated static let defaultPromptTimeoutSeconds: TimeInterval = 60 * 60
+    /// How long a cancelled Turn waits for the Runtime to settle: an answer to
+    /// `$/cancel_request`, or an `idle` after `session/cancel`. When it expires
+    /// the Turn ends without the Runtime's confirmation and the backend is
+    /// retired, so a Runtime that ignores cancellation cannot hold the
+    /// Timeline busy for the prompt timeout.
+    nonisolated static let defaultCancellationSettleSeconds: TimeInterval = 30
 
     /// The configuration keys accepted by the ACP client backend.
     public nonisolated static let settingsSchema = AscendantBackendSettingsSchema(keys: [
@@ -50,6 +56,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private let configuration: AscendantBackendConfiguration
     private let protocolTimeoutSeconds: TimeInterval
     private let promptTimeoutSeconds: TimeInterval
+    private let cancellationSettleSeconds: TimeInterval
     private let configuredTimelines: [NodeManifest.Timeline]
     private let projectResolver: ProjectDirectoryResolver
     private let explicitProjectIDs: Set<UUID>
@@ -140,7 +147,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         services: AscendantBackendServices,
         timelines configuredTimelines: [NodeManifest.Timeline],
         protocolTimeoutSeconds: TimeInterval = 30,
-        promptTimeoutSeconds: TimeInterval = 60 * 60
+        promptTimeoutSeconds: TimeInterval = 60 * 60,
+        cancellationSettleSeconds: TimeInterval = ACPAscendantBackend.defaultCancellationSettleSeconds
     ) throws {
         try AscendantBackendConfigurationValidator.validate(configuration)
         let parsedLaunchSpec = try Self.parse(configuration)
@@ -156,6 +164,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         self.configuration = configuration
         self.protocolTimeoutSeconds = protocolTimeoutSeconds
         self.promptTimeoutSeconds = promptTimeoutSeconds
+        self.cancellationSettleSeconds = cancellationSettleSeconds
         permissionService = services.permission
         workspaceService = services.workspace
         timelineJournalRecorder = services.capability(TimelineJournalRecorder.self)
@@ -544,6 +553,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             activeTurns[request.timelineID] = activeTurn
             defer {
                 activeTurn.isCancelled = true
+                activeTurn.isFinished = true
+                activeTurn.cancellationDeadline?.cancel()
                 activeTurns.removeValue(forKey: request.timelineID)
             }
             let eventStream = updateRouter.beginTurn(sessionID: sessionID)
@@ -557,7 +568,14 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 // ACP v2 acknowledges insertion, not completion. The turn is
                 // finished by the idle state update, which the forwarding task
                 // consumes before it returns.
-                let response = try await withTaskCancellationHandler {
+                //
+                // The prompt runs in its own task, which cancelling this Turn's
+                // task does not cancel. A cancelled wait would discard the
+                // Runtime's answer to `$/cancel_request`, and that answer
+                // decides whether `session/cancel` follows. Cancelling the Turn
+                // sends the cancel instead (ADR 0019 section 5), and the
+                // cancellation deadline bounds the wait.
+                let promptTask = Task {
                     try await connection.prompt(
                         request: ACPPromptRequest(
                             sessionId: sessionID,
@@ -573,8 +591,11 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                             }
                         }
                     )
+                }
+                let response = try await withTaskCancellationHandler {
+                    try await promptTask.value
                 } onCancel: {
-                    Task { @MainActor in activeTurn.isCancelled = true }
+                    Task { @MainActor [weak self] in await self?.cancelActiveTurn(activeTurn) }
                 }
                 activeTurn.insertion = .inserted
                 // A successful response binds the Turn to the Runtime's message.
@@ -582,12 +603,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 // The Runtime inserted the prompt although cancellation was
                 // requested while it was pending, so `session/cancel` follows
                 // the successful response (ADR 0019 section 5).
-                if activeTurn.isTurnCancelled {
-                    try? await connection.sendNotification(
-                        method: ACPv2Protocol.AgentMethod.sessionCancel,
-                        params: ACPCancelSessionNotification(sessionId: sessionID)
-                    )
-                }
+                if activeTurn.isTurnCancelled { await sendSessionCancel(for: activeTurn) }
             } catch {
                 updateRouter.endTurn(sessionID: sessionID)
                 let outcome = await forwardingTask.value
@@ -621,6 +637,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             let outcome = await forwardingTask.value
             idleTimeout.cancel()
             updateRouter.endTurn(sessionID: sessionID)
+            // The Runtime did not settle a cancelled Turn within the bound. The
+            // Turn ends, and the failure retires the backend rather than
+            // claiming the Runtime stopped.
+            if let failure = activeTurn.cancellationFailure { throw AscendantBackendError.lifecycleUnusable(failure) }
             if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
             if let streamError = outcome.error { throw streamError }
             guard outcome.idleReported else {
@@ -685,8 +705,20 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         guard let canonicalClientTurnID = try? GnosticWirePayload.canonicalClientTurnID(clientTurnID) else { return }
         guard let activeTurn = activeTurns[timelineID],
               activeTurn.clientTurnID == canonicalClientTurnID else { return }
-        let insertion = activeTurn.insertion
-        activeTurn.cancelTurn()
+        await cancelActiveTurn(activeTurn)
+    }
+
+    /// Cancels one Turn once. Cancelling the Turn's task reaches this too, so a
+    /// repeated cancel sends nothing more. The Runtime has
+    /// ``cancellationSettleSeconds`` to settle the Turn.
+    private func cancelActiveTurn(_ activeTurn: ACPActiveTurn) async {
+        guard let insertion = activeTurn.beginCancellation() else { return }
+        let settleSeconds = cancellationSettleSeconds
+        activeTurn.cancellationDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(settleSeconds))
+            guard !Task.isCancelled else { return }
+            await self?.expireCancellation(of: activeTurn)
+        }
         guard let connection else { return }
         switch insertion {
         case .notDispatched:
@@ -694,11 +726,40 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         case let .pending(requestID):
             try? await connection.cancelRequest(requestId: requestID)
         case .inserted:
-            try? await connection.sendNotification(
-                method: ACPv2Protocol.AgentMethod.sessionCancel,
-                params: ACPCancelSessionNotification(sessionId: activeTurn.sessionID)
-            )
+            await sendSessionCancel(for: activeTurn)
         }
+    }
+
+    private func sendSessionCancel(for activeTurn: ACPActiveTurn) async {
+        guard activeTurn.claimSessionCancel(), let connection else { return }
+        try? await connection.sendNotification(
+            method: ACPv2Protocol.AgentMethod.sessionCancel,
+            params: ACPCancelSessionNotification(sessionId: activeTurn.sessionID)
+        )
+    }
+
+    /// Ends a cancelled Turn that the Runtime did not settle in time.
+    ///
+    /// - A prompt whose answer is still missing leaves insertion unknown: the
+    ///   wait ends as a timeout, which the Turn records as `insertionUnknown`.
+    /// - An inserted prompt whose Turn never reported `idle` ends with a
+    ///   lifecycle failure. The Runtime may still be working, and a later Turn
+    ///   must not start beside that work, so the failure retires the backend.
+    ///   Gnostic does not record the Turn `cancelled`, because the Runtime did
+    ///   not confirm it (ADR 0021).
+    private func expireCancellation(of activeTurn: ACPActiveTurn) async {
+        guard !activeTurn.isFinished else { return }
+        if case let .pending(requestID) = activeTurn.insertion {
+            await connection?.abandonRequest(id: requestID, error: ACPTransportError.timeout)
+            return
+        }
+        let failure = AscendantBackendLifecycleFailure(
+            code: "acpCancellationUnconfirmed",
+            message: "The ACP Runtime did not settle a cancelled Turn within \(Int(cancellationSettleSeconds)) seconds."
+        )
+        activeTurn.cancellationFailure = failure
+        lifecycleFailure = failure
+        updateRouter.endTurn(sessionID: activeTurn.sessionID)
     }
 
     /// Closes the ACP transport and terminates the child process.
@@ -1944,6 +2005,12 @@ private final class ACPActiveTurn {
         case inserted
     }
     var insertion = Insertion.notDispatched
+    /// The deadline that ends a cancelled Turn the Runtime does not settle.
+    var cancellationDeadline: Task<Void, Never>?
+    /// Set when that deadline expired on an inserted prompt.
+    var cancellationFailure: AscendantBackendLifecycleFailure?
+    var isFinished = false
+    private var sessionCancelSent = false
     private var permissionContinuations: [UUID: CheckedContinuation<AscendantPermissionDecision, Never>] = [:]
     private var permissionTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -1958,6 +2025,22 @@ private final class ACPActiveTurn {
         guard case .notDispatched = insertion else { return false }
         insertion = .pending(requestID)
         return isTurnCancelled
+    }
+
+    /// Starts the Turn's cancellation. Returns the insertion state at that
+    /// moment, or `nil` when the Turn is already cancelled.
+    func beginCancellation() -> Insertion? {
+        guard !isTurnCancelled else { return nil }
+        let insertion = insertion
+        cancelTurn()
+        return insertion
+    }
+
+    /// Claims the one `session/cancel` a Turn sends.
+    func claimSessionCancel() -> Bool {
+        guard !sessionCancelSent else { return false }
+        sessionCancelSent = true
+        return true
     }
 
     func nextTimelineUpdateSequence() -> Int {
