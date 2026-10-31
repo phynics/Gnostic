@@ -2304,20 +2304,35 @@ struct ACPAscendantBackendTests {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
         let timelineID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
         let permission = RecordingPermissionService(decision: .unavailable(reason: "hostUnavailable"))
         let backend = try backend(
             settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true, permissionOutcome: "cancelled"),
             timelines: [.init(id: timelineID, title: "Configured")],
-            permission: permission
+            permission: permission,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
         )
 
+        // The fixture asserts the `cancelled` outcome on the wire. The completed
+        // reply proves that the unanswered request did not end the Turn.
         let response = try await backend.runTurn(
-            .init(timelineID: timelineID, message: "handle unavailable permission"),
+            .init(timelineID: timelineID, message: "handle unavailable permission", clientTurnID: "unavailable-once"),
             updates: RecordingUpdateSink()
         )
 
         #expect(response == "fixture reply: handle unavailable permission")
         #expect(await permission.requests.count == 1)
+        let records = try await store.journal(for: timelineID).replay()
+        let decisions = records.compactMap { record -> (String, Bool)? in
+            if case let .permissionDecision(_, clientTurnID, decision, approved) = record.payload,
+               clientTurnID == "unavailable-once" {
+                return (decision, approved)
+            }
+            return nil
+        }
+        #expect(decisions.count == 1)
+        #expect(decisions.first?.0 == "unavailable")
+        #expect(decisions.first?.1 == false)
         await backend.shutdown()
     }
 

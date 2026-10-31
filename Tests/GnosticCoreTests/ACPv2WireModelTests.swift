@@ -50,7 +50,7 @@ struct ACPv2WireModelTests {
         #expect(rpc.data?["retryable"] == .boolean(true))
     }
 
-    @Test("unanswered permission request maps to error -32800")
+    @Test("executing-party request cancellation maps to error -32800")
     func permissionCancellationErrorCode() {
         let cancelled = ACPError.requestCancelled("Request cancelled")
         let rpc = cancelled.toJSONRPCError()
