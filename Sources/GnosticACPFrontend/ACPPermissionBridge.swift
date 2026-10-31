@@ -31,15 +31,24 @@ enum ACPPermissionBridge {
         ])
     }
 
-    static func approved(from response: GnosticJSONValue) -> Bool? {
+    /// What an ACP client said about one permission request.
+    enum Answer: Equatable {
+        case approved
+        case denied
+        /// The client ended the request without deciding. This is not a denial.
+        case undecided
+    }
+
+    /// Reads a client's response, or returns `nil` when it is malformed.
+    static func answer(from response: GnosticJSONValue) -> Answer? {
         guard case let .dictionary(root) = response,
               case let .dictionary(outcome)? = root["outcome"],
               case let .string(kind)? = outcome["outcome"] else { return nil }
-        if kind == "cancelled" { return false }
+        if kind == "cancelled" { return .undecided }
         guard kind == "selected", case let .string(optionID)? = outcome["optionId"] else { return nil }
         switch optionID {
-        case "allow_once": return true
-        case "reject_once": return false
+        case "allow_once": return .approved
+        case "reject_once": return .denied
         default: return nil
         }
     }

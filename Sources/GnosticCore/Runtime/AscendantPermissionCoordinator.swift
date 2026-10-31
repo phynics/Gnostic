@@ -28,10 +28,22 @@ public actor AscendantPermissionCoordinator {
     private let updates: AscendantTurnUpdateStore
     private let logger: Logger
     private var pending: [String: Pending] = [:]
+    private let unansweredBound: Duration
     private var acceptingResponses = true
 
-    public init(updates: AscendantTurnUpdateStore) {
+    /// The default wait for a client answer. It leaves a person time to decide,
+    /// and it stays well inside the ACP prompt deadline.
+    public static let defaultUnansweredBound: Duration = .seconds(300)
+
+    /// Creates a coordinator.
+    ///
+    /// - Parameters:
+    ///   - updates: The Turn update store that carries permission state.
+    ///   - unansweredBound: How long to wait for a client answer before the
+    ///     request resolves as unavailable (ADR 0019 §4).
+    public init(updates: AscendantTurnUpdateStore, unansweredBound: Duration = defaultUnansweredBound) {
         self.updates = updates
+        self.unansweredBound = unansweredBound
         self.logger = ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).permission")
     }
 
@@ -43,7 +55,8 @@ public actor AscendantPermissionCoordinator {
     /// - Returns: ``AscendantPermissionDecision/approved`` or
     ///   ``AscendantPermissionDecision/denied`` when the client answered, and
     ///   ``AscendantPermissionDecision/unavailable(reason:)`` when the host
-    ///   could not ask. A host failure is never reported as a denial.
+    ///   could not ask or no client answered within the bound. Neither is
+    ///   reported as a denial.
     public func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
         guard acceptingResponses else {
             return .unavailable(reason: "permissionMediationStopped")
@@ -64,8 +77,29 @@ public actor AscendantPermissionCoordinator {
         let (decisions, continuation) = AsyncStream<AscendantPermissionDecision>.makeStream()
         pending[request.correlationID] = Pending(request: request, clientTurnID: clientTurnID, continuation: continuation)
         await append(request, clientTurnID: clientTurnID, status: .pending)
+        let bound = unansweredBound
+        let correlationID = request.correlationID
+        let expiry = Task { [weak self] in
+            try await Task.sleep(for: bound)
+            await self?.expire(correlationID: correlationID)
+        }
+        defer { expiry.cancel() }
         var iterator = decisions.makeAsyncIterator()
         return await iterator.next() ?? .unavailable(reason: "decisionStreamEnded")
+    }
+
+    private func expire(correlationID: String) async {
+        guard let value = pending.removeValue(forKey: correlationID) else { return }
+        logger.warning("permission request unanswered within its bound")
+        await resolveUnavailable(value, reason: "permissionUnanswered", status: .unavailable)
+    }
+
+    private func resolveUnavailable(_ value: Pending, reason: String, status: AscendantPermissionStatus) async {
+        try? await updates.recordPermissionDecision(request: value.request, decision: .unavailable(reason: reason))
+        await append(value.request, clientTurnID: value.clientTurnID, status: status)
+        await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
+        value.continuation.yield(.unavailable(reason: reason))
+        value.continuation.finish()
     }
 
     @discardableResult
@@ -110,11 +144,7 @@ public actor AscendantPermissionCoordinator {
         let values = Array(pending.values)
         pending.removeAll()
         for value in values {
-            try? await updates.recordPermissionDecision(request: value.request, decision: .unavailable(reason: reason.rawValue))
-            await append(value.request, clientTurnID: value.clientTurnID, status: reason)
-            await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
-            value.continuation.yield(.unavailable(reason: reason.rawValue))
-            value.continuation.finish()
+            await resolveUnavailable(value, reason: reason.rawValue, status: reason)
         }
     }
 

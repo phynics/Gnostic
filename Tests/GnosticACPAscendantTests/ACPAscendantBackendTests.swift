@@ -2336,6 +2336,40 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("a permission request nobody answers reaches the agent as cancelled, keeps the Turn, and is journaled unavailable")
+    @MainActor
+    func unansweredPermissionKeepsTheTurn() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let store = TimelineJournalStore(directoryURL: stateHome.url.appendingPathComponent("journals"))
+        // No client ever responds to this coordinator. Only its bound can end the request.
+        let permission = AscendantPermissionCoordinator(updates: AscendantTurnUpdateStore(), unansweredBound: .milliseconds(100))
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, permissionPrompt: true, permissionOutcome: "cancelled"),
+            timelines: [.init(id: timelineID, title: "Configured")],
+            permission: permission,
+            optionalCapabilities: [TimelineJournalRecorder(journals: store)]
+        )
+
+        let response = try await backend.runTurn(
+            .init(timelineID: timelineID, message: "nobody answers", clientTurnID: "unanswered-once"),
+            updates: RecordingUpdateSink()
+        )
+
+        #expect(response == "fixture reply: nobody answers")
+        let records = try await store.journal(for: timelineID).replay()
+        let decisions = records.compactMap { record -> String? in
+            if case let .permissionDecision(_, clientTurnID, decision, approved) = record.payload,
+               clientTurnID == "unanswered-once", !approved {
+                return decision
+            }
+            return nil
+        }
+        #expect(decisions == ["unavailable"])
+        await backend.shutdown()
+    }
+
     @Test("missing permission mediation service cancels the ACP request")
     @MainActor
     func missingPermissionServiceFailsClosed() async throws {

@@ -465,9 +465,9 @@ public actor TimelineTurnCoordinator {
 
     /// Mediates a host permission request crossing Node boundaries with a timeout bound.
     ///
-    /// If unresponded within timeout, records the decision as "unavailable" and returns it. This ends
-    /// the one request, never the Turn, and it is not a denial (ADR 0019 T3). Replay preserves the
-    /// recorded decision and never prompts again.
+    /// If the client does not answer within the timeout, or its prompt fails, records the decision as
+    /// "unavailable" and returns it. This ends the one request, never the Turn, and it is not a denial
+    /// (ADR 0019 T3). Replay preserves the recorded decision and never prompts again.
     public func mediatePermission(
         request: TimelinePermissionRequest,
         timeout: Duration = .seconds(5),

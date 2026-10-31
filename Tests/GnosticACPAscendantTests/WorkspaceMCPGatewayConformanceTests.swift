@@ -30,6 +30,20 @@ struct WorkspaceMCPGatewayConformanceTests {
         }
     }
 
+    /// Runs a state change while the approval prompt is pending, then approves.
+    private actor ChangingPermissionService: AscendantBackendPermissionService {
+        private let change: @MainActor @Sendable () -> Void
+
+        init(change: @escaping @MainActor @Sendable () -> Void) {
+            self.change = change
+        }
+
+        func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
+            await change()
+            return .approved
+        }
+    }
+
     private struct ProviderOffline: LocalizedError {
         var errorDescription: String? { "provider is offline" }
     }
@@ -266,9 +280,9 @@ struct WorkspaceMCPGatewayConformanceTests {
         ]))
     }
 
-    @Test("the provider validator is authoritative: arguments reach it unchanged, even when they violate the schema")
+    @Test("the gateway does not validate arguments against the schema: they reach the provider, and its failure is a tool result")
     @MainActor
-    func argumentsReachTheProviderValidatorUnchanged() async throws {
+    func gatewayForwardsArgumentsWithoutSchemaValidation() async throws {
         let schema: ManifestJSONValue = .object([
             "type": .string("object"),
             "required": .array([.string("query")]),
@@ -360,6 +374,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         #expect(reply.status == 200)
         #expect(reply.message?.error?.code == -32003)
         #expect(reply.message?.result == nil)
+        #expect(fixture.service.invocations.count == 1)
     }
 
     @Test("a missing tool is a protocol error and dispatches nothing")
@@ -528,5 +543,146 @@ struct WorkspaceMCPGatewayConformanceTests {
         #expect(reply.message?.result == nil)
         #expect(await fixture.permission.requests.count == 1)
         #expect(fixture.service.invocations.isEmpty)
+    }
+
+    // MARK: Changes during a call
+
+    @MainActor
+    private final class MutableTurn {
+        var current: (clientTurnID: String, sessionID: String)? = ("turn-1", "session-1")
+    }
+
+    @MainActor
+    private func startGateway(
+        service: ScriptedWorkspaceService,
+        registry: AscendantTimelineRegistry,
+        timelineID: UUID,
+        permission: any AscendantBackendPermissionService,
+        journals: TimelineJournalStore? = nil,
+        turn: MutableTurn
+    ) throws -> (gateway: WorkspaceMCPGateway, endpoint: URL, authorization: String) {
+        let gateway = WorkspaceMCPGateway(
+            timelineID: timelineID,
+            timelineRegistry: registry,
+            workspaceService: service,
+            permissionService: permission,
+            timelineJournalRecorder: journals.map { TimelineJournalRecorder(journals: $0) },
+            activeTurn: { _ in turn.current }
+        )
+        guard case let .http(_, endpoint, headers, _) = try gateway.start(),
+              let url = URL(string: endpoint),
+              let authorization = headers?.first(where: { $0.name == "Authorization" })?.value else {
+            throw ProviderOffline()
+        }
+        return (gateway, url, authorization)
+    }
+
+    @MainActor
+    private func rewire(
+        _ base: Fixture,
+        permission: any AscendantBackendPermissionService,
+        journals: TimelineJournalStore? = nil,
+        turn: MutableTurn
+    ) throws -> Fixture {
+        base.gateway.stop()
+        let started = try startGateway(
+            service: base.service,
+            registry: base.registry,
+            timelineID: base.timelineID,
+            permission: permission,
+            journals: journals,
+            turn: turn
+        )
+        return Fixture(
+            workspaceID: base.workspaceID,
+            timelineID: base.timelineID,
+            registry: base.registry,
+            service: base.service,
+            permission: base.permission,
+            gateway: started.gateway,
+            endpoint: started.endpoint,
+            authorization: started.authorization
+        )
+    }
+
+    @Test("an attachment revoked while approval is pending stops the dispatch")
+    @MainActor
+    func attachmentRevokedDuringApproval() async throws {
+        let base = try makeFixture(tools: [Self.searchTool(requiresPermission: true)])
+        let turn = MutableTurn()
+        let registry = base.registry
+        let workspaceID = base.workspaceID
+        let timelineID = base.timelineID
+        let fixture = try rewire(base, permission: ChangingPermissionService {
+            registry.detachWorkspace(workspaceID, from: timelineID)
+        }, turn: turn)
+        defer { fixture.gateway.stop() }
+
+        let reply = try await fixture.call()
+
+        #expect(reply.message?.error?.code == -32003)
+        #expect(fixture.service.invocations.isEmpty)
+    }
+
+    @Test("a Workspace that goes offline while approval is pending stops the dispatch")
+    @MainActor
+    func workspaceOfflineDuringApproval() async throws {
+        let base = try makeFixture(tools: [Self.searchTool(requiresPermission: true)])
+        let turn = MutableTurn()
+        let service = base.service
+        let offline = base.reference(status: .unavailable, tools: [Self.searchTool(requiresPermission: true)])
+        let fixture = try rewire(base, permission: ChangingPermissionService {
+            service.workspaceReference = offline
+        }, turn: turn)
+        defer { fixture.gateway.stop() }
+
+        let reply = try await fixture.call()
+
+        #expect(reply.message?.error?.code == -32003)
+        #expect(fixture.service.invocations.isEmpty)
+    }
+
+    @Test("an approval granted to a Turn that has since ended does not authorize the call")
+    @MainActor
+    func turnEndedDuringApproval() async throws {
+        let base = try makeFixture(tools: [Self.searchTool(requiresPermission: true)])
+        let turn = MutableTurn()
+        let fixture = try rewire(base, permission: ChangingPermissionService {
+            turn.current = ("turn-2", "session-1")
+        }, turn: turn)
+        defer { fixture.gateway.stop() }
+
+        let reply = try await fixture.call()
+
+        #expect(reply.message?.error?.code == -32003)
+        #expect(fixture.service.invocations.isEmpty)
+    }
+
+    @Test("the gateway journals an unavailable decision as unavailable, not as a denial")
+    @MainActor
+    func gatewayJournalsUnavailable() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TimelineJournalStore(directoryURL: directory)
+        let base = try makeFixture(tools: [Self.searchTool(requiresPermission: true)])
+        let fixture = try rewire(
+            base,
+            permission: RecordingPermissionService(decision: .unavailable(reason: "hostUnavailable")),
+            journals: store,
+            turn: MutableTurn()
+        )
+        defer { fixture.gateway.stop() }
+
+        let reply = try await fixture.call()
+
+        #expect(reply.message?.error?.code == -32003)
+        let records = try await store.journal(for: fixture.timelineID).replay()
+        let decisions = records.compactMap { record -> String? in
+            if case let .permissionDecision(_, _, decision, approved) = record.payload, !approved {
+                return decision
+            }
+            return nil
+        }
+        #expect(decisions == ["unavailable"])
     }
 }

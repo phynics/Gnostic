@@ -33,6 +33,60 @@ struct AscendantPermissionCoordinatorTests {
         #expect(!unavailable.isApproved)
     }
 
+    @Test("a request nobody answers resolves as unavailable within the bound, and a late answer is refused")
+    func unansweredRequestIsBounded() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates, unansweredBound: .milliseconds(50))
+        let timelineID = UUID()
+        let request = BackendPermissionRequest(
+            correlationID: "permission-unanswered",
+            timelineID: timelineID,
+            clientTurnID: "turn-unanswered",
+            toolCallID: "call-unanswered",
+            title: "Write file"
+        )
+
+        let decision = await coordinator.requestApproval(for: request)
+
+        guard case let .unavailable(reason) = decision else {
+            Issue.record("Expected an unavailable decision, got \(decision).")
+            return
+        }
+        #expect(reason == "permissionUnanswered")
+        #expect(await coordinator.pendingCount == 0)
+        let lateAnswer = await coordinator.respond(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: "turn-unanswered",
+            approved: true
+        )
+        #expect(!lateAnswer)
+    }
+
+    @Test("an answer inside the bound wins and the bound does not fire afterwards")
+    func answerInsideTheBound() async throws {
+        let updates = AscendantTurnUpdateStore()
+        let coordinator = AscendantPermissionCoordinator(updates: updates, unansweredBound: .seconds(30))
+        let timelineID = UUID()
+        let request = BackendPermissionRequest(
+            correlationID: "permission-answered",
+            timelineID: timelineID,
+            clientTurnID: "turn-answered",
+            toolCallID: "call-answered",
+            title: "Write file"
+        )
+
+        let decision = Task { await coordinator.requestApproval(for: request) }
+        try await waitUntil { await coordinator.pendingCount == 1 }
+        #expect(await coordinator.respond(
+            correlationID: request.correlationID,
+            timelineID: timelineID,
+            clientTurnID: "turn-answered",
+            approved: true
+        ))
+        #expect(await decision.value == .approved)
+    }
+
     @Test("an explicit client denial is reported as a denial")
     func explicitDenialIsADenial() async throws {
         let updates = AscendantTurnUpdateStore()

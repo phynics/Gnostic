@@ -481,38 +481,26 @@ final class ACPDispatcher: Sendable {
             }
             do {
                 let response = try await permissionTask.value
-                guard let approved = ACPPermissionBridge.approved(from: response) else {
+                guard let answer = ACPPermissionBridge.answer(from: response) else {
                     throw JSONRPCMethodError.invalidState("ACP client returned a malformed permission outcome")
                 }
+                // Only a client's explicit choice is a decision. Without one, the
+                // Node's bound resolves the request as unavailable (ADR 0019 §4).
+                guard answer != .undecided else { return }
                 let providerID = try await currentRuntime().providerID
                 try client.respondToPermission(AscendantPermissionResponse(
                     correlationID: state.correlationID,
                     timelineID: timelineID,
                     clientTurnID: turnID,
-                    approved: approved
+                    approved: answer == .approved
                 ), providerID: providerID)
             } catch {
-                try? await denyPermission(state, timelineID: timelineID, turnID: turnID)
                 if error is CancellationError {
                     throw JSONRPCMethodError.invalidState("ACP session was closed")
                 }
                 throw error
             }
         }
-    }
-
-    private func denyPermission(
-        _ state: AscendantPermissionState,
-        timelineID: UUID,
-        turnID: String
-    ) async throws {
-        let providerID = try await currentRuntime().providerID
-        try client.respondToPermission(AscendantPermissionResponse(
-            correlationID: state.correlationID,
-            timelineID: timelineID,
-            clientTurnID: turnID,
-            approved: false
-        ), providerID: providerID)
     }
 
     private func publishUserMessage(
