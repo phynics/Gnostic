@@ -273,6 +273,23 @@ struct FilesystemWorkspaceTests {
         expectContainedFailure(absolute, fixture: fixture)
     }
 
+    @Test("a sibling whose name is only canonically equal to the root's is not inside the root")
+    func canonicallyEqualSiblingIsOutsideTheRoot() async throws {
+        let fixture = try Fixture()
+        defer { fixture.tearDown() }
+        let root = fixture.base.path + "/caf\u{E9}"
+        let sibling = fixture.base.path + "/cafe\u{301}"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(atPath: sibling, withIntermediateDirectories: false)
+        try Self.secret.write(toFile: sibling + "/secret.txt", atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: root + "/escape.txt", withDestinationPath: sibling + "/secret.txt")
+
+        let result = try await call(try workspace(at: root), "read_file", ["path": .string("escape.txt")])
+        #expect(!result.isSuccess)
+        #expect(!(result.message ?? "").contains(Self.secret))
+        #expect(!result.output.contains(Self.secret))
+    }
+
     @Test("a root reached through a symlink still contains its tools")
     func rootGivenAsSymlink() async throws {
         let fixture = try Fixture(); defer { fixture.tearDown() }
@@ -446,6 +463,7 @@ struct FilesystemWorkspaceTests {
 
     @Test("configuration fails clearly when the URI is not an absolute path", arguments: [
         "relative/dir", "~/dir", "https://example.com/dir", "file://remote-host/dir", "file:relative", "",
+        "file:///tmp/gnostic%00suffix",
     ])
     func rootMustBeAbsolute(uri: String) throws {
         let id = UUID()

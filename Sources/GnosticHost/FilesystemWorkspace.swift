@@ -337,13 +337,15 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
     }
 
     private func contains(_ resolved: String) -> Bool {
-        resolved == root || resolved.hasPrefix(rootPrefix)
+        // Bytes, not `String` comparison: canonically equal names are different
+        // directories on a filesystem that does not normalize them.
+        resolved.utf8.elementsEqual(root.utf8) || resolved.utf8.starts(with: rootPrefix.utf8)
     }
 
     /// Opens an already-resolved path without following a final symlink, then
     /// checks where the descriptor really points.
     private func openContained(_ resolved: String, directory: Bool) -> Int32? {
-        var flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        var flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | O_NOCTTY
         if directory { flags |= O_DIRECTORY }
         let descriptor = open(resolved, flags)
         guard descriptor >= 0 else { return nil }
@@ -378,7 +380,7 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
         if uri.hasPrefix("file:") {
             guard let url = URL(string: uri), url.scheme == "file",
                   url.host == nil || url.host == "" || url.host == "localhost",
-                  url.path.hasPrefix("/") else { return nil }
+                  url.path.hasPrefix("/"), !uri.contains("%00") else { return nil }
             return url.path
         }
         guard !uri.contains("://"), uri.hasPrefix("/") else { return nil }
