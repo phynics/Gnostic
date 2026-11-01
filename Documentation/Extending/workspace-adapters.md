@@ -35,6 +35,11 @@ Gnostic does not invent any of it.
 `WorkspaceAdapterRegistry.registeredKinds` enumerates what a registry can
 build.
 
+The `gnostic` host registers one kind in every build,
+`FilesystemWorkspace` in `Sources/GnosticHost`. It is a reference for an
+adapter that validates its own arguments, because the MCP gateway does not
+check them against the declared schema.
+
 ## Why the adapter owns its reference
 
 An earlier seam, `register(kind:factory:)`, handed the factory a runtime-built

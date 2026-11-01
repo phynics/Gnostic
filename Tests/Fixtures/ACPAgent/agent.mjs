@@ -298,7 +298,10 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         const result = await mcp(
           3,
           "tools/call",
-          { name: invocationTool.name, arguments: { query: "fixture" } },
+          {
+            name: invocationTool.name,
+            arguments: JSON.parse(process.env.GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_ARGUMENTS ?? '{"query":"fixture"}'),
+          },
           expectsRejection,
         );
         if (expectsRejection) {

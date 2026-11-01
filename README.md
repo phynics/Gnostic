@@ -68,8 +68,45 @@ gnostic config timeline add --title "Research notes"
 ```
 
 Workspace entries require a matching local Workspace adapter in the host. The
-default `gnostic` CLI build registers no local Workspace kinds, so its fresh
-configuration leaves `workspaces` empty.
+default `gnostic` CLI build registers one kind, `filesystem`, so its fresh
+configuration leaves `workspaces` empty until you add an entry.
+
+The `filesystem` kind serves a local directory as a read-only Workspace. Edit
+the manifest to add an entry; `config workspace add` writes the default kind, so
+set `kind` by hand:
+
+```json
+{
+  "id": "00000000-0000-4000-8000-000000000001",
+  "kind": "filesystem",
+  "name": "Project files",
+  "uri": "/srv/project"
+}
+```
+
+- `uri` is required and names the root. Use an absolute path or a `file:` URL.
+  `gnostic serve` fails to start when the root is missing or is not a
+  directory.
+- The Workspace advertises two tools: `list_directory` and `read_file`. Each
+  takes a Workspace-relative `path`; `list_directory` also accepts none for the
+  root. Both require permission. There are no write tools.
+- The Node that owns the Timeline asks for that permission, and the Workspace
+  Node accepts its answer. The Workspace Node rejects a call from any other
+  Node, but it identifies Nodes by their Axoloty source ID, which is not a
+  credential. Broker access is the trust boundary: give it only to Nodes that
+  may read the root.
+- The Workspace's `uri`, including the root's absolute path, is advertised to
+  every Node on the broker. Choose a root whose path you are willing to share.
+- A tool cannot leave the root. The adapter rejects absolute paths, `..`
+  components, and any path whose real location, after following symlinks, is
+  not inside the root. A symlink that stays inside the root works. A failure
+  comes back as a failed tool result and does not name paths outside the root.
+- Output is bounded to fit the wire payload. A result that is cut ends with a
+  `[truncated: ...]` line. `read_file` returns UTF-8 text only. Neither tool can
+  page past the bound, so `list_directory` shows only the first names of a large
+  directory, in sorted order among at most 4,096 entries.
+- The adapter does not sandbox a Runtime process. A Runtime keeps whatever file
+  access its operating-system user has.
 
 Inspect the objects that a running Node advertises:
 
