@@ -7,6 +7,7 @@ import FoundationNetworking
 @testable import GnosticACPAscendant
 import GnosticAscendantConformance
 @_spi(RuntimeHost) import GnosticCore
+@testable import GnosticCore
 import GnosticProtocol
 import Testing
 #if canImport(Darwin)
@@ -3234,6 +3235,64 @@ struct ACPAscendantBackendTests {
         #expect(events.dropFirst().first?.hasPrefix("cancel_request ") == true)
         #expect(events.last?.hasPrefix("session_cancel ") == true)
         await backend.shutdown()
+    }
+
+    @Test("an unconfirmed cancel reaches the Turn service and retires the backend")
+    @MainActor
+    func unconfirmedCancelRetiresTheBackendThroughTheTurnService() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let ascendantID = UUID()
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let promptRequests = stateHome.url.appendingPathComponent("prompt-requests.txt")
+        let configuration = AscendantBackendConfiguration(
+            kind: ACPAscendantBackend.kind,
+            settings: try fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog, promptRequestFile: promptRequests)
+        )
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-unconfirmed-cancel-\(UUID().uuidString.lowercased())"),
+            node: .init(id: UUID()),
+            ascendants: [.init(id: ascendantID, name: "Unconfirmed cancel", defaultTimelineID: timelineID, backend: configuration)],
+            timelines: [.init(id: timelineID, title: "Unconfirmed cancel", operatingAscendantID: ascendantID, project: .local(stateHome.url.path))]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines,
+                cancellationSettleSeconds: 1
+            )
+        }
+        let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
+        try await runtime.start()
+        let turn = Task {
+            try await runtime.turn(.init(
+                message: "[fixture:silent-ignore-cancel]", timelineID: timelineID, clientTurnID: "unconfirmed-1"
+            ))
+        }
+        // The Runtime holds the prompt and sends nothing, so the cancel finds
+        // the prompt dispatched whether or not its answer has arrived.
+        try await waitForWireEvents(wireLog, count: 1)
+        #expect(await runtime.backendHealth(for: ascendantID) == .healthy)
+        #expect(await runtime.cancelTurn(.init(timelineID: timelineID, clientTurnID: "unconfirmed-1")))
+
+        let outcome = await settle(turn, seconds: 8)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+            Issue.record("Expected a lifecycleUnusable end within the bound, observed \(String(describing: outcome)).")
+            await runtime.shutdown()
+            return
+        }
+        // The Turn service retired the backend because the Runtime never
+        // confirmed that it stopped.
+        #expect(await runtime.backendHealth(for: ascendantID) == .failed)
+        #expect(wireEvents(promptRequests).count == 1)
+        await runtime.shutdown()
     }
 
     @Test("a Runtime that never answers $/cancel_request ends the Turn insertionUnknown within the cancellation bound")

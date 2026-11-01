@@ -328,6 +328,10 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         throw acp.RequestError.requestCancelled({ requestId });
       }
     }
+    // With `[fixture:silent-ignore-cancel]` the prompt is inserted and answered at once, with
+    // no update, and the Runtime then ignores every cancel. It leaves the Turn open with
+    // nothing in flight, so a cancel cannot race an update.
+    if (promptText.includes("[fixture:silent-ignore-cancel]")) return { messageId: userMessageId };
     if (promptText.includes("[fixture:unknown-update]")) {
       await client.notify(acp.methods.client.session.update, {
         sessionId: params.sessionId,
