@@ -1064,9 +1064,13 @@ struct BackendLifecycleTests {
         #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified.")
     }
 
-    @Test("diagnostics disclose a prior context loss next to a journaled live Session")
+    @Test("diagnostics disclose a prior context loss once, whatever Session state follows it", arguments: [
+        (TimelineJournalSessionState.live, "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified. A prior Runtime Session was lost; its context was not reconstructed."),
+        (.ambiguous, "The Runtime Session outcome is ambiguous. Gnostic blocks prompts and Session creation for this Timeline. A prior Runtime Session was lost; its context was not reconstructed."),
+        (.resumable, "A prior Runtime Session was definitively lost. Gnostic did not reconstruct its context in a replacement Session."),
+    ])
     @MainActor
-    func diagnosticsDiscloseContextLossBesideLiveSession() async throws {
+    func diagnosticsDiscloseContextLossOnce(state: TimelineJournalSessionState, expectedMessage: String) async throws {
         let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000375")!
         let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000376")!
         let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000377")!
@@ -1094,7 +1098,7 @@ struct BackendLifecycleTests {
             timelineID: timelineID,
             sessionID: "previous-runtime-session",
             runtimeInstanceID: ascendantID,
-            state: .live,
+            state: state,
             projectKind: nil,
             cwd: "/original/project"
         )
@@ -1119,9 +1123,8 @@ struct BackendLifecycleTests {
         defer { Task { @MainActor in await runtime.shutdown() } }
 
         let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
-        #expect(timeline.sessionRecovery?.state == .live)
         #expect(timeline.sessionRecovery?.contextWasLost == true)
-        #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified. A prior Runtime Session was lost; its context was not reconstructed.")
+        #expect(timeline.sessionRecovery?.message == expectedMessage)
     }
 
     @Test("a running Node serves capability-gated diagnostics to a consumer")

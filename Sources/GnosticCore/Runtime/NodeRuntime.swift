@@ -397,9 +397,10 @@ public final class NodeRuntime {
             } else {
                 message = nil
             }
-            // A Session that is not itself the lost one still follows the
-            // earlier loss, so the disclosure must not depend on its state.
-            let disclosure = projection.hasLostSession && sessionState != .lost && message != nil
+            // A live or ambiguous Session still follows the earlier loss, and its
+            // own message does not say so. Every other state with a loss already
+            // reports it above.
+            let disclosure = projection.hasLostSession && (sessionState == .live || sessionState == .ambiguous)
                 ? " A prior Runtime Session was lost; its context was not reconstructed."
                 : ""
             return DiagnosticsTimelineSessionRecovery(
