@@ -3,8 +3,10 @@
 import Foundation
 import GnosticClient
 import GnosticCore
+import GnosticProtocol
 import Testing
 
+@testable import GnosticACPFrontend
 @testable import GnosticCLI
 
 #if os(Linux)
@@ -595,6 +597,117 @@ struct TwoNodeMQTTIntegrationTests {
             throw error
         }
         await session.stop()
+        await owner.shutdown()
+        await survivor.shutdown()
+    }
+
+    @Test("gnostic acp fails a Turn as providerOffline when its owner is killed mid-Turn and never re-sends it")
+    @MainActor
+    func acpReportsVanishedOwnerAndRetryNeverResendsPrompt() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "acp-owner-loss-\(UUID().uuidString.lowercased())"
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-acp-owner-loss-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let promptsReceived = scratch.appendingPathComponent("owner-prompts-received")
+        let ownerEnvironment = ["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE": promptsReceived.path]
+        let survivor = try await launchNode(
+            name: "survivor", namespace: namespace, serveBinary: serveBinary,
+            agentFixture: agentFixture, scratch: scratch
+        )
+        var owner: NodeProcess
+        do {
+            owner = try await launchNode(
+                name: "owner", namespace: namespace, serveBinary: serveBinary,
+                agentFixture: agentFixture, scratch: scratch, fixtureEnvironment: ownerEnvironment
+            )
+        } catch {
+            await survivor.shutdown()
+            throw error
+        }
+        let consumer = try GnosticConsumerSession(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+            connectTimeout: .seconds(3),
+            discoverTimeout: .seconds(3)
+        )
+        let acp: ACPClientProcess
+        do {
+            try await consumer.start()
+            acp = try ACPClientProcess.launch(
+                binary: serveBinary,
+                namespace: namespace,
+                runtimeID: try #require(owner.runtimeID),
+                scratch: scratch
+            )
+        } catch {
+            await consumer.stop()
+            await owner.shutdown()
+            await survivor.shutdown()
+            throw error
+        }
+
+        do {
+            let clientTurnID = "acp-owner-loss-turn"
+            let sessionID = try await acp.openSession(cwd: scratch.path)
+            let promptID = acp.sendPrompt(sessionID: sessionID, text: "[fixture:wait]", clientTurnID: clientTurnID)
+
+            try await waitForFile(promptsReceived, timeout: .seconds(10))
+            let clock = ContinuousClock()
+            let started = clock.now
+            _ = kill(owner.process.processIdentifier, SIGKILL)
+            owner.process.waitUntilExit()
+            if let fixturePIDURL = owner.fixturePIDURL {
+                await stopFixtureProcess(at: fixturePIDURL)
+            }
+
+            // The wait follows discovery's eviction of the owner, not the 300 s
+            // prompt timeout. The cap here only keeps a regression from
+            // holding the suite.
+            let failure = await acp.wire.response(id: promptID, timeout: .seconds(30))
+            let elapsed = clock.now - started
+            #expect(failure?.error != nil, "The prompt did not fail after its owner was killed (waited \(elapsed)).")
+            #expect(elapsed < .seconds(10), "The prompt waited \(elapsed) for a dead owner.")
+            #expect(
+                ACPClientProcess.gnosticCode(of: failure) == "providerOffline",
+                Comment(rawValue: "Unexpected failure: \(String(describing: failure?.error))")
+            )
+            #expect(failure?.error?.message.contains("went offline") == true)
+
+            try await consumer.discover(timeout: .seconds(2))
+            let remaining = await consumer.networkObjects().filter { $0.objectID == owner.timelineID }
+            #expect(remaining.isEmpty, "A surviving peer took authority for the lost Timeline.")
+
+            // The same owner returns. A retry of the same clientTurnID keeps
+            // the recorded state and the Runtime never sees a second prompt.
+            let promptCount = try String(contentsOf: promptsReceived, encoding: .utf8)
+                .split(whereSeparator: \.isNewline).count
+            #expect(promptCount == 1)
+            await owner.shutdown()
+            owner = try await launchNode(
+                name: "owner", namespace: namespace, serveBinary: serveBinary,
+                agentFixture: agentFixture, scratch: scratch, fixtureEnvironment: ownerEnvironment
+            )
+            let retryID = acp.sendPrompt(sessionID: sessionID, text: "[fixture:wait]", clientTurnID: clientTurnID)
+            let retry = await acp.wire.response(id: retryID, timeout: .seconds(30))
+            #expect(
+                ACPClientProcess.gnosticCode(of: retry) == "insertionUnknown",
+                Comment(rawValue: "Unexpected retry outcome: \(String(describing: retry))")
+            )
+            let promptCountAfterRetry = try String(contentsOf: promptsReceived, encoding: .utf8)
+                .split(whereSeparator: \.isNewline).count
+            #expect(promptCountAfterRetry == 1, "The Runtime received the prompt again after the retry.")
+        } catch {
+            await acp.stop()
+            await consumer.stop()
+            await owner.shutdown()
+            await survivor.shutdown()
+            throw error
+        }
+        await acp.stop()
+        await consumer.stop()
         await owner.shutdown()
         await survivor.shutdown()
     }
@@ -1199,7 +1312,11 @@ struct TwoNodeMQTTIntegrationTests {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
-        _ = try store.initializeManifest()
+        // A Node started again under the same name keeps its manifest, so it
+        // returns as the same Node with the same Timelines.
+        if !FileManager.default.fileExists(atPath: store.path().path) {
+            _ = try store.initializeManifest()
+        }
         let manifest = try store.loadManifest()
         let timelineID: UUID
         if let requestedTimelineID {
@@ -1284,6 +1401,7 @@ struct TwoNodeMQTTIntegrationTests {
         let node = NodeProcess(
             name: name,
             timelineID: timelineID,
+            runtimeID: manifest.ascendants[0].id,
             process: process,
             log: log,
             fixturePIDURL: configDirectory.appendingPathComponent("fixture-process.pid")
@@ -1375,6 +1493,7 @@ struct TwoNodeMQTTIntegrationTests {
         let node = NodeProcess(
             name: "workspace-owner",
             timelineID: UUID(),
+            runtimeID: nil,
             process: process,
             log: log,
             fixturePIDURL: configDirectory.appendingPathComponent("fixture-process.pid")
@@ -1411,6 +1530,7 @@ struct TwoNodeMQTTIntegrationTests {
 private struct NodeProcess {
     let name: String
     let timelineID: UUID
+    let runtimeID: UUID?
     let process: Process
     let log: FileHandle
 
@@ -1559,7 +1679,127 @@ private final class RejectionOutcomeBox {
     var outcome: Result<TurnResult, any Error>?
 }
 
+/// A real `gnostic acp` process driven over stdio, as an ACP client would.
 @MainActor
+private final class ACPClientProcess {
+    let wire = ACPWireCapture()
+    private let process: Process
+    private let input: Pipe
+    private let output: Pipe
+    private let log: FileHandle
+    private let lines = ACPLineBuffer()
+    private var nextRequestID = 1
+
+    private init(process: Process, input: Pipe, output: Pipe, log: FileHandle) {
+        self.process = process
+        self.input = input
+        self.output = output
+        self.log = log
+    }
+
+    static func launch(binary: String, namespace: String, runtimeID: UUID, scratch: URL) throws -> ACPClientProcess {
+        let logURL = scratch.appendingPathComponent("acp.log")
+        _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let log = try FileHandle(forWritingTo: logURL)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = [
+            "acp", "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
+            "--runtime", runtimeID.uuidString.lowercased(),
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNOSTIC_STATE_HOME"] = scratch.appendingPathComponent("acp-state", isDirectory: true).path
+        process.environment = environment
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = log
+        let client = ACPClientProcess(process: process, input: input, output: output, log: log)
+        let wire = client.wire
+        let lines = client.lines
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            for line in lines.append(data) { wire.record(frame: line) }
+        }
+        try process.run()
+        return client
+    }
+
+    /// Initializes the connection and opens a Session, returning its ID.
+    func openSession(cwd: String) async throws -> String {
+        let initialize = send("initialize", #"{"protocolVersion":2}"#)
+        _ = await wire.response(id: initialize, timeout: .seconds(20))
+        let created = send("session/new", #"{"cwd":"\#(cwd)","mcpServers":[]}"#)
+        let response = await wire.response(id: created, timeout: .seconds(20))
+        guard case let .dictionary(result)? = response?.result,
+              case let .string(sessionID)? = result["sessionId"] else {
+            Issue.record("session/new did not return a session: \(String(describing: response))")
+            throw TwoNodeIntegrationError.nodeFailedToStart("gnostic acp")
+        }
+        return sessionID
+    }
+
+    @discardableResult
+    func sendPrompt(sessionID: String, text: String, clientTurnID: String) -> Int {
+        send(
+            "session/prompt",
+            #"{"sessionId":"\#(sessionID)","prompt":[{"type":"text","text":"\#(text)"}],"_meta":{"\#(ACPProtocol.turnIDMetadataKey)":"\#(clientTurnID)"}}"#
+        )
+    }
+
+    private func send(_ method: String, _ params: String) -> Int {
+        let id = nextRequestID
+        nextRequestID += 1
+        input.fileHandleForWriting.write(Data(
+            #"{"jsonrpc":"2.0","id":\#(id),"method":"\#(method)","params":\#(params)}"#.utf8 + [0x0A]
+        ))
+        return id
+    }
+
+    static func gnosticCode(of response: JSONRPCResponse?) -> String? {
+        guard case let .dictionary(data)? = response?.error?.data,
+              case let .string(code)? = data["gnosticCode"] else { return nil }
+        return code
+    }
+
+    func stop() async {
+        output.fileHandleForReading.readabilityHandler = nil
+        try? input.fileHandleForWriting.close()
+        if process.isRunning {
+            process.terminate()
+            for _ in 0..<50 where process.isRunning {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
+        }
+        process.waitUntilExit()
+        try? log.close()
+    }
+}
+
+/// Splits a byte stream into complete newline-terminated frames.
+private final class ACPLineBuffer: @unchecked Sendable { // SAFETY: `lock` guards `pending`.
+    private let lock = NSLock()
+    private var pending = Data()
+
+    func append(_ data: Data) -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        pending.append(data)
+        var frames: [Data] = []
+        while let newline = pending.firstIndex(of: 0x0A) {
+            frames.append(Data(pending[pending.startIndex..<newline]))
+            pending.removeSubrange(pending.startIndex...newline)
+        }
+        return frames
+    }
+}
+
 private func waitForFile(_ url: URL, timeout: Duration) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now + timeout
