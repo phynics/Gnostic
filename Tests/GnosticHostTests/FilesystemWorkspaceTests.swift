@@ -273,6 +273,9 @@ struct FilesystemWorkspaceTests {
         expectContainedFailure(absolute, fixture: fixture)
     }
 
+    // APFS treats the two names as one directory, so this needs a filesystem that
+    // keeps them apart.
+    #if !canImport(Darwin)
     @Test("a sibling whose name is only canonically equal to the root's is not inside the root")
     func canonicallyEqualSiblingIsOutsideTheRoot() async throws {
         let fixture = try Fixture()
@@ -289,6 +292,7 @@ struct FilesystemWorkspaceTests {
         #expect(!(result.message ?? "").contains(Self.secret))
         #expect(!result.output.contains(Self.secret))
     }
+    #endif
 
     @Test("a root reached through a symlink still contains its tools")
     func rootGivenAsSymlink() async throws {
