@@ -694,7 +694,7 @@ struct TwoNodeMQTTIntegrationTests {
     // Each ACP Runtime holds threads in blocking reads of its stdout and stderr
     // pipes. If those reads ran on the Swift cooperative pool, whose width is the
     // CPU count, these Runtimes would occupy all of it and the Node would hang
-    // before it advertises (#694). The cap keeps startup fast on large hosts.
+    // before it advertises (#694).
     @Test("a Node with more blocking ACP pipe readers than CPUs still comes online")
     @MainActor
     func nodeWithMoreRuntimePipeReadersThanCPUsComesOnline() async throws {
@@ -711,7 +711,7 @@ struct TwoNodeMQTTIntegrationTests {
             serveBinary: serveBinary,
             agentFixture: agentFixture,
             scratch: scratch,
-            additionalRuntimeCount: min(ProcessInfo.processInfo.activeProcessorCount / 2 + 1, 7)
+            additionalRuntimeCount: ProcessInfo.processInfo.activeProcessorCount / 2 + 1
         )
         await node.shutdown()
     }
@@ -1265,7 +1265,8 @@ struct TwoNodeMQTTIntegrationTests {
         )
         do {
             var online = false
-            for _ in 0..<100 {
+            // Allow one more second for each additional Runtime to start.
+            for _ in 0..<(100 + 10 * additionalRuntimeCount) {
                 try log.synchronize()
                 let output = try String(contentsOf: logURL, encoding: .utf8)
                 if output.contains("advertised objects"),

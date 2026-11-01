@@ -39,9 +39,16 @@ mkdir -p "$log_dir"
     guile --version | head -n 1
 } 2>&1 | tee "$log_dir/toolchain.log"
 
-# Tests that cannot run on macOS, each with its reason. Every entry becomes a
-# `--skip` filter, so the list below is the complete record of exclusions.
-excluded_tests=(
+# Tests that do not run on macOS, each with its reason. This is the complete
+# record of exclusions. `run_suite` fails on any other skipped test.
+#
+# Compiled out with `#if !canImport(Darwin)`:
+# - FilesystemWorkspaceTests.canonicallyEqualSiblingIsOutsideTheRoot: APFS treats
+#   the test's two directory names as one directory.
+expected_skips=(
+    # RLMChibiWorkerSessionTests.fileDescriptorsAbsent reads /proc, which macOS
+    # does not have.
+    'the worker process holds only its standard file descriptors'
 )
 
 swift_flags=(
@@ -139,13 +146,13 @@ export GNOSTIC_ACP_AGENT_FIXTURE="$repo_root/Tests/Fixtures/ACPAgent/agent.mjs"
 export GNOSTIC_ACP_OFFICIAL_CLIENT="$repo_root/Tests/Fixtures/OfficialACPClient/lifecycle.mjs"
 export GNOSTIC_PI_ACP_CLIENT_FIXTURE="$repo_root/Tests/Fixtures/PiACPClient/lifecycle.mjs"
 
-# Sends a signal to a process and all its descendants, children first.
-kill_tree() {
-    local signal=$1 parent=$2 child
-    for child in $(pgrep -P "$parent" 2>/dev/null); do
-        kill_tree "$signal" "$child"
+# Prints the descendants of a process, children first.
+descendants() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        descendants "$child"
+        echo "$child"
     done
-    kill "-$signal" "$parent" 2>/dev/null || true
 }
 
 # Records the stacks of a process and all its descendants next to $timeout_marker.
@@ -158,10 +165,12 @@ sample_tree() {
 }
 
 # Runs a command, sampling and then terminating it and its descendants after $1
-# seconds. macOS has no timeout(1). The watchdog logs to $timeout_marker, not to
-# the pipe.
+# seconds, and returns 124 if that happened. macOS has no timeout(1). The watchdog
+# logs to $timeout_marker, not to the pipe. It records the descendants before it
+# signals them, because a descendant that outlives its parent can no longer be
+# found through the parent, and it finishes escalating before this returns.
 run_bounded() {
-    local seconds=$1 status=0 pid watchdog
+    local seconds=$1 status=0 pid watchdog child
     shift
     "$@" &
     pid=$!
@@ -170,14 +179,24 @@ run_bounded() {
         sleep "$seconds"
         echo "Timed out after ${seconds}s: $*" >"$timeout_marker"
         sample_tree "$pid"
-        kill_tree TERM "$pid"
+        targets="$(descendants "$pid") $pid"
+        # shellcheck disable=SC2086
+        kill -TERM $targets 2>/dev/null || true
         sleep 10
-        kill_tree KILL "$pid"
+        # shellcheck disable=SC2086
+        kill -KILL $targets 2>/dev/null || true
     ) &
     watchdog=$!
     wait "$pid" || status=$?
-    kill_tree TERM "$watchdog"
+    if [[ ! -f "$timeout_marker" ]]; then
+        for child in $(descendants "$watchdog") "$watchdog"; do
+            kill -TERM "$child" 2>/dev/null || true
+        done
+    fi
     wait "$watchdog" 2>/dev/null || true
+    if [[ -f "$timeout_marker" ]]; then
+        return 124
+    fi
     return "$status"
 }
 
@@ -209,6 +228,14 @@ run_suite() {
         echo "$label did not execute the expected tests; log: $log" >&2
         return 1
     fi
+    local unexpected_skips
+    unexpected_skips=$(grep -E '(Test|Suite) ".*" skipped' "$log" |
+        grep -vF -f <(printf '%s\n' "${expected_skips[@]}") || true)
+    if [[ -n "$unexpected_skips" ]]; then
+        printf '%s skipped tests that are not recorded as macOS exclusions:\n%s\n' \
+            "$label" "$unexpected_skips" >&2
+        return 1
+    fi
 }
 
 failed=0
@@ -220,12 +247,7 @@ run_suite release-filesystem-workspace "$release_gnostic" "$release_runtime" \
     '1 test' \
     --filter 'TwoNodeMQTTIntegrationTests/runtimeReadsPeerFilesystemWorkspace' || failed=1
 
-skip_args=()
-for excluded in ${excluded_tests[@]+"${excluded_tests[@]}"}; do
-    skip_args+=(--skip "$excluded")
-done
 run_suite full-suite "$debug_bin_dir/gnostic" "$debug_bin_dir/gnostic-pk-runtime" \
-    '[1-9][0-9]* tests' \
-    ${skip_args[@]+"${skip_args[@]}"} || failed=1
+    '[1-9][0-9]* tests' || failed=1
 
 exit "$failed"
