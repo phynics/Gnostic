@@ -24,14 +24,14 @@ struct PositronicRuntimeMain {
 }
 
 private struct RuntimeModel: Sendable {
-    private let makeRuntime: @Sendable (MCPWorkspaceFactory) -> PKRuntime
+    private let makeRuntime: @Sendable (MCPWorkspaceFactory, InMemoryTimelineRuntimeRepository) -> PKRuntime
 
     static func fromEnvironment() throws -> RuntimeModel {
         if ProcessInfo.processInfo.environment["GNOSTIC_PK_SCRIPTED"] == "1" {
-            return RuntimeModel { workspaceFactory in
+            return RuntimeModel { workspaceFactory, history in
                 PKRuntime(configuration: .init(
                     languageModel: ScriptedLLMClient(),
-                    persistence: .inMemory(),
+                    persistence: .init(runtimeRepository: history),
                     runtime: .init(workspaceCreator: workspaceFactory)
                 ))
             }
@@ -42,11 +42,11 @@ private struct RuntimeModel: Sendable {
         }
         let modelName = ProcessInfo.processInfo.environment["GNOSTIC_PK_MODEL"] ?? "gpt-4o-mini"
         let endpoint = ProcessInfo.processInfo.environment["GNOSTIC_PK_ENDPOINT"]
-        return RuntimeModel { workspaceFactory in
+        return RuntimeModel { workspaceFactory, history in
             let provider = PKOpenAI.makeConfiguredProvider(apiKey: apiKey, model: modelName, endpoint: endpoint)
             return PKRuntime(configuration: .init(
                 provider: provider,
-                persistence: .inMemory(),
+                persistence: .init(runtimeRepository: history),
                 runtime: .init(workspaceCreator: workspaceFactory)
             ))
         }
@@ -54,15 +54,31 @@ private struct RuntimeModel: Sendable {
 
     // RC2's resolver caches providers but PKRuntime exposes no resolver-close operation.
     // Give each ACP session its own resolver lifetime so closing it releases that cache.
+    // The Timeline history lives in a repository this Runtime owns, so `session/resume` can
+    // seed it from the session file and the Timeline is the only history a Turn reads.
     func makeSessionRuntime() -> RuntimeSessionRuntime {
         let workspaceFactory = MCPWorkspaceFactory()
-        return RuntimeSessionRuntime(model: makeRuntime(workspaceFactory), workspaceFactory: workspaceFactory)
+        let history = InMemoryTimelineRuntimeRepository()
+        return RuntimeSessionRuntime(
+            model: makeRuntime(workspaceFactory, history),
+            workspaceFactory: workspaceFactory,
+            history: history
+        )
     }
 }
 
 private struct RuntimeSessionRuntime: Sendable {
     let model: PKRuntime
     let workspaceFactory: MCPWorkspaceFactory
+    let history: InMemoryTimelineRuntimeRepository
+
+    /// Loads the session file's transcript into the new Timeline, in order, so the first Turn
+    /// after a resume reads the same history the Timeline held before the restart.
+    func restoreHistory(_ transcript: [RuntimeTranscriptMessage], into timelineID: UUID) async throws {
+        for (index, message) in transcript.enumerated() {
+            try await history.saveMessage(message.timelineMessage(in: timelineID, position: index))
+        }
+    }
 }
 
 private struct ScriptedLLMClient: LLMStreamClient {
@@ -111,7 +127,7 @@ private struct ScriptedLLMClient: LLMStreamClient {
             return stream(text: "scripted response after tool: \(toolOutput)")
         }
         if query.contains("[fixture:tool-after-resume]"), let toolOutput = currentTurnToolOutput {
-            let restoredToolContext = messages.contains { $0.role == .system && $0.content.contains("fixture MCP output: hello") }
+            let restoredToolContext = priorMessages(in: messages).contains { $0.role == .tool && $0.content.contains("fixture MCP output: hello") }
             let contextMarker = restoredToolContext ? " [prior MCP tool context restored]" : ""
             return stream(text: "scripted response after tool: \(toolOutput)\(contextMarker)")
         }
@@ -119,7 +135,7 @@ private struct ScriptedLLMClient: LLMStreamClient {
            currentTurnToolOutput == nil {
             return stream(toolName: "call_tool", arguments: #"{"tool":"fixture_echo","arguments":{"value":"hello"}}"#)
         }
-        let restored = messages.contains { $0.role == .system && $0.content.contains("persist this conversation") }
+        let restored = priorMessages(in: messages).contains { $0.content.contains("persist this conversation") }
         let contextMarker = restored ? " [restored prior context]" : ""
         return stream(
             text: "scripted response: \(query)\(contextMarker)",
@@ -171,6 +187,12 @@ private struct ScriptedLLMClient: LLMStreamClient {
             continuation.yield(chunk)
             continuation.finish()
         }
+    }
+
+    /// The conversation before the latest user message: what a resumed session restored.
+    private func priorMessages(in messages: [LLMMessage]) -> ArraySlice<LLMMessage> {
+        guard let index = messages.lastIndex(where: { $0.role == .user }) else { return [] }
+        return messages[..<index]
     }
 
     private func latestTurnToolOutput(in messages: [LLMMessage]) -> String? {
@@ -333,7 +355,6 @@ private actor ACPAgentServer {
                 guard let sessionRuntime = sessionRuntimes[input.sessionId] else {
                     throw RuntimeSessionStoreError.missingRuntime
                 }
-                let systemInstructions = try sessions.systemInstructions(sessionID: input.sessionId)
                 guard await session.beginPrompt() else {
                     throw ACPError.custom(
                         code: ACPv2Protocol.ErrorCode.timelineBusy,
@@ -345,7 +366,6 @@ private actor ACPAgentServer {
                     try await startPrompt(
                         input,
                         text: promptText,
-                        systemInstructions: systemInstructions,
                         in: session,
                         using: sessionRuntime,
                         userMessageID: userMessageID
@@ -400,6 +420,10 @@ private actor ACPAgentServer {
                     defer { sessionResumesInProgress.remove(input.sessionId) }
                     let sessionRuntime = runtime.makeSessionRuntime()
                     let timeline = try await sessionRuntime.model.timelines.create(title: "Resumed ACP Session")
+                    try await sessionRuntime.restoreHistory(
+                        try sessions.transcript(sessionID: input.sessionId),
+                        into: timeline.id
+                    )
                     let workspaceIDs = try await attachMCPServers(
                         input.mcpServers ?? [],
                         sessionID: input.sessionId,
@@ -461,7 +485,6 @@ private actor ACPAgentServer {
     private func startPrompt(
         _ input: ACPPromptRequest,
         text prompt: String,
-        systemInstructions: String,
         in session: RuntimeSession,
         using sessionRuntime: RuntimeSessionRuntime,
         userMessageID: String
@@ -470,7 +493,7 @@ private actor ACPAgentServer {
         do {
             let handle = try await sessionRuntime.model.timelines.open(session.timelineID).startDirectTurn(
                 prompt,
-                context: DirectTurnContext(systemInstructions: systemInstructions, contributor: .host)
+                context: DirectTurnContext(systemInstructions: "", contributor: .host)
             )
             admittedTurn = handle
             await session.setActiveTurn(handle)
@@ -544,10 +567,12 @@ private actor ACPAgentServer {
                 message: reason
             ))
             }
-            try await sendUpdate(sessionID: sessionID, update: .stateUpdate(.idle(stopReason: stopReason, meta: nil)))
+            // Release the prompt before announcing idle: a client may prompt as soon as it reads idle.
             await session.endPrompt()
+            try await sendUpdate(sessionID: sessionID, update: .stateUpdate(.idle(stopReason: stopReason, meta: nil)))
         } catch {
             await session.clearActiveTurn()
+            await session.endPrompt()
             try? await sendUpdate(
                 sessionID: sessionID,
                 update: .stateUpdate(.idle(stopReason: .error(ACPJSONRPCError(
@@ -555,7 +580,6 @@ private actor ACPAgentServer {
                     message: String(describing: error)
                 )), meta: nil))
             )
-            await session.endPrompt()
             return
         }
     }
@@ -736,24 +760,54 @@ private actor RuntimeSessionState {
     }
 }
 
+/// One message of a session's durable history. `id`, `timestamp` and `reasoning` are optional
+/// so session files written before they existed still decode; a message without them gets a
+/// fresh identity and a position-derived timestamp when it is restored.
 private struct RuntimeTranscriptMessage: Codable, Sendable {
+    let id: UUID?
     let role: String
     let content: String
     let toolCalls: String?
     let toolCallID: String?
+    let reasoning: String?
+    let timestamp: Date?
 
-    init(role: String, content: String, toolCalls: String? = nil, toolCallID: String? = nil) {
+    init(role: String, content: String) {
+        id = nil
         self.role = role
         self.content = content
-        self.toolCalls = toolCalls
-        self.toolCallID = toolCallID
+        toolCalls = nil
+        toolCallID = nil
+        reasoning = nil
+        timestamp = nil
     }
 
     init(_ message: TimelineMessage) {
+        id = message.id
         role = message.role
         content = message.content
         toolCalls = message.toolCalls == "[]" ? nil : message.toolCalls
         toolCallID = message.toolCallID
+        reasoning = message.reasoning
+        timestamp = message.timestamp
+    }
+
+    func timelineMessage(in timelineID: UUID, position: Int) throws -> TimelineMessage {
+        guard let messageRole = Message.MessageRole(rawValue: role) else {
+            throw RuntimeSessionStoreError.unknownMessageRole(role)
+        }
+        // Legacy entries carry no timestamp. Any past instant keeps them ahead of new messages
+        // and `position` keeps their stored order.
+        return TimelineMessage(
+            id: id ?? UUID(),
+            timelineID: timelineID,
+            role: messageRole,
+            content: content,
+            timestamp: timestamp ?? Date(timeIntervalSince1970: TimeInterval(position)),
+            reasoning: reasoning,
+            toolCalls: toolCalls ?? "[]",
+            toolCallID: toolCallID
+        )
     }
 }
 
@@ -871,12 +925,9 @@ private struct RuntimeSessions {
         return true
     }
 
-    func systemInstructions(sessionID: String) throws -> String {
-        guard let transcript = persisted[sessionID]?.transcript, !transcript.isEmpty else { return "" }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let history = String(decoding: try encoder.encode(transcript), as: UTF8.self)
-        return "Continue this ACP session using its prior conversation. The transcript is JSON with role and content fields:\n\(history)"
+    func transcript(sessionID: String) throws -> [RuntimeTranscriptMessage] {
+        guard let session = persisted[sessionID] else { throw RuntimeSessionStoreError.unknownSession }
+        return session.transcript
     }
 
     mutating func appendTranscript(sessionID: String, message: RuntimeTranscriptMessage) throws {
@@ -934,4 +985,5 @@ private enum RuntimeSessionStoreError: Error {
     case unsupportedVersion(Int)
     case unknownSession
     case missingRuntime
+    case unknownMessageRole(String)
 }
