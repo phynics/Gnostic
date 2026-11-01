@@ -160,9 +160,22 @@ jobs:
   macos-product:
     name: macOS product build and tests
     runs-on: xcode-27
-    timeout-minutes: 90
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
+
+      # A cold run spends about 20 of its 30 minutes compiling the release and
+      # debug builds.
+      - name: Restore SwiftPM and build caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .build
+            .swiftpm-cache
+          key: macos-xcode27-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            macos-xcode27-${{ hashFiles('Package.resolved') }}-
+            macos-xcode27-
 
       - name: Install broker and Guile
         run: brew install mosquitto guile
@@ -170,8 +183,17 @@ jobs:
       - name: Build release binaries, run the test suite and the release proof
         run: make macos-product-proof
 
+      - name: Save SwiftPM and build caches
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/pull/695/merge')
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .build
+            .swiftpm-cache
+          key: macos-xcode27-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+
       - name: Upload macOS product logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: macos-product-proof-logs
