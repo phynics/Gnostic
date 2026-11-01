@@ -31,6 +31,9 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     /// The Runtime did not confirm whether it inserted the prompt, and Gnostic
     /// does not send it again.
     case insertionUnknown
+    /// The Timeline's journal is quarantined read-only, so the Node admits no new
+    /// Turn on it. Retrying cannot succeed until an operator repairs the journal.
+    case timelineQuarantined
 
     public var errorDescription: String? {
         switch self {
@@ -59,6 +62,8 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .timelineBusy: "Timeline is busy"
         case .insertionUnknown:
             "The Runtime did not confirm whether it inserted the prompt, and Gnostic does not send it again."
+        case .timelineQuarantined:
+            "The Timeline journal is quarantined and read-only. Gnostic admits no new Turn on this Timeline."
         }
     }
 
@@ -88,6 +93,7 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .promptTooLarge: "promptTooLarge"
         case .timelineBusy: "timelineBusy"
         case .insertionUnknown: "insertionUnknown"
+        case .timelineQuarantined: "timelineQuarantined"
         }
     }
 }

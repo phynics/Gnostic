@@ -181,6 +181,13 @@ public enum InspectRenderer {
                 lines.append("  \(message)")
             }
         }
+        if let journal = snapshot.journal {
+            switch journal.state {
+            case .writable: lines.append("journal  writable")
+            case .quarantined: lines.append("journal  quarantined  read-only")
+            }
+            if let message = journal.message { lines.append("  \(message)") }
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 

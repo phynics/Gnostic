@@ -130,25 +130,32 @@ public actor JSONRPCSession {
             respondIfNeeded(to: request, error: errorObject(code: .invalidState, message: "session is already initialized"))
             return
         }
-        // Strict ACP v1 rejection (ADR 0019 T1): reject incoming v1 initialize cleanly
-        if let params = request.params,
-           let data = try? JSONEncoder().encode(params),
-           let dict = try? JSONDecoder().decode([String: ACPValue].self, from: data),
-           let version = dict["protocolVersion"] {
-            let verInt: Int?
-            switch version {
-            case let .int(i): verInt = Int(i)
-            case let .string(s): verInt = Int(s)
-            case let .double(d): verInt = Int(d)
-            default: verInt = nil
-            }
-            if let verInt, verInt < 2 {
-                respondIfNeeded(to: request, error: JSONRPCErrorObject(
-                    code: ACPv2Protocol.ErrorCode.unsupportedProtocolVersion,
-                    message: "ACP v1 is not supported. Gnostic requires ACP v2 or higher."
-                ))
-                return
-            }
+        // Strict ACP v1 rejection (ADR 0019 T1): reject incoming v1 initialize cleanly.
+        // Every ACP client sends `protocolVersion`, so a missing or unreadable
+        // value is invalid params instead of an assumed v2.
+        let requested: [String: ACPValue]? = request.params
+            .flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { try? JSONDecoder().decode([String: ACPValue].self, from: $0) }
+        let verInt: Int?
+        switch requested?["protocolVersion"] {
+        case let .int(i)?: verInt = Int(i)
+        case let .string(s)?: verInt = Int(s)
+        case let .double(d)?: verInt = Int(exactly: d)
+        default: verInt = nil
+        }
+        guard let verInt else {
+            respondIfNeeded(to: request, error: errorObject(
+                code: .invalidParams,
+                message: "initialize requires an integer protocolVersion"
+            ))
+            return
+        }
+        if verInt < 2 {
+            respondIfNeeded(to: request, error: JSONRPCErrorObject(
+                code: ACPv2Protocol.ErrorCode.unsupportedProtocolVersion,
+                message: "ACP v1 is not supported. Gnostic requires ACP v2 or higher."
+            ))
+            return
         }
         do {
             let result = try await initializeHandler()
@@ -291,7 +298,7 @@ public actor JSONRPCSession {
         case .noServedAscendant, .noRuntime, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
              .ambiguousAscendant, .ambiguousRuntime, .ascendantUnavailable, .runtimeUnavailable, .providerUnavailable, .providerOffline,
              .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
-             .missingCapability, .insertionUnknown, .timelineBusy: .invalidState
+             .missingCapability, .insertionUnknown, .timelineQuarantined, .timelineBusy: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI, .promptTooLarge: .invalidParams
         }
         return JSONRPCErrorObject(

@@ -1071,6 +1071,57 @@ struct BackendLifecycleTests {
         #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified.")
     }
 
+    @Test("diagnostics report a quarantined Timeline journal as read-only without a path or frame")
+    @MainActor
+    func diagnosticsReportQuarantinedJournal() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000375")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000376")!
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000377")!
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quarantined-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let nodeJournalDirectory = stateDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let journals = TimelineJournalStore(directoryURL: nodeJournalDirectory)
+        try await journals.ensureTimelineCreated(
+            timelineID: timelineID,
+            title: "Quarantined",
+            runtimeInstanceID: ascendantID,
+            attachments: []
+        )
+        let url = TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("0000000000000000 1700000000000 {\"invalid\":true}\n".utf8))
+        try handle.close()
+
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
+            LifecycleFixtureBackend(ascendant: ascendant, timelines: timelines, probe: LifecycleBackendProbe(), outcome: .success)
+        }
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "quarantined-diagnostics"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+            timelines: [.init(id: timelineID, title: "Quarantined", operatingAscendantID: ascendantID)]
+        )
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: stateDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
+        #expect(timeline.journal?.state == .quarantined)
+        let message = try #require(timeline.journal?.message)
+        #expect(message.contains("quarantined"))
+        #expect(message.contains("read-only"))
+        for leak in [stateDirectory.path, "timeline-", ".jsonl", "checksum", "0000000000000000"] {
+            #expect(!message.contains(leak), "The diagnostic message leaks \(leak).")
+        }
+    }
+
     @Test("diagnostics disclose a prior context loss once, whatever Session state follows it", arguments: [
         (TimelineJournalSessionState.live, "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified. A prior Runtime Session was lost; its context was not reconstructed."),
         (.ambiguous, "The Runtime Session outcome is ambiguous. Gnostic blocks prompts and Session creation for this Timeline. A prior Runtime Session was lost; its context was not reconstructed."),

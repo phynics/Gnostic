@@ -213,6 +213,11 @@ public enum TimelineJournalError: Error, Sendable, Equatable, LocalizedError {
     case reservedPayload
     case writeFailed(String)
 
+    /// The fixed text a client and `gnostic inspect` see for a quarantined
+    /// Timeline. It carries no path, frame, or Turn content.
+    public static let quarantinedPublicMessage =
+        "The Timeline journal is quarantined and read-only. Gnostic admits no new Turn on this Timeline."
+
     public var errorDescription: String? {
         switch self {
         case let .unsupportedFormatVersion(actual, supported):

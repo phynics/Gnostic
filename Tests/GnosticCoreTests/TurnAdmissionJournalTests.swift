@@ -107,6 +107,160 @@ struct TurnAdmissionJournalTests {
         #expect(try await reader.admit(timelineID: timelineID, clientTurnID: readerID, message: "other prompt") == .conflict)
     }
 
+    @Test("a quarantined Timeline journal admits nothing new and never dispatches")
+    func quarantinedJournalAdmitsNothing() async throws {
+        let directory = makeDirectory("turn-admission-quarantine-tests")
+        let timelineID = UUID()
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let coordinator = AscendantTurnCoordinator(ledger: AscendantTurnUpdateStore(timelineJournals: journals))
+        _ = try await coordinator.execute(
+            AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+            ascendantID: UUID()
+        ) { "first answer" }
+
+        // A newline-terminated frame with a bad checksum is committed corruption.
+        let url = TimelineJournalStore.fileURL(for: timelineID, in: directory)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("0000000000000000 1700000000000 {\"invalid\":true}\n".utf8))
+        try handle.close()
+        let corrupt = try Data(contentsOf: url)
+
+        let restarted = AscendantTurnCoordinator(
+            ledger: AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: directory))
+        )
+        let dispatched = Flag()
+        do {
+            _ = try await restarted.execute(
+                AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "after-corruption"),
+                ascendantID: UUID()
+            ) {
+                await dispatched.set(true)
+                return "must not run"
+            }
+            Issue.record("A Timeline with a quarantined journal admitted a new Turn.")
+        } catch let error as TimelineJournalError {
+            guard case .quarantined = error else {
+                Issue.record("Expected a quarantine error, observed \(error).")
+                return
+            }
+        } catch {
+            Issue.record("Expected a quarantine error, observed \(error).")
+        }
+        #expect(await !dispatched.value, "A quarantined Timeline dispatched a Turn.")
+        #expect(try Data(contentsOf: url) == corrupt, "Quarantine rewrote the journal.")
+
+        // The committed prefix is still readable: an admitted Turn is never rerun.
+        do {
+            _ = try await restarted.execute(
+                AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+                ascendantID: UUID()
+            ) {
+                await dispatched.set(true)
+                return "must not run"
+            }
+            Issue.record("A recovered Turn produced a result.")
+        } catch is AscendantTurnError {
+        }
+        #expect(await !dispatched.value, "A retry in a quarantined Timeline dispatched an admitted Turn.")
+    }
+
+    @Test("a Turn on a quarantined Timeline fails with a distinct non-retryable code that names no path, body, or secret")
+    func quarantinedTimelineFailsWithTimelineQuarantined() async throws {
+        let directory = makeDirectory("turn-admission-quarantine-public-tests")
+        let timelineID = UUID()
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let coordinator = AscendantTurnCoordinator(ledger: AscendantTurnUpdateStore(timelineJournals: journals))
+        _ = try await coordinator.execute(
+            AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+            ascendantID: UUID()
+        ) { "first answer" }
+        let url = TimelineJournalStore.fileURL(for: timelineID, in: directory)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("0000000000000000 1700000000000 {\"invalid\":true}\n".utf8))
+        try handle.close()
+
+        let restarted = AscendantTurnCoordinator(
+            ledger: AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: directory))
+        )
+        let dispatched = Flag()
+        let provider = AscendantTurnProvider(execute: { request in
+            try await restarted.execute(request, ascendantID: UUID()) {
+                await dispatched.set(true)
+                return "must not run"
+            }
+        })
+        let request = AscendantTurnRequest(
+            message: "sentinel-turn-body", timelineID: timelineID, clientTurnID: "after-corruption"
+        )
+        let response = try await provider.handle(
+            operation: AscendantTurnProvider.turnOperation,
+            parameters: String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+        )
+
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("A quarantined Timeline did not fail the Turn: \(response).")
+            return
+        }
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "timelineQuarantined")
+        #expect(code == failure.statusCode)
+        #expect(!failure.retryable)
+        for leak in [directory.path, "timeline-", ".jsonl", "sentinel-turn-body", "after-corruption", "checksum"] {
+            #expect(!message.contains(leak), "The public failure leaks \(leak).")
+        }
+        #expect(await !dispatched.value, "A quarantined Timeline dispatched a Turn.")
+    }
+
+    @Test("a crash that tears the admission frame leaves the Turn unadmitted, and the earlier Turn stays insertionUnknown")
+    func tornAdmissionFrameIsNotAdmitted() async throws {
+        let directory = makeDirectory("turn-admission-torn-tests")
+        let timelineID = UUID()
+        let writer = AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: directory))
+        let committedID = try await writer.validatedClientTurnID("committed-turn")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: committedID, message: "committed") == .new)
+        let url = TimelineJournalStore.fileURL(for: timelineID, in: directory)
+        let committedSize = try Data(contentsOf: url).count
+        let tornID = try await writer.validatedClientTurnID("torn-turn")
+        #expect(try await writer.admit(timelineID: timelineID, clientTurnID: tornID, message: "torn") == .new)
+
+        // The crash happened inside the admission frame, before its newline.
+        let full = try Data(contentsOf: url)
+        try full.dropLast(40).write(to: url)
+        #expect(try Data(contentsOf: url).count > committedSize)
+
+        let restarted = AscendantTurnCoordinator(
+            ledger: AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: directory))
+        )
+        let order = Order()
+        do {
+            _ = try await restarted.execute(
+                AscendantTurnRequest(message: "committed", timelineID: timelineID, clientTurnID: "committed-turn"),
+                ascendantID: UUID()
+            ) {
+                await order.add("committed")
+                return "must not run"
+            }
+            Issue.record("A committed admission produced a result after the crash.")
+        } catch let error as AscendantTurnError {
+            #expect(error.reasonCode == "insertionUnknown")
+        }
+        // The torn admission was never committed, so no prompt can have been
+        // dispatched for it. The same identity is admitted afresh and runs once.
+        let retried = try await restarted.execute(
+            AscendantTurnRequest(message: "torn", timelineID: timelineID, clientTurnID: "torn-turn"),
+            ascendantID: UUID()
+        ) {
+            await order.add("torn")
+            return "torn answer"
+        }
+        #expect(retried.text == "torn answer")
+        #expect(await order.values == ["torn"])
+        let admitted = try await admissions(TimelineJournalStore(directoryURL: directory), timelineID).map(\.clientTurnID)
+        #expect(admitted == ["committed-turn", "torn-turn"])
+    }
+
     @Test("the Timeline journal rejects an admission whose digest is not the RFC 8785 SHA-256")
     func journalRejectsAForeignDigest() async throws {
         let directory = makeDirectory("turn-admission-foreign-digest-tests")
@@ -131,6 +285,12 @@ struct TurnAdmissionJournalTests {
         #expect(!GnosticProtocol.isCompatible(2))
         #expect(!GnosticProtocol.isCompatible(1))
     }
+}
+
+private actor Order {
+    private(set) var values: [String] = []
+
+    func add(_ value: String) { values.append(value) }
 }
 
 private actor Flag {

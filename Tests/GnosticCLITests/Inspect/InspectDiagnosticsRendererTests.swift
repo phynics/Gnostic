@@ -83,6 +83,30 @@ struct InspectDiagnosticsRendererTests {
         #expect(timelineText.contains("available  uri=workspace://alpha"))
     }
 
+    @Test("a quarantined Timeline journal renders as quarantined and read-only in text and JSON")
+    func quarantinedTimelineJournalRenders() throws {
+        let message = "The Timeline journal is quarantined and read-only. Gnostic admits no new Turn on this Timeline."
+        let timeline = TimelineDiagnostics(
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            workspaces: [],
+            journal: DiagnosticsTimelineJournal(state: .quarantined, message: message)
+        )
+
+        let text = InspectRenderer.timelineText(timeline)
+        #expect(text.contains("journal  quarantined  read-only"))
+        #expect(text.contains(message))
+
+        let json = try InspectRenderer.diagnosticsJSON(timeline)
+        let decoded = try JSONDecoder().decode(TimelineDiagnostics.self, from: Data(json.utf8))
+        #expect(decoded.journal == timeline.journal)
+        #expect(json.contains("\"quarantined\""))
+
+        let writable = TimelineDiagnostics(
+            timeline: timeline.timeline, workspaces: [], journal: DiagnosticsTimelineJournal(state: .writable)
+        )
+        #expect(InspectRenderer.timelineText(writable).contains("journal  writable"))
+    }
+
     private func timelineText(_ recovery: DiagnosticsTimelineSessionRecovery?) -> String {
         InspectRenderer.timelineText(TimelineDiagnostics(
             timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),

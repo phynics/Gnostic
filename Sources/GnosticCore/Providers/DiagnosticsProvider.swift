@@ -101,6 +101,24 @@ public struct DiagnosticsTimelineSessionRecovery: Codable, Sendable, Equatable {
     }
 }
 
+/// Whether the Timeline's authoritative journal accepts writes.
+public enum DiagnosticsTimelineJournalState: String, Codable, Sendable, Equatable {
+    case writable
+    case quarantined
+}
+
+/// Payload-free journal availability for Timeline diagnostics. A quarantined
+/// journal names neither a path nor the corrupt frame.
+public struct DiagnosticsTimelineJournal: Codable, Sendable, Equatable {
+    public let state: DiagnosticsTimelineJournalState
+    public let message: String?
+
+    public init(state: DiagnosticsTimelineJournalState, message: String? = nil) {
+        self.state = state
+        self.message = message.map(GnosticWirePayload.boundedLabel)
+    }
+}
+
 /// Live Turn counts. These are counts only; no Turn identity or body is carried.
 public struct DiagnosticsTurnCounters: Codable, Sendable, Equatable {
     public let inFlight: Int
@@ -226,17 +244,20 @@ public struct TimelineDiagnostics: Codable, Sendable, Equatable {
     public let timeline: DiagnosticsTimelineSummary
     public let workspaces: [DiagnosticsWorkspaceSummary]
     public let sessionRecovery: DiagnosticsTimelineSessionRecovery?
+    public let journal: DiagnosticsTimelineJournal?
 
     public init(
         timeline: DiagnosticsTimelineSummary,
         workspaces: [DiagnosticsWorkspaceSummary],
         sessionRecovery: DiagnosticsTimelineSessionRecovery? = nil,
+        journal: DiagnosticsTimelineJournal? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
         self.timeline = timeline
         self.workspaces = workspaces
         self.sessionRecovery = sessionRecovery
+        self.journal = journal
     }
 }
 
