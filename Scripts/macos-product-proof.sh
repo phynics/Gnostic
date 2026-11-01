@@ -51,7 +51,8 @@ swift_flags=(
     -Xswiftc -warnings-as-errors
 )
 # Test runs keep Swift Testing's per-test output, so a hung run names the test
-# it stopped in. Builds stay quiet.
+# it stopped in. Swift Testing buffers that output when stdout is a pipe, so
+# `run_suite` gives it a pseudo-terminal. Builds stay quiet.
 build_flags=("${swift_flags[@]}" --quiet)
 
 # Upper bound for one `swift test` run. A hung macOS test would otherwise hold
@@ -147,8 +148,18 @@ kill_tree() {
     kill "-$signal" "$parent" 2>/dev/null || true
 }
 
-# Runs a command, terminating it and its descendants after $1 seconds. macOS
-# has no timeout(1). The watchdog logs to $timeout_marker, not to the pipe.
+# Records the stacks of a process and all its descendants next to $timeout_marker.
+sample_tree() {
+    local parent=$1 child
+    for child in $(pgrep -P "$parent" 2>/dev/null); do
+        sample_tree "$child"
+    done
+    sample "$parent" 2 -file "${timeout_marker%.timeout}-sample-$parent.txt" >/dev/null 2>&1 || true
+}
+
+# Runs a command, sampling and then terminating it and its descendants after $1
+# seconds. macOS has no timeout(1). The watchdog logs to $timeout_marker, not to
+# the pipe.
 run_bounded() {
     local seconds=$1 status=0 pid watchdog
     shift
@@ -158,6 +169,7 @@ run_bounded() {
         exec >/dev/null 2>&1
         sleep "$seconds"
         echo "Timed out after ${seconds}s: $*" >"$timeout_marker"
+        sample_tree "$pid"
         kill_tree TERM "$pid"
         sleep 10
         kill_tree KILL "$pid"
@@ -169,28 +181,6 @@ run_bounded() {
     return "$status"
 }
 
-# Diagnostics for the proof scenario, which launches two `gnostic serve`
-# processes from a scratch directory that the test removes on exit: copy that
-# directory and sample any serve process that is still alive after six seconds.
-watch_proof_scratch() {
-    local out="$log_dir/proof-watch" sampled=" " pid age
-    mkdir -p "$out"
-    for _ in $(seq 1 120); do
-        sleep 1
-        cp -R "${TMPDIR:-/tmp}"/gnostic-peer-filesystem-* "$out/" 2>/dev/null || true
-        ps -axo pid=,etime=,stat=,command= | grep -F 'gnostic' >"$out/ps.txt" || true
-        for pid in $(pgrep -f 'gnostic.* serve --config' || true); do
-            case "$sampled" in *" $pid "*) continue ;; esac
-            age=$(ps -o etime= -p "$pid" | tr -d ' ')
-            case "$age" in
-            00:0[0-5]) continue ;;
-            esac
-            sampled="$sampled$pid "
-            sample "$pid" 2 -file "$out/sample-$pid.txt" >/dev/null 2>&1 || true
-        done
-    done
-}
-
 # Runs `swift test` with the given binaries, then fails unless the run executed
 # the expected number of tests. $1 label, $2 gnostic, $3 gnostic-pk-runtime,
 # $4 required "Test run with" pattern, remaining arguments go to `swift test`.
@@ -200,13 +190,14 @@ run_suite() {
     local log="$log_dir/$label.log"
     local status=0
     timeout_marker="$log_dir/$label.timeout"
-    GNOSTIC_SERVE_BINARY="$gnostic" \
+    NO_COLOR=1 \
+        GNOSTIC_SERVE_BINARY="$gnostic" \
         GNOSTIC_CLI_BINARY="$gnostic" \
         GNOSTIC_ACP_BINARY="$gnostic" \
         GNOSTIC_PK_RUNTIME_BINARY="$runtime" \
         run_bounded "$suite_timeout_seconds" \
-        swift test "${swift_flags[@]}" --skip-build --no-parallel \
-        --xunit-output "$log_dir/$label-swift-testing.xml" "$@" 2>&1 | tee "$log" || status=$?
+        script -q /dev/null swift test "${swift_flags[@]}" --skip-build --no-parallel \
+        --xunit-output "$log_dir/$label.xml" "$@" 2>&1 </dev/null | tee "$log" || status=$?
     if [[ -f "$timeout_marker" ]]; then
         cat "$timeout_marker" >&2
     fi
@@ -223,15 +214,11 @@ run_suite() {
 failed=0
 timeout_marker=/dev/null
 
-watch_proof_scratch &
-watcher_pid=$!
 # Release proof: the filesystem Workspace is the only kind a release build
 # registers, and its containment path uses macOS F_GETPATH.
 run_suite release-filesystem-workspace "$release_gnostic" "$release_runtime" \
     '1 test' \
     --filter 'TwoNodeMQTTIntegrationTests/runtimeReadsPeerFilesystemWorkspace' || failed=1
-
-kill_tree TERM "$watcher_pid"
 
 skip_args=()
 for excluded in ${excluded_tests[@]+"${excluded_tests[@]}"}; do

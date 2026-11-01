@@ -691,6 +691,31 @@ struct TwoNodeMQTTIntegrationTests {
         completed = true
     }
 
+    // Each ACP Runtime holds threads in blocking reads of its stdout and stderr
+    // pipes. If those reads ran on the Swift cooperative pool, whose width is the
+    // CPU count, these Runtimes would occupy all of it and the Node would hang
+    // before it advertises (#694). The cap keeps startup fast on large hosts.
+    @Test("a Node with more blocking ACP pipe readers than CPUs still comes online")
+    @MainActor
+    func nodeWithMoreRuntimePipeReadersThanCPUsComesOnline() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-pipe-readers-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let node = try await launchNode(
+            name: "runtime-owner",
+            namespace: "pipe-readers-\(UUID().uuidString.lowercased())",
+            serveBinary: serveBinary,
+            agentFixture: agentFixture,
+            scratch: scratch,
+            additionalRuntimeCount: min(ProcessInfo.processInfo.activeProcessorCount / 2 + 1, 7)
+        )
+        await node.shutdown()
+    }
+
     // `GNOSTIC_SERVE_BINARY` may name a release build. The `filesystem` kind is
     // the only Workspace kind a release build registers, so this scenario also
     // runs there, unlike the debug fixture above.
@@ -1143,7 +1168,8 @@ struct TwoNodeMQTTIntegrationTests {
         agentFixture: String,
         scratch: URL,
         timelineID requestedTimelineID: UUID? = nil,
-        fixtureEnvironment extraFixtureEnvironment: [String: String] = [:]
+        fixtureEnvironment extraFixtureEnvironment: [String: String] = [:],
+        additionalRuntimeCount: Int = 0
     ) async throws -> NodeProcess {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -1177,7 +1203,34 @@ struct TwoNodeMQTTIntegrationTests {
                 manifest.timelines[0].id = requestedTimelineID
                 manifest.ascendants[0].defaultTimelineID = requestedTimelineID
             }
+            for index in 0..<additionalRuntimeCount {
+                let runtimeID = UUID()
+                let additionalTimelineID = UUID()
+                let state = configDirectory.appendingPathComponent("fixture-sessions-\(index).json")
+                let backend = AscendantBackendConfiguration(
+                    kind: manifest.ascendants[0].backend.kind,
+                    settings: [
+                        "command": .string("node"),
+                        "args": .string(try jsonString([agentFixture])),
+                        "env": .string(try jsonString(["GNOSTIC_ACP_FIXTURE_STATE": state.path])),
+                    ]
+                )
+                manifest.ascendants.append(.init(
+                    id: runtimeID,
+                    kind: manifest.ascendants[0].kind,
+                    name: "Additional Runtime \(index)",
+                    defaultTimelineID: additionalTimelineID,
+                    backend: backend
+                ))
+                manifest.timelines.append(.init(
+                    id: additionalTimelineID,
+                    title: "Additional Timeline \(index)",
+                    operatingAscendantID: runtimeID
+                ))
+            }
         }
+        // `gnostic serve` logs one Timeline of its Node.
+        let advertisedTimelineIDs = try store.loadManifest().timelines.map(\.id)
 
         let logURL = configDirectory.appendingPathComponent("serve.log")
         #expect(FileManager.default.createFile(atPath: logURL.path, contents: nil))
@@ -1216,7 +1269,7 @@ struct TwoNodeMQTTIntegrationTests {
                 try log.synchronize()
                 let output = try String(contentsOf: logURL, encoding: .utf8)
                 if output.contains("advertised objects"),
-                   output.contains("timeline=\(timelineID.uuidString.lowercased())") {
+                   advertisedTimelineIDs.contains(where: { output.contains("timeline=\($0.uuidString.lowercased())") }) {
                     online = true
                     break
                 }
