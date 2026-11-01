@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "broker": { "host": "@@BROKER_HOST@@", "port": "@@BROKER_PORT@@", "namespace": "@@NAMESPACE@@" },
+  "node": { "id": "@@NODE_A_ID@@", "kind": "node", "approvalMode": "auto", "logLevel": "info" },
+  "runtimeInstances": [
+    {
+      "id": "@@RUNTIME_ID@@",
+      "kind": "acp-client",
+      "name": "T4 Runtime",
+      "description": "",
+      "metadata": {},
+      "backend": {
+        "kind": "acp-client",
+        "schemaVersion": 1,
+        "settings": {
+          "command": "@@RUNTIME_COMMAND@@",
+          "args": "@@RUNTIME_ARGS@@",
+          "env": "@@RUNTIME_ENV@@"
+        },
+        "secrets": {}
+      },
+      "defaultTimelineID": "@@TIMELINE_ID@@"
+    }
+  ],
+  "timelines": [
+    {
+      "id": "@@TIMELINE_ID@@",
+      "kind": "timeline",
+      "title": "T4 default Timeline",
+      "runtimeInstanceID": "@@RUNTIME_ID@@",
+      "flags": [],
+      "attachments": []
+    }
+  ],
+  "workspaces": []
+}
