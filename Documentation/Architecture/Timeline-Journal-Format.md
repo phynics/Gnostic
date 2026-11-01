@@ -36,9 +36,15 @@ Each JSON record has these fields:
 | `timelineID` | The Timeline that owns this event. |
 | `replayEpoch` | The writer epoch for this event. |
 | `sequence` | A contiguous, per-Timeline sequence number starting at `1`. |
-| `timestamp` | The event timestamp. |
-| `causalSpanID` | The causal span, or `null` for an event without a span. |
+| `timestamp` | The event timestamp, as a JSON number of seconds since 2001-01-01T00:00:00Z. |
+| `causalSpanID` | The causal span. The field is absent for an event without a span. |
 | `payload` | A Gnostic event or an ACP v2 session update. |
+
+JSON UUID values, such as `timelineID` and `replayEpoch`, use the uppercase
+form that Foundation encodes. The committed fixture
+`Tests/Fixtures/TimelineJournal/timeline-v1.golden.jsonl` pins the frame, the
+checksum, and the JSON shape of every payload kind. Its tests check the frame
+against a checksum that is computed without the implementation.
 
 The first event starts the initial replay epoch. Every later open appends an
 epoch-start event that names the previous epoch and sequence. Normal events
