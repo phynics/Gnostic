@@ -42,7 +42,7 @@ final class ACPFrontendHarness {
         let configuration = AscendantBackendConfiguration(
             kind: ACPAscendantBackend.kind,
             settings: [
-                "command": .string("/usr/bin/node"),
+                "command": .string("node"),
                 "args": .string(String(decoding: try JSONEncoder().encode([fixture]), as: UTF8.self)),
                 "env": .string(String(decoding: try JSONEncoder().encode(environment), as: UTF8.self)),
             ]

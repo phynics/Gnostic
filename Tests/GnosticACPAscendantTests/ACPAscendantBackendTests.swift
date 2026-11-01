@@ -2886,7 +2886,7 @@ struct ACPAscendantBackendTests {
         }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
-            "command": .string("/usr/bin/node"),
+            "command": .string("node"),
             "args": .string(try #require(String(data: JSONEncoder().encode([fixturePath]), encoding: .utf8))),
             "env": .string(try #require(String(data: encodedEnvironment, encoding: .utf8))),
         ]
