@@ -182,11 +182,9 @@ jobs:
 
       - name: Build release binaries, run the test suite and the release proof
         run: make macos-product-proof
-        env:
-          SUITE_TIMEOUT: 300
 
       - name: Save SwiftPM and build caches
-        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/pull/695/merge')
+        if: always() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v6
         with:
           path: |
