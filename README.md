@@ -511,7 +511,9 @@ CONTAINER_TIMEOUT=30000 SOAK_DURATION_SECONDS=28800 SOAK_TURNS=512 make soak
 ```
  Choose a Turn count below the configured identity capacity; exceeding it
 is an expected admission failure, not a successful soak. This command alone
-does not satisfy owner manual acceptance or external-peer conformance.
+does not satisfy owner manual acceptance or external-peer conformance. The
+[T4 owner acceptance runbook](Documentation/Acceptance/T4-owner-acceptance.md)
+covers the manual drills.
 
 The retained ledger metrics describe Gnostic admission state. Runtime memory
 and model context remain Runtime-owned.
