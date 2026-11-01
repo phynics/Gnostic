@@ -15,7 +15,7 @@
       "rule": "ADR 0019 section 2: Gnostic sends `session/prompt` for an admitted Turn only after it has observed `idle` for the Session.",
       "scope": "Sources/GnosticACPAscendant/ACPAscendantBackend.swift (requireSession and performTurn)",
       "rationale": "The backend sends `session/prompt` right after a confirmed `session/resume`, without waiting for an observed `idle`. ADR 0021 supersedes the queue and the quiet-period inference that ADR 0019 section 2 used to cover an unknown state after a resume. It does not supersede the observed-idle rule itself. Silence does not prove `idle`, and the ACP v2 RFD leaves resume-state synchronization open (ADR 0019 section 2), so the backend has no observation to wait for. Gnostic rejects a second Turn on a busy Timeline before `session/prompt`, and it blocks a Session whose resume it cannot confirm. The residual risk is a Runtime that is running work it started itself when the prompt arrives. Gnostic does not detect that case. The owner accepted this departure on 2026-11-01 (decision D21, recorded on the issue), scoped to confirmed resumes.",
-      "issue": "https://github.com/phynics/Gnostic/issues/681",
+      "issue": "https://github.com/phynics/Gnostic/issues/687",
       "owner": "phynics",
       "reconsiderWhen": "ADR 0019 section 2 is amended to match this behavior, or ACP defines resume-state synchronization without inferring it from silence."
     }
