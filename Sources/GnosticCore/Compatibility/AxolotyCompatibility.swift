@@ -9,7 +9,7 @@ import GnosticProtocol
 
 // This file is the single compatibility boundary for the pre-0.7 API names
 // still used by Gnostic's public seams. The implementation is backed entirely
-// by Axoloty 0.8's bounded runtime and wire values.
+// by Axoloty 1.0's bounded runtime and wire values.
 //
 // Nothing here is part of Gnostic's intended API. These declarations are
 // `public` only because GnosticCLI, GnosticRunner, and the test targets

@@ -397,7 +397,7 @@ can resume them.
 
 The v0.5 release removes the in-process `positronic` and `letta` backend kinds.
 The Gnostic host has no PositronicKit dependency. The standalone reference
-Runtime uses PositronicKit 7. The host targets Axoloty 0.8.x and uses it only
+Runtime uses PositronicKit 7. The host targets Axoloty 1.x and uses it only
 between Gnostic Nodes.
 
 Release acceptance requires the structural work in #602, the schema migration
