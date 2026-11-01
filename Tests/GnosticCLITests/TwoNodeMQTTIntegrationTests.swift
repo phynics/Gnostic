@@ -691,6 +691,109 @@ struct TwoNodeMQTTIntegrationTests {
         completed = true
     }
 
+    // `GNOSTIC_SERVE_BINARY` may name a release build. The `filesystem` kind is
+    // the only Workspace kind a release build registers, so this scenario also
+    // runs there, unlike the debug fixture above.
+    @Test("Node A ACP Runtime reads a filesystem Workspace on Node B through the gateway")
+    @MainActor
+    func runtimeReadsPeerFilesystemWorkspace() async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "peer-filesystem-\(UUID().uuidString.lowercased())"
+        let workspaceID = UUID()
+        let timelineID = UUID()
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-peer-filesystem-\(UUID().uuidString)", isDirectory: true)
+        let root = scratch.appendingPathComponent("workspace-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let content = "peer filesystem content"
+        try content.write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+
+        let workspaceNode = try await launchWorkspaceNode(
+            namespace: namespace,
+            scratch: scratch,
+            workspaceID: workspaceID,
+            workspaceURI: root.path,
+            workspaceKind: "filesystem",
+            serveBinary: serveBinary,
+            agentFixture: agentFixture
+        )
+        let owner: NodeProcess
+        do {
+            owner = try await launchNode(
+                name: "runtime-owner",
+                namespace: namespace,
+                serveBinary: serveBinary,
+                agentFixture: agentFixture,
+                scratch: scratch,
+                timelineID: timelineID,
+                fixtureEnvironment: [
+                    "GNOSTIC_ACP_FIXTURE_EXPECTED_WORKSPACE_TOOL_COUNT": "2",
+                    "GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_SUFFIX": "__read_file",
+                    "GNOSTIC_ACP_FIXTURE_WORKSPACE_TOOL_ARGUMENTS": #"{"path":"note.txt"}"#,
+                ]
+            )
+        } catch {
+            await workspaceNode.process.shutdown()
+            throw error
+        }
+        let session: GnosticConsumerSession
+        do {
+            session = try GnosticConsumerSession(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+                connectTimeout: .seconds(3),
+                discoverTimeout: .seconds(3)
+            )
+            try await session.start()
+        } catch {
+            await owner.shutdown()
+            await workspaceNode.process.shutdown()
+            throw error
+        }
+        do {
+            var providerID: String?
+            for _ in 1...12 where providerID == nil {
+                try await session.discover(timeout: .milliseconds(250))
+                let objects = await session.networkObjects()
+                if objects.contains(where: { $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID }) {
+                    providerID = objects.first {
+                        $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
+                    }?.providerID
+                }
+            }
+            let timelineProviderID = try #require(providerID)
+            let workspaceClient = try session.workspaceClient(timeout: .seconds(5))
+            try await workspaceClient.attach(
+                workspaceID: workspaceID,
+                to: timelineID,
+                approved: true,
+                providerID: timelineProviderID
+            )
+            try #require(await workspaceClient.effectiveStatus(workspaceID: workspaceID) == .available)
+
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
+            let result = try await runTurnApprovingWorkspacePermission(
+                client: client,
+                timelineID: timelineID,
+                clientTurnID: "peer-filesystem-read",
+                providerID: timelineProviderID,
+                message: "[fixture:workspace-tool]",
+                trace: WorkspaceScenarioTrace(),
+                stagePrefix: "filesystem.read"
+            )
+            #expect(result.text.contains(content), Comment(rawValue: result.text))
+        } catch {
+            await session.stop()
+            await owner.shutdown()
+            await workspaceNode.process.shutdown()
+            throw error
+        }
+        await session.stop()
+        await owner.shutdown()
+        await workspaceNode.process.shutdown()
+    }
+
     @MainActor
     private func runGatewayRevocationScenario(
         namespace: String,
@@ -1136,6 +1239,7 @@ struct TwoNodeMQTTIntegrationTests {
         scratch: URL,
         workspaceID: UUID,
         workspaceURI: String,
+        workspaceKind: String = "test-revocable-peer",
         serveBinary: String,
         agentFixture: String
     ) async throws -> WorkspaceNodeProcess {
@@ -1157,7 +1261,7 @@ struct TwoNodeMQTTIntegrationTests {
                 id: workspaceID,
                 name: "Remote revocation fixture",
                 uri: workspaceURI,
-                kind: "test-revocable-peer"
+                kind: workspaceKind
             )]
         }
 
