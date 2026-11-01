@@ -107,11 +107,14 @@ state, and the entry records the review decision rather than active ownership.
 ## Architecture exceptions
 
 [`exceptions.json`](exceptions.json) is the versioned machine-readable
-exception registry. It records one accepted exception. `GNO-EXC-0001` covers the
+exception registry. It records two exceptions. `GNO-EXC-0001` covers the
 Coaty vocabulary that `GnosticCore` still publishes through
 `Sources/GnosticCore/Compatibility/AxolotyCompatibility.swift` and that
 `GnosticProtocol` publishes through
-`Sources/GnosticProtocol/CoatyObjectModel.swift`. Every exception must have a unique
+`Sources/GnosticProtocol/CoatyObjectModel.swift`. `GNO-EXC-0003` covers the
+backend sending `session/prompt` without an observed `idle`, which ADR 0019
+section 2 still requires. It is owned by issue #681 and takes effect after its
+independent review and owner approval. Every exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,
 packages, targets, or interfaces; wildcard target-wide exceptions are not
