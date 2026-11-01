@@ -48,6 +48,9 @@ final class ACPDispatcher: Sendable {
     private var runtime: RuntimeInstance?
     private var requestedPermissionIDs: Set<String> = []
     private var activePrompts: [String: ActivePrompt] = [:]
+    /// The Turn that holds each session's single foreground slot, from the
+    /// moment its prompt is accepted until it ends.
+    private var promptReservations: [String: (turnID: String, token: UUID)] = [:]
     private var activePermissionRequests: [String: ActivePermissionRequest] = [:]
     private var cancelledSessions: Set<String> = []
 
@@ -234,15 +237,8 @@ final class ACPDispatcher: Sendable {
 
     private func prompt(_ params: GnosticJSONValue?) async throws -> GnosticJSONValue {
         let input: ACPPromptParameters = try decode(params)
-        defer { cancelledSessions.remove(input.sessionID) }
         guard let text = input.text else {
             throw JSONRPCMethodError.invalidParams("session/prompt accepts non-empty text content only")
-        }
-        let record = try await knownSession(id: input.sessionID, cwd: nil)
-        do {
-            try await requireBinding(of: record)
-        } catch {
-            throw await orphanAwareError(error, for: record)
         }
         let turnID: String
         if let clientTurnID = input.clientTurnID {
@@ -251,7 +247,36 @@ final class ACPDispatcher: Sendable {
             // request and every update or permission correlation.
             turnID = try GnosticWirePayload.canonicalClientTurnID(clientTurnID)
         } else {
-            turnID = "acp:\(record.id):\(UUID().uuidString.lowercased())"
+            turnID = "acp:\(input.sessionID):\(UUID().uuidString.lowercased())"
+        }
+        // One foreground Turn per session (ADR 0021). A distinct prompt that
+        // arrives while another is active is rejected here, before any await
+        // and before anything is published. It is not queued, and it must not
+        // replace the active prompt's cancellation handle. An identical retry
+        // of the active Turn proceeds and is attached by the Node.
+        let reservation: UUID?
+        if let held = promptReservations[input.sessionID] {
+            guard held.turnID == turnID else { throw RemoteTurnClientError.timelineBusy }
+            reservation = nil
+        } else {
+            let token = UUID()
+            promptReservations[input.sessionID] = (turnID, token)
+            reservation = token
+        }
+        // Only a prompt that holds the slot owns the session's cancellation flag.
+        // A rejected prompt leaves it alone, so it cannot erase a cancel that is
+        // still unwinding the active Turn.
+        defer {
+            cancelledSessions.remove(input.sessionID)
+            if let reservation, promptReservations[input.sessionID]?.token == reservation {
+                promptReservations.removeValue(forKey: input.sessionID)
+            }
+        }
+        let record = try await knownSession(id: input.sessionID, cwd: nil)
+        do {
+            try await requireBinding(of: record)
+        } catch {
+            throw await orphanAwareError(error, for: record)
         }
 
         let messageID = "acp:user:\(turnID)"
@@ -267,6 +292,9 @@ final class ACPDispatcher: Sendable {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
             }
             if let error = existing.updates.last(where: \.isTerminalFailure) {
+                // A retry of a Turn whose insertion is unknown gets that state
+                // back, structured, and never a second prompt.
+                if error.reasonCode == "insertionUnknown" { throw RemoteTurnClientError.insertionUnknown }
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
@@ -278,19 +306,35 @@ final class ACPDispatcher: Sendable {
                     replayed: true
                 )
             }
-            publishState(sessionID: record.id, state: "idle", stopReason: "end_turn", turnID: turnID)
-            return .dictionary(["messageId": .string(messageID)])
-        }
-        publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
-        publishState(sessionID: record.id, state: "running", stopReason: nil, turnID: turnID)
-        let resultAndSequence: (AscendantTurnResult, Int)
-        do {
-            resultAndSequence = try await streamPrompt(
-                message: text,
-                record: record,
+            publishState(
+                sessionID: record.id,
+                state: "idle",
+                stopReason: Self.endedUnspecified(existing.updates) ? nil : "end_turn",
                 turnID: turnID
             )
+            return .dictionary(["messageId": .string(messageID)])
+        }
+        // The client sees the user message and the running state only once the
+        // Node has accepted the Turn. A prompt the Node rejects as busy was never
+        // inserted, so nothing is published for it.
+        var announced = false
+        let announce = { [self] in
+            guard !announced else { return }
+            announced = true
+            publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
+            publishState(sessionID: record.id, state: "running", stopReason: nil, turnID: turnID)
+        }
+        let streamed: (result: AscendantTurnResult, lastSequence: Int, endedUnspecified: Bool)
+        do {
+            streamed = try await streamPrompt(
+                message: text,
+                record: record,
+                turnID: turnID,
+                announce: announce
+            )
         } catch {
+            if case RemoteTurnClientError.timelineBusy = error { throw error }
+            announce()
             if cancelledSessions.contains(input.sessionID) {
                 publishState(sessionID: record.id, state: "idle", stopReason: "cancelled", turnID: turnID)
                 return .dictionary(["messageId": .string(messageID)])
@@ -298,11 +342,12 @@ final class ACPDispatcher: Sendable {
             publishState(sessionID: record.id, state: "idle", stopReason: "error", turnID: turnID)
             throw await orphanAwareError(error, for: record)
         }
+        announce()
         if cancelledSessions.contains(input.sessionID) {
             publishState(sessionID: record.id, state: "idle", stopReason: "cancelled", turnID: turnID)
             return .dictionary(["messageId": .string(messageID)])
         }
-        let (result, lastSequence) = resultAndSequence
+        let (result, lastSequence) = (streamed.result, streamed.lastSequence)
         let replay = try? await client.replay(
             timelineID: record.timelineID,
             clientTurnID: turnID,
@@ -329,7 +374,10 @@ final class ACPDispatcher: Sendable {
             }
         }
         try await registry.touch(id: record.id)
-        publishState(sessionID: record.id, state: "idle", stopReason: "end_turn", turnID: turnID)
+        // An idle update without a stop reason reaches the client as it came:
+        // the Turn ended, and the Runtime named no reason (ADR 0019 section 2).
+        let unspecified = streamed.endedUnspecified || Self.endedUnspecified(updates)
+        publishState(sessionID: record.id, state: "idle", stopReason: unspecified ? nil : "end_turn", turnID: turnID)
         return .dictionary(["messageId": .string(messageID)])
     }
 
@@ -339,8 +387,9 @@ final class ACPDispatcher: Sendable {
     private func streamPrompt(
         message: String,
         record: ACPSessionRecord,
-        turnID: String
-    ) async throws -> (AscendantTurnResult, Int) {
+        turnID: String,
+        announce: () -> Void
+    ) async throws -> (result: AscendantTurnResult, lastSequence: Int, endedUnspecified: Bool) {
         let providerID = try await boundProviderID(for: record)
         let channel = try await client.turnUpdates(for: turnID, timelineID: record.timelineID, providerID: providerID)
         let inbox = TurnUpdateInbox()
@@ -394,12 +443,14 @@ final class ACPDispatcher: Sendable {
             }
         }
         var lastSequence = 0
+        var endedUnspecified = false
 
         while true {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(40))
 
             for update in await inbox.drain(afterSequence: lastSequence) {
+                announce()
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
@@ -413,15 +464,22 @@ final class ACPDispatcher: Sendable {
                     turnID: turnID
                 )
                 lastSequence = max(lastSequence, update.sequence)
+                endedUnspecified = endedUnspecified || Self.endedUnspecified([update])
             }
 
             switch await completion.value() {
-            case .completed(let result): return (result, lastSequence)
+            case .completed(let result): return (result, lastSequence, endedUnspecified)
             case .failed(let failure): throw failure.thrown
             case .cancelled: throw CancellationError()
             case nil: break
             }
         }
+    }
+
+    /// Whether the Turn's terminal update records an idle without a stop reason.
+    private static func endedUnspecified(_ updates: [AscendantTurnUpdate]) -> Bool {
+        guard let terminal = updates.last(where: \.terminal) else { return false }
+        return terminal.updateKind == .completion && terminal.reasonCode == TimelineTurnTerminalOutcome.endedUnspecified.rawValue
     }
 
     fileprivate enum PromptWaitOutcome: Sendable {

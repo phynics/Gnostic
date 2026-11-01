@@ -69,11 +69,18 @@ public actor ACPProtocolLayer {
         try await transport.send(.notification(notification))
     }
 
+    /// Sends one request and awaits its response.
+    ///
+    /// - Parameter didSend: Called once with the request's ID after the
+    ///   transport has accepted the request and before the response is awaited.
+    ///   A caller that may cancel the request (`$/cancel_request`) needs the ID,
+    ///   and must not cancel a request the Runtime has not been sent.
     public func sendRequest<Req: Encodable, Resp: Decodable>(
         method: String,
         params: Req,
         responseType: Resp.Type = Resp.self,
-        timeoutSeconds: Double? = nil
+        timeoutSeconds: Double? = nil,
+        didSend: (@Sendable (ACPRequestId) async -> Void)? = nil
     ) async throws -> Resp {
         guard !isClosed else { throw ACPTransportError.transportClosed }
         let reqID = nextRequestID
@@ -93,6 +100,7 @@ public actor ACPProtocolLayer {
                         await self.registerPendingRequest(id: strID, continuation: continuation)
                         do {
                             try await self.transport.send(.request(request))
+                            await didSend?(request.id)
                         } catch {
                             await self.cancelPendingRequest(id: strID, error: error)
                         }
@@ -131,17 +139,38 @@ public actor ACPProtocolLayer {
         pendingRequests[id] = continuation
     }
 
-    private func cancelPendingRequest(id: String, error: any Error) {
-        pendingRequests.removeValue(forKey: id)?.resume(throwing: error)
+    @discardableResult
+    private func cancelPendingRequest(id: String, error: any Error) -> Bool {
+        guard let continuation = pendingRequests.removeValue(forKey: id) else { return false }
+        continuation.resume(throwing: error)
+        return true
+    }
+
+    /// Stops waiting for a sent request: its caller receives `error`, and a
+    /// response that arrives later is ignored. Returns whether the request was
+    /// still waiting. It is not when its response already reached this layer,
+    /// so the caller is already resuming with that response and `error` was
+    /// not delivered.
+    @discardableResult
+    package func abandonRequest(id: ACPRequestId, error: any Error) -> Bool {
+        guard let key = id.stringValue else { return false }
+        return cancelPendingRequest(id: key, error: error)
     }
 
     public func request<Req: Encodable, Resp: Decodable>(
         method: String,
         params: Req,
         responseType: Resp.Type = Resp.self,
-        timeoutSeconds: Double? = nil
+        timeoutSeconds: Double? = nil,
+        didSend: (@Sendable (ACPRequestId) async -> Void)? = nil
     ) async throws -> Resp {
-        try await sendRequest(method: method, params: params, responseType: responseType, timeoutSeconds: timeoutSeconds)
+        try await sendRequest(
+            method: method,
+            params: params,
+            responseType: responseType,
+            timeoutSeconds: timeoutSeconds,
+            didSend: didSend
+        )
     }
 
     // MARK: - Convenience Operations
@@ -166,8 +195,18 @@ public actor ACPProtocolLayer {
         try await self.request(method: ACPv2Protocol.AgentMethod.sessionList, params: request, responseType: ACPListSessionsResponse.self)
     }
 
-    public func prompt(request: ACPPromptRequest, timeoutSeconds: Double? = nil) async throws -> ACPPromptResponse {
-        try await self.request(method: ACPv2Protocol.AgentMethod.sessionPrompt, params: request, responseType: ACPPromptResponse.self, timeoutSeconds: timeoutSeconds)
+    public func prompt(
+        request: ACPPromptRequest,
+        timeoutSeconds: Double? = nil,
+        didSend: (@Sendable (ACPRequestId) async -> Void)? = nil
+    ) async throws -> ACPPromptResponse {
+        try await self.request(
+            method: ACPv2Protocol.AgentMethod.sessionPrompt,
+            params: request,
+            responseType: ACPPromptResponse.self,
+            timeoutSeconds: timeoutSeconds,
+            didSend: didSend
+        )
     }
 
     public func cancelSession(sessionId: String) async throws {

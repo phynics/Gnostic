@@ -464,6 +464,32 @@ public final class CommunicationManager {
     private var isRuntimeReady = false
     private var isStarted = false
 
+    /// The call operations a Node answers. The architecture fitness test reads
+    /// this list, so it inspects what production registers rather than a copy.
+    nonisolated static let registeredCallOperations = [
+        GnosticWorkspaceProtocol.invocationOperation,
+        AscendantTurnProvider.turnOperation,
+        AscendantTurnProvider.replayOperation,
+        AscendantTurnProvider.cancelOperation,
+        AscendantPermissionProvider.responseOperation,
+        WorkspaceOpsProvider.listOperation,
+        WorkspaceOpsProvider.attachOperation,
+        WorkspaceOpsProvider.detachOperation,
+        TimelineStatusProvider.statusOperation,
+        TimelineManagementProvider.createOperation,
+        TimelineManagementProvider.listOperation,
+        TimelineManagementProvider.updateOperation,
+        DiagnosticsProvider.nodeOperation,
+        DiagnosticsProvider.ascendantOperation,
+        DiagnosticsProvider.timelineOperation,
+    ]
+
+    /// The channels a Node subscribes to for named events.
+    nonisolated static let registeredChannelIdentifiers = [
+        AscendantPermissionProvider.responseChannel,
+        AscendantTurnProvider.updateChannel,
+    ]
+
     public convenience init(identity: Identity, communicationOptions: CommunicationOptions, commonOptions: CommonOptions?) throws {
         guard let mqtt = communicationOptions.mqttClientOptions else { throw AxolotyError.invalidArgument(argument: "mqttClientOptions", reason: "is required") }
         try self.init(identity: identity, namespace: communicationOptions.namespace ?? "-", mqtt: mqtt)
@@ -482,28 +508,7 @@ public final class CommunicationManager {
             protocolMaximumTopicBytes: GnosticWirePayload.maximumTopicBytes
         )
         var builder = try RuntimeBuilder(identity: runtimeIdentity, namespace: namespace, capacities: capacities)
-        let callOperations = [
-            GnosticWorkspaceProtocol.invocationOperation,
-            TimelineTurnProvider.turnOperation,
-            TimelineTurnProvider.replayOperation,
-            TimelineTurnProvider.cancelOperation,
-            TimelinePermissionProvider.responseOperation,
-            AscendantTurnProvider.turnOperation,
-            AscendantTurnProvider.replayOperation,
-            AscendantTurnProvider.cancelOperation,
-            AscendantPermissionProvider.responseOperation,
-            WorkspaceOpsProvider.listOperation,
-            WorkspaceOpsProvider.attachOperation,
-            WorkspaceOpsProvider.detachOperation,
-            TimelineStatusProvider.statusOperation,
-            TimelineManagementProvider.createOperation,
-            TimelineManagementProvider.listOperation,
-            TimelineManagementProvider.updateOperation,
-            DiagnosticsProvider.nodeOperation,
-            DiagnosticsProvider.ascendantOperation,
-            DiagnosticsProvider.timelineOperation,
-        ]
-        for operation in callOperations {
+        for operation in Self.registeredCallOperations {
             try builder.respond(to: .call(operation: operation), maximumConcurrentInvocations: 16) { invocation in
                 try await dispatch.handleCall(invocation)
             }
@@ -520,10 +525,9 @@ public final class CommunicationManager {
         let retrieves = try builder.events(matching: .family(.retrieve), buffering: .dropOldest(capacity: 64))
         let returns = try builder.events(matching: .family(.returnEvent), buffering: .dropOldest(capacity: 64))
         let calls = try builder.events(matching: .family(.call), buffering: .dropOldest(capacity: 64))
-        let permissionChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.permission.response"), buffering: .dropOldest(capacity: 64))
-        let turnChannel = try builder.events(matching: .channel(identifier: "me.atkn.gnostic.ascendant.turn.update"), buffering: .dropOldest(capacity: 64))
-        let timelinePermissionChannel = try builder.events(matching: .channel(identifier: TimelinePermissionProvider.responseChannel), buffering: .dropOldest(capacity: 64))
-        let timelineTurnChannel = try builder.events(matching: .channel(identifier: TimelineTurnProvider.updateChannel), buffering: .dropOldest(capacity: 64))
+        let namedChannels = try Self.registeredChannelIdentifiers.map {
+            try builder.events(matching: .channel(identifier: $0), buffering: .dropOldest(capacity: 64))
+        }
         // The remaining families and a family-wide channel selector feed the
         // diagnostic raw stream. A consumer cannot know an arbitrary channel
         // identifier in advance, so the channel selector matches the family
@@ -536,11 +540,11 @@ public final class CommunicationManager {
         let transport = try MQTTBinding(configuration: .init(host: mqtt.host, port: mqtt.port, usesTLS: mqtt.enableSSL, username: mqtt.username, password: mqtt.password))
         self.transport = transport
         self.runtime = AxolotyRuntime(definition: try builder.finish(), transport: transport)
-        self.eventStreams = [
-            advertise, deadvertise, resolve, retrieves, returns, calls, permissionChannel, turnChannel,
-            discovers, queries, updates, completes, allChannels,
-            timelinePermissionChannel, timelineTurnChannel,
-        ]
+        // The named channels follow the six leading families, in the order of
+        // `registeredChannelIdentifiers`; `startEventPumps` reads them back.
+        self.eventStreams = [advertise, deadvertise, resolve, retrieves, returns, calls]
+            + namedChannels
+            + [discovers, queries, updates, completes, allChannels]
         Task { await dispatch.attach(runtime: self.runtime) }
     }
 
@@ -566,22 +570,24 @@ public final class CommunicationManager {
 
     private func startEventPumps() {
         guard eventTasks.isEmpty else { return }
-        let entries: [(RuntimeEventFamily, String?, RuntimeEventStream)] = [
+        var entries: [(RuntimeEventFamily, String?, RuntimeEventStream)] = [
             (.advertise, nil, eventStreams[0]),
             (.deadvertise, nil, eventStreams[1]),
             (.resolve, nil, eventStreams[2]),
             (.retrieve, nil, eventStreams[3]),
             (.returnEvent, nil, eventStreams[4]),
             (.call, nil, eventStreams[5]),
-            (.channel, "me.atkn.gnostic.ascendant.permission.response", eventStreams[6]),
-            (.channel, "me.atkn.gnostic.ascendant.turn.update", eventStreams[7]),
-            (.discover, nil, eventStreams[8]),
-            (.query, nil, eventStreams[9]),
-            (.update, nil, eventStreams[10]),
-            (.complete, nil, eventStreams[11]),
-            (.channel, nil, eventStreams[12]),
-            (.channel, TimelinePermissionProvider.responseChannel, eventStreams[13]),
-            (.channel, TimelineTurnProvider.updateChannel, eventStreams[14]),
+        ]
+        for (offset, identifier) in Self.registeredChannelIdentifiers.enumerated() {
+            entries.append((.channel, identifier, eventStreams[6 + offset]))
+        }
+        let rest = 6 + Self.registeredChannelIdentifiers.count
+        entries += [
+            (.discover, nil, eventStreams[rest]),
+            (.query, nil, eventStreams[rest + 1]),
+            (.update, nil, eventStreams[rest + 2]),
+            (.complete, nil, eventStreams[rest + 3]),
+            (.channel, nil, eventStreams[rest + 4]),
         ]
         for (family, channelID, stream) in entries {
             eventTasks.append(Task { @MainActor [weak self] in

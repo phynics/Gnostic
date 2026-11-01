@@ -12,6 +12,12 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
     case lifecycleUnusable(timelineID: UUID, clientTurnID: String, detail: String)
     case backendUnavailable(timelineID: UUID, clientTurnID: String, detail: String)
     case replayUnavailable(timelineID: UUID, clientTurnID: String)
+    /// A distinct Turn arrived while another Turn was active on the Timeline.
+    /// Gnostic rejects it before it is admitted and does not queue it.
+    case timelineBusy(timelineID: UUID, clientTurnID: String)
+    /// The Runtime's response to `session/prompt` was lost, so whether the
+    /// prompt was inserted is unknown. Gnostic never retries or guesses.
+    case insertionUnknown(timelineID: UUID, clientTurnID: String)
 
     public var errorDescription: String? {
         switch self {
@@ -31,6 +37,10 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
             detail
         case let .replayUnavailable(_, clientTurnID):
             "the replay result for ascendant.turn turn \(clientTurnID) is no longer retained; the turn will not be rerun"
+        case .timelineBusy:
+            "Timeline is busy"
+        case let .insertionUnknown(_, clientTurnID):
+            "the Runtime did not confirm whether it inserted the prompt of turn \(clientTurnID); the prompt will not be sent again"
         }
     }
 
@@ -43,6 +53,8 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .cancelled: 499
         case .lifecycleUnusable, .backendUnavailable: 503
         case .replayUnavailable: 410
+        case .timelineBusy: 409
+        case .insertionUnknown: 502
         }
     }
 
@@ -56,12 +68,20 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case .lifecycleUnusable: "backendLifecycleUnusable"
         case .backendUnavailable: "backendUnavailable"
         case .replayUnavailable: "replayUnavailable"
+        case .timelineBusy: "timelineBusy"
+        case .insertionUnknown: "insertionUnknown"
         }
     }
 
+    /// Whether an identical retry could succeed. A busy Timeline can accept the
+    /// Turn once the active Turn ends. A Turn whose insertion is unknown is
+    /// never sent again.
     public var retryable: Bool {
-        if case let .terminal(_, _, _, _, retryable, _) = self { return retryable }
-        return false
+        switch self {
+        case let .terminal(_, _, _, _, retryable, _): retryable
+        case .timelineBusy: true
+        default: false
+        }
     }
 
     /// A stable message for public protocol failures. Detail associated values
@@ -82,6 +102,10 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
             "The ascendant backend is unavailable."
         case .replayUnavailable:
             "The replay result for ascendant.turn is no longer retained."
+        case .timelineBusy:
+            "Timeline is busy"
+        case .insertionUnknown:
+            "The Runtime did not confirm whether it inserted the prompt, and Gnostic does not send it again."
         }
     }
     private static func boundedStatusCode(_ value: Int) -> Int {

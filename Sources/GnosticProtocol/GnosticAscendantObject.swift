@@ -22,8 +22,12 @@ public enum GnosticObjectType {
     /// - Parameter objectType: A network object type.
     /// - Returns: `true` when the type is one of Gnostic's canonical types.
     public static func isSupported(_ objectType: String) -> Bool {
-        [ascendant, timeline, workspace, workspaceTool, runtimeInstance].contains(objectType)
+        supported.contains(objectType)
     }
+
+    /// Every canonical object type. The architecture fitness test reads this
+    /// list to check what the catalog really advertises.
+    package static let supported = [ascendant, timeline, workspace, workspaceTool, runtimeInstance]
 }
 
 /// A safe network projection of a backend-neutral Ascendant identity.

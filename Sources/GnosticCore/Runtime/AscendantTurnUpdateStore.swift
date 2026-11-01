@@ -17,9 +17,12 @@ internal enum TurnLedgerAdmission: Sendable, Equatable {
     /// The identity was admitted with a different message.
     case conflict
     /// The identity was admitted but its outcome cannot be replayed. This covers
-    /// a Turn with no terminal record, a failed recovered Turn, a truncated
-    /// outcome, and an identity whose outcome was evicted.
+    /// a failed recovered Turn, a truncated outcome, and an identity whose
+    /// outcome was evicted.
     case unavailable
+    /// The identity is new, but the caller reported that another Turn is active
+    /// on its Timeline. Nothing was admitted or journaled.
+    case busy
 }
 
 /// A terminal outcome of one identified Turn, as committed in this process.
@@ -99,7 +102,7 @@ public actor AscendantTurnUpdateStore {
         var terminal: Bool
         var finished: Bool
         var compacted: Bool
-        var messageDigest: UInt64?
+        var messageDigest: String?
         /// True when the entry was rebuilt from the journal rather than admitted here.
         var recovered: Bool = false
         var outcome: RetainedOutcome? = nil
@@ -122,7 +125,10 @@ public actor AscendantTurnUpdateStore {
     /// Admitted identities and their message digests. Bounded by
     /// ``identityCapacity`` and never evicted, so an identity whose entry was
     /// evicted or never recovered can never rerun.
-    private var identityDigests: [Key: UInt64] = [:]
+    private var identityDigests: [Key: String] = [:]
+    /// The Runtime message identifiers that confirmed prompts bound to their
+    /// Turns, kept until the Turn's outcome is journaled.
+    private var boundMessageIDs: [Key: String] = [:]
 
     internal var retainedStateCounts: (entries: Int, bytes: Int) {
         (entries.count, entries.values.reduce(0) { $0 + $1.bytes })
@@ -232,7 +238,7 @@ public actor AscendantTurnUpdateStore {
 
     /// Restores an admitted identity's digest. Recovery records identities even
     /// when their entries are skipped, so a skipped Turn still never reruns.
-    private func recoverIdentity(_ key: Key, messageDigest: UInt64?) {
+    private func recoverIdentity(_ key: Key, messageDigest: String?) {
         guard let messageDigest, identityDigests[key] == nil, identityDigests.count < identityCapacity else {
             return
         }
@@ -348,7 +354,7 @@ public actor AscendantTurnUpdateStore {
         try start(timelineID: timelineID, clientTurnID: clientTurnID, messageDigest: message.map { Self.messageDigest($0) })
     }
 
-    internal func start(timelineID: UUID, clientTurnID: ValidatedClientTurnID, messageDigest: UInt64?) throws {
+    internal func start(timelineID: UUID, clientTurnID: ValidatedClientTurnID, messageDigest: String?) throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard entries[key] == nil else { return }
         // A retired identity never reopens with a digest: its outcome was evicted.
@@ -361,13 +367,24 @@ public actor AscendantTurnUpdateStore {
     /// ``TurnLedgerAdmission/new`` means the identity was journaled as started and the
     /// caller may run the backend. Every other case answers the request without
     /// running the backend, so an admitted identity never reruns.
-    internal func admit(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String) async throws -> TurnLedgerAdmission {
+    ///
+    /// - Parameter admitNew: Whether the Timeline can take a new Turn. When it
+    ///   cannot, a request for an identity the ledger does not know is answered
+    ///   ``TurnLedgerAdmission/busy`` without admitting or journaling it. A retry
+    ///   of a known identity is classified as usual, because it never starts a
+    ///   second Turn.
+    internal func admit(
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID,
+        message: String,
+        admitNew: Bool = true
+    ) async throws -> TurnLedgerAdmission {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         let digest = Self.messageDigest(message)
         if let admitted = identityDigests[key] {
             guard admitted == digest else { return .conflict }
             guard let entry = entries[key] else { return .unavailable }
-            return Self.admission(for: entry)
+            return Self.admission(for: entry, key: key)
         }
         // An entry without an admitted identity came from a non-admitted path.
         // Admission never adopts it, so it fails closed.
@@ -375,31 +392,68 @@ public actor AscendantTurnUpdateStore {
         if let timelineJournals {
             let journal = try await timelineJournals.journal(for: timelineID)
             let records = try await journal.replay()
-            let prior = records.first { record in
-                guard record.timelineID == timelineID else { return false }
-                if case let .turnAdmitted(clientTurnID, _, _, _, _) = record.payload {
-                    return clientTurnID == key.clientTurnID
+            var admittedTurns = 0
+            var lastSequence = 0
+            var prior: (digest: String, outcome: TimelineTurnTerminalOutcome?)?
+            for record in records where record.timelineID == timelineID {
+                switch record.payload {
+                case let .turnAdmitted(admittedID, admissionDigest, turnSequence, _, _):
+                    admittedTurns += 1
+                    lastSequence = max(lastSequence, turnSequence)
+                    if admittedID == key.clientTurnID { prior = (admissionDigest, nil) }
+                case let .turnCompleted(completedID, outcome, _) where completedID == key.clientTurnID:
+                    if let admitted = prior { prior = (admitted.digest, outcome) }
+                default:
+                    break
                 }
-                return false
             }
-            if let prior,
-               case let .turnAdmitted(_, admissionDigest, _, _, _) = prior.payload {
-                let canonicalDigest = Self.timelineAdmissionDigest(message)
-                return admissionDigest == canonicalDigest ? .unavailable : .conflict
+            if let prior {
+                guard prior.digest == digest else { return .conflict }
+                return Self.recoveredAdmission(for: key, outcome: prior.outcome)
             }
+            guard admitNew else { return .busy }
             // The owning Timeline journal commits admission before the
             // bounded replay ledger. Failure or a crash after this point can
             // lose availability, but can never dispatch an unjournaled Turn.
             try await journal.append(.turnAdmitted(
                 clientTurnID: key.clientTurnID,
-                admissionDigest: Self.timelineAdmissionDigest(message),
-                turnSequence: 1,
-                acpVersionTag: "legacy-text-v1",
+                admissionDigest: digest,
+                turnSequence: max(lastSequence, admittedTurns) + 1,
+                acpVersionTag: ACPv2Protocol.versionTag,
                 prompt: Self.timelineAdmissionPrompt(message)
             ))
         }
+        guard admitNew else { return .busy }
         try insert(key: key, timelineID: timelineID, messageDigest: digest, recovered: false)
         return .new
+    }
+
+    /// Classifies an identity that the Timeline journal admitted before this
+    /// process started. The journal holds the prompt and the outcome kind but not
+    /// the assistant text, so a finished Turn cannot replay its result.
+    ///
+    /// A Turn with no completion record, or one recorded `insertionUnknown`, may
+    /// or may not have been inserted. It is never dispatched again.
+    private static func recoveredAdmission(
+        for key: Key,
+        outcome: TimelineTurnTerminalOutcome?
+    ) -> TurnLedgerAdmission {
+        switch outcome {
+        case nil, .insertionUnknown?:
+            return .replay(.failed(.insertionUnknown(timelineID: key.timelineID, clientTurnID: key.clientTurnID)))
+        case .cancelled?:
+            return .replay(.failed(.cancelled(timelineID: key.timelineID, clientTurnID: key.clientTurnID)))
+        case .completed?, .endedUnspecified?, .failed?, .unavailable?:
+            return .unavailable
+        }
+    }
+
+    /// Binds an admitted Turn to the Runtime's message identifier. The outcome
+    /// record carries it. An identifier for a Turn that already ended is ignored.
+    internal func bindMessageID(timelineID: UUID, clientTurnID: ValidatedClientTurnID, messageID: String) {
+        let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
+        guard entries[key]?.outcome == nil else { return }
+        boundMessageIDs[key] = messageID
     }
 
     /// Records the terminal outcome of one admitted Turn and appends the
@@ -419,13 +473,16 @@ public actor AscendantTurnUpdateStore {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard entries[key]?.outcome == nil,
               persistingOutcomes.insert(key).inserted else { return }
-        defer { persistingOutcomes.remove(key) }
+        defer {
+            persistingOutcomes.remove(key)
+            boundMessageIDs.removeValue(forKey: key)
+        }
         if let timelineJournals {
             let journal = try await timelineJournals.journal(for: timelineID)
             try await journal.append(.turnCompleted(
                 clientTurnID: clientTurnID.rawValue,
-                outcome: Self.timelineOutcome(outcome),
-                messageID: nil
+                outcome: Self.timelineOutcome(outcome, endedUnspecified: endedUnspecified(key)),
+                messageID: boundMessageIDs[key]
             ))
         }
         guard var entry = entries[key], entry.outcome == nil else { return }
@@ -463,12 +520,27 @@ public actor AscendantTurnUpdateStore {
         )
     }
 
-    private static func timelineOutcome(_ outcome: TurnTerminalOutcome) -> TimelineTurnTerminalOutcome {
+    /// Whether the Runtime ended the Turn with an idle update that carried no stop
+    /// reason. The backend marks that on the Turn's terminal completion update.
+    private func endedUnspecified(_ key: Key) -> Bool {
+        guard let terminal = entries[key]?.updates.last(where: \.terminal) else { return false }
+        return terminal.kind == AscendantTurnUpdateKind.completion.rawValue
+            && terminal.reasonCode == TimelineTurnTerminalOutcome.endedUnspecified.rawValue
+    }
+
+    private static func timelineOutcome(
+        _ outcome: TurnTerminalOutcome,
+        endedUnspecified: Bool
+    ) -> TimelineTurnTerminalOutcome {
         switch outcome {
         case .succeeded:
-            .completed
+            endedUnspecified ? .endedUnspecified : .completed
         case let .failed(error):
-            if case .cancelled = error { .cancelled } else { .failed }
+            switch error {
+            case .cancelled: .cancelled
+            case .insertionUnknown: .insertionUnknown
+            default: .failed
+            }
         }
     }
 
@@ -518,7 +590,7 @@ public actor AscendantTurnUpdateStore {
     /// Opens an entry for a new admission or a recovered start. The identity is
     /// recorded first, and only when it has room. The entry may still be refused
     /// by the entry bound, which leaves the identity in place.
-    private func insert(key: Key, timelineID: UUID, messageDigest: UInt64?, recovered: Bool) throws {
+    private func insert(key: Key, timelineID: UUID, messageDigest: String?, recovered: Bool) throws {
         if messageDigest != nil, identityDigests[key] == nil {
             guard identityDigests.count < identityCapacity else { throw Error.capacityExceeded }
         }
@@ -552,13 +624,21 @@ public actor AscendantTurnUpdateStore {
         }
     }
 
-    private static func admission(for entry: Entry) -> TurnLedgerAdmission {
+    private static func admission(for entry: Entry, key: Key) -> TurnLedgerAdmission {
+        let insertionUnknown = AscendantTurnError.insertionUnknown(
+            timelineID: key.timelineID, clientTurnID: key.clientTurnID
+        )
         switch entry.outcome {
         case nil:
-            return entry.recovered ? .unavailable : .inFlight
+            // A recovered start without an outcome may have lost the prompt
+            // response with the process. It never dispatches again.
+            return entry.recovered ? .replay(.failed(insertionUnknown)) : .inFlight
         case let .live(outcome)?:
             return .replay(outcome)
         case let .recovered(journaled)?:
+            if !journaled.succeeded, journaled.reasonCode == insertionUnknown.reasonCode {
+                return .replay(.failed(insertionUnknown))
+            }
             guard journaled.succeeded, !journaled.truncated, let text = journaled.text else {
                 return .unavailable
             }
@@ -571,8 +651,12 @@ public actor AscendantTurnUpdateStore {
         case let .succeeded(text):
             let bounded = GnosticWirePayload.prefix(text, maximumBytes: maxJournaledTextBytes)
             return TurnJournalOutcome(succeeded: true, text: bounded, truncated: bounded != text)
-        case .failed:
-            return TurnJournalOutcome(succeeded: false, text: nil, truncated: false)
+        case let .failed(error):
+            // Only the reason that changes what a retry may do is kept, so a
+            // restarted ledger still answers insertionUnknown without a rerun.
+            var keptReason: String?
+            if case .insertionUnknown = error { keptReason = error.reasonCode }
+            return TurnJournalOutcome(succeeded: false, text: nil, truncated: false, reasonCode: keptReason)
         }
     }
 
@@ -935,22 +1019,17 @@ public actor AscendantTurnUpdateStore {
         }
     }
 
-    /// The one FNV-1a fingerprint of an identified Turn's message. It is
-    /// process-stable and never stores the message itself.
-    static func messageDigest(_ message: String) -> UInt64 {
-        var digest: UInt64 = 14_695_981_039_346_656_037
-        for byte in message.utf8 {
-            digest ^= UInt64(byte)
-            digest &*= 1_099_511_628_211
-        }
-        return digest
-    }
-
-    private static func timelineAdmissionDigest(_ message: String) -> String {
-        TimelineTurnEnvelope.computeAdmissionDigest(
+    /// The admission digest of an identified Turn's message: the SHA-256 of the
+    /// RFC 8785 canonical form of its prompt content and the ACP version tag
+    /// (ADR 0021 Turn semantics). It is process-stable and never stores the
+    /// message itself.
+    static func messageDigest(_ message: String) -> String {
+        // A text prompt always canonicalizes, so the fallback is unreachable.
+        // It stays deterministic rather than trapping on an impossible failure.
+        (try? TurnAdmissionDigest.hex(
             prompt: timelineAdmissionPrompt(message),
-            acpVersionTag: "legacy-text-v1"
-        )
+            acpVersionTag: ACPv2Protocol.versionTag
+        )) ?? SHA256.hexDigest(message)
     }
 
     private static func timelineAdmissionPrompt(_ message: String) -> [ACPContentBlock] {

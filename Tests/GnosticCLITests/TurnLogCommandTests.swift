@@ -69,7 +69,7 @@ struct TurnLogCommandTests {
     func groupsOneTurn() throws {
         let (log, url) = makeLog(in: try makeFolder())
         let timelineID = UUID()
-        try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .started(messageDigest: 42)))
+        try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .started(messageDigest: "digest-42")))
         try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .update(
             AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")
         )))
@@ -87,7 +87,7 @@ struct TurnLogCommandTests {
         #expect(turn.events == 4)
         #expect(turn.updates == 2)
         #expect(turn.finished)
-        #expect(turn.messageDigest == 42)
+        #expect(turn.messageDigest == "digest-42")
         #expect(turn.lastSequence == 2)
         #expect(turn.terminal == true)
         #expect(turn.startedAt != nil)
@@ -112,7 +112,7 @@ struct TurnLogCommandTests {
         let timelineID = UUID()
         try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .checkpoint(
             TurnJournalCheckpoint(
-                messageDigest: 9,
+                messageDigest: "digest-9",
                 nextSequence: 3,
                 updates: [
                     AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi"),
@@ -131,7 +131,7 @@ struct TurnLogCommandTests {
         #expect(turn.events == 1)
         #expect(turn.updates == 2)
         #expect(turn.finished)
-        #expect(turn.messageDigest == 9)
+        #expect(turn.messageDigest == "digest-9")
         #expect(turn.lastSequence == 2)
         #expect(turn.terminal == true)
         #expect(report.humanDescription().contains("compacted"))
@@ -140,7 +140,7 @@ struct TurnLogCommandTests {
     @Test("a torn tail is reported and the file is left unchanged")
     func tornTailReported() throws {
         let (log, url) = makeLog(in: try makeFolder())
-        try log.append(TurnEventRecord(timelineID: UUID(), clientTurnID: "turn-1", event: .started(messageDigest: 7)))
+        try log.append(TurnEventRecord(timelineID: UUID(), clientTurnID: "turn-1", event: .started(messageDigest: "digest-7")))
         let tornSize = try appendTornFragment(to: url)
 
         let report = TurnLogReport(scan: try log.scan(), path: url.path, exists: true)
@@ -180,7 +180,7 @@ struct TurnLogCommandTests {
     @Test("JSON output carries the stable report keys")
     func jsonShape() throws {
         let (log, url) = makeLog(in: try makeFolder())
-        try log.append(TurnEventRecord(timelineID: UUID(), clientTurnID: "turn-1", event: .started(messageDigest: 5)))
+        try log.append(TurnEventRecord(timelineID: UUID(), clientTurnID: "turn-1", event: .started(messageDigest: "digest-5")))
         let report = TurnLogReport(scan: try log.scan(), path: url.path, exists: true)
         let object = try #require(
             try JSONSerialization.jsonObject(with: Data(JSONOutput.encode(report).utf8)) as? [String: Any]
@@ -192,7 +192,7 @@ struct TurnLogCommandTests {
         #expect(object["tail"] == nil)
         let turns = try #require(object["turns"] as? [[String: Any]])
         #expect(turns.first?["clientTurnID"] as? String == "turn-1")
-        #expect((turns.first?["messageDigest"] as? NSNumber)?.uint64Value == 5)
+        #expect(turns.first?["messageDigest"] as? String == "digest-5")
     }
 
     private func fileSize(_ url: URL) throws -> UInt64 {

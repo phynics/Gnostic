@@ -436,7 +436,12 @@ public final class RemoteTurnClient: Sendable {
             case .providerMismatch: RemoteTurnClientError.providerMismatch
             case let .missingCapability(capability): RemoteTurnClientError.missingCapability(capability)
             case let .callFailed(reasonCode, _, _):
-                reasonCode == "promptTooLarge" ? RemoteTurnClientError.promptTooLarge : error
+                switch reasonCode {
+                case "promptTooLarge": RemoteTurnClientError.promptTooLarge
+                case "timelineBusy": RemoteTurnClientError.timelineBusy
+                case "insertionUnknown": RemoteTurnClientError.insertionUnknown
+                default: error
+                }
             }
         case let error as GnosticWirePayload.Error:
             if case .tooLarge = error { RemoteTurnClientError.promptTooLarge } else { error }

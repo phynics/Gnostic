@@ -6,7 +6,7 @@ import GnosticProtocol
 /// The durable events that make up one identified Turn's lifecycle.
 public enum TurnEventKind: Codable, Sendable, Equatable {
     /// A Turn began. The digest identifies the prompt without persisting it.
-    case started(messageDigest: UInt64?)
+    case started(messageDigest: String?)
     /// One bounded update was emitted.
     case update(AscendantTurnUpdate)
     /// The Turn's retention slot was released.
@@ -24,16 +24,20 @@ public enum TurnEventKind: Codable, Sendable, Equatable {
 /// serve can replay it. `truncated` records that the full text exceeded that
 /// bound, and a unary replay then reports `replayUnavailable` instead of
 /// returning a partial answer. A failed Turn stores no detail; recovery
-/// reports it as unavailable rather than widening the journal.
+/// reports it as unavailable rather than widening the journal. The one
+/// exception is `reasonCode`: a Turn that ended `insertionUnknown` keeps it, so
+/// a restarted serve answers the retry with that state instead of unavailable.
 public struct TurnJournalOutcome: Codable, Sendable, Equatable {
     public let succeeded: Bool
     public let text: String?
     public let truncated: Bool
+    public let reasonCode: String?
 
-    public init(succeeded: Bool, text: String?, truncated: Bool) {
+    public init(succeeded: Bool, text: String?, truncated: Bool, reasonCode: String? = nil) {
         self.succeeded = succeeded
         self.text = text
         self.truncated = truncated
+        self.reasonCode = reasonCode
     }
 }
 
@@ -43,7 +47,7 @@ public struct TurnJournalOutcome: Codable, Sendable, Equatable {
 /// from the `started`/`update`/`finished` records it supersedes, so replacing
 /// the journal with checkpoints does not change the recovered ledger.
 public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
-    public let messageDigest: UInt64?
+    public let messageDigest: String?
     public let nextSequence: Int
     public let updates: [AscendantTurnUpdate]
     public let compacted: Bool
@@ -53,7 +57,7 @@ public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
     public let outcome: TurnJournalOutcome?
 
     public init(
-        messageDigest: UInt64?,
+        messageDigest: String?,
         nextSequence: Int,
         updates: [AscendantTurnUpdate],
         compacted: Bool,

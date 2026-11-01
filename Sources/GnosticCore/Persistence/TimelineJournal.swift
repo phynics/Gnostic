@@ -634,7 +634,7 @@ public actor TimelineJournal {
             guard (try? GnosticWirePayload.canonicalClientTurnID(clientTurnID)) == clientTurnID,
                   turnSequence > 0,
                   !acpVersionTag.isEmpty,
-                  TimelineTurnEnvelope.computeAdmissionDigest(prompt: prompt, acpVersionTag: acpVersionTag) == digest else {
+                  (try? TurnAdmissionDigest.hex(prompt: prompt, acpVersionTag: acpVersionTag)) == digest else {
                 return "Turn admission has an invalid identity, digest, or sequence"
             }
         case let .rawACPUpdate(sessionID, _, _):
