@@ -1217,9 +1217,9 @@ struct TwoNodeMQTTIntegrationTests {
                 )
                 manifest.ascendants.append(.init(
                     id: runtimeID,
-                    kind: manifest.ascendants[0].kind,
                     name: "Additional Runtime \(index)",
                     defaultTimelineID: additionalTimelineID,
+                    kind: manifest.ascendants[0].kind,
                     backend: backend
                 ))
                 manifest.timelines.append(.init(
