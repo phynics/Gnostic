@@ -165,6 +165,54 @@ struct TurnAdmissionJournalTests {
         #expect(await !dispatched.value, "A retry in a quarantined Timeline dispatched an admitted Turn.")
     }
 
+    @Test("a Turn on a quarantined Timeline fails with a distinct non-retryable code that names no path, body, or secret")
+    func quarantinedTimelineFailsWithTimelineQuarantined() async throws {
+        let directory = makeDirectory("turn-admission-quarantine-public-tests")
+        let timelineID = UUID()
+        let journals = TimelineJournalStore(directoryURL: directory)
+        let coordinator = AscendantTurnCoordinator(ledger: AscendantTurnUpdateStore(timelineJournals: journals))
+        _ = try await coordinator.execute(
+            AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+            ascendantID: UUID()
+        ) { "first answer" }
+        let url = TimelineJournalStore.fileURL(for: timelineID, in: directory)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("0000000000000000 1700000000000 {\"invalid\":true}\n".utf8))
+        try handle.close()
+
+        let restarted = AscendantTurnCoordinator(
+            ledger: AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: directory))
+        )
+        let dispatched = Flag()
+        let provider = AscendantTurnProvider(execute: { request in
+            try await restarted.execute(request, ascendantID: UUID()) {
+                await dispatched.set(true)
+                return "must not run"
+            }
+        })
+        let request = AscendantTurnRequest(
+            message: "sentinel-turn-body", timelineID: timelineID, clientTurnID: "after-corruption"
+        )
+        let response = try await provider.handle(
+            operation: AscendantTurnProvider.turnOperation,
+            parameters: String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+        )
+
+        guard case let .failure(code, message, _) = response else {
+            Issue.record("A quarantined Timeline did not fail the Turn: \(response).")
+            return
+        }
+        let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
+        #expect(failure.reasonCode == "timelineQuarantined")
+        #expect(code == failure.statusCode)
+        #expect(!failure.retryable)
+        for leak in [directory.path, "timeline-", ".jsonl", "sentinel-turn-body", "after-corruption", "checksum"] {
+            #expect(!message.contains(leak), "The public failure leaks \(leak).")
+        }
+        #expect(await !dispatched.value, "A quarantined Timeline dispatched a Turn.")
+    }
+
     @Test("a crash that tears the admission frame leaves the Turn unadmitted, and the earlier Turn stays insertionUnknown")
     func tornAdmissionFrameIsNotAdmitted() async throws {
         let directory = makeDirectory("turn-admission-torn-tests")

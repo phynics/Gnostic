@@ -409,6 +409,15 @@ public final class NodeRuntime {
                 message: message.map { $0 + disclosure }
             )
         }()
+        let journal: DiagnosticsTimelineJournal?
+        switch try await timelineJournals?.journal(for: timelineID).status() {
+        case .writable?: journal = DiagnosticsTimelineJournal(state: .writable)
+        case .quarantined?:
+            journal = DiagnosticsTimelineJournal(
+                state: .quarantined, message: TimelineJournalError.quarantinedPublicMessage
+            )
+        case nil: journal = nil
+        }
         return TimelineDiagnostics(
             timeline: DiagnosticsTimelineSummary(
                 id: record.id,
@@ -416,7 +425,8 @@ public final class NodeRuntime {
                 operatingAscendantID: record.operatorID
             ),
             workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems)),
-            sessionRecovery: sessionRecovery
+            sessionRecovery: sessionRecovery,
+            journal: journal
         )
     }
 
@@ -441,19 +451,6 @@ public final class NodeRuntime {
 
     public func timeline(id: UUID) async -> AscendantRuntimeTimeline? {
         await registry.timeline(id: id)?.timeline
-    }
-
-    /// Returns the write/read status and any quarantine diagnostic for a
-    /// Timeline's authoritative journal.
-    public func timelineJournalStatus(for timelineID: UUID) async throws -> TimelineJournalAvailability {
-        guard await registry.timeline(id: timelineID) != nil else {
-            throw NodeRuntimeError.missingTimeline(timelineID)
-        }
-        guard let timelineJournals else {
-            throw TimelineJournalError.quarantined("no durable Timeline journal directory is configured")
-        }
-        let journal = try await timelineJournals.journal(for: timelineID)
-        return await journal.status()
     }
 
     /// Returns the Ascendant selected to operate a timeline, including

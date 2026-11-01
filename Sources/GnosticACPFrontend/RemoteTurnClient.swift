@@ -440,6 +440,7 @@ public final class RemoteTurnClient: Sendable {
                 case "promptTooLarge": RemoteTurnClientError.promptTooLarge
                 case "timelineBusy": RemoteTurnClientError.timelineBusy
                 case "insertionUnknown": RemoteTurnClientError.insertionUnknown
+                case "timelineQuarantined": RemoteTurnClientError.timelineQuarantined
                 default: error
                 }
             }

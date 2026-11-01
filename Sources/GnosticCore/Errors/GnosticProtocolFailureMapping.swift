@@ -43,6 +43,19 @@ extension GnosticProtocol {
                 retryable: false
             )
         }
+        // A quarantined journal admits no Turn (ADR 0021). The reason string
+        // can name a path or frame, so the wire carries only the fixed text.
+        if case .quarantined? = error as? TimelineJournalError {
+            return GnosticPublicFailure(
+                code: 423,
+                message: failureMessage(
+                    reasonCode: "timelineQuarantined",
+                    message: TimelineJournalError.quarantinedPublicMessage,
+                    statusCode: 423
+                ),
+                retryable: false
+            )
+        }
         if let error = error as? DiscoveredWorkspaceAttachmentError {
             switch error {
             case .approvalRequired:
