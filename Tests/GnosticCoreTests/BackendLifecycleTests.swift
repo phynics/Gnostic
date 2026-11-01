@@ -738,6 +738,13 @@ struct BackendLifecycleTests {
             await runtime.shutdown()
             await backendProbe.markShutdownFinished()
         }
+        // Shutdown must close the lifetime before the factory resumes. Otherwise
+        // the candidate can pass every generation check, be installed, and be
+        // retired by `retireAll`, which waits on the deadline that this test
+        // releases only after shutdown finishes.
+        try await withTestTimeout {
+            while await runtime.isRunning, !Task.isCancelled { await Task.yield() }
+        }
         await backendProbe.releaseSecondFactory()
         try await withTestTimeout { await backendProbe.waitUntilSecondShutdownStarted() }
         try await withTestTimeout { await backendProbe.waitUntilShutdownFinished() }
