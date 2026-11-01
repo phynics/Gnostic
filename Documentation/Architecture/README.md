@@ -113,8 +113,8 @@ Coaty vocabulary that `GnosticCore` still publishes through
 `GnosticProtocol` publishes through
 `Sources/GnosticProtocol/CoatyObjectModel.swift`. `GNO-EXC-0003` covers the
 backend sending `session/prompt` without an observed `idle`, which ADR 0019
-section 2 still requires. It is owned by issue #681 and takes effect after its
-independent review and owner approval. Every exception must have a unique
+section 2 still requires. The owner accepted it in decision D21 on issue #681,
+and issue #687 owns it until it is retired. Every exception must have a unique
 `id`, the violated `rule`, an exact `scope`, a `rationale`, an owning `issue`,
 an `owner`, and `reconsiderWhen` guidance. Scope names concrete files,
 packages, targets, or interfaces; wildcard target-wide exceptions are not
