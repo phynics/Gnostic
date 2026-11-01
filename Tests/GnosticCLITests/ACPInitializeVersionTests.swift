@@ -60,6 +60,29 @@ struct ACPInitializeVersionTests {
         #expect(await session.currentState() == .awaitingInitialize)
     }
 
+    @Test(
+        "an initialize without a usable protocolVersion is invalid params and never reaches the Node",
+        arguments: [
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":null}}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"two"}}"#,
+        ]
+    )
+    func rejectsMissingVersion(frame: String) async throws {
+        let probe = Probe()
+        let wire = ACPWireCapture()
+        let session = session(probe, wire)
+
+        await session.receive(Data(frame.utf8 + [0x0A]))
+
+        let response = try #require(await wire.response(id: 1, timeout: .seconds(5)))
+        #expect(response.result == nil)
+        #expect(response.error?.code == JSONRPCErrorCode.invalidParams.rawValue)
+        #expect(probe.initializations == 0, "A client without a protocolVersion reached Runtime resolution.")
+        #expect(await session.currentState() == .awaitingInitialize)
+    }
+
     @Test("a v1 initialize leaves the session open for a v2 initialize")
     func v2FollowsARejectedV1() async throws {
         let probe = Probe()
