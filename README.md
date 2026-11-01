@@ -137,9 +137,14 @@ timeline` report backend health and quarantine, in-flight and completed Turn
 counts, Workspace effective status, and observer drain statistics. They never
 print a Turn body or a secret value. `gnostic inspect events` renders the
 bounded raw wire-event stream as envelopes with a payload byte count; it never
-prints the payload. Every command supports `--format json`. Every `inspect`
-command also accepts `--config PATH`, which resolves the broker from the same
-manifest that `gnostic serve --config PATH` reads.
+prints the payload. `gnostic inspect timeline` also prints the Timeline's latest
+Session recovery state (`live`, `resumable`, `lost`, or `ambiguous`), whether a
+prior Session's context was lost, and a payload-free explanation. A `live` state
+is the last state the journal confirmed, not a verified Runtime connection; an
+`ambiguous` state blocks prompts and Session creation for that Timeline. Every
+command supports `--format json`. Every `inspect` command also accepts
+`--config PATH`, which resolves the broker from the same manifest that
+`gnostic serve --config PATH` reads.
 
 ## Run experiments
 
