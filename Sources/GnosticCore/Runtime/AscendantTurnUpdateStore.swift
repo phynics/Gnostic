@@ -190,6 +190,11 @@ public actor AscendantTurnUpdateStore {
     /// The most assistant text a journaled outcome keeps. It matches the
     /// bounded update payload, so a longer outcome replays as unavailable.
     private static let maxJournaledTextBytes = 800
+    /// The most text one update holds. Longer assistant text continues in the
+    /// next update, so this bounds an update and not the text a client receives.
+    private static let maxAssistantTextBytes = 800
+    /// Ends text that retention cut, so a client can tell it is incomplete.
+    private static let truncationMarker = "…[truncated]"
 
     func events() -> AsyncStream<Event> { eventStream }
 
@@ -733,6 +738,45 @@ public actor AscendantTurnUpdateStore {
         retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) throws -> AscendantTurnUpdate {
+        let limit = min(maxBytes / 2, 1_200)
+        // Assistant text longer than one update continues in the next one, so a
+        // client assembles all of it. Other text fields are diagnostics.
+        if kind == AscendantTurnUpdateKind.assistantText.rawValue, !terminal, toolState == nil,
+           permissionState == nil, let text {
+            let pieces = Self.assistantTextPieces(text, kind: kind, maxBytes: limit)
+            if pieces.count > 1 {
+                var last: AscendantTurnUpdate?
+                for piece in pieces {
+                    last = try appendBounded(
+                        timelineID: timelineID, clientTurnID: clientTurnID, kind: kind, text: piece,
+                        toolState: nil, permissionState: nil, terminal: false, reasonCode: reasonCode,
+                        statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor, maxBytes: limit
+                    )
+                }
+                if let last { return last }
+            }
+        }
+        return try appendBounded(
+            timelineID: timelineID, clientTurnID: clientTurnID, kind: kind, text: text,
+            toolState: toolState, permissionState: permissionState, terminal: terminal, reasonCode: reasonCode,
+            statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor, maxBytes: limit
+        )
+    }
+
+    private func appendBounded(
+        timelineID: UUID,
+        clientTurnID: ValidatedClientTurnID,
+        kind: String,
+        text: String?,
+        toolState: AscendantToolState?,
+        permissionState: AscendantPermissionState?,
+        terminal: Bool,
+        reasonCode: String?,
+        statusCode: Int?,
+        retryable: Bool?,
+        protocolMajor: Int,
+        maxBytes limit: Int
+    ) throws -> AscendantTurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         if entries[key] == nil {
             evictFinishedEntriesIfNeeded(for: key)
@@ -755,7 +799,7 @@ public actor AscendantTurnUpdateStore {
                 retryable: retryable,
                 protocolMajor: protocolMajor
             ),
-            maxBytes: min(maxBytes / 2, 1_200)
+            maxBytes: limit
         )
         apply(update, into: &entry)
         entries[key] = entry
@@ -917,8 +961,58 @@ public actor AscendantTurnUpdateStore {
         return total
     }
 
+    /// Splits assistant text on scalar boundaries into pieces that each survive
+    /// ``bounded(_:maxBytes:)`` whole. JSON escaping counts: 800 quotes encode to
+    /// 1,600 bytes, so a piece can hold fewer than `maxAssistantTextBytes` bytes.
+    private static func assistantTextPieces(_ text: String, kind: String, maxBytes: Int) -> [String] {
+        guard text.utf8.count > maxAssistantTextBytes || !fits(text, kind: kind, maxBytes: maxBytes) else {
+            return [text]
+        }
+        var pieces: [String] = []
+        var rest = text.unicodeScalars[...]
+        while !rest.isEmpty {
+            var end = rest.startIndex
+            var bytes = 0
+            while end != rest.endIndex {
+                let width = UTF8.width(rest[end])
+                guard bytes + width <= maxAssistantTextBytes else { break }
+                bytes += width
+                end = rest.index(after: end)
+            }
+            var window = rest[..<end]
+            while window.count > 1, !fits(String(window), kind: kind, maxBytes: maxBytes) {
+                window = window.prefix(window.count / 2)
+            }
+            pieces.append(String(window))
+            rest = rest[window.endIndex...]
+        }
+        return pieces
+    }
+
+    private static func fits(_ text: String, kind: String, maxBytes: Int) -> Bool {
+        // The sequence is set high so a piece still fits once a real one is assigned.
+        encodedSize(AscendantTurnUpdate(sequence: Int(Int32.max), kind: kind, text: text)) <= maxBytes
+    }
+
+    /// `text` within `maximumBytes`. A retention snapshot that loses text says so.
+    private static func clipped(_ text: String, maximumBytes: Int, kind: String) -> String {
+        guard text.utf8.count > maximumBytes,
+              kind == AscendantTurnUpdateKind.assistantTextSnapshot.rawValue else {
+            return GnosticWirePayload.prefix(text, maximumBytes: maximumBytes)
+        }
+        return markedPrefix(text, maximumBytes: maximumBytes)
+    }
+
+    /// A prefix ending in ``truncationMarker``, within `maximumBytes` in total.
+    private static func markedPrefix(_ text: String, maximumBytes: Int) -> String {
+        guard text.utf8.count > maximumBytes else { return text }
+        let room = maximumBytes - truncationMarker.utf8.count
+        guard room > 0 else { return GnosticWirePayload.prefix(truncationMarker, maximumBytes: maximumBytes) }
+        return GnosticWirePayload.prefix(text, maximumBytes: room) + truncationMarker
+    }
+
     private static func bounded(_ update: AscendantTurnUpdate, maxBytes: Int) -> AscendantTurnUpdate {
-        var text = update.text.map { GnosticWirePayload.prefix($0, maximumBytes: 800) }
+        var text = update.text.map { clipped($0, maximumBytes: maxAssistantTextBytes, kind: update.kind) }
         let toolState = update.toolState.map(bounded)
         var toolStates = update.toolStates.map(bounded)
         let permissionState = update.permissionState.map(bounded)
@@ -933,7 +1027,8 @@ public actor AscendantTurnUpdateStore {
             retryable: update.retryable
         )
         while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
-            text = GnosticWirePayload.prefix(current, maximumBytes: max(1, current.utf8.count / 2))
+            // A single byte halves to nothing, so this loop always ends.
+            text = clipped(current, maximumBytes: current.utf8.count / 2, kind: update.kind)
             candidate = AscendantTurnUpdate(
                 sequence: update.sequence, kind: kind,
                 text: text,
@@ -987,7 +1082,7 @@ public actor AscendantTurnUpdateStore {
             toolCallID: GnosticWirePayload.boundedIdentifier(state.toolCallID),
             title: state.title.map { GnosticWirePayload.boundedLabel($0) },
             status: GnosticWirePayload.boundedIdentifier(state.status),
-            content: state.content.map { GnosticWirePayload.prefix($0, maximumBytes: 256) }
+            content: state.content.map { markedPrefix($0, maximumBytes: 256) }
         )
     }
 

@@ -30,7 +30,10 @@ final class ACPFrontendHarness {
     ///
     /// - Parameter environment: Extra environment for the fixture Runtime process.
     /// - Returns: `nil`, after recording an issue, when no session could be opened.
-    static func start(environment extra: [String: String] = [:]) async throws -> ACPFrontendHarness? {
+    static func start(
+        environment extra: [String: String] = [:],
+        promptTimeout: Duration? = nil
+    ) async throws -> ACPFrontendHarness? {
         let fixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("gnostic-acp-frontend-\(UUID().uuidString)", isDirectory: true)
@@ -77,7 +80,7 @@ final class ACPFrontendHarness {
             timelineJournalDirectory: scratch.appendingPathComponent("timeline-journals")
         )
         try await runtime.start()
-        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace)
+        let client = try RemoteTurnClient(host: "127.0.0.1", port: 1883, namespace: namespace, promptTimeout: promptTimeout)
         try await client.connect()
         let registry = ACPSessionRegistry(url: scratch.appendingPathComponent("acp-sessions.json"))
         let wire = ACPWireCapture()

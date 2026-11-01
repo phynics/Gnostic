@@ -445,31 +445,58 @@ final class ACPDispatcher: Sendable {
         var lastSequence = 0
         var endedUnspecified = false
 
+        func deliver(_ update: AscendantTurnUpdate) async throws {
+            announce()
+            publishUpdate(
+                sessionID: record.id,
+                turnID: turnID,
+                update: update,
+                replayed: false
+            )
+            try await handlePermissionUpdate(
+                update,
+                sessionID: record.id,
+                timelineID: record.timelineID,
+                turnID: turnID
+            )
+            lastSequence = max(lastSequence, update.sequence)
+            endedUnspecified = endedUnspecified || Self.endedUnspecified([update])
+        }
+
+        // Live events are best effort: a burst can overflow a buffer, and a
+        // Turn can complete with updates still in transit. Replay is the
+        // authoritative record, so it fills what the live path missed. A
+        // failed replay leaves the gap, because the owner may be gone.
+        func catchUp() async throws {
+            while let page = try? await client.replay(
+                timelineID: record.timelineID,
+                clientTurnID: turnID,
+                afterSequence: lastSequence,
+                providerID: providerID
+            ), !page.updates.isEmpty {
+                for update in page.updates where update.sequence > lastSequence {
+                    try await deliver(update)
+                }
+                guard page.nextSequence != nil else { return }
+            }
+        }
+
         while true {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(40))
 
-            for update in await inbox.drain(afterSequence: lastSequence) {
-                announce()
-                publishUpdate(
-                    sessionID: record.id,
-                    turnID: turnID,
-                    update: update,
-                    replayed: false
-                )
-                try await handlePermissionUpdate(
-                    update,
-                    sessionID: record.id,
-                    timelineID: record.timelineID,
-                    turnID: turnID
-                )
-                lastSequence = max(lastSequence, update.sequence)
-                endedUnspecified = endedUnspecified || Self.endedUnspecified([update])
+            for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
+                if update.sequence > lastSequence + 1 { try await catchUp() }
+                if update.sequence > lastSequence { try await deliver(update) }
             }
 
             switch await completion.value() {
-            case .completed(let result): return (result, lastSequence, endedUnspecified)
-            case .failed(let failure): throw failure.thrown
+            case .completed(let result):
+                try await catchUp()
+                return (result, lastSequence, endedUnspecified)
+            case .failed(let failure):
+                try await catchUp()
+                throw failure.thrown
             case .cancelled: throw CancellationError()
             case nil: break
             }
