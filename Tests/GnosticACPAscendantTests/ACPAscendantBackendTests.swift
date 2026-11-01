@@ -3195,6 +3195,75 @@ struct ACPAscendantBackendTests {
         await backend.shutdown()
     }
 
+    @Test("an update after session/cancel does not settle a cancelled Turn")
+    @MainActor
+    func trailingUpdateDoesNotSettleACancelledTurn() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "Trailing update")],
+            cancellationSettleSeconds: 1
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let sink = RecordingUpdateSink()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:trailing-update-ignore-cancel]", clientTurnID: "trailing-1", updates: sink
+        )
+        try await sink.waitForInsertion()
+        #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "trailing-1"))
+
+        // The Runtime answers `session/cancel` with an update and never reports
+        // `idle`. It did not confirm that it stopped, and the next Turn must not
+        // start beside its work, so the Turn does not end `cancelled`.
+        let outcome = await settle(turn, seconds: 6)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+            Issue.record("Expected a lifecycleUnusable end within the bound, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        await backend.shutdown()
+    }
+
+    @Test("a Turn that reaches the prompt timeout without idle retires the backend")
+    @MainActor
+    func promptTimeoutWithoutIdleRetiresTheBackend() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let wireLog = stateHome.url.appendingPathComponent("wire.log")
+        let backend = try backend(
+            settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
+            timelines: [.init(id: timelineID, title: "No idle")],
+            promptTimeoutSeconds: 1
+        )
+        let coordinator = AscendantTurnCoordinator()
+        let turn = coordinatedTurn(
+            coordinator, backend: backend, timelineID: timelineID,
+            message: "[fixture:ignore-cancel]", clientTurnID: "no-idle-1", updates: RecordingUpdateSink()
+        )
+        let outcome = await settle(turn, seconds: 6)
+        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+            Issue.record("Expected a lifecycleUnusable end at the prompt timeout, observed \(String(describing: outcome)).")
+            await backend.shutdown()
+            return
+        }
+        // The Runtime may still be working, so the next Turn meets the retired
+        // backend and nothing reaches the Runtime.
+        let events = wireEvents(wireLog)
+        let next = await nextTurnError(coordinator, backend: backend, timelineID: timelineID)
+        guard case .lifecycleUnusable? = next else {
+            Issue.record("Expected the next Turn to meet the retired backend, observed \(String(describing: next)).")
+            await backend.shutdown()
+            return
+        }
+        #expect(wireEvents(wireLog) == events)
+        await backend.shutdown()
+    }
+
     @Test("a Runtime that answers the prompt late still gets a full bound to idle after session/cancel")
     @MainActor
     func lateAnswerGetsAFreshBoundFromSessionCancel() async throws {
@@ -3202,13 +3271,13 @@ struct ACPAscendantBackendTests {
         defer { stateHome.cleanup() }
         let timelineID = UUID()
         let wireLog = stateHome.url.appendingPathComponent("wire.log")
-        // The answer follows the cancel by 1.5 s and the idle follows
-        // `session/cancel` by 1 s: 2.5 s after the cancel, past a 2 s bound that
+        // The answer follows the cancel by 3 s and the idle follows
+        // `session/cancel` by 3 s: 6 s after the cancel, past a 4 s bound that
         // started at the cancel, and inside one that starts at `session/cancel`.
         let backend = try backend(
             settings: fixtureSettings(stateHome: stateHome.url, wireLogFile: wireLog),
             timelines: [.init(id: timelineID, title: "Late answer, late idle")],
-            cancellationSettleSeconds: 2
+            cancellationSettleSeconds: 4
         )
         let coordinator = AscendantTurnCoordinator()
         let sink = RecordingUpdateSink()
@@ -3218,12 +3287,11 @@ struct ACPAscendantBackendTests {
             clientTurnID: "late-answer-1", updates: sink
         )
         // The Runtime's progress reaches the backend while the prompt is still
-        // unanswered. Any update after the cancel ends the Turn, so the cancel
-        // waits until the Runtime has nothing in flight.
+        // unanswered, so the cancel finds the prompt pending.
         try await sink.waitForUpdate()
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "late-answer-1"))
 
-        let outcome = await settle(turn, seconds: 8)
+        let outcome = await settle(turn, seconds: 12)
         guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
             Issue.record("Expected the Runtime's late idle to end the Turn cancelled, observed \(String(describing: outcome)).")
             await backend.shutdown()

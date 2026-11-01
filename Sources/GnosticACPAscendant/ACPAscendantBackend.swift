@@ -643,11 +643,15 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             if let failure = activeTurn.cancellationFailure { throw AscendantBackendError.lifecycleUnusable(failure) }
             if activeTurn.isTurnCancelled { throw AscendantBackendError.cancelled }
             if let streamError = outcome.error { throw streamError }
+            // The Runtime may still be working, and a later Turn must not start
+            // beside that work, so the failure retires the backend.
             guard outcome.idleReported else {
-                throw AscendantBackendError.terminal(.init(
+                let failure = AscendantBackendLifecycleFailure(
                     code: "acpTurnStopped",
                     message: "ACP agent did not report an idle state for the Turn."
-                ))
+                )
+                lifecycleFailure = failure
+                throw AscendantBackendError.lifecycleUnusable(failure)
             }
             if let stopReason = outcome.stopReason {
                 if stopReason == .cancelled { throw AscendantBackendError.cancelled }
@@ -777,6 +781,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
            await connection?.abandonRequest(id: requestID, error: ACPTransportError.timeout) == true {
             return
         }
+        // The Turn may have sent `session/cancel` during that wait, which starts
+        // a fresh bound and cancels this one.
+        guard !Task.isCancelled, !activeTurn.isFinished else { return }
         // The prompt was answered, but `session/cancel` has not gone out. Its
         // bound starts when it does, so this one is extended at most once.
         switch insertion {
@@ -811,6 +818,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         connection = nil
         await transport?.close()
         transport = nil
+        // The closed connection can report no `idle`, so nothing else ends these
+        // Turns.
+        for activeTurn in activeTurns.values { updateRouter.endTurn(sessionID: activeTurn.sessionID) }
         for gateway in workspaceGateways.values { gateway.stop() }
         workspaceGateways.removeAll()
         process = nil
@@ -1928,14 +1938,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         var appendError: (any Error)?
         var seenToolCalls: Set<String> = []
         for await event in events {
-            if await activeTurn.isTurnCancelled {
-                return ForwardOutcome(
-                    text: assistantText,
-                    idleReported: true,
-                    stopReason: .cancelled,
-                    error: appendError
-                )
-            }
             if case let .stateUpdate(state) = event, state.isIdle {
                 return ForwardOutcome(
                     text: assistantText,
@@ -1944,7 +1946,10 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     error: appendError
                 )
             }
-            guard appendError == nil else { continue }
+            // A cancelled Turn ends on `idle` or at its bound. A trailing update
+            // does neither: the Runtime has not stopped, and its later `idle`
+            // must not reach the next Turn.
+            guard appendError == nil, await !activeTurn.isTurnCancelled else { continue }
             guard let update = backendUpdate(
                 for: event,
                 assistantText: &assistantText,
