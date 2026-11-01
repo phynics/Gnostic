@@ -83,6 +83,51 @@ struct InspectDiagnosticsRendererTests {
         #expect(timelineText.contains("available  uri=workspace://alpha"))
     }
 
+    private func timelineText(_ recovery: DiagnosticsTimelineSessionRecovery?) -> String {
+        InspectRenderer.timelineText(TimelineDiagnostics(
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            workspaces: [],
+            sessionRecovery: recovery
+        ))
+    }
+
+    @Test("timeline text renders a last-confirmed-live Session without claiming a current connection")
+    func timelineTextRendersLastConfirmedLive() {
+        let message = "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified."
+        let text = timelineText(DiagnosticsTimelineSessionRecovery(state: .live, contextWasLost: false, message: message))
+        #expect(text.contains("session  state=live  contextLost=false\n"))
+        #expect(text.contains("  \(message)\n"))
+    }
+
+    @Test("timeline text renders an ambiguous recovery that blocks prompts")
+    func timelineTextRendersAmbiguousRecovery() {
+        let message = "The Runtime Session outcome is ambiguous. Gnostic blocks prompts and Session creation for this Timeline."
+        let text = timelineText(DiagnosticsTimelineSessionRecovery(state: .ambiguous, contextWasLost: false, message: message))
+        #expect(text.contains("session  state=ambiguous  contextLost=false\n"))
+        #expect(text.contains("  \(message)\n"))
+    }
+
+    @Test("timeline text discloses prior context loss next to a live Session")
+    func timelineTextRendersPriorContextLoss() {
+        let message = "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified. A prior Runtime Session was lost; its context was not reconstructed."
+        let text = timelineText(DiagnosticsTimelineSessionRecovery(state: .live, contextWasLost: true, message: message))
+        #expect(text.contains("session  state=live  contextLost=true\n"))
+        #expect(text.contains("context was not reconstructed"))
+    }
+
+    @Test("timeline text renders a lost Session")
+    func timelineTextRendersLostSession() {
+        let message = "A prior Runtime Session was definitively lost. Gnostic did not reconstruct its context in a replacement Session."
+        let text = timelineText(DiagnosticsTimelineSessionRecovery(state: .lost, contextWasLost: true, message: message))
+        #expect(text.contains("session  state=lost  contextLost=true\n"))
+        #expect(text.contains("  \(message)\n"))
+    }
+
+    @Test("timeline text omits the Session line when no recovery is recorded")
+    func timelineTextOmitsAbsentRecovery() {
+        #expect(!timelineText(nil).contains("session  "))
+    }
+
     @Test("events never render the raw payload, only its byte count")
     func eventsNeverRenderPayload() throws {
         let secret = "sk-live-SUPERSECRET"

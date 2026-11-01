@@ -1064,6 +1064,66 @@ struct BackendLifecycleTests {
         #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified.")
     }
 
+    @Test("diagnostics disclose a prior context loss next to a journaled live Session")
+    @MainActor
+    func diagnosticsDiscloseContextLossBesideLiveSession() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000375")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000376")!
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000377")!
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("journaled-lost-then-live-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let nodeJournalDirectory = stateDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let journals = TimelineJournalStore(directoryURL: nodeJournalDirectory)
+        let journalRecorder = TimelineJournalRecorder(journals: journals)
+        try await journals.ensureTimelineCreated(
+            timelineID: timelineID,
+            title: "Lost then live Session",
+            runtimeInstanceID: ascendantID,
+            attachments: []
+        )
+        try await journalRecorder.appendSessionTransition(
+            timelineID: timelineID,
+            sessionID: "lost-runtime-session",
+            runtimeInstanceID: ascendantID,
+            state: .lost,
+            projectKind: nil,
+            cwd: "/original/project"
+        )
+        try await journalRecorder.appendSessionTransition(
+            timelineID: timelineID,
+            sessionID: "previous-runtime-session",
+            runtimeInstanceID: ascendantID,
+            state: .live,
+            projectKind: nil,
+            cwd: "/original/project"
+        )
+
+        let probe = LifecycleBackendProbe()
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, _, timelines in
+            LifecycleFixtureBackend(ascendant: ascendant, timelines: timelines, probe: probe, outcome: .success)
+        }
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "journaled-lost-then-live-diagnostics"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+            timelines: [.init(id: timelineID, title: "Lost then live Session", operatingAscendantID: ascendantID)]
+        )
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: stateDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
+        #expect(timeline.sessionRecovery?.state == .live)
+        #expect(timeline.sessionRecovery?.contextWasLost == true)
+        #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified. A prior Runtime Session was lost; its context was not reconstructed.")
+    }
+
     @Test("a running Node serves capability-gated diagnostics to a consumer")
     @MainActor
     func runningNodeServesDiagnosticsToConsumer() async throws {

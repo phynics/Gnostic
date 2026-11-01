@@ -397,10 +397,15 @@ public final class NodeRuntime {
             } else {
                 message = nil
             }
+            // A Session that is not itself the lost one still follows the
+            // earlier loss, so the disclosure must not depend on its state.
+            let disclosure = projection.hasLostSession && sessionState != .lost && message != nil
+                ? " A prior Runtime Session was lost; its context was not reconstructed."
+                : ""
             return DiagnosticsTimelineSessionRecovery(
                 state: sessionState,
                 contextWasLost: projection.hasLostSession,
-                message: message
+                message: message.map { $0 + disclosure }
             )
         }()
         return TimelineDiagnostics(

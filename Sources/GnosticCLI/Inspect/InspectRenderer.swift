@@ -175,6 +175,12 @@ public enum InspectRenderer {
         for workspace in snapshot.workspaces {
             lines.append("  \(workspaceSummaryLine(workspace))")
         }
+        if let recovery = snapshot.sessionRecovery {
+            lines.append("session  state=\(recovery.state?.rawValue ?? "-")  contextLost=\(recovery.contextWasLost)")
+            if let message = recovery.message {
+                lines.append("  \(message)")
+            }
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 
