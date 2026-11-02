@@ -472,12 +472,16 @@ struct ACPAscendantBackendTests {
         _ = try await backend.operatedTimelines()
 
         let instance = try #require(backend.runtimeInstanceObject)
-        #expect(instance.runtimeID == backend.identity.id)
+        #expect(instance.runtimeInstanceID == backend.identity.id)
         #expect(instance.runtimeKind == "local-command")
         #expect(instance.runtimeVersion == "1")
         #expect(instance.launchFingerprint == backend.launchSpec.launchFingerprint)
-        #expect(instance.rawCapabilities["futureCapability"] == .object(["values": .array([.int(1), .string("two")])]))
-        #expect(instance.rawCapabilities["session"]?["futureSession"] == .object(["enabled": .bool(true)]))
+        #expect(instance.rawCapabilities["futureCapability"] == .dictionary(["values": .array([.integer(1), .string("two")])]))
+        guard case let .dictionary(session)? = instance.rawCapabilities["session"] else {
+            Issue.record("The Runtime's session capabilities must reach the advertisement.")
+            return
+        }
+        #expect(session["futureSession"] == .dictionary(["enabled": .boolean(true)]))
         let serialized = try JSONEncoder().encode(instance)
         let decoded = try JSONDecoder().decode(GnosticRuntimeInstanceObject.self, from: serialized)
         #expect(decoded.launchFingerprint == instance.launchFingerprint)
@@ -499,7 +503,7 @@ struct ACPAscendantBackendTests {
         let permission = AscendantPermissionCoordinator(updates: updates)
         let workspace = GatewayWorkspaceService(workspaceReference: BackendWorkspaceReference(
             id: workspaceID, uri: "workspace://journal-fault", status: .available,
-            tools: [.init(id: "write", name: "Write", description: "Write", parametersSchema: .object([:]), requiresPermission: true)]
+            tools: [.init(id: "write", name: "Write", description: "Write", parametersSchema: .dictionary([:]), requiresPermission: true)]
         ))
         let registry = AscendantTimelineRegistry(
             ascendantID: runtimeID, privateTimelineID: timelineID,
@@ -545,7 +549,7 @@ struct ACPAscendantBackendTests {
             id: "search",
             name: "Search",
             description: "Search workspace records",
-            parametersSchema: .object(["type": .string("object"), "properties": .object(["query": .object(["type": .string("string")])])]),
+            parametersSchema: .dictionary(["type": .string("object"), "properties": .dictionary(["query": .dictionary(["type": .string("string")])])]),
             requiresPermission: true
         )
         let workspaceService = GatewayWorkspaceService(workspaceReference: BackendWorkspaceReference(
@@ -682,9 +686,9 @@ struct ACPAscendantBackendTests {
                 id: "search",
                 name: "Search",
                 description: "Search records",
-                parametersSchema: .object([
+                parametersSchema: .dictionary([
                     "type": .string("object"),
-                    "properties": .object(["query": .object(["type": .string("string")])]),
+                    "properties": .dictionary(["query": .dictionary(["type": .string("string")])]),
                 ])
             )]
         ))
@@ -1854,7 +1858,7 @@ struct ACPAscendantBackendTests {
         let firstRuntime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         try await firstRuntime.start()
         let runtimeInstance = try #require(firstRuntime.runtimeInstanceObject(for: ascendantID))
-        #expect(runtimeInstance.runtimeID == ascendantID)
+        #expect(runtimeInstance.runtimeInstanceID == ascendantID)
         #expect(runtimeInstance.nodeID == manifest.node.id)
         #expect(runtimeInstance.runtimeKind == "local-command")
         #expect(runtimeInstance.runtimeVersion == "1")

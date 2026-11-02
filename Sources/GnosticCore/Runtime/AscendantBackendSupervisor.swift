@@ -135,7 +135,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     var runtimeInstanceObjects: [GnosticRuntimeInstanceObject] {
         backendIdentities
             .map(advertisedRuntimeInstance(for:))
-            .sorted { $0.runtimeID.uuidString < $1.runtimeID.uuidString }
+            .sorted { $0.runtimeInstanceID.uuidString < $1.runtimeInstanceID.uuidString }
     }
 
     /// The initialized snapshot when the Runtime has connected, otherwise an

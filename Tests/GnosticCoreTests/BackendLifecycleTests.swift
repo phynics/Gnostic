@@ -1001,7 +1001,6 @@ struct BackendLifecycleTests {
 
         let ascendant = try await runtime.diagnosticsAscendantSnapshot(ascendantID)
         #expect(ascendant.runtimeInstance.id == ascendantID)
-        #expect(ascendant.privateTimelineID == timelineID)
 
         let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
         #expect(timeline.timeline.id == timelineID)

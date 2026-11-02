@@ -5,9 +5,8 @@ import Foundation
 /// The raw Axoloty wire family observed by the consumer session's raw event
 /// stream.
 ///
-/// This is diagnostic vocabulary, not a stable automation contract. The cases
-/// name the Axoloty families a consumer session can observe on its own
-/// connection.
+/// The cases are frozen through 0.5.x. They name the Axoloty families a consumer
+/// session can observe on its own connection.
 public enum GnosticRawWireEventKind: String, Codable, Sendable, Equatable, CaseIterable {
     case advertise
     case deadvertise
@@ -24,11 +23,11 @@ public enum GnosticRawWireEventKind: String, Codable, Sendable, Equatable, CaseI
 
 /// A bounded, diagnostic view of one raw wire event seen by a consumer session.
 ///
-/// The envelope carries only Gnostic-owned values. It is intentionally
-/// read-only and best-effort: the session projects events from its existing
-/// bounded runtime streams, drops the oldest event when an observer falls
-/// behind, and never persists or replays them. Do not build automation on
-/// the consumer session's raw event stream; use the typed clients instead.
+/// The envelope carries only Gnostic-owned values. Its signatures are part of the
+/// supported API. Only delivery is best effort: the session projects events from
+/// its existing bounded runtime streams, drops the oldest event when an observer
+/// falls behind, and never persists or replays them. A consumer must not rely on
+/// seeing every event; it can rely on the shape of each event it does see.
 public struct GnosticRawWireEvent: Codable, Sendable, Equatable {
     /// The maximum UTF-8 byte length retained in ``payload``.
     ///

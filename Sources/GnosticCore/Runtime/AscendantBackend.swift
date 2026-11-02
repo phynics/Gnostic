@@ -178,7 +178,7 @@ public struct BackendWorkspaceTool: Sendable, Equatable {
     /// What the tool does, as shown to a model.
     public let description: String
     /// The tool's JSON Schema parameters, when it declares any.
-    public let parametersSchema: ManifestJSONValue?
+    public let parametersSchema: GnosticJSONValue?
     /// Whether invoking the tool requires client approval.
     public let requiresPermission: Bool
 
@@ -190,7 +190,7 @@ public struct BackendWorkspaceTool: Sendable, Equatable {
         id: String,
         name: String,
         description: String,
-        parametersSchema: ManifestJSONValue? = nil,
+        parametersSchema: GnosticJSONValue? = nil,
         requiresPermission: Bool = false
     ) {
         self.id = id
@@ -256,10 +256,10 @@ public struct BackendWorkspaceInvocation: Sendable, Equatable {
     /// The advertised tool identifier.
     public let toolID: String
     /// The tool arguments, matching its declared schema.
-    public let arguments: [String: ManifestJSONValue]
+    public let arguments: [String: GnosticJSONValue]
 
     /// Creates a Workspace tool invocation.
-    public init(timelineID: UUID? = nil, permissionApproved: Bool = false, workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue] = [:]) {
+    public init(timelineID: UUID? = nil, permissionApproved: Bool = false, workspaceID: UUID, toolID: String, arguments: [String: GnosticJSONValue] = [:]) {
         self.timelineID = timelineID
         self.permissionApproved = permissionApproved
         self.workspaceID = workspaceID
@@ -271,7 +271,7 @@ public struct BackendWorkspaceInvocation: Sendable, Equatable {
 /// The result of one Workspace tool invocation.
 public struct BackendWorkspaceResult: Sendable, Equatable {
     /// The structured result, when the tool returned one.
-    public let value: ManifestJSONValue?
+    public let value: GnosticJSONValue?
     /// A human-readable result or failure description.
     public let message: String?
     /// Whether the tool reported success.
@@ -283,7 +283,7 @@ public struct BackendWorkspaceResult: Sendable, Equatable {
     ///   - value: The structured result, when the tool returned one.
     ///   - message: A human-readable result or failure description.
     ///   - isSuccess: Whether the tool reported success.
-    public init(value: ManifestJSONValue? = nil, message: String? = nil, isSuccess: Bool = true) {
+    public init(value: GnosticJSONValue? = nil, message: String? = nil, isSuccess: Bool = true) {
         self.value = value
         self.message = message
         self.isSuccess = isSuccess
@@ -308,7 +308,7 @@ public struct BackendWorkspaceResult: Sendable, Equatable {
     /// The textual output of a successful result.
     public var output: String { value.flatMap(Self.describe) ?? message ?? "" }
 
-    private static func describe(_ value: ManifestJSONValue) -> String? {
+    private static func describe(_ value: GnosticJSONValue) -> String? {
         guard case let .string(text) = value else { return nil }
         return text
     }

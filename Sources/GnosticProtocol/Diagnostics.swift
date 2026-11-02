@@ -204,34 +204,22 @@ public struct RuntimeInstanceDiagnostics: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let runtimeInstance: DiagnosticsRuntimeInstanceSummary
     public let description: String
-    public let backendKind: String?
-    public let backendVersion: String?
     public let capabilities: [String]
-    public let privateTimelineID: UUID
-    public let primaryWorkspaceID: UUID?
     public let timelines: [DiagnosticsTimelineSummary]
 
     public init(
         runtimeInstance: DiagnosticsRuntimeInstanceSummary,
         description: String,
-        backendKind: String?,
-        backendVersion: String?,
         capabilities: [String],
-        privateTimelineID: UUID,
-        primaryWorkspaceID: UUID?,
         timelines: [DiagnosticsTimelineSummary],
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
         self.runtimeInstance = runtimeInstance
         self.description = GnosticWirePayload.boundedLabel(description)
-        self.backendKind = backendKind.map(GnosticWirePayload.boundedLabel)
-        self.backendVersion = backendVersion.map(GnosticWirePayload.boundedLabel)
         self.capabilities = capabilities
             .filter { GnosticCapability.stable.contains($0) || GnosticCapability.isNamespacedExperimental($0) }
             .sorted()
-        self.privateTimelineID = privateTimelineID
-        self.primaryWorkspaceID = primaryWorkspaceID
         self.timelines = timelines
     }
 }

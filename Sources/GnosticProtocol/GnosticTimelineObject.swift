@@ -41,26 +41,45 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
         register(objectType: GnosticObjectType.timeline, with: self)
     }
 
-    /// Creates a network projection without exposing a provider's Timeline type.
+    /// Creates a network projection of a Timeline.
+    ///
+    /// - Parameters:
+    ///   - id: The Gnostic-owned Timeline identifier.
+    ///   - title: The Timeline title. Longer values are truncated to the label bound.
+    ///   - attachedWorkspaceIDs: The attached Workspaces. Longer lists are truncated.
+    ///   - runtimeInstanceID: The Runtime instance that operates the Timeline, if any.
+    ///   - isArchived: Whether the Timeline is archived.
+    ///   - isPrivate: Whether the Timeline is private.
+    ///   - createdAt: When Gnostic created the Timeline.
+    ///   - updatedAt: When the Timeline last changed.
+    ///   - nodeID: The identity of the Node that serves the Timeline.
+    ///   - protocolMajor: The protocol major the advertisement carries.
     public init(
-        timeline: RuntimeInstanceTimeline,
+        id: UUID,
+        title: String,
+        attachedWorkspaceIDs: [UUID] = [],
+        runtimeInstanceID: UUID? = nil,
+        isArchived: Bool = false,
+        isPrivate: Bool = false,
+        createdAt: Date,
+        updatedAt: Date,
         nodeID: UUID? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
-        title = GnosticWirePayload.boundedLabel(timeline.title)
-        isArchived = timeline.isArchived
-        isPrivate = timeline.isPrivate
-        runtimeInstanceID = timeline.runtimeInstanceID
-        attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(timeline.attachedWorkspaceIDs)
+        self.title = GnosticWirePayload.boundedLabel(title)
+        self.isArchived = isArchived
+        self.isPrivate = isPrivate
+        self.runtimeInstanceID = runtimeInstanceID
+        self.attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(attachedWorkspaceIDs)
         self.nodeID = nodeID
-        createdAt = timeline.createdAt
-        updatedAt = timeline.updatedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
         super.init(
             coreType: .coatyObject,
             objectType: Self.objectType,
-            objectId: CoatyUUID(uuidString: timeline.id.uuidString)!,
-            name: GnosticWirePayload.boundedLabel(timeline.title)
+            objectId: CoatyUUID(uuidString: id.uuidString)!,
+            name: GnosticWirePayload.boundedLabel(title)
         )
     }
 

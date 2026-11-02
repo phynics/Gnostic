@@ -140,7 +140,7 @@ public struct GnosticWorkspaceToolResult : Swift::Codable, Swift::Sendable, Swif
   @_Concurrency::MainActor final public func effectiveStatus(workspaceID: FoundationEssentials::UUID) async -> GnosticProtocol::GnosticWorkspaceEffectiveStatus
   @_Concurrency::MainActor final public func attach(workspaceID: FoundationEssentials::UUID, to timelineID: FoundationEssentials::UUID, approved: Swift::Bool, providerID: Swift::String? = nil) async throws
   @_Concurrency::MainActor final public func detach(workspaceID: FoundationEssentials::UUID, from timelineID: FoundationEssentials::UUID, providerID: Swift::String? = nil) async throws
-  @_Concurrency::MainActor final public func invoke(timelineID: FoundationEssentials::UUID, workspaceID: FoundationEssentials::UUID, toolID: Swift::String, arguments: [Swift::String : GnosticProtocol::ManifestJSONValue] = [:], permissionApproved: Swift::Bool = false, providerID: Swift::String? = nil) async throws -> GnosticClient::GnosticWorkspaceToolResult
+  @_Concurrency::MainActor final public func invoke(timelineID: FoundationEssentials::UUID, workspaceID: FoundationEssentials::UUID, toolID: Swift::String, arguments: [Swift::String : GnosticProtocol::GnosticJSONValue] = [:], permissionApproved: Swift::Bool = false, providerID: Swift::String? = nil) async throws -> GnosticClient::GnosticWorkspaceToolResult
   deinit
 }
 public enum GnosticWorkspaceClientError : Swift::Error, Swift::Sendable, Swift::Equatable, FoundationEssentials::LocalizedError {

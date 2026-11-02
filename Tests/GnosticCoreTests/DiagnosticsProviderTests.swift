@@ -78,11 +78,7 @@ struct DiagnosticsProviderTests {
                 quarantined: false
             ),
             description: "Test ascendant",
-            backendKind: "test",
-            backendVersion: "1.0.0",
             capabilities: [GnosticCapability.textTurnInput, GnosticCapability.diagnostics],
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
             timelines: []
         )
         let timeline = TimelineDiagnostics(

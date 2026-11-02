@@ -221,7 +221,7 @@ public final class NodeRuntime {
     public func runtimeInstanceObject(for ascendantID: UUID) -> GnosticRuntimeInstanceObject? {
         guard let instance = backendSupervisor.runtimeInstanceObject(for: ascendantID) else { return nil }
         return GnosticRuntimeInstanceObject(
-            id: instance.runtimeID,
+            id: instance.runtimeInstanceID,
             name: instance.name,
             kind: instance.runtimeKind,
             nodeID: plan.nodeID,
@@ -358,11 +358,7 @@ public final class NodeRuntime {
                 quarantined: backendSupervisor.isQuarantined(identity.id)
             ),
             description: identity.description,
-            backendKind: identity.capabilities.backendKind,
-            backendVersion: identity.capabilities.backendVersion,
             capabilities: identity.capabilities.interoperability.sorted(),
-            privateTimelineID: identity.privateTimelineID,
-            primaryWorkspaceID: identity.primaryWorkspaceID,
             timelines: Array(timelines.prefix(GnosticWirePayload.maximumListItems))
         )
     }
@@ -507,7 +503,7 @@ public final class NodeRuntime {
         return true
     }
 
-    public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+    public func executeWorkspaceTool(workspaceID: UUID, toolID: String, arguments: [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult {
         try await workspaceService.executeLocalTool(workspaceID: workspaceID, toolID: toolID, arguments: arguments)
     }
 

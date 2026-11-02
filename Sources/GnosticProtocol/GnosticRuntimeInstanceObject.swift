@@ -2,7 +2,6 @@
 
 import AxolotyWire
 import Foundation
-import GnosticACPWire
 
 /// Current process health for one discovered Runtime instance.
 public enum GnosticRuntimeInstanceHealth: String, Codable, Sendable, Equatable {
@@ -17,13 +16,13 @@ public enum GnosticRuntimeInstanceHealth: String, Codable, Sendable, Equatable {
 /// and diagnostics, as defined by ADR 0021.
 public final class GnosticRuntimeInstanceObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.
     public var protocolMajor: Int
-    public var runtimeID: UUID
+    public var runtimeInstanceID: UUID
     public var nodeID: UUID?
     public var runtimeKind: String
     public var runtimeVersion: String?
     public var launchFingerprint: String?
     public var health: GnosticRuntimeInstanceHealth
-    public var rawCapabilities: [String: ACPValue]
+    public var rawCapabilities: [String: GnosticJSONValue]
 
     public override class var objectType: String {
         register(objectType: GnosticObjectType.runtimeInstance, with: self)
@@ -37,11 +36,11 @@ public final class GnosticRuntimeInstanceObject: CoatyObject, @unchecked Sendabl
         version: String? = nil,
         launchFingerprint: String? = nil,
         health: GnosticRuntimeInstanceHealth = .unknown,
-        rawCapabilities: [String: ACPValue] = [:],
+        rawCapabilities: [String: GnosticJSONValue] = [:],
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
-        self.runtimeID = id
+        self.runtimeInstanceID = id
         self.nodeID = nodeID
         self.runtimeKind = kind
         self.runtimeVersion = version
@@ -58,7 +57,7 @@ public final class GnosticRuntimeInstanceObject: CoatyObject, @unchecked Sendabl
 
     private enum CodingKeys: String, CodingKey {
         case protocolMajor
-        case runtimeID
+        case runtimeInstanceID = "runtimeID"
         case nodeID
         case runtimeKind
         case runtimeVersion
@@ -70,13 +69,13 @@ public final class GnosticRuntimeInstanceObject: CoatyObject, @unchecked Sendabl
     public required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        runtimeID = try container.decode(UUID.self, forKey: .runtimeID)
+        runtimeInstanceID = try container.decode(UUID.self, forKey: .runtimeInstanceID)
         nodeID = try container.decodeIfPresent(UUID.self, forKey: .nodeID)
         runtimeKind = try container.decode(String.self, forKey: .runtimeKind)
         runtimeVersion = try container.decodeIfPresent(String.self, forKey: .runtimeVersion)
         launchFingerprint = try container.decodeIfPresent(String.self, forKey: .launchFingerprint)
         health = try container.decodeIfPresent(GnosticRuntimeInstanceHealth.self, forKey: .health) ?? .unknown
-        rawCapabilities = try container.decodeIfPresent([String: ACPValue].self, forKey: .rawCapabilities) ?? [:]
+        rawCapabilities = try container.decodeIfPresent([String: GnosticJSONValue].self, forKey: .rawCapabilities) ?? [:]
         try super.init(from: decoder)
     }
 
@@ -84,7 +83,7 @@ public final class GnosticRuntimeInstanceObject: CoatyObject, @unchecked Sendabl
         try super.encode(to: encoder)
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(protocolMajor, forKey: .protocolMajor)
-        try container.encode(runtimeID, forKey: .runtimeID)
+        try container.encode(runtimeInstanceID, forKey: .runtimeInstanceID)
         try container.encodeIfPresent(nodeID, forKey: .nodeID)
         try container.encode(runtimeKind, forKey: .runtimeKind)
         try container.encodeIfPresent(runtimeVersion, forKey: .runtimeVersion)

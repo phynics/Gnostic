@@ -53,7 +53,7 @@ public enum GnosticWirePayload {
 
     /// Encodes one application value and rejects values that cannot safely be
     /// embedded in a bounded Gnostic operation payload.
-    public static func encode<T: Encodable>(_ value: T, context: String) throws -> Data {
+    package static func encode<T: Encodable>(_ value: T, context: String) throws -> Data {
         let data = try JSONEncoder().encode(value)
         guard data.count <= maximumEmbeddedValueBytes else {
             throw Error.tooLarge(context: context, actualBytes: data.count, maximumBytes: maximumEmbeddedValueBytes)
@@ -63,7 +63,7 @@ public enum GnosticWirePayload {
 
     /// Validates a complete Axoloty event payload after its envelope has been
     /// assembled.
-    public static func validateEvent(_ data: Data, context: String) throws {
+    package static func validateEvent(_ data: Data, context: String) throws {
         guard data.count <= maximumBytes else {
             throw Error.tooLarge(context: context, actualBytes: data.count, maximumBytes: maximumBytes)
         }
@@ -72,7 +72,7 @@ public enum GnosticWirePayload {
     /// Bounds a UTF-8 string without splitting a scalar. This is used only for
     /// diagnostic/status fields where retaining a prefix is preferable to
     /// allowing an otherwise valid event to overflow.
-    public static func prefix(_ value: String, maximumBytes: Int) -> String {
+    package static func prefix(_ value: String, maximumBytes: Int) -> String {
         guard maximumBytes > 0 else { return "" }
         guard value.utf8.count > maximumBytes else { return value }
         var result = String()
@@ -87,11 +87,11 @@ public enum GnosticWirePayload {
         return result
     }
 
-    public static func boundedLabel(_ value: String) -> String {
+    package static func boundedLabel(_ value: String) -> String {
         prefix(value, maximumBytes: maximumLabelBytes)
     }
 
-    public static func boundedIdentifier(_ value: String) -> String {
+    package static func boundedIdentifier(_ value: String) -> String {
         prefix(value, maximumBytes: maximumIdentifierBytes)
     }
 
@@ -129,7 +129,7 @@ public enum GnosticWirePayload {
         return canonical
     }
 
-    public static func boundedWorkspaceIDs(_ values: [UUID]) -> [UUID] {
+    package static func boundedWorkspaceIDs(_ values: [UUID]) -> [UUID] {
         Array(values.prefix(maximumAttachedWorkspaceIDs))
     }
 }

@@ -287,6 +287,53 @@ struct MultiplexedWorkspaceProviderTests {
         )
     }
 
+    @Test("an integer argument above 2^53 survives the wire and reaches the Workspace unchanged")
+    func largeIntegerArgumentRoundTrips() async throws {
+        let beyondDouble: Int64 = 9_007_199_254_740_993
+        let arguments: [String: GnosticJSONValue] = [
+            "id": .integer(beyondDouble),
+            "floor": .integer(Int64.min),
+            "ceiling": .unsignedInteger(UInt64.max),
+            "ratio": .number(0.25),
+        ]
+        // The client encodes the invocation, the provider decodes it from the wire string.
+        let workspace = WorkspaceInvocationTestWorkspace(id: UUID(), tools: [definition], execute: { _, received in
+            .success(received == arguments ? "exact" : "changed: \(received)")
+        })
+        let registry = try registry(for: workspace)
+        let provider = provider(for: workspace, registry: registry)
+        let wire = String(decoding: try JSONEncoder().encode(WorkspaceInvocation(
+            permissionApproved: true,
+            workspaceID: workspace.reference.id,
+            toolID: "allowed",
+            arguments: arguments
+        )), as: UTF8.self)
+        #expect(wire.contains("9007199254740993"))
+
+        let response = try await provider.handle(parameters: wire)
+
+        guard case let .success(result, _) = response else {
+            Issue.record("The invocation was rejected: \(response)")
+            return
+        }
+        #expect(result.contains("exact"))
+        #expect(workspace.invocationCount == 1)
+    }
+
+    @Test("a tool schema keeps an integer bound above 2^53 through the tool definition's encoding")
+    func largeIntegerSchemaBoundRoundTrips() throws {
+        let bound: Int64 = 9_007_199_254_740_993
+        let tool = GnosticWorkspaceToolDefinition(
+            id: "bounded", name: "Bounded", description: "A bounded tool.",
+            parametersSchema: ["type": .string("object"), "maximum": .integer(bound)]
+        )
+
+        let decoded = try JSONDecoder().decode(GnosticWorkspaceToolDefinition.self, from: JSONEncoder().encode(tool))
+
+        #expect(decoded == tool)
+        #expect(decoded.parametersSchema["maximum"] == .integer(bound))
+    }
+
     private func payload(for workspace: WorkspaceInvocationTestWorkspace, toolID: String = "allowed", permissionApproved: Bool = true, timelineID: UUID? = nil) throws -> String {
         String(decoding: try JSONEncoder().encode(WorkspaceInvocation(
             timelineID: timelineID,

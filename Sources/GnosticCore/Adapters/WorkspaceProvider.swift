@@ -20,10 +20,10 @@ public struct WorkspaceInvocation: Codable, Sendable {
     public let toolID: String
 
     /// The tool arguments supplied by the caller.
-    public let arguments: [String: ManifestJSONValue]
+    public let arguments: [String: GnosticJSONValue]
 
     /// Creates an invocation payload.
-    public init(timelineID: UUID? = nil, permissionApproved: Bool = false, workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: ManifestJSONValue] = [:], protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(timelineID: UUID? = nil, permissionApproved: Bool = false, workspaceID: UUID, providerID: String? = nil, toolID: String, arguments: [String: GnosticJSONValue] = [:], protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.timelineID = timelineID
         self.permissionApproved = permissionApproved
@@ -43,6 +43,6 @@ public struct WorkspaceInvocation: Codable, Sendable {
         workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
         providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
         toolID = try container.decode(String.self, forKey: .toolID)
-        arguments = try container.decode([String: ManifestJSONValue].self, forKey: .arguments)
+        arguments = try container.decode([String: GnosticJSONValue].self, forKey: .arguments)
     }
 }

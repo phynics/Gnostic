@@ -251,7 +251,7 @@ removes every record owned by the provider and yields
 `NetworkCatalogChange.providerEvicted`. Both are reflected by
 `networkObjects(includeIncompatible:)` and `object(id:providerID:)`.
 
-### Observe raw wire events for diagnostics
+### Observe raw wire events
 
 `session.rawEvents()` returns a bounded, best-effort stream of
 `GnosticRawWireEvent` values for the session's own connection. It covers
@@ -268,9 +268,10 @@ for await event in raw {
 ```
 
 The stream retains at most 64 pending events and drops the oldest when an
-observer falls behind, so it never blocks the runtime. It is diagnostic-only:
-events are not persisted or replayed, and the envelope is not a contract for
-automation. Use the typed clients for behavior.
+observer falls behind, so it never blocks the runtime. The signatures of
+`GnosticRawWireEvent` are supported; only delivery is best effort. Events are
+not persisted or replayed, so do not rely on seeing every event. Use the typed
+clients for behavior.
 
 ## Run Turns from a consumer
 

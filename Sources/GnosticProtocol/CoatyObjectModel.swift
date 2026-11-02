@@ -56,7 +56,6 @@ open class CoatyObject: Codable, @unchecked Sendable { // SAFETY: Axoloty-compat
     public var parentObjectId: CoatyUUID?
     public var locationId: CoatyUUID?
     public var isDeactivated: Bool?
-    public var custom: [String: String] = [:]
 
     public init(coreType: CoreType, objectType: String, objectId: CoatyUUID, name: String) {
         self.coreType = coreType
@@ -93,5 +92,5 @@ open class CoatyObject: Codable, @unchecked Sendable { // SAFETY: Axoloty-compat
         case coreType, objectType, objectId, name, externalId, parentObjectId, locationId, isDeactivated
     }
 
-    public static func register(objectType: String, with _: CoatyObject.Type) -> String { objectType }
+    package static func register(objectType: String, with _: CoatyObject.Type) -> String { objectType }
 }

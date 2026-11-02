@@ -15,17 +15,17 @@ public final class WorkspaceInvocationTestWorkspace: LocalWorkspace, LocalWorksp
     public var isHealthy = true
     public var beforeListing: (@MainActor @Sendable () async throws -> Void)?
     public private(set) var invocationCount = 0
-    private let execute: @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
+    private let execute: @Sendable (String, [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult
 
     public init(
         id: UUID,
         tools: [GnosticWorkspaceToolDefinition],
-        execute: @escaping @Sendable (String, [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult = { _, _ in .success("ok") }
+        execute: @escaping @Sendable (String, [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult = { _, _ in .success("ok") }
     ) {
         let definitions = tools.map {
             BackendWorkspaceTool(
                 id: $0.id, name: $0.name, description: $0.description,
-                parametersSchema: .object($0.parametersSchema), requiresPermission: $0.requiresPermission
+                parametersSchema: .dictionary($0.parametersSchema), requiresPermission: $0.requiresPermission
             )
         }
         reference = BackendWorkspaceReference(id: id, uri: "workspace://fixture", status: .available, tools: definitions)
@@ -38,7 +38,7 @@ public final class WorkspaceInvocationTestWorkspace: LocalWorkspace, LocalWorksp
         return tools
     }
 
-    public func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+    public func executeTool(id: String, parameters: [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult {
         invocationCount += 1
         return try await execute(id, parameters)
     }

@@ -36,7 +36,7 @@ public struct TurnPermissionResponse: Codable, Sendable {
         unavailableReason = try container.decodeIfPresent(String.self, forKey: .unavailableReason)
     }
 
-    public func targeted(to providerID: String?) -> Self {
+    package func targeted(to providerID: String?) -> Self {
         Self(
             correlationID: correlationID,
             timelineID: timelineID,
