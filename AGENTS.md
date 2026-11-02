@@ -57,6 +57,7 @@ Run the narrowest applicable checks and the full gate before review:
 | ACP or Turn behavior | `make verify`, `make runner-smoke`, and `make acp-smoke` when the ACP seam changes |
 | Manifest or CLI | `make verify`, focused migration or configuration tests, and `make runner-smoke` when startup or routing changes |
 | Container, Makefile, toolchain, or system dependency | `make container-smoke` plus the affected gate |
+| Public API of `GnosticProtocol` or `GnosticClient` | `make api-check` (also part of `make verify`); after a deliberate change, `make api-update` |
 | Documentation or architecture | `make docs-check`, `make verify`, and `git diff --check` |
 | Dependency resolution | `make resolve`, `make verify`, and the relevant smoke scenario |
 
@@ -137,7 +138,12 @@ any of these:
 
 - a public contract: a public symbol of a library product, a `gnostic`
   command or option, the wire protocol, a capability, or the manifest schema.
-  Once #551 declares the stable products, only their public symbols count;
+  Once #551 declares the stable products, only their public symbols count.
+  `make verify` fails on an unreviewed change to the public API of
+  `GnosticProtocol` and `GnosticClient`. A pull request that changes
+  `Documentation/Compatibility/API/` is review-required. Regenerate the
+  baseline with `make api-update`; see
+  [`Documentation/Compatibility/API/README.md`](Documentation/Compatibility/API/README.md);
 - a persistence format or durable-state behavior;
 - a dependency or its pin;
 - an architecture decision or exception.
