@@ -494,6 +494,7 @@ final class ACPDispatcher: Sendable {
             var missed: [AscendantTurnUpdate] = []
             var after = lastSequence
             var replayFailed = false
+            var pages = 0
             while true {
                 guard let page = try? await client.replay(
                     timelineID: record.timelineID,
@@ -507,7 +508,10 @@ final class ACPDispatcher: Sendable {
                 guard let last = page.updates.last, last.sequence > after else { break }
                 missed += page.updates.filter { $0.sequence > after }
                 after = last.sequence
-                guard page.nextSequence != nil else { break }
+                pages += 1
+                // A running Turn can add pages as fast as they are read, so one
+                // pass is bounded and the prompt loop still sees completion.
+                guard page.nextSequence != nil, turnEnded || pages < Self.catchUpPagesPerPass else { break }
             }
             // A partial replay can't show whether a pending request was resolved
             // on the page that failed, so a running Turn delivers none of it.
@@ -533,7 +537,12 @@ final class ACPDispatcher: Sendable {
 
             drained: for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
                 if update.sequence > lastSequence + 1, try await !catchUp(turnEnded: false) { break drained }
-                if update.sequence > lastSequence { try await deliver(update) }
+                if update.sequence == lastSequence + 1 {
+                    try await deliver(update)
+                } else if update.sequence > lastSequence {
+                    // A bounded pass stopped short of this update. Replay still holds it.
+                    break drained
+                }
             }
 
             switch await completion.value() {
@@ -561,6 +570,9 @@ final class ACPDispatcher: Sendable {
             }
         }
     }
+
+    /// Replay pages one catch-up pass reads while a Turn is still running.
+    private static let catchUpPagesPerPass = 64
 
     /// Whether the Turn's terminal update records an idle without a stop reason.
     private static func endedUnspecified(_ updates: [AscendantTurnUpdate]) -> Bool {
