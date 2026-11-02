@@ -16,8 +16,9 @@ public enum GnosticTurnClientError: Error, Sendable, Equatable, LocalizedError {
     /// from a different provider than the addressed one.
     case providerMismatch
 
-    /// The resolved Runtime instance does not provide the required capability.
-    case missingCapability(String)
+    /// The Runtime instance that operates the Timeline is not advertised by
+    /// the Timeline's provider.
+    case runtimeInstanceUnavailable(UUID)
 
     /// The serve rejected the operation with a structured protocol failure.
     ///
@@ -31,7 +32,7 @@ public enum GnosticTurnClientError: Error, Sendable, Equatable, LocalizedError {
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
         case .providerMismatch: "providerMismatch"
-        case .missingCapability: "missingCapability"
+        case .runtimeInstanceUnavailable: "runtimeInstanceUnavailable"
         case let .callFailed(reasonCode, _, _): reasonCode
         }
     }
@@ -45,8 +46,8 @@ public enum GnosticTurnClientError: Error, Sendable, Equatable, LocalizedError {
             "Timeline \(id.uuidString.lowercased()) is advertised by more than one provider."
         case .providerMismatch:
             "The provider does not own the requested Timeline, or the response came from another provider."
-        case let .missingCapability(capability):
-            "The selected Runtime instance does not provide capability \(capability)."
+        case let .runtimeInstanceUnavailable(id):
+            "Runtime instance \(id.uuidString.lowercased()) was not discovered, or is not advertised by the Timeline's provider."
         case let .callFailed(reasonCode, statusCode, _):
             "The serve rejected the operation: \(reasonCode) (status \(statusCode))."
         }

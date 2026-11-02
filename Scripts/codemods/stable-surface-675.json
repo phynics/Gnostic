@@ -2,7 +2,6 @@
   "$comment": "Rename and move map for #675. Read by stable-surface-675.mjs. Whole-word, case-sensitive matches only, so AscendantTurnUpdateStore is not touched by the AscendantTurnUpdate rule.",
   "roots": ["Sources", "Tests"],
   "types": {
-    "AscendantInteroperabilityCapability": "InteroperabilityCapability",
     "AscendantBackendHealth": "GnosticRuntimeInstanceHealth",
     "AscendantBackendCapabilities": "RuntimeInstanceCapabilities",
     "AscendantBackendIdentity": "RuntimeInstanceIdentity",

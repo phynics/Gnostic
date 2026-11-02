@@ -103,56 +103,6 @@ public enum GnosticProtocol {
     }
 }
 
-/// Stable capability names a client can require from a Runtime instance.
-///
-/// A Node advertises no capability list (ADR 0020 §8). A Runtime instance
-/// provides the names in ``providedByRuntimeInstance`` by being advertised, so a
-/// client checks that the operating instance is present instead of reading a
-/// list. The other names stay as vocabulary for ``InteroperabilityCapability``.
-public enum GnosticCapability {
-    public static let textTurnInput = InteroperabilityCapability.textTurn.rawValue
-    public static let streamedTurnUpdates = InteroperabilityCapability.streamedUpdates.rawValue
-    public static let turnCancellation = InteroperabilityCapability.cancellation.rawValue
-    public static let turnReplay = InteroperabilityCapability.replay.rawValue
-    public static let permissionMediation = InteroperabilityCapability.permissionMediation.rawValue
-    public static let timelineManagement = InteroperabilityCapability.timelineManagement.rawValue
-    public static let workspaceAttachment = InteroperabilityCapability.workspaceAttachment.rawValue
-    public static let workspaceToolInvocation = InteroperabilityCapability.workspaceToolInvocation.rawValue
-    public static let diagnostics = InteroperabilityCapability.diagnostics.rawValue
-
-    /// The capabilities every advertised Runtime instance provides.
-    ///
-    /// - ``textTurnInput``: ACP v2 requires `session/prompt`.
-    /// - ``timelineManagement``: the hosting Node owns Timeline creation and
-    ///   renaming.
-    /// - ``diagnostics``: the hosting Node serves payload-free diagnostics. A
-    ///   provider offers diagnostics when it advertises at least one Runtime
-    ///   instance at the current protocol major; a Node with no advertised
-    ///   instance has nothing to diagnose and offers none.
-    public static let providedByRuntimeInstance: Set<String> = [
-        textTurnInput,
-        timelineManagement,
-        diagnostics,
-    ]
-
-    public static let stable: Set<String> = [
-        textTurnInput,
-        streamedTurnUpdates,
-        turnReplay,
-        permissionMediation,
-        timelineManagement,
-        workspaceAttachment,
-        workspaceToolInvocation,
-        diagnostics,
-    ]
-
-    /// Experimental names are intentionally namespaced.  Generic clients
-    /// ignore names they do not recognize, including future stable names.
-    public static func isNamespacedExperimental(_ capability: String) -> Bool {
-        capability.hasPrefix("x-") && capability.contains(".")
-    }
-}
-
 /// Structured protocol compatibility failures used at every direct seam.
 public enum GnosticProtocolError: Error, Codable, Sendable, Equatable, LocalizedError {
     case missing

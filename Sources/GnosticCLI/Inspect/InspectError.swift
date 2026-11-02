@@ -10,7 +10,6 @@ public enum InspectError: Error, Sendable, LocalizedError {
     case ambiguous(String, providers: [String])
     case brokerUnreachable(String)
     case connectionFailed(String)
-    case diagnosticsCapabilityUnavailable(String)
     case diagnosticsUnavailable(String)
     case diagnosticsAmbiguous(String)
     case ascendantUnavailable(UUID)
@@ -24,8 +23,6 @@ public enum InspectError: Error, Sendable, LocalizedError {
         case let .ambiguous(uuid, providers): "Object '\(uuid)' is advertised by multiple providers: \(providers.joined(separator: ", "))."
         case let .brokerUnreachable(detail): "Could not reach the MQTT broker: \(detail)"
         case let .connectionFailed(detail): "Connection failed: \(detail)"
-        case let .diagnosticsCapabilityUnavailable(capability):
-            "Live diagnostics are unavailable: no discovered Node advertises a Runtime instance that provides capability \(capability)."
         case let .diagnosticsUnavailable(detail): "Live diagnostics are unavailable: \(detail)"
         case let .diagnosticsAmbiguous(target): "Live diagnostics target '\(target)' is served by more than one provider."
         case let .ascendantUnavailable(id): "Ascendant \(id.uuidString.lowercased()) was not discovered."
@@ -41,7 +38,6 @@ public enum InspectError: Error, Sendable, LocalizedError {
         case .ambiguous: "ambiguous"
         case .brokerUnreachable: "brokerUnreachable"
         case .connectionFailed: "connectionFailed"
-        case .diagnosticsCapabilityUnavailable: "diagnosticsCapabilityUnavailable"
         case .diagnosticsUnavailable: "diagnosticsUnavailable"
         case .diagnosticsAmbiguous: "diagnosticsAmbiguous"
         case .ascendantUnavailable: "ascendantUnavailable"
@@ -56,8 +52,7 @@ extension InspectError {
     /// - Parameter error: The client failure.
     public init(_ error: GnosticDiagnosticsClientError) {
         switch error {
-        case let .missingCapability(capability): self = .diagnosticsCapabilityUnavailable(capability)
-        case .nodeUnavailable: self = .diagnosticsUnavailable("no discovered Node serves live diagnostics")
+        case .nodeUnavailable: self = .diagnosticsUnavailable("no discovered Node advertises a Runtime instance")
         case .nodeAmbiguous: self = .diagnosticsAmbiguous("node")
         case let .runtimeInstanceUnavailable(id): self = .ascendantUnavailable(id)
         case let .runtimeInstanceAmbiguous(id): self = .diagnosticsAmbiguous(id.uuidString.lowercased())

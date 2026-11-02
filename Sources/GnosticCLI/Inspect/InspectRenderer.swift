@@ -151,7 +151,6 @@ public enum InspectRenderer {
         var lines: [String] = [
             "ascendant  \(snapshot.runtimeInstance.id.uuidString.lowercased())  \(snapshot.runtimeInstance.name)",
             "health=\(snapshot.runtimeInstance.health.rawValue) quarantined=\(snapshot.runtimeInstance.quarantined)",
-            "capabilities=[\(snapshot.capabilities.joined(separator: ","))]",
             "timelines  \(snapshot.timelines.count)",
         ]
         for timeline in snapshot.timelines {

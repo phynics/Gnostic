@@ -59,7 +59,7 @@ struct InspectDiagnosticsCommandsTests {
     }
 
     @Test("degrades clearly when the Node advertises no Runtime instance")
-    func degradesWhenCapabilityIsMissing() async throws {
+    func degradesWhenNoRuntimeInstanceIsAdvertised() async throws {
         let namespace = uniqueNamespace()
         let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
         defer { provider.manager.stop() }
@@ -69,8 +69,8 @@ struct InspectDiagnosticsCommandsTests {
                 .node(providerID: provider.providerID)
             Issue.record("a Node without a Runtime instance was accepted")
         } catch let error as InspectError {
-            #expect(error.reasonCode == "diagnosticsCapabilityUnavailable")
-            #expect(error.errorDescription?.contains(GnosticCapability.diagnostics) == true)
+            #expect(error.reasonCode == "diagnosticsUnavailable")
+            #expect(error.errorDescription?.contains("advertises a Runtime instance") == true)
         }
     }
 

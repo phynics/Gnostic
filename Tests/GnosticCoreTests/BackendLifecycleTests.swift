@@ -1732,7 +1732,7 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: .init(interoperability: [InteroperabilityCapability.textTurn.rawValue], backendKind: "lifecycle-fixture")
+            capabilities: .init(backendKind: "lifecycle-fixture")
         )
         self.timelines = timelines.map {
             .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), runtimeInstanceID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)

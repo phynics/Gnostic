@@ -220,8 +220,8 @@ struct TimelineClientFacadeTests {
     }
 
     @Test("a Timeline whose Runtime instance is not advertised is rejected")
-    func missingCapabilityIsRejected() async throws {
-        let namespace = namespaced("capability")
+    func unadvertisedRuntimeInstanceIsRejected() async throws {
+        let namespace = namespaced("runtime-instance")
         let fixture = try await TimelineClientFacadeBridge.makeFixture(
             namespace: namespace,
             host: host,
@@ -237,8 +237,7 @@ struct TimelineClientFacadeTests {
             await #expect(throws: GnosticTimelineClientError.runtimeInstanceUnavailable(fixture.ascendantID)) {
                 _ = try await client.create(title: "Gated", runtimeInstanceID: fixture.ascendantID)
             }
-            await #expect(throws: GnosticTimelineClientError
-                .missingCapability(GnosticCapability.timelineManagement)) {
+            await #expect(throws: GnosticTimelineClientError.runtimeInstanceUnavailable(fixture.ascendantID)) {
                 _ = try await client.update(timelineID: fixture.timelineID, title: "Gated")
             }
         }
@@ -334,7 +333,6 @@ struct TimelineClientFacadeTests {
         #expect(GnosticTimelineClientError.timelineUnavailable(id).reasonCode == "timelineUnavailable")
         #expect(GnosticTimelineClientError.timelineAmbiguous(id).reasonCode == "timelineAmbiguous")
         #expect(GnosticTimelineClientError.providerMismatch.reasonCode == "providerMismatch")
-        #expect(GnosticTimelineClientError.missingCapability("capability").reasonCode == "missingCapability")
         #expect(GnosticTimelineClientError
             .callFailed(reasonCode: "timelineConflict", statusCode: 409, retryable: false)
             .reasonCode == "timelineConflict")

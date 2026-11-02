@@ -299,7 +299,7 @@ public actor JSONRPCSession {
         case .noServedAscendant, .noRuntime, .workspaceUnavailable, .workspaceAmbiguous, .timelineNotAttached,
              .ambiguousAscendant, .ambiguousRuntime, .ascendantUnavailable, .runtimeUnavailable, .providerUnavailable, .providerOffline,
              .nodeUnavailable, .timelineUnavailable, .timelineAmbiguous, .providerMismatch,
-             .missingCapability, .insertionUnknown, .timelineQuarantined, .timelineBusy: .invalidState
+             .insertionUnknown, .timelineQuarantined, .timelineBusy: .invalidState
         case .approvalRequired, .toolNotAdvertised, .invalidWorkspaceURI, .promptTooLarge: .invalidParams
         }
         return JSONRPCErrorObject(

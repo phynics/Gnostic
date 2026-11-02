@@ -7,16 +7,13 @@ import GnosticProtocol
 // products (owner decision D28 on #551, #716); `GnosticRuntimeInstanceObject`
 // and `GnosticTimelineObject` are the consumer-facing projections.
 
-/// The capabilities a Runtime instance offers to remote clients.
+/// The host-side description of what a Runtime instance offers.
 ///
-/// `interoperability` is a `Set<String>` rather than a set of
-/// ``InteroperabilityCapability`` on purpose: capability IDs are
-/// negotiated with peers that may run a newer build, so a value this build
-/// does not know must survive a round trip rather than be dropped.
+/// Gnostic defines no capability names of its own (ADR 0020 section 8). A
+/// Runtime's ACP `initialize` capabilities travel verbatim as
+/// `GnosticRuntimeInstanceObject.rawCapabilities`.
 public struct RuntimeInstanceCapabilities: Codable, Sendable, Equatable {
-    /// Interoperability capability IDs, as raw ``InteroperabilityCapability`` values.
-    public let interoperability: Set<String>
-    /// Host-defined capability IDs that are not part of the interoperability contract.
+    /// Host-defined capability IDs.
     public let host: Set<String>
     /// The backend implementation's kind, for diagnostics only. Never routed on.
     public let backendKind: String?
@@ -25,12 +22,10 @@ public struct RuntimeInstanceCapabilities: Codable, Sendable, Equatable {
 
     /// Creates a capability set. Every field is optional.
     public init(
-        interoperability: Set<String> = [],
         host: Set<String> = [],
         backendKind: String? = nil,
         backendVersion: String? = nil
     ) {
-        self.interoperability = interoperability
         self.host = host
         self.backendKind = backendKind
         self.backendVersion = backendVersion

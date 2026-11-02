@@ -62,7 +62,6 @@ public enum GnosticConsumerSessionError : Swift::Error, Swift::Sendable, Swift::
   deinit
 }
 public enum GnosticDiagnosticsClientError : Swift::Error, Swift::Sendable, Swift::Equatable, FoundationEssentials::LocalizedError {
-  case missingCapability(Swift::String)
   case nodeUnavailable
   case nodeAmbiguous
   case runtimeInstanceUnavailable(FoundationEssentials::UUID)
@@ -90,7 +89,6 @@ public enum GnosticTimelineClientError : Swift::Error, Swift::Sendable, Swift::E
   case runtimeInstanceAmbiguous(FoundationEssentials::UUID)
   case timelineUnavailable(FoundationEssentials::UUID)
   case timelineAmbiguous(FoundationEssentials::UUID)
-  case missingCapability(Swift::String)
   case providerMismatch
   case callFailed(reasonCode: Swift::String, statusCode: Swift::Int, retryable: Swift::Bool)
   public var reasonCode: Swift::String {
@@ -115,7 +113,7 @@ public enum GnosticTurnClientError : Swift::Error, Swift::Sendable, Swift::Equat
   case timelineUnavailable(FoundationEssentials::UUID)
   case timelineAmbiguous(FoundationEssentials::UUID)
   case providerMismatch
-  case missingCapability(Swift::String)
+  case runtimeInstanceUnavailable(FoundationEssentials::UUID)
   case callFailed(reasonCode: Swift::String, statusCode: Swift::Int, retryable: Swift::Bool)
   public var reasonCode: Swift::String {
     get
@@ -151,7 +149,6 @@ public enum GnosticWorkspaceClientError : Swift::Error, Swift::Sendable, Swift::
   case timelineUnavailable(FoundationEssentials::UUID)
   case timelineAmbiguous(FoundationEssentials::UUID)
   case providerMismatch
-  case missingCapability(Swift::String)
   case callFailed(reasonCode: Swift::String, statusCode: Swift::Int, retryable: Swift::Bool)
   public var reasonCode: Swift::String {
     get

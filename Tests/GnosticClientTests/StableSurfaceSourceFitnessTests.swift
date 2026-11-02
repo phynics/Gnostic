@@ -97,6 +97,22 @@ struct StableSurfaceSourceFitnessTests {
         #expect(aliases.isEmpty, "D19 removed the ACP typealiases; import GnosticACPWire instead: \(aliases.map(\.path))")
     }
 
+    @Test("no source names a Gnostic capability or gates on one (D31)")
+    func noGnosticCapabilityNames() throws {
+        let sourceRoot = Self.root.appendingPathComponent("Sources")
+        let names = try NSRegularExpression(
+            pattern: #"\b(?:InteroperabilityCapability|GnosticCapability|missingCapability|providedByRuntimeInstance|requiredCapability)\b"#
+        )
+        var violations: [String] = []
+        for path in try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path).sorted()
+        where path.hasSuffix(".swift") {
+            let text = try String(contentsOf: sourceRoot.appendingPathComponent(path), encoding: .utf8)
+            let range = NSRange(text.startIndex..., in: text)
+            if names.firstMatch(in: text, range: range) != nil { violations.append(path) }
+        }
+        #expect(violations.isEmpty, "ADR 0020 section 8 retired Gnostic capability names; D31 removed them: \(violations)")
+    }
+
     // MARK: - Source scanning
 
     private static func sources(in relativePath: String) throws -> [Source] {

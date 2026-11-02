@@ -368,8 +368,8 @@ is not exposed because no delete operation exists in the Gnostic wire contract.
 Every typed client resolves its target through one policy. The catalog is
 refreshed at most once per call, and only when the target is absent (for a
 node-wide diagnostics call, when no provider advertises a Runtime instance). After
-that refresh the call fails with the error below. Capability checks read the
-catalog as it stands and never refresh it. A pinned `providerID` that does not
+that refresh the call fails with the error below. The operating Runtime instance
+check reads the catalog as it stands and never refreshes it. A pinned `providerID` that does not
 own the target is `providerMismatch` for every client.
 
 | Client | Failure | Public error |
@@ -377,21 +377,20 @@ own the target is `providerMismatch` for every client.
 | Turn | Timeline absent, or no single operating Runtime instance | `timelineUnavailable` |
 | Turn | Timeline advertised by two providers | `timelineAmbiguous` |
 | Turn | Pinned provider does not own the Timeline | `providerMismatch` |
-| Turn | Operating Runtime instance not advertised by the Timeline's provider | `missingCapability` |
+| Turn | Operating Runtime instance not advertised by the Timeline's provider | `runtimeInstanceUnavailable` |
 | Workspace attach, detach | Timeline absent, or advertised by two providers | `timelineUnavailable`, `timelineAmbiguous` |
 | Workspace attach, detach | Pinned provider does not own the Timeline | `providerMismatch` |
 | Timeline create | Runtime instance absent or ambiguous | `runtimeInstanceUnavailable`, `runtimeInstanceAmbiguous` |
 | Timeline create | Pinned provider does not own the Runtime instance | `providerMismatch` |
 | Timeline update | Timeline absent, or no single operating Runtime instance | `timelineUnavailable` |
 | Timeline update | Timeline advertised by two providers | `timelineAmbiguous` |
-| Timeline update | Operating Runtime instance not advertised by the Timeline's provider | `missingCapability` |
+| Timeline update | Operating Runtime instance not advertised by the Timeline's provider | `runtimeInstanceUnavailable` |
 | Timeline status | Timeline absent, or advertised by two providers | `timelineUnavailable`, `timelineAmbiguous` |
-| Diagnostics node | No provider advertises a Runtime instance | `missingCapability` |
-| Diagnostics node | Pinned provider advertises no Runtime instance | `nodeUnavailable` |
+| Diagnostics node | No provider advertises a Runtime instance, or the pinned provider advertises none | `nodeUnavailable` |
 | Diagnostics node | More than one provider advertises a Runtime instance | `nodeAmbiguous` |
 | Diagnostics Runtime instance | Runtime instance absent, ambiguous, or pinned to another provider | `runtimeInstanceUnavailable`, `runtimeInstanceAmbiguous`, `providerMismatch` |
 | Diagnostics timeline | Timeline absent, ambiguous, or pinned to another provider | `timelineUnavailable`, `timelineAmbiguous`, `providerMismatch` |
-| Diagnostics timeline | Operating Runtime instance not advertised by the Timeline's provider, or none named | `missingCapability`, `timelineUnavailable` |
+| Diagnostics timeline | Operating Runtime instance not advertised by the Timeline's provider, or none named | `runtimeInstanceUnavailable`, `timelineUnavailable` |
 
 ## Use ACP
 

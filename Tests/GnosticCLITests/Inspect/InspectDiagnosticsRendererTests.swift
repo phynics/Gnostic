@@ -62,12 +62,11 @@ struct InspectDiagnosticsRendererTests {
         let ascendant = RuntimeInstanceDiagnostics(
             runtimeInstance: DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Ascendant", health: .healthy, quarantined: false),
             description: "Test ascendant",
-            capabilities: [GnosticCapability.diagnostics],
             timelines: []
         )
         let ascendantText = InspectRenderer.ascendantText(ascendant)
         #expect(ascendantText.contains("health=healthy quarantined=false"))
-        #expect(ascendantText.contains(GnosticCapability.diagnostics))
+        #expect(!ascendantText.contains("capabilities"))
 
         let timeline = TimelineDiagnostics(
             timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
@@ -183,9 +182,9 @@ struct InspectDiagnosticsRendererTests {
 
     @Test("diagnostics errors map to stable CLI reason codes")
     func diagnosticsErrorsMapToCLIReasonCodes() {
-        let missing = InspectError(.missingCapability(GnosticCapability.diagnostics))
-        #expect(missing.reasonCode == "diagnosticsCapabilityUnavailable")
-        #expect(missing.errorDescription?.contains(GnosticCapability.diagnostics) == true)
+        let noNode = InspectError(.nodeUnavailable)
+        #expect(noNode.reasonCode == "diagnosticsUnavailable")
+        #expect(noNode.errorDescription?.contains("advertises a Runtime instance") == true)
 
         let unavailable = InspectError(.runtimeInstanceUnavailable(ascendantID))
         #expect(unavailable.reasonCode == "ascendantUnavailable")

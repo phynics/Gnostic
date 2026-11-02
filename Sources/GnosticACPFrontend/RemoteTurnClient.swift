@@ -435,7 +435,7 @@ public final class RemoteTurnClient: Sendable {
             case let .timelineUnavailable(id): RemoteTurnClientError.timelineUnavailable(id)
             case let .timelineAmbiguous(id): RemoteTurnClientError.timelineAmbiguous(id)
             case .providerMismatch: RemoteTurnClientError.providerMismatch
-            case let .missingCapability(capability): RemoteTurnClientError.missingCapability(capability)
+            case let .runtimeInstanceUnavailable(id): RemoteTurnClientError.runtimeUnavailable(id)
             case let .callFailed(reasonCode, _, _):
                 switch reasonCode {
                 case "promptTooLarge": RemoteTurnClientError.promptTooLarge
@@ -454,7 +454,6 @@ public final class RemoteTurnClient: Sendable {
             case let .timelineUnavailable(id): RemoteTurnClientError.timelineUnavailable(id)
             case let .timelineAmbiguous(id): RemoteTurnClientError.timelineAmbiguous(id)
             case .providerMismatch: RemoteTurnClientError.providerMismatch
-            case let .missingCapability(capability): RemoteTurnClientError.missingCapability(capability)
             case .callFailed: error
             }
         default:

@@ -29,11 +29,7 @@ final class EchoAscendantBackend: AscendantBackend {
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            // Advertise only what this backend genuinely supports.
-            capabilities: RuntimeInstanceCapabilities(
-                interoperability: [InteroperabilityCapability.textTurn.rawValue],
-                backendKind: "example-echo"
-            )
+            capabilities: RuntimeInstanceCapabilities(backendKind: "example-echo")
         )
         self.timelines = timelines.map {
             RuntimeInstanceTimeline(

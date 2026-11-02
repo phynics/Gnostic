@@ -126,9 +126,8 @@ public struct RuntimeInstanceDiagnostics : Swift::Codable, Swift::Sendable, Swif
   public let protocolMajor: Swift::Int
   public let runtimeInstance: GnosticProtocol::DiagnosticsRuntimeInstanceSummary
   public let description: Swift::String
-  public let capabilities: [Swift::String]
   public let timelines: [GnosticProtocol::DiagnosticsTimelineSummary]
-  public init(runtimeInstance: GnosticProtocol::DiagnosticsRuntimeInstanceSummary, description: Swift::String, capabilities: [Swift::String], timelines: [GnosticProtocol::DiagnosticsTimelineSummary], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
+  public init(runtimeInstance: GnosticProtocol::DiagnosticsRuntimeInstanceSummary, description: Swift::String, timelines: [GnosticProtocol::DiagnosticsTimelineSummary], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::RuntimeInstanceDiagnostics, _ b: GnosticProtocol::RuntimeInstanceDiagnostics) -> Swift::Bool
   public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
@@ -241,20 +240,6 @@ public enum GnosticProtocol {
   @_hasInitialValue public static let currentMajor: Swift::Int
   public static func isCompatible(_ protocolMajor: Swift::Int?) -> Swift::Bool
   public static func validate(_ protocolMajor: Swift::Int?) throws
-}
-public enum GnosticCapability {
-  @_hasInitialValue public static let textTurnInput: Swift::String
-  @_hasInitialValue public static let streamedTurnUpdates: Swift::String
-  @_hasInitialValue public static let turnCancellation: Swift::String
-  @_hasInitialValue public static let turnReplay: Swift::String
-  @_hasInitialValue public static let permissionMediation: Swift::String
-  @_hasInitialValue public static let timelineManagement: Swift::String
-  @_hasInitialValue public static let workspaceAttachment: Swift::String
-  @_hasInitialValue public static let workspaceToolInvocation: Swift::String
-  @_hasInitialValue public static let diagnostics: Swift::String
-  @_hasInitialValue public static let providedByRuntimeInstance: Swift::Set<Swift::String>
-  @_hasInitialValue public static let stable: Swift::Set<Swift::String>
-  public static func isNamespacedExperimental(_ capability: Swift::String) -> Swift::Bool
 }
 public enum GnosticProtocolError : Swift::Error, Swift::Codable, Swift::Sendable, Swift::Equatable, FoundationEssentials::LocalizedError {
   case missing
@@ -470,26 +455,6 @@ public enum WorkspaceAttachmentStatus : Swift::Sendable, Swift::Equatable {
   case unsupported
   case available(providerID: Swift::String, uri: Swift::String)
   @_semantics("derived_enum_equals") @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_enum_equals(_ a: GnosticProtocol::WorkspaceAttachmentStatus, _ b: GnosticProtocol::WorkspaceAttachmentStatus) -> Swift::Bool
-}
-public enum InteroperabilityCapability : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable, Swift::CaseIterable {
-  case textTurn
-  case streamedUpdates
-  case cancellation
-  case replay
-  case permissionMediation
-  case timelineManagement
-  case workspaceAttachment
-  case workspaceToolInvocation
-  case diagnostics
-  @inlinable public init?(rawValue: Swift::String)
-  public typealias AllCases = [GnosticProtocol::InteroperabilityCapability]
-  public typealias RawValue = Swift::String
-  nonisolated public static var allCases: [GnosticProtocol::InteroperabilityCapability] {
-    get
-  }
-  public var rawValue: Swift::String {
-    @inlinable get
-  }
 }
 public enum GnosticRuntimeInstanceHealth : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable {
   case healthy
@@ -759,8 +724,6 @@ extension GnosticProtocol::GnosticWorkspaceEffectiveStatus : Swift::Hashable {}
 extension GnosticProtocol::GnosticWorkspaceEffectiveStatus : Swift::RawRepresentable {}
 extension GnosticProtocol::GnosticWorkspaceLocation : Swift::Hashable {}
 extension GnosticProtocol::GnosticWorkspaceLocation : Swift::RawRepresentable {}
-extension GnosticProtocol::InteroperabilityCapability : Swift::Hashable {}
-extension GnosticProtocol::InteroperabilityCapability : Swift::RawRepresentable {}
 extension GnosticProtocol::GnosticRuntimeInstanceHealth : Swift::Hashable {}
 extension GnosticProtocol::GnosticRuntimeInstanceHealth : Swift::RawRepresentable {}
 extension GnosticProtocol::TurnTerminalOutcome : Swift::Hashable {}

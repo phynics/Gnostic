@@ -12,18 +12,20 @@ import GnosticProtocol
 /// hosts no Node, and advertises nothing. Every call resolves its target from
 /// the session catalog; discovery is refreshed only when the target is absent.
 ///
-/// ## Capability gating
+/// ## Runtime instance requirement
 ///
-/// A provider offers ``GnosticCapability/diagnostics`` when it advertises at
-/// least one Runtime instance at the current protocol major. The rule reads the
-/// catalog, not a capability list: the Node that hosts a Runtime instance
-/// serves diagnostics for it. A Timeline is diagnosable when it names its
-/// operating Runtime instance and that instance is advertised by the Timeline's
-/// provider. When no discovered provider advertises a Runtime instance, every
-/// method fails with ``GnosticDiagnosticsClientError/missingCapability(_:)``
-/// before any wire call. A session that talks to a Node with no Runtime
-/// instance, or to a peer at another protocol major, therefore degrades
-/// clearly instead of receiving an unknown-operation error.
+/// A provider offers diagnostics when it advertises at least one Runtime
+/// instance at the current protocol major. The rule reads the catalog, not a
+/// capability list: the Node that hosts a Runtime instance serves diagnostics
+/// for it. A Timeline is diagnosable when it names its operating Runtime
+/// instance and that instance is advertised by the Timeline's provider. When no
+/// discovered provider advertises a Runtime instance, ``node(providerID:)``
+/// fails with ``GnosticDiagnosticsClientError/nodeUnavailable`` before any wire
+/// call. A Timeline whose operating instance its provider does not advertise
+/// fails with ``GnosticDiagnosticsClientError/runtimeInstanceUnavailable(_:)``.
+/// A session that talks to a Node with no Runtime instance, or to a peer at
+/// another protocol major, therefore degrades clearly instead of receiving an
+/// unknown-operation error.
 ///
 /// ## Payload safety
 ///
@@ -67,8 +69,8 @@ public final class GnosticDiagnosticsClient {
     ///   or `nil` to resolve the single advertising provider from the session
     ///   catalog.
     /// - Returns: The payload-free node diagnostics snapshot.
-    /// - Throws: ``GnosticDiagnosticsClientError`` when no provider advertises
-    ///   ``GnosticCapability/diagnostics``, more than one does, or the serve
+    /// - Throws: ``GnosticDiagnosticsClientError`` when no provider advertises a
+    ///   Runtime instance (`nodeUnavailable`), more than one does, or the serve
     ///   rejected the call.
     public func node(providerID: String? = nil) async throws -> NodeDiagnostics {
         let target = try await resolvedDiagnosticsProvider(providerID)
@@ -97,7 +99,7 @@ public final class GnosticDiagnosticsClient {
             .runtimeInstance,
             id: runtimeInstanceID,
             expectedProviderID: providerID,
-            requiredCapability: GnosticCapability.diagnostics
+            requiringRuntimeInstance: true
         ) {
         case let .success(resolved): target = resolved
         case let .failure(failure): throw Self.error(for: failure, runtimeInstance: runtimeInstanceID)
@@ -122,7 +124,7 @@ public final class GnosticDiagnosticsClient {
     /// - Throws: ``GnosticDiagnosticsClientError`` when the Timeline cannot be
     ///   resolved or names no operating Runtime instance
     ///   (`timelineUnavailable`), its operating Runtime instance is not
-    ///   advertised by the Timeline's provider (`missingCapability`), or the
+    ///   advertised by the Timeline's provider (`runtimeInstanceUnavailable`), or the
     ///   serve rejected the call.
     public func timeline(_ timelineID: UUID, providerID: String? = nil) async throws -> TimelineDiagnostics {
         let target: CatalogTarget
@@ -130,7 +132,7 @@ public final class GnosticDiagnosticsClient {
             .timeline,
             id: timelineID,
             expectedProviderID: providerID,
-            requiredCapability: GnosticCapability.diagnostics
+            requiringRuntimeInstance: true
         ) {
         case let .success(resolved): target = resolved
         case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
@@ -150,8 +152,7 @@ public final class GnosticDiagnosticsClient {
     /// rather than ``GnosticDiagnosticsClientError/providerMismatch``: no
     /// object is addressed, so there is no ownership to mismatch.
     private func resolvedDiagnosticsProvider(_ explicitProviderID: String?) async throws -> String {
-        switch await resolver.resolveProvider(
-            providing: GnosticCapability.diagnostics,
+        switch await resolver.resolveProviderAdvertisingRuntimeInstance(
             expectedProviderID: explicitProviderID
         ) {
         case let .success(target): return target.providerID
@@ -163,10 +164,9 @@ public final class GnosticDiagnosticsClient {
     /// addressed by Runtime instance.
     static func error(for failure: CatalogTargetFailure, runtimeInstance runtimeInstanceID: UUID) -> GnosticDiagnosticsClientError {
         switch failure {
-        case .unavailable: .runtimeInstanceUnavailable(runtimeInstanceID)
+        case .unavailable, .runtimeInstanceUnavailable: .runtimeInstanceUnavailable(runtimeInstanceID)
         case .ambiguous: .runtimeInstanceAmbiguous(runtimeInstanceID)
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
         }
     }
 
@@ -177,7 +177,7 @@ public final class GnosticDiagnosticsClient {
         case .unavailable: .timelineUnavailable(timelineID)
         case .ambiguous: .timelineAmbiguous(timelineID)
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
+        case let .runtimeInstanceUnavailable(id): .runtimeInstanceUnavailable(id)
         }
     }
 
@@ -185,10 +185,9 @@ public final class GnosticDiagnosticsClient {
     /// client errors.
     static func nodeError(for failure: CatalogTargetFailure) -> GnosticDiagnosticsClientError {
         switch failure {
-        case .unavailable: .nodeUnavailable
+        case .unavailable, .runtimeInstanceUnavailable: .nodeUnavailable
         case .ambiguous: .nodeAmbiguous
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
         }
     }
 }

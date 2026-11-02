@@ -205,17 +205,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             result[entry.key] = startedAt
         }
 
-        var interoperability: Set<String> = [
-            InteroperabilityCapability.textTurn.rawValue,
-            InteroperabilityCapability.streamedUpdates.rawValue,
-            InteroperabilityCapability.cancellation.rawValue,
-            InteroperabilityCapability.permissionMediation.rawValue,
-            InteroperabilityCapability.timelineManagement.rawValue,
-        ]
-        if services.workspace != nil {
-            interoperability.insert(InteroperabilityCapability.workspaceAttachment.rawValue)
-            interoperability.insert(InteroperabilityCapability.workspaceToolInvocation.rawValue)
-        }
         let now = Date()
         identity = RuntimeInstanceIdentity(
             id: ascendant.id,
@@ -227,7 +216,6 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             createdAt: now,
             updatedAt: now,
             capabilities: .init(
-                interoperability: interoperability,
                 backendKind: Self.kind,
                 backendVersion: "0.1.16"
             )

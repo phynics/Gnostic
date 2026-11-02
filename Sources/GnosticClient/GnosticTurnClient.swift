@@ -17,16 +17,15 @@ import GnosticProtocol
 /// ## Target validation
 ///
 /// Every call resolves the addressed Timeline from the catalog and requires its
-/// operating Runtime instance to be advertised by the resolving provider. An
-/// advertised Runtime instance provides ``GnosticCapability/textTurnInput``
-/// through ACP v2's required `session/prompt` method. An explicit provider
+/// operating Runtime instance to be advertised by the resolving provider; ACP
+/// v2 requires every Runtime to answer `session/prompt`. An explicit provider
 /// must be the one the catalog attributes to the Timeline. The catalog is
 /// consulted first; the client issues an active discover request only when the
 /// Timeline is absent.
 ///
 /// A refresh is keyed on the Timeline alone. When the Timeline is present but
 /// its operating Runtime instance is absent, resolution reports
-/// ``GnosticTurnClientError/missingCapability(_:)`` without a second refresh; a
+/// ``GnosticTurnClientError/runtimeInstanceUnavailable(_:)`` without a second refresh; a
 /// caller can retry after the next catalog change.
 ///
 /// ## Lifetime
@@ -202,8 +201,8 @@ public final class GnosticTurnClient {
 
     /// Reads the retained updates for an identified Turn.
     ///
-    /// This call applies the same target resolution and `textTurnInput`
-    /// capability gate as ``run(message:timelineID:clientTurnID:providerID:)``.
+    /// This call applies the same target resolution and operating Runtime
+    /// instance check as ``run(message:timelineID:clientTurnID:providerID:)``.
     ///
     /// - Parameters:
     ///   - timelineID: The Timeline the Turn ran on.
@@ -421,7 +420,7 @@ public final class GnosticTurnClient {
             .timeline,
             id: timelineID,
             expectedProviderID: explicitProviderID,
-            requiredCapability: GnosticCapability.textTurnInput
+            requiringRuntimeInstance: true
         ) {
         case let .success(target): return target.providerID
         case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
@@ -434,7 +433,7 @@ public final class GnosticTurnClient {
         case .unavailable: .timelineUnavailable(timelineID)
         case .ambiguous: .timelineAmbiguous(timelineID)
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
+        case let .runtimeInstanceUnavailable(id): .runtimeInstanceUnavailable(id)
         }
     }
 }

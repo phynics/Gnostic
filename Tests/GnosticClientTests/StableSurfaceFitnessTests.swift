@@ -151,6 +151,18 @@ struct StableSurfaceFitnessTests {
         }
     }
 
+    @Test("no baseline names a Gnostic capability or a capability failure (D31)")
+    func capabilityNamesStayOutOfTheBaseline() throws {
+        let names = ["InteroperabilityCapability", "GnosticCapability", "missingCapability", "providedByRuntimeInstance"]
+        for product in Self.products {
+            let lines = try Self.baselineLines(of: product)
+            for name in names {
+                let named = lines.filter { $0.contains(name) }
+                #expect(named.isEmpty, "\(name) was removed by D31 and must stay out of \(product): \(named)")
+            }
+        }
+    }
+
     @Test("the D28 wire plumbing and Core records are not public")
     func trimmedSymbolsStayOutOfTheBaseline() throws {
         let declarations = [
