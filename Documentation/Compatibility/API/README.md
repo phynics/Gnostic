@@ -116,7 +116,11 @@ CONTAINER_RUNTIME=podman ./.devcontainer/run.sh bash -o pipefail -c \
      --products GnosticProtocol --products GnosticClient'
 ```
 
-Replace `0.5.0-rc.1` with the rc tag that the patch follows. The command exits
+Replace `0.5.0-rc.1` with the rc tag that the patch follows. The command was
+run with `--products GnosticProtocol --products GnosticClient` against the
+commit before #714. It listed the breaking changes of that cleanup (removed
+`ACP*` typealiases, `GnosticAscendantObject`, renamed Turn types) in about 10
+minutes. The command exits
 non-zero when it finds a breaking change, and it lists each one. It reports
 removals and changes only, so the baseline remains the check for additions.
 Its output contains absolute paths from the clone. Do not commit them.
