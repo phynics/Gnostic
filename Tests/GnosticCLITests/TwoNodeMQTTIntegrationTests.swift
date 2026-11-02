@@ -658,16 +658,19 @@ struct TwoNodeMQTTIntegrationTests {
             let clock = ContinuousClock()
             let started = clock.now
             _ = kill(owner.process.processIdentifier, SIGKILL)
+            // The wait follows discovery's eviction of the owner, not the 300 s
+            // prompt timeout. The cap here only keeps a regression from
+            // holding the suite. It is timed apart from the cleanup below.
+            let wire = acp.wire
+            let answer = Task { @MainActor in
+                let response = await wire.response(id: promptID, timeout: .seconds(30))
+                return (response, clock.now - started)
+            }
             owner.process.waitUntilExit()
             if let fixturePIDURL = owner.fixturePIDURL {
                 await stopFixtureProcess(at: fixturePIDURL)
             }
-
-            // The wait follows discovery's eviction of the owner, not the 300 s
-            // prompt timeout. The cap here only keeps a regression from
-            // holding the suite.
-            let failure = await acp.wire.response(id: promptID, timeout: .seconds(30))
-            let elapsed = clock.now - started
+            let (failure, elapsed) = await answer.value
             #expect(failure?.error != nil, "The prompt did not fail after its owner was killed (waited \(elapsed)).")
             #expect(elapsed < .seconds(10), "The prompt waited \(elapsed) for a dead owner.")
             #expect(
@@ -677,7 +680,9 @@ struct TwoNodeMQTTIntegrationTests {
             #expect(failure?.error?.message.contains("went offline") == true)
 
             try await consumer.discover(timeout: .seconds(2))
-            let remaining = await consumer.networkObjects().filter { $0.objectID == owner.timelineID }
+            // `session/new` created this Timeline, so check it and the manifest's own.
+            let lostTimelines = [owner.timelineID, try #require(acp.openedTimelineID)]
+            let remaining = await consumer.networkObjects().filter { lostTimelines.contains($0.objectID) }
             #expect(remaining.isEmpty, "A surviving peer took authority for the lost Timeline.")
 
             // The same owner returns. A retry of the same clientTurnID keeps
@@ -1734,6 +1739,9 @@ private final class ACPClientProcess {
     }
 
     /// Initializes the connection and opens a Session, returning its ID.
+    /// The Timeline the last `session/new` created.
+    private(set) var openedTimelineID: UUID?
+
     func openSession(cwd: String) async throws -> String {
         let initialize = send("initialize", #"{"protocolVersion":2}"#)
         _ = await wire.response(id: initialize, timeout: .seconds(20))
@@ -1743,6 +1751,10 @@ private final class ACPClientProcess {
               case let .string(sessionID)? = result["sessionId"] else {
             Issue.record("session/new did not return a session: \(String(describing: response))")
             throw TwoNodeIntegrationError.nodeFailedToStart("gnostic acp")
+        }
+        if case let .dictionary(meta)? = result["_meta"],
+           case let .string(timelineID)? = meta["gnosticTimelineID"] {
+            openedTimelineID = UUID(uuidString: timelineID)
         }
         return sessionID
     }

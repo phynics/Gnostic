@@ -256,7 +256,8 @@ public actor NetworkCatalog {
                     workspaceToolOwners[toolObjectID] = nil
                 }
             }
-            if let owner = workspaceToolOwners.removeValue(forKey: objectID) {
+            if workspaceToolOwners[objectID]?.providerID == providerID,
+               let owner = workspaceToolOwners.removeValue(forKey: objectID) {
                 workspaceTools[owner.workspaceID]?[owner.providerID]?[owner.toolID] = nil
                 if workspaceTools[owner.workspaceID]?[owner.providerID]?.isEmpty == true {
                     workspaceTools[owner.workspaceID]?[owner.providerID] = nil
