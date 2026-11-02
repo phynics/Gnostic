@@ -319,14 +319,6 @@ public struct AscendantBackendConformanceSuite: Sendable {
             "declaration .workspaceFiles is \(declared.contains(.workspaceFiles)) but the host Workspace service offers files: \(filesAvailable)"
         )
 
-        if declared.contains(.workspace) {
-            let advertised = backend.identity.capabilities.interoperability
-            checks.require(
-                advertised.contains(InteroperabilityCapability.workspaceAttachment.rawValue),
-                "declares .workspace but does not advertise workspaceAttachment"
-            )
-        }
-
         await backend.shutdown()
         try checks.finish()
     }

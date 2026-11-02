@@ -5,8 +5,8 @@ import GnosticClient
 import GnosticCore
 
 /// Live, read-only diagnostics through the public consumer facade: connect,
-/// resolve a capability-gated diagnostics client, read one payload-free
-/// snapshot or the bounded raw wire-event stream, then disconnect.
+/// resolve a diagnostics client, read one payload-free snapshot or the bounded
+/// raw wire-event stream, then disconnect.
 ///
 /// Every method maps a ``GnosticDiagnosticsClientError`` to its ``InspectError``
 /// form so the command layer reports one stable failure vocabulary.

@@ -165,21 +165,18 @@ struct GnosticCatalogLookup {
         return runtimeInstanceIDs.count == 1 ? runtimeInstanceIDs.first : nil
     }
 
-    /// Reports whether a provider advertises a Runtime instance that provides
-    /// a capability, optionally restricted to one instance.
+    /// Reports whether a provider advertises a Runtime instance, optionally
+    /// restricted to one instance.
     ///
-    /// A Runtime instance advertises no capability list. It provides each name
-    /// in ``GnosticCapability/providedByRuntimeInstance`` by being advertised:
-    /// ACP v2 requires `session/prompt`, and the Node that hosts the instance
-    /// owns Timeline management and diagnostics.
-    static func runtimeInstanceProvides(
-        _ capability: String,
-        runtimeInstanceID: UUID? = nil,
+    /// A provider offers a client operation when it advertises at least one
+    /// Runtime instance: the Node that hosts the instance owns Timeline
+    /// management and diagnostics, and ACP v2 requires `session/prompt`.
+    static func advertisesRuntimeInstance(
+        _ runtimeInstanceID: UUID? = nil,
         providerID: String,
         in entries: [NetworkCatalogEntry]
     ) -> Bool {
-        guard GnosticCapability.providedByRuntimeInstance.contains(capability) else { return false }
-        return entries.contains { entry in
+        entries.contains { entry in
             entry.objectType == GnosticObjectType.runtimeInstance
                 && (runtimeInstanceID == nil || entry.objectID == runtimeInstanceID)
                 && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
@@ -187,13 +184,11 @@ struct GnosticCatalogLookup {
     }
 
     /// Returns the distinct provider identities that advertise a Runtime
-    /// instance providing a capability. Matching is case-insensitive; the first
-    /// encountered spelling of each provider is returned.
-    static func providers(
-        providing capability: String,
+    /// instance. Matching is case-insensitive; the first encountered spelling of
+    /// each provider is returned.
+    static func providersAdvertisingRuntimeInstance(
         in entries: [NetworkCatalogEntry]
     ) -> [String] {
-        guard GnosticCapability.providedByRuntimeInstance.contains(capability) else { return [] }
         var providers: [String] = []
         var seen: Set<String> = []
         for entry in entries where entry.objectType == GnosticObjectType.runtimeInstance {

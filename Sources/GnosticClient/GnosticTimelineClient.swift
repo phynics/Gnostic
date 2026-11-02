@@ -11,7 +11,8 @@ import GnosticProtocol
 /// ``GnosticConsumerSession`` that created it. It opens no second connection,
 /// hosts no Node, and advertises nothing. Each operation resolves the serving
 /// provider from the session catalog and requires the operating Runtime instance
-/// to provide ``GnosticCapability/timelineManagement``.
+/// to be advertised by that provider, because the Node that hosts a Runtime
+/// instance owns Timeline management.
 ///
 /// Timeline deletion is not exposed because no delete operation exists in the
 /// Gnostic wire contract.
@@ -67,10 +68,11 @@ public final class GnosticTimelineClient {
     ///   - title: The replacement title.
     /// - Returns: The status returned by the serving Node.
     /// - Throws: ``GnosticTimelineClientError`` when the Timeline cannot be
-    ///   resolved, its Runtime instance lacks Timeline management, or the serve
+    ///   resolved, its operating Runtime instance is not advertised by the
+    ///   Timeline's provider (`runtimeInstanceUnavailable`), or the serve
     ///   rejects the call.
     public func update(timelineID: UUID, title: String) async throws -> TimelineStatus {
-        let providerID = try await resolvedTimelineProvider(for: timelineID, requiredCapability: GnosticCapability.timelineManagement)
+        let providerID = try await resolvedTimelineProvider(for: timelineID, requiringRuntimeInstance: true)
         return try await channel.call(
             TimelineManagementProvider.updateOperation,
             request: TimelineUpdateRequest(timelineID: timelineID, title: title),
@@ -83,7 +85,7 @@ public final class GnosticTimelineClient {
 
     /// Reads a Timeline's attachment state from its serving Node.
     ///
-    /// Unlike the mutating operations, status needs no capability. When
+    /// Unlike the mutating operations, status does not need the operating Runtime instance to be advertised. When
     /// `providerID` is given the client asks that provider directly, without a
     /// catalog refresh, so a caller can probe a Timeline it no longer sees
     /// advertised; a Node that does not own the Timeline rejects the call.
@@ -117,17 +119,17 @@ public final class GnosticTimelineClient {
             .runtimeInstance,
             id: runtimeInstanceID,
             expectedProviderID: expected,
-            requiredCapability: GnosticCapability.timelineManagement
+            requiringRuntimeInstance: true
         ) {
         case let .success(target): return target.providerID
         case let .failure(failure): throw Self.error(for: failure, runtimeInstance: runtimeInstanceID)
         }
     }
 
-    /// Resolves the Timeline's provider and, when a capability is required,
-    /// requires its operating Runtime instance to provide it.
-    private func resolvedTimelineProvider(for timelineID: UUID, requiredCapability: String? = nil) async throws -> String {
-        switch await resolver.resolve(.timeline, id: timelineID, requiredCapability: requiredCapability) {
+    /// Resolves the Timeline's provider and, when required, requires its
+    /// operating Runtime instance to be advertised by it.
+    private func resolvedTimelineProvider(for timelineID: UUID, requiringRuntimeInstance: Bool = false) async throws -> String {
+        switch await resolver.resolve(.timeline, id: timelineID, requiringRuntimeInstance: requiringRuntimeInstance) {
         case let .success(target): return target.providerID
         case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
         }
@@ -137,10 +139,9 @@ public final class GnosticTimelineClient {
     /// Timeline client errors.
     static func error(for failure: CatalogTargetFailure, runtimeInstance runtimeInstanceID: UUID) -> GnosticTimelineClientError {
         switch failure {
-        case .unavailable: .runtimeInstanceUnavailable(runtimeInstanceID)
+        case .unavailable, .runtimeInstanceUnavailable: .runtimeInstanceUnavailable(runtimeInstanceID)
         case .ambiguous: .runtimeInstanceAmbiguous(runtimeInstanceID)
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
         }
     }
 
@@ -151,7 +152,7 @@ public final class GnosticTimelineClient {
         case .unavailable: .timelineUnavailable(timelineID)
         case .ambiguous: .timelineAmbiguous(timelineID)
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
+        case let .runtimeInstanceUnavailable(id): .runtimeInstanceUnavailable(id)
         }
     }
 }

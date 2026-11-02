@@ -78,7 +78,6 @@ struct DiagnosticsProviderTests {
                 quarantined: false
             ),
             description: "Test ascendant",
-            capabilities: [GnosticCapability.textTurnInput, GnosticCapability.diagnostics],
             timelines: []
         )
         let timeline = TimelineDiagnostics(
@@ -106,8 +105,7 @@ struct DiagnosticsProviderTests {
         }
         let decodedAscendant = try JSONDecoder().decode(RuntimeInstanceDiagnostics.self, from: Data(ascendantPayload.utf8))
         #expect(decodedAscendant == ascendant)
-        // Capabilities are filtered to the stable/experimental vocabulary and sorted.
-        #expect(decodedAscendant.capabilities == decodedAscendant.capabilities.sorted())
+        #expect(!ascendantPayload.contains("capabilities"))
 
         let timelineResult = try await handler.handle(
             operation: DiagnosticsProvider.timelineOperation,

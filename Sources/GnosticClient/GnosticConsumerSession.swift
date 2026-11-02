@@ -397,8 +397,8 @@ public final class GnosticConsumerSession {
     /// shares the session's subscription and catalog, so it reads payload-free
     /// Node, Runtime instance, and Timeline diagnostics without a second connection or
     /// a hosted Node; neither the session nor the client advertises. Every call
-    /// is gated on ``GnosticCapability/diagnostics`` advertisement so a Node
-    /// without the capability degrades without a wire call.
+    /// requires a provider that advertises a Runtime instance, so a Node
+    /// with none degrades without a wire call.
     ///
     /// - Parameter timeout: The bounded window for discovery refreshes and each
     ///   diagnostics call.

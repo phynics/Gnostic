@@ -282,17 +282,13 @@ A Runtime instance's capabilities are its Runtime's ACP `initialize`
 capabilities, advertised verbatim as discovery data. The ACP adapter reads them
 where the protocol requires it (ADR 0021).
 
-ADR 0020 section 8 retires the Gnostic capability set, but the code has not
-removed it. `GnosticCapability` and `InteroperabilityCapability` remain public in
-`GnosticProtocol`, and the stable client gates calls with them. A Runtime
-instance advertises no capability list. It provides the names in
-`GnosticCapability.providedByRuntimeInstance` (`textTurnInput`,
-`timelineManagement`, `diagnostics`) by being advertised, and a client call
-fails with `missingCapability` when no advertised instance provides the name.
-These names are client-side gating vocabulary, not ACP capabilities, and a
-Runtime never declares them. `Documentation/Compatibility/0.5.0.md` defines the
-gating. Whether to remove the names or keep them as supported vocabulary is an
-owner decision (open question on #718).
+Gnostic defines no capability names (ADR 0020 section 8, owner decision D31).
+`GnosticCapability` and `InteroperabilityCapability` are removed. A Runtime
+instance advertises no capability list. A provider offers a client operation
+when it advertises at least one Runtime instance, and a client reports a missing
+Runtime instance with its own error (`runtimeInstanceUnavailable`, or
+`nodeUnavailable` for node diagnostics).
+`Documentation/Compatibility/0.5.0.md` defines the rule.
 
 ## protocol major
 
@@ -403,5 +399,5 @@ code or its tests are obsolete. Remove them only through the owning issue.
 | Agent (Gnostic-owned), Agent definition | Timeline and Runtime instance | A harness carries its own identity and instructions (ADR 0020, ADR 0021). |
 | Native Runtime, special-Node Runtime | ACP Runtime process | Every Runtime uses ACP v2 over stdio; no separate in-process Runtime kind exists (ADR 0021). |
 | Gnostic harness agent | Standalone reference Runtime | The reference Runtime is a separate ACP process, not a Gnostic Agent or special Node (ADR 0021). |
-| Gnostic interoperability capability as an advertised list, backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | The Node advertises no capability list (ADR 0020). `InteroperabilityCapability` and `GnosticCapability` are still public client-side gating names; see Capability. Removal is an open owner decision. |
+| Gnostic interoperability capability as an advertised list, `GnosticCapability`, `InteroperabilityCapability`, `missingCapability`, backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | The Node advertises no capability list and Gnostic defines no capability names (ADR 0020; removed in #723). A missing Runtime instance is `runtimeInstanceUnavailable`; see Capability. |
 | `ACPProfile`, `gnostic acp profiles` | Runtime instances and their Timelines | ADR 0020, O7. |

@@ -544,9 +544,9 @@ struct TurnClientFacadeTests {
         }
     }
 
-    @Test("rejects an ascendant without the text-turn capability")
-    func rejectsMissingCapability() async throws {
-        let namespace = namespaced("capability")
+    @Test("rejects a Turn on a Timeline whose Runtime instance is not advertised")
+    func rejectsUnadvertisedRuntimeInstance() async throws {
+        let namespace = namespaced("runtime-instance")
         let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
         defer { provider.manager.stop() }
 
@@ -560,9 +560,10 @@ struct TurnClientFacadeTests {
                     clientTurnID: "capability-1",
                     providerID: provider.providerID
                 )
-                Issue.record("an Ascendant without textTurnInput was accepted")
+                Issue.record("a Turn on a Timeline with an unadvertised Runtime instance was accepted")
             } catch let error as GnosticTurnClientError {
-                #expect(error == .missingCapability(GnosticCapability.textTurnInput))
+                #expect(error == .runtimeInstanceUnavailable(provider.ascendantID))
+                #expect(error.reasonCode == "runtimeInstanceUnavailable")
             }
         }
     }
@@ -589,7 +590,7 @@ struct TurnClientFacadeTests {
         #expect(GnosticTurnClientError.timelineUnavailable(id).reasonCode == "timelineUnavailable")
         #expect(GnosticTurnClientError.timelineAmbiguous(id).reasonCode == "timelineAmbiguous")
         #expect(GnosticTurnClientError.providerMismatch.reasonCode == "providerMismatch")
-        #expect(GnosticTurnClientError.missingCapability("capability").reasonCode == "missingCapability")
+        #expect(GnosticTurnClientError.runtimeInstanceUnavailable(id).reasonCode == "runtimeInstanceUnavailable")
         #expect(GnosticTurnClientError
             .callFailed(reasonCode: "turnConflict", statusCode: 409, retryable: true)
             .reasonCode == "turnConflict")

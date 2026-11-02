@@ -6,19 +6,19 @@ import GnosticProtocol
 
 /// Failures produced by the public live-diagnostics client.
 public enum GnosticDiagnosticsClientError: Error, Sendable, Equatable, LocalizedError {
-    /// The resolved provider does not advertise the required capability.
+    /// No live provider serves node-wide diagnostics, because none advertises a
+    /// Runtime instance, or the addressed provider does not.
     ///
-    /// This is the clear degradation path: a Node without the diagnostics
-    /// capability is refused locally without a wire call.
-    case missingCapability(String)
-
-    /// No live provider serves node-wide diagnostics.
+    /// This is the clear degradation path: a Node with no Runtime instance is
+    /// refused locally without a wire call.
     case nodeUnavailable
 
     /// More than one live provider serves node-wide diagnostics.
     case nodeAmbiguous
 
-    /// No live provider advertised the addressed Runtime instance.
+    /// No live provider advertised the addressed Runtime instance, or the
+    /// Runtime instance that operates the addressed Timeline is not advertised
+    /// by the Timeline's provider.
     case runtimeInstanceUnavailable(UUID)
 
     /// More than one provider advertised the addressed Runtime instance.
@@ -44,7 +44,6 @@ public enum GnosticDiagnosticsClientError: Error, Sendable, Equatable, Localized
     /// A stable, machine-readable reason label.
     public var reasonCode: String {
         switch self {
-        case .missingCapability: "missingCapability"
         case .nodeUnavailable: "nodeUnavailable"
         case .nodeAmbiguous: "nodeAmbiguous"
         case .runtimeInstanceUnavailable: "runtimeInstanceUnavailable"
@@ -59,14 +58,12 @@ public enum GnosticDiagnosticsClientError: Error, Sendable, Equatable, Localized
     /// A stable, human-readable description of the failure.
     public var errorDescription: String? {
         switch self {
-        case let .missingCapability(capability):
-            "The selected provider does not advertise capability \(capability)."
         case .nodeUnavailable:
-            "No discovered Node serves live diagnostics."
+            "No discovered Node advertises a Runtime instance, so none serves live diagnostics."
         case .nodeAmbiguous:
             "More than one discovered Node serves live diagnostics."
         case let .runtimeInstanceUnavailable(id):
-            "Runtime instance \(id.uuidString.lowercased()) was not discovered."
+            "Runtime instance \(id.uuidString.lowercased()) was not discovered, or is not advertised by the Timeline's provider."
         case let .runtimeInstanceAmbiguous(id):
             "Runtime instance \(id.uuidString.lowercased()) is advertised by more than one provider."
         case let .timelineUnavailable(id):

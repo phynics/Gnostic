@@ -23,7 +23,6 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
     case timelineUnavailable(UUID)
     case timelineAmbiguous(UUID)
     case providerMismatch
-    case missingCapability(String)
     case promptTooLarge
     /// The Timeline has an active Turn, so Gnostic rejected this one before it
     /// reached the Runtime. The prompt was not queued and not inserted.
@@ -56,7 +55,6 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case let .timelineUnavailable(id): "Timeline \(id.uuidString.lowercased()) was not discovered."
         case let .timelineAmbiguous(id): "Timeline \(id.uuidString.lowercased()) is advertised by more than one Node."
         case .providerMismatch: "The response came from a different provider than the addressed Node."
-        case let .missingCapability(capability): "The selected Runtime instance does not advertise capability \(capability)."
         case .promptTooLarge:
             "The prompt exceeds the maximum size the Turn wire accepts. Shorten it and retry."
         case .timelineBusy: "Timeline is busy"
@@ -89,7 +87,6 @@ public enum RemoteTurnClientError: Error, Sendable, LocalizedError {
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
         case .providerMismatch: "providerMismatch"
-        case .missingCapability: "missingCapability"
         case .promptTooLarge: "promptTooLarge"
         case .timelineBusy: "timelineBusy"
         case .insertionUnknown: "insertionUnknown"

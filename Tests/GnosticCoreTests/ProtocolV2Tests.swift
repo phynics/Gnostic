@@ -24,17 +24,6 @@ struct ProtocolV2Tests {
         #expect(!json.contains("me.atkn.gnostic.Agent"))
     }
 
-    @Test("stable capabilities do not advertise an unsupported cancellation seam")
-    func stableCapabilitiesOnlyAdvertiseImplementedSeams() {
-        // Every interoperability capability is stable except the cancellation
-        // seam, which this build does not advertise. A new capability therefore
-        // lands in `stable` only after an explicit review of this expectation.
-        let supported = Set(InteroperabilityCapability.allCases.map(\.rawValue))
-            .subtracting([InteroperabilityCapability.cancellation.rawValue])
-        #expect(GnosticCapability.stable == supported)
-        #expect(GnosticCapability.turnCancellation == InteroperabilityCapability.cancellation.rawValue)
-    }
-
     @Test("Turn requests, results, replay updates, and errors carry the protocol major")
     func turnPayloadsCarryProtocolMajor() throws {
         let request = TurnRequest(

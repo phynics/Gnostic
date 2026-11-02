@@ -9,7 +9,7 @@ import Testing
 // compiles against the public GnosticCore API alone and avoids testable
 // imports where possible, so passing here proves that an external consumer can
 // read payload-free Node, Ascendant, and Timeline diagnostics over a consumer
-// session, and that a Node without the diagnostics capability degrades clearly
+// session, and that a Node without a Runtime instance degrades clearly
 // before any wire call.
 
 @Suite("Public diagnostics client", .timeLimit(.minutes(1)))
@@ -59,9 +59,9 @@ struct DiagnosticsClientFacadeTests {
         }
     }
 
-    @Test("degrades clearly when no provider advertises diagnostics")
-    func degradesWhenCapabilityIsMissing() async throws {
-        let namespace = namespaced("missing-capability")
+    @Test("degrades clearly when no provider advertises a Runtime instance")
+    func degradesWhenNoRuntimeInstanceIsAdvertised() async throws {
+        let namespace = namespaced("no-runtime-instance")
         let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
         defer { provider.manager.stop() }
 
@@ -70,10 +70,35 @@ struct DiagnosticsClientFacadeTests {
             let client = try session.diagnosticsClient(timeout: .seconds(1))
             do {
                 _ = try await client.node()
-                Issue.record("a Node without the diagnostics capability was accepted")
+                Issue.record("a Node without a Runtime instance was accepted")
             } catch let error as GnosticDiagnosticsClientError {
-                #expect(error == .missingCapability(GnosticCapability.diagnostics))
-                #expect(error.reasonCode == "missingCapability")
+                #expect(error == .nodeUnavailable)
+                #expect(error.reasonCode == "nodeUnavailable")
+            }
+            do {
+                _ = try await client.node(providerID: provider.providerID)
+                Issue.record("a pinned Node without a Runtime instance was accepted")
+            } catch let error as GnosticDiagnosticsClientError {
+                #expect(error == .nodeUnavailable)
+            }
+        }
+    }
+
+    @Test("rejects a Timeline whose operating Runtime instance is not advertised")
+    func rejectsTimelineWithUnadvertisedRuntimeInstance() async throws {
+        let namespace = namespaced("timeline-no-runtime-instance")
+        let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
+        defer { provider.manager.stop() }
+
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            try await session.discover()
+            let client = try session.diagnosticsClient(timeout: .seconds(1))
+            do {
+                _ = try await client.timeline(provider.timelineID)
+                Issue.record("a Timeline with an unadvertised Runtime instance was accepted")
+            } catch let error as GnosticDiagnosticsClientError {
+                #expect(error == .runtimeInstanceUnavailable(provider.ascendantID))
+                #expect(error.reasonCode == "runtimeInstanceUnavailable")
             }
         }
     }
@@ -188,7 +213,6 @@ struct DiagnosticsClientFacadeTests {
     @Test("reason codes are stable")
     func reasonCodesAreStable() {
         let id = UUID()
-        #expect(GnosticDiagnosticsClientError.missingCapability("capability").reasonCode == "missingCapability")
         #expect(GnosticDiagnosticsClientError.nodeUnavailable.reasonCode == "nodeUnavailable")
         #expect(GnosticDiagnosticsClientError.nodeAmbiguous.reasonCode == "nodeAmbiguous")
         #expect(GnosticDiagnosticsClientError.runtimeInstanceUnavailable(id).reasonCode == "runtimeInstanceUnavailable")
@@ -235,7 +259,6 @@ struct DiagnosticsClientFacadeTests {
         RuntimeInstanceDiagnostics(
             runtimeInstance: DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Diagnostics Ascendant", health: .healthy, quarantined: false),
             description: "Offline diagnostics provider.",
-            capabilities: [GnosticCapability.diagnostics],
             timelines: []
         )
     }

@@ -6,7 +6,9 @@ import GnosticProtocol
 
 /// Failures produced by the public Timeline client.
 public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedError {
-    /// No live provider advertised the addressed Runtime instance.
+    /// No live provider advertised the addressed Runtime instance, or the
+    /// Runtime instance that operates the addressed Timeline is not advertised
+    /// by the Timeline's provider.
     case runtimeInstanceUnavailable(UUID)
 
     /// More than one provider advertised the addressed Runtime instance.
@@ -17,9 +19,6 @@ public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedErr
 
     /// More than one provider advertised the addressed Timeline.
     case timelineAmbiguous(UUID)
-
-    /// The resolved Runtime instance does not provide Timeline management.
-    case missingCapability(String)
 
     /// The response came from a different provider than the addressed one.
     case providerMismatch
@@ -37,7 +36,6 @@ public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedErr
         case .runtimeInstanceAmbiguous: "runtimeInstanceAmbiguous"
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
-        case .missingCapability: "missingCapability"
         case .providerMismatch: "providerMismatch"
         case let .callFailed(reasonCode, _, _): reasonCode
         }
@@ -47,15 +45,13 @@ public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedErr
     public var errorDescription: String? {
         switch self {
         case let .runtimeInstanceUnavailable(id):
-            "Runtime instance \(id.uuidString.lowercased()) was not discovered."
+            "Runtime instance \(id.uuidString.lowercased()) was not discovered, or is not advertised by the Timeline's provider."
         case let .runtimeInstanceAmbiguous(id):
             "Runtime instance \(id.uuidString.lowercased()) is advertised by more than one provider."
         case let .timelineUnavailable(id):
             "Timeline \(id.uuidString.lowercased()) was not discovered."
         case let .timelineAmbiguous(id):
             "Timeline \(id.uuidString.lowercased()) is advertised by more than one provider."
-        case let .missingCapability(capability):
-            "The selected Runtime instance does not provide capability \(capability)."
         case .providerMismatch:
             "The response came from a provider other than the one selected from the catalog."
         case let .callFailed(reasonCode, statusCode, _):

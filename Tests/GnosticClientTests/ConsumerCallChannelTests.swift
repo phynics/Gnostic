@@ -62,8 +62,8 @@ struct ConsumerCallChannelTests {
         #expect(GnosticCatalogLookup.provider(of: GnosticObjectType.timeline, id: id, in: one, expected: "node-a") == .provider("Node-A"))
     }
 
-    @Test("capability checks match the operating Runtime instance on the addressed provider")
-    func operatingRuntimeInstanceCapability() {
+    @Test("Runtime instance checks match the operating Runtime instance on the addressed provider")
+    func operatingRuntimeInstanceAdvertisement() {
         let timelineID = UUID()
         let runtimeID = UUID()
         let entries = [
@@ -75,11 +75,11 @@ struct ConsumerCallChannelTests {
 
         let operating = GnosticCatalogLookup.runtimeInstanceID(ofTimeline: timelineID, providerID: "NODE-A", in: entries)
         #expect(operating == runtimeID)
-        #expect(GnosticCatalogLookup.runtimeInstanceProvides(GnosticCapability.textTurnInput, runtimeInstanceID: runtimeID, providerID: "node-a", in: entries))
-        #expect(!GnosticCatalogLookup.runtimeInstanceProvides(GnosticCapability.workspaceAttachment, providerID: "node-a", in: entries))
-        #expect(!GnosticCatalogLookup.runtimeInstanceProvides(GnosticCapability.textTurnInput, providerID: "node-b", in: entries))
-        #expect(GnosticCatalogLookup.providers(providing: GnosticCapability.diagnostics, in: entries) == ["node-a"])
-        #expect(GnosticCatalogLookup.providers(providing: GnosticCapability.workspaceAttachment, in: entries).isEmpty)
+        #expect(GnosticCatalogLookup.advertisesRuntimeInstance(runtimeID, providerID: "node-a", in: entries))
+        #expect(!GnosticCatalogLookup.advertisesRuntimeInstance(UUID(), providerID: "node-a", in: entries))
+        #expect(!GnosticCatalogLookup.advertisesRuntimeInstance(providerID: "node-b", in: entries))
+        #expect(GnosticCatalogLookup.providersAdvertisingRuntimeInstance(in: entries) == ["node-a"])
+        #expect(GnosticCatalogLookup.providersAdvertisingRuntimeInstance(in: entries.filter { $0.objectType == GnosticObjectType.timeline }).isEmpty)
         #expect(GnosticCatalogLookup.runtimeInstanceID(ofTimeline: timelineID, providerID: "node-b", in: entries) == nil)
     }
 

@@ -358,7 +358,6 @@ public final class NodeRuntime {
                 quarantined: backendSupervisor.isQuarantined(identity.id)
             ),
             description: identity.description,
-            capabilities: identity.capabilities.interoperability.sorted(),
             timelines: Array(timelines.prefix(GnosticWirePayload.maximumListItems))
         )
     }

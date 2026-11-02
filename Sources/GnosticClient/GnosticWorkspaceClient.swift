@@ -271,18 +271,15 @@ public final class GnosticWorkspaceClient {
         }
     }
 
-    /// Resolves the Timeline's provider and, when a capability is required,
-    /// requires its operating Runtime instance to provide it.
+    /// Resolves the Timeline's provider.
     private func resolvedTimelineProvider(
         _ explicitProviderID: String?,
-        for timelineID: UUID,
-        requiredCapability: String? = nil
+        for timelineID: UUID
     ) async throws -> String {
         switch await resolver.resolve(
             .timeline,
             id: timelineID,
-            expectedProviderID: explicitProviderID,
-            requiredCapability: requiredCapability
+            expectedProviderID: explicitProviderID
         ) {
         case let .success(target): return target.providerID
         case let .failure(failure): throw Self.error(for: failure, timeline: timelineID)
@@ -293,10 +290,11 @@ public final class GnosticWorkspaceClient {
     /// addressed by Timeline.
     static func error(for failure: CatalogTargetFailure, timeline timelineID: UUID) -> GnosticWorkspaceClientError {
         switch failure {
-        case .unavailable: .timelineUnavailable(timelineID)
+        // Workspace operations do not require the operating Runtime instance, so
+        // the resolver never reports it; the case maps to the Timeline anyway.
+        case .unavailable, .runtimeInstanceUnavailable: .timelineUnavailable(timelineID)
         case .ambiguous: .timelineAmbiguous(timelineID)
         case .providerMismatch: .providerMismatch
-        case let .missingCapability(capability): .missingCapability(capability)
         }
     }
 
