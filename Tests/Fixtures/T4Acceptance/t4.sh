@@ -18,9 +18,11 @@
 # works on Linux and macOS and does not need /proc. Every helper that signals a recorded
 # process, or refuses because one is alive, checks the record first with _t4_owned.
 
-# _t4_identity <pid>: print the start time and command line of a process.
+# _t4_identity <pid>: print the start time and command line of a process. ps prints the
+# start time in the shell's time zone and locale, and another terminal can differ, so both
+# are fixed here.
 _t4_identity() {
-	ps -o lstart= -o command= -p "$1" 2> /dev/null
+	LC_ALL=C TZ=UTC ps -o lstart= -o command= -p "$1" 2> /dev/null
 }
 
 # _t4_record <name> <pid>: record the identity of a process we started.

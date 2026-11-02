@@ -156,6 +156,21 @@ check "t4_node_start starts when the recorded process is gone, and records its i
 check "a reused PID is never signalled, and the record is cleared and reported" test "$ok" = 0
 [ "$ok" = 0 ] || cat "$work/reuse.report"
 
+# A record stays valid in another terminal's time zone or locale.
+(
+	t4env zone
+	. "$t4sh"
+	sleep 60 & live=$!
+	echo "$live" > "$T4_WORK/pids/b"
+	TZ=UTC LC_ALL=C _t4_record b "$live"
+	TZ=Asia/Tokyo _t4_owned b; first=$?
+	TZ=America/New_York LC_ALL=POSIX _t4_owned b; second=$?
+	kept=$(cat "$T4_WORK/pids/b" 2> /dev/null)
+	kill "$live" 2> /dev/null
+	[ "$first" = 0 ] && [ "$second" = 0 ] && [ "$kept" = "$live" ]
+) && ok=0 || ok=1
+check "a recorded process keeps its identity in another time zone or locale" test "$ok" = 0
+
 # The broker guard.
 (
 	t4env broker
