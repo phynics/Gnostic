@@ -66,7 +66,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private var sessionStates: [UUID: TimelineJournalSessionState] = [:]
     private var pendingSessionCreations = 0
     private var bindingTimelineIDsBySessionID: [String: UUID] = [:]
-    private var pendingSessionUpdates: [String: [ACPSessionUpdate]] = [:]
+    private var pendingSessionUpdates: [String: [ACPReceivedSessionUpdate]] = [:]
     private var timelineIDsBySessionID: [String: UUID]
     private var sessionCwds: [UUID: String]
     private var sessionProjectKinds: [UUID: Project.Kind]
@@ -904,8 +904,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 output: input.fileHandleForWriting,
                 onSessionUpdate: { [weak self, updateRouter] sessionID, update in
                     guard let self else { return }
-                    if try await self.recordRawSessionUpdate(sessionID: sessionID, update: update) {
-                        updateRouter.enqueue(sessionID: sessionID, update)
+                    if try await self.recordRawSessionUpdate(sessionID: sessionID, update: update),
+                       let typed = update.typed {
+                        updateRouter.enqueue(sessionID: sessionID, typed)
                     }
                 },
                 onFailure: { [weak self] in
@@ -1070,7 +1071,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         sessionStates[timelineID] = state
     }
 
-    private func recordRawSessionUpdate(sessionID: String, update: ACPSessionUpdate) async throws -> Bool {
+    private func recordRawSessionUpdate(sessionID: String, update: ACPReceivedSessionUpdate) async throws -> Bool {
         guard timelineJournalRecorder != nil else { return true }
         if bindingTimelineIDsBySessionID[sessionID] != nil ||
             (timelineIDsBySessionID[sessionID] == nil && pendingSessionCreations > 0) {
@@ -1085,14 +1086,14 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         return true
     }
 
-    private func recordBoundSessionUpdate(sessionID: String, update: ACPSessionUpdate) async throws {
+    private func recordBoundSessionUpdate(sessionID: String, update: ACPReceivedSessionUpdate) async throws {
         guard let timelineJournalRecorder else { return }
         guard let timelineID = timelineIDsBySessionID[sessionID] else {
             throw TimelineJournalError.invalidPayload("ACP update references an unknown or duplicate Session ID")
         }
         if let activeTurn = activeTurns[timelineID], activeTurn.sessionID == sessionID {
             let terminalOutcome: TurnTerminalOutcome?
-            if case let .stateUpdate(state) = update, state.isIdle {
+            if case let .stateUpdate(state) = update.received.update, state.isIdle {
                 terminalOutcome = .from(stopReason: state.idleStopReason)
             } else {
                 terminalOutcome = nil
@@ -1103,7 +1104,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                     timelineID: timelineID,
                     clientTurnID: activeTurn.clientTurnID,
                     sequence: activeTurn.nextTimelineUpdateSequence(),
-                    update: update,
+                    receivedUpdate: update.received,
                     terminal: terminalOutcome != nil,
                     terminalOutcome: terminalOutcome
                 )
@@ -1113,7 +1114,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 timelineID: timelineID,
                 sessionID: sessionID,
                 clientTurnID: nil,
-                update: update
+                receivedUpdate: update.received
             )
         }
     }
@@ -1210,7 +1211,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         while let queued = pendingSessionUpdates.removeValue(forKey: response.sessionId) {
             for update in queued {
                 try await recordBoundSessionUpdate(sessionID: response.sessionId, update: update)
-                updateRouter.enqueue(sessionID: response.sessionId, update)
+                if let typed = update.typed {
+                    updateRouter.enqueue(sessionID: response.sessionId, typed)
+                }
             }
         }
         if pendingSessionCreations == 1 && !pendingSessionUpdates.isEmpty {

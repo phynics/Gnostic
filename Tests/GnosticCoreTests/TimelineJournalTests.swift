@@ -29,6 +29,60 @@ struct TimelineJournalTests {
         #expect(record.payload == .replayEpochStarted(previousEpoch: nil, afterSequence: 0))
     }
 
+    @Test("a received ACP update keeps what its typed form cannot, through restart, in both ACP payload kinds")
+    func receivedUpdatesSurviveRestart() async throws {
+        let timelineID = UUID()
+        let url = makeURL()
+        let journal = try TimelineJournal(fileURL: url, timelineID: timelineID)
+        let received: [ACPValue] = [
+            .object(["sessionUpdate": .string("state_update"), "state": .string("running"), "vendorProgress": .int(3)]),
+            .object([
+                "sessionUpdate": .string("agent_message_chunk"),
+                "messageId": .string("m"),
+                "content": .object(["type": .string("text"), "text": .string("hi"), "annotation": .bool(true)]),
+                "vendorTrace": .array([.string("a")]),
+            ]),
+            // A known kind that does not fit its type.
+            .object(["sessionUpdate": .string("state_update"), "state": .int(5), "vendorMisfit": .bool(true)]),
+        ]
+        let updates = try received.map { try #require(ReceivedACPUpdate(received: $0)) }
+        #expect(updates[0].update == .stateUpdate(.running(meta: nil)))
+        #expect(updates[2].update == .other(sessionUpdate: "state_update", fields: [
+            "state": .int(5), "vendorMisfit": .bool(true),
+        ]))
+        for (index, update) in updates.enumerated() {
+            try await journal.append(.acpUpdate(sessionID: "s", update: TurnSessionUpdate(
+                timelineID: timelineID, clientTurnID: "turn", sequence: index + 1, receivedUpdate: update
+            )))
+            try await journal.append(.rawACPUpdate(sessionID: "s", clientTurnID: nil, update: update))
+        }
+
+        let reopened = try TimelineJournal(fileURL: url, timelineID: timelineID)
+        try #require(await reopened.status() == .writable)
+        var replayed: [ReceivedACPUpdate] = []
+        for record in try await reopened.replay() {
+            switch record.payload {
+            case let .acpUpdate(_, update): replayed.append(update.receivedUpdate)
+            case let .rawACPUpdate(_, _, update): replayed.append(update)
+            default: break
+            }
+        }
+        #expect(replayed.map(\.receivedValue) == received.flatMap { [$0, $0] })
+        #expect(replayed == updates.flatMap { [$0, $0] })
+    }
+
+    @Test("an update whose typed form is faithful stores no override")
+    func faithfulUpdateHasNoOverride() throws {
+        let value = ACPValue.object([
+            "sessionUpdate": .string("state_update"), "state": .string("running"), "_meta": .object(["k": .string("v")]),
+        ])
+        let update = try #require(ReceivedACPUpdate(received: value))
+        #expect(update.receivedOverride == nil)
+        #expect(update.receivedValue == value)
+        #expect(update == ReceivedACPUpdate(.stateUpdate(.running(meta: ["k": .string("v")]))))
+        #expect(ReceivedACPUpdate(received: .object(["state": .string("running")])) == nil)
+    }
+
     @Test("records ordered host and raw ACP events across replay epochs")
     func orderedEventsAndReplayEpochs() async throws {
         let timelineID = UUID()

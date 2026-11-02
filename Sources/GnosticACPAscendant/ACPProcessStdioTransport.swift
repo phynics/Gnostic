@@ -2,7 +2,36 @@
 
 import Foundation
 import GnosticACPWire
+import GnosticCore
 import GnosticProtocol
+
+/// One `session/update` notification as the Runtime sent it.
+///
+/// `received` is what the Timeline journal stores. `typed` is the update in its
+/// fixed ACP type, and it is `nil` when the notification does not fit that type.
+/// Only a typed update drives Turn projection, so a misfit is journaled and
+/// otherwise ignored.
+struct ACPReceivedSessionUpdate: Sendable {
+    let sessionID: String
+    let received: ReceivedACPUpdate
+    let typed: ACPSessionUpdate?
+
+    /// Returns `nil` when the notification has no session ID or no update kind.
+    init?(params: ACPValue) {
+        guard case let .object(fields) = params,
+              case let .string(sessionID)? = fields["sessionId"],
+              let updateValue = fields["update"],
+              let received = ReceivedACPUpdate(received: updateValue) else { return nil }
+        self.sessionID = sessionID
+        self.received = received
+        if let data = try? JSONEncoder().encode(params),
+           let notification = try? JSONDecoder().decode(ACPSessionNotification.self, from: data) {
+            typed = notification.update
+        } else {
+            typed = nil
+        }
+    }
+}
 
 /// Nonblocking ACP transport for a child process's stdin and stdout pipes.
 final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAFETY: Transport state is lock-guarded, and teardown closes the single-reader/single-writer FileHandles before awaiting both tasks.
@@ -13,7 +42,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     private let sendContinuation: AsyncStream<ACPJSONRPCMessage>.Continuation
     private let input: FileHandle
     private let output: FileHandle
-    private let onSessionUpdate: @Sendable (String, ACPSessionUpdate) async throws -> Void
+    private let onSessionUpdate: @Sendable (String, ACPReceivedSessionUpdate) async throws -> Void
     private let onFailure: @Sendable () -> Void
     private let lock = NSLock()
     private var started = false
@@ -25,7 +54,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (String, ACPSessionUpdate) async throws -> Void,
+        onSessionUpdate: @escaping @Sendable (String, ACPReceivedSessionUpdate) async throws -> Void,
         onFailure: @escaping @Sendable () -> Void
     ) {
         self.input = input
@@ -58,9 +87,8 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                         if case .notification(let notification) = message,
                            notification.method == ACPv2Protocol.ClientMethod.sessionUpdate,
                            let params = notification.params,
-                           let paramsData = try? JSONEncoder().encode(params),
-                           let sessionNotification = try? JSONDecoder().decode(ACPSessionNotification.self, from: paramsData) {
-                             try await onSessionUpdate(sessionNotification.sessionId, sessionNotification.update)
+                           let received = ACPReceivedSessionUpdate(params: params) {
+                            try await onSessionUpdate(received.sessionID, received)
                         }
                         messageContinuation.yield(message)
                     }

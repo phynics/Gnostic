@@ -230,6 +230,125 @@ struct ACPAscendantBackendTests {
         #expect(fields["extension"] == .object(["phase": .string("fixture")]))
     }
 
+    @Test("known ACP update kinds reach the Timeline journal exactly as received, and survive a restart")
+    @MainActor
+    func knownKindsAreJournaledAsReceived() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let timelineID = UUID()
+        let runtimeID = UUID()
+        let nodeID = UUID()
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "acp-as-received-\(UUID().uuidString.lowercased())"),
+            node: .init(id: nodeID),
+            ascendants: [.init(
+                id: runtimeID,
+                name: "As-received fixture",
+                defaultTimelineID: timelineID,
+                backend: .init(kind: ACPAscendantBackend.kind, settings: try fixtureSettings(stateHome: stateHome.url))
+            )],
+            timelines: [.init(id: timelineID, title: "As received", operatingAscendantID: runtimeID)]
+        )
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(
+            kind: ACPAscendantBackend.kind,
+            settings: ACPAscendantBackend.settingsSchema
+        ) { ascendant, backendConfiguration, services, timelines in
+            try ACPAscendantBackend(
+                ascendant: ascendant,
+                configuration: backendConfiguration,
+                services: services,
+                timelines: timelines
+            )
+        }
+        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            timelineJournalDirectory: journalDirectory
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        // The misfit update must not fail the Turn.
+        _ = try await runtime.turn(.init(
+            message: "[fixture:as-received] [fixture:unknown-update]",
+            timelineID: timelineID,
+            clientTurnID: "as-received"
+        ))
+        await runtime.shutdown()
+
+        let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory)
+
+        let expectedState: [String: Any] = [
+            "sessionUpdate": "state_update", "state": "running", "vendorProgress": ["percent": 40],
+        ]
+        let expectedChunk: [String: Any] = [
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "fixture-as-received",
+            "content": ["type": "text", "text": "as received"],
+            "vendorTrace": ["a", ["b": 2]],
+            "_meta": ["trace_id": "fixture-known-meta"],
+        ]
+        let expectedMisfit: [String: Any] = [
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": 7,
+            "content": ["type": "text", "text": "misfit"],
+            "vendorMisfit": true,
+        ]
+        let expectedUnknown: [String: Any] = [
+            "sessionUpdate": "vendor_future_update",
+            "extension": ["phase": "fixture"],
+            "_meta": ["trace_id": "fixture-raw-meta"],
+        ]
+
+        /// The ACP update JSON of every journaled update, in sequence order.
+        func journaledUpdates(_ payloads: [[String: Any]]) -> [[String: Any]] {
+            payloads.compactMap { payload in
+                let turn = (payload["acpUpdate"] as? [String: Any])?["update"] as? [String: Any]
+                return (turn?["update"] as? [String: Any])
+                    ?? ((payload["rawACPUpdate"] as? [String: Any])?["update"] as? [String: Any])
+            }
+        }
+        /// Sorted-key JSON text, so two values compare by what they serialize to.
+        func canonical(_ object: [String: Any]) throws -> String {
+            String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+        }
+        func check(_ updates: [[String: Any]], _ label: String) throws {
+            let journaled = try updates.map(canonical)
+            for (name, expected) in [
+                ("state_update with an extra field", expectedState),
+                ("agent_message_chunk with extra fields", expectedChunk),
+                ("agent_message_chunk that does not fit its type", expectedMisfit),
+                ("unknown kind with _meta", expectedUnknown),
+            ] {
+                #expect(
+                    journaled.contains(try canonical(expected)),
+                    "\(label): \(name) was not journaled exactly as received"
+                )
+            }
+        }
+
+        // The bytes on disk.
+        let frames = try String(contentsOf: fileURL, encoding: .utf8).split(separator: "\n")
+        let diskPayloads = try frames.map { frame -> [String: Any] in
+            let json = frame.split(separator: " ", maxSplits: 2)[2]
+            let record = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            return try #require(record["payload"] as? [String: Any])
+        }
+        try check(journaledUpdates(diskPayloads), "on disk")
+
+        // A restarted journal replays the same values.
+        let reopened = try TimelineJournal(fileURL: fileURL, timelineID: timelineID)
+        let replayed = try await reopened.replay().map { record -> [String: Any] in
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(record.payload)
+            return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        try check(journaledUpdates(replayed), "after restart")
+    }
+
     @Test("runtime Timeline genesis is journaled before its ACP Session")
     @MainActor
     func runtimeTimelineGenesisPrecedesSession() async throws {
@@ -1094,7 +1213,7 @@ struct ACPAscendantBackendTests {
         let transition = try #require(records.firstIndex { if case .sessionTransition = $0.payload { return true }; return false })
         let update = try #require(records.firstIndex {
             if case let .rawACPUpdate(_, _, update) = $0.payload,
-               case .other(sessionUpdate: "fixture_session_opened", fields: _) = update { return true }
+               case .other(sessionUpdate: "fixture_session_opened", fields: _) = update.update { return true }
             return false
         })
         #expect(transition < update)

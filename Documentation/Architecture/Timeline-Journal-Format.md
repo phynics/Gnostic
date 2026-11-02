@@ -68,8 +68,13 @@ sequence the Timeline has admitted, so it increases in admission order. A reader
 recomputes the digest from the stored prompt and tag, and it quarantines the
 Timeline when they disagree. A Turn completion stores the Turn's outcome:
 `completed`, `endedUnspecified`, `cancelled`, `failed`, `insertionUnknown`, or
-`unavailable`. An ACP update stores the `ACPSessionUpdate` value as received.
-That value keeps `_meta` and unknown update kinds.
+`unavailable`. An ACP update stores the `update` JSON object exactly as the
+Runtime sent it in `session/update`. It keeps `_meta`, unknown update kinds, and fields that
+Gnostic's typed form of a known kind does not model, such as an extra field on a
+`state_update`. A known kind whose payload does not fit its typed form is stored
+the same way. The Turn does not fail. Gnostic's own consumers skip an update
+that has no typed form. The stored `update` object is the only record of the
+update, so a reader must not rebuild it from a typed value.
 
 A `projectChanged` event stores the desired `Project` and retires the latest
 Session projection before the old Session is closed. Recovery uses this desired
@@ -116,6 +121,15 @@ development build wrote fails the digest check when Gnostic opens it, so the
 Timeline is quarantined and nothing is rewritten. Discard such a journal.
 After the first release, a digest change needs a new format version and a
 migration.
+
+Before release, Gnostic also changed how it fills the ACP `update` object. It
+had stored the re-encoded typed value, which dropped the fields above, and it
+dropped a known kind that did not fit its type. It now stores the received
+object. The record layout and the format version did not change, so a journal
+that an earlier development build wrote still opens and replays. Such a journal
+has the loss that the earlier build already caused. A reader that follows this
+page reads an update with an unrecognized shape without quarantining the
+Timeline.
 
 ## Schema changes
 

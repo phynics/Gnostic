@@ -345,6 +345,38 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         },
       });
     }
+    // Known kinds with fields beyond the fixed ACP types, and one whose payload does
+    // not fit its type (`messageId` is a number). Gnostic must journal each exactly as sent.
+    if (promptText.includes("[fixture:as-received]")) {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "state_update", state: "running", vendorProgress: { percent: 40 } },
+      });
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "fixture-as-received",
+          content: { type: "text", text: "as received" },
+          vendorTrace: ["a", { b: 2 }],
+          _meta: { trace_id: "fixture-known-meta" },
+        },
+      });
+      // The SDK validates what it sends, so write this frame by hand.
+      process.stdout.write(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: 7,
+            content: { type: "text", text: "misfit" },
+            vendorMisfit: true,
+          },
+        },
+      }) + "\n");
+    }
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
       update: {
