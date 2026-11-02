@@ -98,7 +98,7 @@ struct TwoNodeMQTTIntegrationTests {
                 while ContinuousClock.now < journalDeadline {
                     let root = scratch.appendingPathComponent("second/state")
                     if let paths = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
-                        for case let file as URL in paths where file.pathExtension == "jsonl" {
+                        for case let file as URL in paths.allObjects where file.pathExtension == "jsonl" {
                             let contents = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
                             if contents.split(whereSeparator: \.isNewline).contains(where: { $0.contains("turnCompleted") && $0.contains(activeID) }) {
                                 journaled = true
