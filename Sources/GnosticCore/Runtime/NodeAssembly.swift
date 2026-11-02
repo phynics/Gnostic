@@ -238,6 +238,12 @@ struct NodeAssembly {
                 timelineJournals: timelineJournals,
                 timelineJournalProjections: journalProjections
             )
+            for conflict in await registry.recoveredAttachmentConflicts() {
+                ServeLogging.warn(conflict.warning, component: "workspace")
+            }
+            infrastructure.backendWorkspaceService.attachmentConflict = { [registry] timelineID, workspaceID in
+                await registry.attachmentConflict(timelineID: timelineID, workspaceID: workspaceID)
+            }
             let supervisor = AscendantBackendSupervisor(
                 plan: plan,
                 adapters: adapters,
