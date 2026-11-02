@@ -16,7 +16,7 @@ public enum GnosticTurnClientError: Error, Sendable, Equatable, LocalizedError {
     /// from a different provider than the addressed one.
     case providerMismatch
 
-    /// The resolved Ascendant does not advertise the required capability.
+    /// The resolved Runtime instance does not provide the required capability.
     case missingCapability(String)
 
     /// The serve rejected the operation with a structured protocol failure.
@@ -46,7 +46,7 @@ public enum GnosticTurnClientError: Error, Sendable, Equatable, LocalizedError {
         case .providerMismatch:
             "The provider does not own the requested Timeline, or the response came from another provider."
         case let .missingCapability(capability):
-            "The selected Ascendant does not advertise capability \(capability)."
+            "The selected Runtime instance does not provide capability \(capability)."
         case let .callFailed(reasonCode, statusCode, _):
             "The serve rejected the operation: \(reasonCode) (status \(statusCode))."
         }

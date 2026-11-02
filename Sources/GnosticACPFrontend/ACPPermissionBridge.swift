@@ -4,7 +4,7 @@ import GnosticProtocol
 import GnosticCore
 
 enum ACPPermissionBridge {
-    static func parameters(sessionID: String, state: AscendantPermissionState) -> GnosticJSONValue {
+    static func parameters(sessionID: String, state: TurnPermissionState) -> GnosticJSONValue {
         .dictionary([
             "sessionId": .string(sessionID),
             "title": .string(state.title),

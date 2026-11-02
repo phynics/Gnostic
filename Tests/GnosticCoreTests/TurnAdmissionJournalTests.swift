@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 @testable import GnosticCore
 import GnosticProtocol
 import Testing
@@ -32,7 +33,7 @@ struct TurnAdmissionJournalTests {
         let timelineID = UUID()
         let journals = TimelineJournalStore(directoryURL: directory)
         let coordinator = AscendantTurnCoordinator(ledger: AscendantTurnUpdateStore(timelineJournals: journals))
-        let request = AscendantTurnRequest(message: "durable prompt", timelineID: timelineID, clientTurnID: "durable-turn")
+        let request = TurnRequest(message: "durable prompt", timelineID: timelineID, clientTurnID: "durable-turn")
         let sawAdmission = Flag()
 
         let result = try await coordinator.execute(request, ascendantID: UUID()) {
@@ -60,7 +61,7 @@ struct TurnAdmissionJournalTests {
                 return "duplicate"
             }
             Issue.record("The restarted Node answered an admitted Turn it cannot replay.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error.reasonCode == "replayUnavailable")
         }
         #expect(await !reran.value, "A restart dispatched an admitted Turn a second time.")
@@ -77,7 +78,7 @@ struct TurnAdmissionJournalTests {
         let restarted = AscendantTurnCoordinator(
             ledger: AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(directoryURL: directory))
         )
-        let request = AscendantTurnRequest(message: "lost", timelineID: timelineID, clientTurnID: "crashed-turn")
+        let request = TurnRequest(message: "lost", timelineID: timelineID, clientTurnID: "crashed-turn")
         let reran = Flag()
         for attempt in 1...2 {
             do {
@@ -86,7 +87,7 @@ struct TurnAdmissionJournalTests {
                     return "duplicate"
                 }
                 Issue.record("Attempt \(attempt) returned a result for an unknown insertion.")
-            } catch let error as AscendantTurnError {
+            } catch let error as TurnError {
                 #expect(error.reasonCode == "insertionUnknown", "attempt \(attempt)")
                 #expect(!error.retryable)
             }
@@ -114,7 +115,7 @@ struct TurnAdmissionJournalTests {
         let journals = TimelineJournalStore(directoryURL: directory)
         let coordinator = AscendantTurnCoordinator(ledger: AscendantTurnUpdateStore(timelineJournals: journals))
         _ = try await coordinator.execute(
-            AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+            TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
             ascendantID: UUID()
         ) { "first answer" }
 
@@ -132,7 +133,7 @@ struct TurnAdmissionJournalTests {
         let dispatched = Flag()
         do {
             _ = try await restarted.execute(
-                AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "after-corruption"),
+                TurnRequest(message: "second", timelineID: timelineID, clientTurnID: "after-corruption"),
                 ascendantID: UUID()
             ) {
                 await dispatched.set(true)
@@ -153,14 +154,14 @@ struct TurnAdmissionJournalTests {
         // The committed prefix is still readable: an admitted Turn is never rerun.
         do {
             _ = try await restarted.execute(
-                AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+                TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
                 ascendantID: UUID()
             ) {
                 await dispatched.set(true)
                 return "must not run"
             }
             Issue.record("A recovered Turn produced a result.")
-        } catch is AscendantTurnError {
+        } catch is TurnError {
         }
         #expect(await !dispatched.value, "A retry in a quarantined Timeline dispatched an admitted Turn.")
     }
@@ -172,7 +173,7 @@ struct TurnAdmissionJournalTests {
         let journals = TimelineJournalStore(directoryURL: directory)
         let coordinator = AscendantTurnCoordinator(ledger: AscendantTurnUpdateStore(timelineJournals: journals))
         _ = try await coordinator.execute(
-            AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
+            TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "before-corruption"),
             ascendantID: UUID()
         ) { "first answer" }
         let url = TimelineJournalStore.fileURL(for: timelineID, in: directory)
@@ -191,7 +192,7 @@ struct TurnAdmissionJournalTests {
                 return "must not run"
             }
         })
-        let request = AscendantTurnRequest(
+        let request = TurnRequest(
             message: "sentinel-turn-body", timelineID: timelineID, clientTurnID: "after-corruption"
         )
         let response = try await provider.handle(
@@ -236,20 +237,20 @@ struct TurnAdmissionJournalTests {
         let order = Order()
         do {
             _ = try await restarted.execute(
-                AscendantTurnRequest(message: "committed", timelineID: timelineID, clientTurnID: "committed-turn"),
+                TurnRequest(message: "committed", timelineID: timelineID, clientTurnID: "committed-turn"),
                 ascendantID: UUID()
             ) {
                 await order.add("committed")
                 return "must not run"
             }
             Issue.record("A committed admission produced a result after the crash.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error.reasonCode == "insertionUnknown")
         }
         // The torn admission was never committed, so no prompt can have been
         // dispatched for it. The same identity is admitted afresh and runs once.
         let retried = try await restarted.execute(
-            AscendantTurnRequest(message: "torn", timelineID: timelineID, clientTurnID: "torn-turn"),
+            TurnRequest(message: "torn", timelineID: timelineID, clientTurnID: "torn-turn"),
             ascendantID: UUID()
         ) {
             await order.add("torn")

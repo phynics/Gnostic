@@ -5,6 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 @testable import GnosticACPAscendant
+import GnosticACPWire
 import GnosticAscendantConformance
 @_spi(RuntimeHost) import GnosticCore
 @testable import GnosticCore
@@ -1792,7 +1793,7 @@ struct ACPAscendantBackendTests {
         do {
             _ = try await runtime.turn(.init(message: "crash", timelineID: timelineID, clientTurnID: "crash-once"))
             Issue.record("Expected the first ACP Turn to end insertionUnknown.")
-        } catch let AscendantTurnError.insertionUnknown(failedTimelineID, failedClientTurnID) {
+        } catch let TurnError.insertionUnknown(failedTimelineID, failedClientTurnID) {
             #expect(failedTimelineID == timelineID)
             #expect(failedClientTurnID == "crash-once")
         } catch {
@@ -2088,7 +2089,7 @@ struct ACPAscendantBackendTests {
         } catch let AscendantBackendError.terminal(failure) {
             #expect(failure.code == "acpTurnStopped")
         }
-        #expect(await limitedSink.updates.last?.kind == AscendantTurnUpdateKind.error)
+        #expect(await limitedSink.updates.last?.kind == TurnUpdateKind.error)
         await backend.shutdown()
     }
 
@@ -2157,7 +2158,7 @@ struct ACPAscendantBackendTests {
         )
 
         #expect(response.contains("fixture reply: do long work"))
-        #expect(await sink.updates.filter { $0.kind == AscendantTurnUpdateKind.assistantText }.count >= 6)
+        #expect(await sink.updates.filter { $0.kind == TurnUpdateKind.assistantText }.count >= 6)
         #expect(try await backend.operatedTimelines().map(\.id) == [timelineID])
         await backend.shutdown()
     }
@@ -3047,10 +3048,10 @@ struct ACPAscendantBackendTests {
         message: String,
         clientTurnID: String,
         updates: RecordingUpdateSink = RecordingUpdateSink()
-    ) -> Task<AscendantTurnResult, any Error> {
+    ) -> Task<TurnResult, any Error> {
         Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+                TurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
                 ascendantID: UUID(),
                 cancel: { await backend.cancelTurn(timelineID: timelineID, clientTurnID: clientTurnID) }
             ) {
@@ -3083,7 +3084,7 @@ struct ACPAscendantBackendTests {
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "coordinated-insert-1"))
 
         let outcome = await settle(turn)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
+        guard case let .failure(error)? = outcome, case TurnError.cancelled = error else {
             Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3118,7 +3119,7 @@ struct ACPAscendantBackendTests {
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "coordinated-hold-1"))
 
         let outcome = await settle(turn)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
+        guard case let .failure(error)? = outcome, case TurnError.cancelled = error else {
             Issue.record("Expected the Turn to end cancelled, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3138,12 +3139,12 @@ struct ACPAscendantBackendTests {
         _ coordinator: AscendantTurnCoordinator,
         backend: ACPAscendantBackend,
         timelineID: UUID
-    ) async -> AscendantTurnError? {
+    ) async -> TurnError? {
         let next = coordinatedTurn(
             coordinator, backend: backend, timelineID: timelineID, message: "next Turn", clientTurnID: "next-1"
         )
         guard case let .failure(error)? = await settle(next, seconds: 4) else { return nil }
-        return error as? AscendantTurnError
+        return error as? TurnError
     }
 
     @Test("a Runtime that ignores session/cancel cannot hold the Timeline busy past the cancellation bound")
@@ -3173,7 +3174,7 @@ struct ACPAscendantBackendTests {
         // The Runtime never reports `idle`. The Turn ends without claiming it
         // stopped, and the failure retires the backend.
         let outcome = await settle(turn, seconds: 6)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+        guard case let .failure(error)? = outcome, case TurnError.lifecycleUnusable = error else {
             Issue.record("Expected a lifecycleUnusable end within the bound, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3220,7 +3221,7 @@ struct ACPAscendantBackendTests {
         // `idle`. It did not confirm that it stopped, and the next Turn must not
         // start beside its work, so the Turn does not end `cancelled`.
         let outcome = await settle(turn, seconds: 6)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+        guard case let .failure(error)? = outcome, case TurnError.lifecycleUnusable = error else {
             Issue.record("Expected a lifecycleUnusable end within the bound, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3246,7 +3247,7 @@ struct ACPAscendantBackendTests {
             message: "[fixture:ignore-cancel]", clientTurnID: "no-idle-1", updates: RecordingUpdateSink()
         )
         let outcome = await settle(turn, seconds: 6)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+        guard case let .failure(error)? = outcome, case TurnError.lifecycleUnusable = error else {
             Issue.record("Expected a lifecycleUnusable end at the prompt timeout, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3292,7 +3293,7 @@ struct ACPAscendantBackendTests {
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "late-answer-1"))
 
         let outcome = await settle(turn, seconds: 12)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.cancelled = error else {
+        guard case let .failure(error)? = outcome, case TurnError.cancelled = error else {
             Issue.record("Expected the Runtime's late idle to end the Turn cancelled, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3351,7 +3352,7 @@ struct ACPAscendantBackendTests {
         #expect(await runtime.cancelTurn(.init(timelineID: timelineID, clientTurnID: "unconfirmed-1")))
 
         let outcome = await settle(turn, seconds: 8)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.lifecycleUnusable = error else {
+        guard case let .failure(error)? = outcome, case TurnError.lifecycleUnusable = error else {
             Issue.record("Expected a lifecycleUnusable end within the bound, observed \(String(describing: outcome)).")
             await runtime.shutdown()
             return
@@ -3385,7 +3386,7 @@ struct ACPAscendantBackendTests {
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "unanswered-cancel-1"))
 
         let outcome = await settle(turn, seconds: 6)
-        guard case let .failure(error)? = outcome, case AscendantTurnError.insertionUnknown = error else {
+        guard case let .failure(error)? = outcome, case TurnError.insertionUnknown = error else {
             Issue.record("Expected insertionUnknown within the bound, observed \(String(describing: outcome)).")
             await backend.shutdown()
             return
@@ -3591,7 +3592,7 @@ struct ACPAscendantBackendTests {
             )
         }
         let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals")
-        let request = AscendantTurnRequest(message: "lose the response", timelineID: timelineID, clientTurnID: "lost-response-1")
+        let request = TurnRequest(message: "lose the response", timelineID: timelineID, clientTurnID: "lost-response-1")
         var runtime = try await NodeRuntime(
             plan: manifest.compileLaunchPlan(), adapters: adapters, timelineJournalDirectory: journalDirectory
         )
@@ -3601,7 +3602,7 @@ struct ACPAscendantBackendTests {
             do {
                 _ = try await runtime.turn(request)
                 Issue.record("Attempt \(attempt) unexpectedly returned a result.")
-            } catch let error as AscendantTurnError {
+            } catch let error as TurnError {
                 #expect(error.reasonCode == "insertionUnknown", "attempt \(attempt) observed \(error.reasonCode)")
                 #expect(!error.retryable)
             }
@@ -3616,7 +3617,7 @@ struct ACPAscendantBackendTests {
         do {
             _ = try await runtime.turn(request)
             Issue.record("The restarted Node unexpectedly returned a result.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error.reasonCode == "insertionUnknown", "after restart observed \(error.reasonCode)")
         }
         await runtime.shutdown()
@@ -3626,7 +3627,7 @@ struct ACPAscendantBackendTests {
         let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeDirectory)
         let completions = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
             .scan().records.map(\.payload.payload)
-            .compactMap { payload -> TimelineTurnTerminalOutcome? in
+            .compactMap { payload -> TurnTerminalOutcome? in
                 if case let .turnCompleted("lost-response-1", outcome, _) = payload { return outcome }
                 return nil
             }
@@ -3680,7 +3681,7 @@ struct ACPAscendantBackendTests {
         let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeDirectory)
         let completions = try AppendOnlyEventLog<TimelineJournalRecord>(fileURL: fileURL)
             .scan().records.map(\.payload.payload)
-            .compactMap { payload -> TimelineTurnTerminalOutcome? in
+            .compactMap { payload -> TurnTerminalOutcome? in
                 if case let .turnCompleted("unspecified-1", outcome, _) = payload { return outcome }
                 return nil
             }

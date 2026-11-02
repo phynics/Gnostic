@@ -99,7 +99,7 @@ public actor AscendantPermissionCoordinator {
         await resolveUnavailable(value, reason: reason, status: .unavailable)
     }
 
-    private func resolveUnavailable(_ value: Pending, reason: String, status: AscendantPermissionStatus) async {
+    private func resolveUnavailable(_ value: Pending, reason: String, status: TurnPermissionStatus) async {
         try? await updates.recordPermissionDecision(request: value.request, decision: .unavailable(reason: reason))
         await append(value.request, clientTurnID: value.clientTurnID, status: status)
         await updates.finish(timelineID: value.request.timelineID, clientTurnID: value.clientTurnID)
@@ -149,7 +149,7 @@ public actor AscendantPermissionCoordinator {
         return true
     }
 
-    public func denyAll(reason: AscendantPermissionStatus) async {
+    public func denyAll(reason: TurnPermissionStatus) async {
         acceptingResponses = false
         let values = Array(pending.values)
         pending.removeAll()
@@ -161,14 +161,14 @@ public actor AscendantPermissionCoordinator {
     private func append(
         _ request: BackendPermissionRequest,
         clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID,
-        status: AscendantPermissionStatus
+        status: TurnPermissionStatus
     ) async {
         do {
             _ = try await updates.append(
             timelineID: request.timelineID,
             clientTurnID: clientTurnID,
-            kind: AscendantTurnUpdateKind.permissionState.rawValue,
-            permissionState: AscendantPermissionState(
+            kind: TurnUpdateKind.permissionState.rawValue,
+            permissionState: TurnPermissionState(
                 correlationID: request.correlationID,
                 toolCallID: request.toolCallID,
                 title: request.title,

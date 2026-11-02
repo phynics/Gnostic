@@ -51,7 +51,7 @@ struct InspectCommand: AsyncParsableCommand {
 
         @OptionGroup var connection: ConnectionOptions
 
-        @Option(name: .long, help: "Filter by object type: ascendant, timeline, or workspace.")
+        @Option(name: .long, help: "Filter by object type: ascendant (a Runtime instance), timeline, or workspace.")
         var type: String?
 
         @OptionGroup var formatOptions: OutputFormatOptions
@@ -74,7 +74,8 @@ struct InspectCommand: AsyncParsableCommand {
 
         static func canonicalType(for alias: String) -> String {
             switch alias.lowercased() {
-            case "ascendant": GnosticObjectType.ascendant
+            // `ascendant` stays an alias until after rc.1 (D20); it names the Runtime instance.
+            case "ascendant", "runtime-instance", "runtimeinstance": GnosticObjectType.runtimeInstance
             case "timeline": GnosticObjectType.timeline
             case "workspace": GnosticObjectType.workspace
             default: alias

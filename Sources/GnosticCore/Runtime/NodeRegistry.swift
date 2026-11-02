@@ -145,7 +145,7 @@ public actor NodeRegistry {
                 id: timelineID,
                 title: projection.title,
                 attachedWorkspaceIDs: attachments.map(\.workspaceID),
-                ascendantID: runtimeInstanceID,
+                runtimeInstanceID: runtimeInstanceID,
                 isArchived: false,
                 isPrivate: false,
                 createdAt: projection.createdAt,
@@ -163,8 +163,8 @@ public actor NodeRegistry {
                 guard ascendantIDs.contains(operatorID), let value = projected[configuration.id] else {
                     throw NodeRuntimeError.missingTimeline(configuration.id)
                 }
-                guard value.attachedAscendantID == operatorID else {
-                    throw NodeRuntimeError.unknownAscendant(value.attachedAscendantID ?? operatorID)
+                guard value.runtimeInstanceID == operatorID else {
+                    throw NodeRuntimeError.unknownAscendant(value.runtimeInstanceID ?? operatorID)
                 }
                 let journalState = timelineJournalProjections[configuration.id]
                 if let recordedRuntimeID = journalState?.runtimeInstanceID, recordedRuntimeID != operatorID {
@@ -177,7 +177,7 @@ public actor NodeRegistry {
                     id: value.id,
                     title: journalState?.title ?? value.title,
                     attachedWorkspaceIDs: attachments.map(\.workspaceID),
-                    ascendantID: value.ascendantID,
+                    runtimeInstanceID: value.runtimeInstanceID,
                     isArchived: value.isArchived,
                     isPrivate: value.isPrivate,
                     createdAt: journalState?.createdAt ?? value.createdAt,
@@ -193,7 +193,7 @@ public actor NodeRegistry {
                     id: configuration.id,
                     title: journalState?.title ?? configuration.title,
                     attachedWorkspaceIDs: attachments.map(\.workspaceID),
-                    attachedAscendantID: nil,
+                    runtimeInstanceID: nil,
                     isArchived: false,
                     isPrivate: false,
                     createdAt: journalState?.createdAt ?? now,
@@ -207,8 +207,8 @@ public actor NodeRegistry {
         // not list: a runtime Timeline created before a restart. Adoption makes
         // it routable again without rewriting the plan.
         for (id, value) in projected where !configuredOperatedIDs.contains(id) {
-            guard let operatorID = value.ascendantID, ascendantIDs.contains(operatorID) else {
-                throw NodeRuntimeError.unknownAscendant(value.ascendantID ?? id)
+            guard let operatorID = value.runtimeInstanceID, ascendantIDs.contains(operatorID) else {
+                throw NodeRuntimeError.unknownAscendant(value.runtimeInstanceID ?? id)
             }
             let journalState = timelineJournalProjections[id]
             if let recordedRuntimeID = journalState?.runtimeInstanceID, recordedRuntimeID != operatorID {
@@ -221,7 +221,7 @@ public actor NodeRegistry {
                     id: value.id,
                     title: journalState?.title ?? value.title,
                     attachedWorkspaceIDs: attachments.map(\.workspaceID),
-                    ascendantID: value.ascendantID,
+                    runtimeInstanceID: value.runtimeInstanceID,
                     isArchived: value.isArchived,
                     isPrivate: value.isPrivate,
                     createdAt: journalState?.createdAt ?? value.createdAt,
@@ -316,7 +316,7 @@ public actor NodeRegistry {
         defer { releaseTimelineMutation(timeline.id) }
         try requireBackendLease(backendLease, for: ascendantID)
         guard timelines[timeline.id] == nil else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.attachedAscendantID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? ascendantID) }
+        guard timeline.runtimeInstanceID == ascendantID else { throw NodeRuntimeError.unknownAscendant(timeline.runtimeInstanceID ?? ascendantID) }
         try await appendJournalEvents(timelineID: timeline.id, payloads: [
             .timelineCreated(title: timeline.title, runtimeInstanceID: ascendantID, attachments: [])
         ])
@@ -354,7 +354,7 @@ public actor NodeRegistry {
         try requireBackendLease(backendLease, for: ascendantID)
         guard let current = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
         guard current.operatorID == ascendantID,
-              timeline.attachedAscendantID == ascendantID else {
+              timeline.runtimeInstanceID == ascendantID else {
             throw NodeRuntimeError.noOperatingAscendant(timeline.id)
         }
         var events: [TimelineJournalPayload] = []
@@ -417,7 +417,7 @@ public actor NodeRegistry {
         await acquireTimelineMutation(timeline.id)
         defer { releaseTimelineMutation(timeline.id) }
         guard let previous = timelines[timeline.id] else { throw NodeRuntimeError.missingTimeline(timeline.id) }
-        guard timeline.attachedAscendantID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
+        guard timeline.runtimeInstanceID == previous.operatorID else { throw NodeRuntimeError.noOperatingAscendant(timeline.id) }
         if previous.timeline.title != timeline.title {
             try await appendJournalEvents(timelineID: timeline.id, payloads: [.timelineRenamed(title: timeline.title)])
         }

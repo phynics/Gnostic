@@ -17,15 +17,15 @@ import GnosticProtocol
 /// ## Target validation
 ///
 /// Every call resolves the addressed Timeline from the catalog and requires its
-/// operating identity to support text input. A canonical ACP Runtime satisfies
-/// this through ACP v2's required `session/prompt` method; legacy Ascendant
-/// advertisements use ``GnosticCapability/textTurnInput``. An explicit provider
+/// operating Runtime instance to be advertised by the resolving provider. An
+/// advertised Runtime instance provides ``GnosticCapability/textTurnInput``
+/// through ACP v2's required `session/prompt` method. An explicit provider
 /// must be the one the catalog attributes to the Timeline. The catalog is
 /// consulted first; the client issues an active discover request only when the
 /// Timeline is absent.
 ///
 /// A refresh is keyed on the Timeline alone. When the Timeline is present but
-/// its operating identity is absent, resolution reports
+/// its operating Runtime instance is absent, resolution reports
 /// ``GnosticTurnClientError/missingCapability(_:)`` without a second refresh; a
 /// caller can retry after the next catalog change.
 ///
@@ -90,16 +90,16 @@ public final class GnosticTurnClient {
         timelineID: UUID,
         clientTurnID: String? = nil,
         providerID: String? = nil
-    ) async throws -> AscendantTurnResult {
+    ) async throws -> TurnResult {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
         return try await callWithProviderEviction(providerID: target) {
             try await self.channel.call(
                 AscendantTurnProvider.turnOperation,
-                request: AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
-                context: "ascendant.turn request",
+                request: TurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "turn request",
                 providerID: target,
                 timeout: self.promptTimeout,
-                returning: AscendantTurnResult.self
+                returning: TurnResult.self
             )
         }
     }
@@ -128,16 +128,16 @@ public final class GnosticTurnClient {
         timelineID: UUID,
         clientTurnID: String,
         routerID: String
-    ) async throws -> AscendantTurnResult {
+    ) async throws -> TurnResult {
         try Self.requireRouterID(routerID)
         return try await callWithProviderEviction(providerID: routerID) {
             try await self.channel.call(
                 AscendantTurnProvider.turnOperation,
-                request: AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
-                context: "ascendant.turn request",
+                request: TurnRequest(message: message, timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "turn request",
                 providerID: routerID,
                 timeout: self.promptTimeout,
-                returning: AscendantTurnResult.self
+                returning: TurnResult.self
             )
         }
     }
@@ -157,11 +157,11 @@ public final class GnosticTurnClient {
         return try await callWithProviderEviction(providerID: routerID) {
             try await self.channel.call(
                 AscendantTurnProvider.cancelOperation,
-                request: AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
-                context: "ascendant.turn.cancel request",
+                request: TurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "turn.cancel request",
                 providerID: routerID,
                 timeout: self.timeout,
-                returning: AscendantTurnCancellationResult.self
+                returning: TurnCancellationResult.self
             ).cancelled
         }
     }
@@ -191,11 +191,11 @@ public final class GnosticTurnClient {
         return try await callWithProviderEviction(providerID: target) {
             try await self.channel.call(
                 AscendantTurnProvider.cancelOperation,
-                request: AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
-                context: "ascendant.turn.cancel request",
+                request: TurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID),
+                context: "turn.cancel request",
                 providerID: target,
                 timeout: self.timeout,
-                returning: AscendantTurnCancellationResult.self
+                returning: TurnCancellationResult.self
             ).cancelled
         }
     }
@@ -226,21 +226,21 @@ public final class GnosticTurnClient {
         message: String? = nil,
         afterSequence: Int = 0,
         providerID: String? = nil
-    ) async throws -> AscendantTurnReplay {
+    ) async throws -> TurnReplay {
         let target = try await resolvedTurnTarget(providerID, forTimeline: timelineID)
         return try await callWithProviderEviction(providerID: target) {
             try await self.channel.call(
                 AscendantTurnProvider.replayOperation,
-                request: AscendantTurnReplayRequest(
+                request: TurnReplayRequest(
                     timelineID: timelineID,
                     clientTurnID: clientTurnID,
                     message: message,
                     afterSequence: afterSequence
                 ),
-                context: "ascendant.turn.replay request",
+                context: "turn.replay request",
                 providerID: target,
                 timeout: self.timeout,
-                returning: AscendantTurnReplay.self
+                returning: TurnReplay.self
             )
         }
     }
@@ -269,7 +269,7 @@ public final class GnosticTurnClient {
         for clientTurnID: String,
         timelineID: UUID,
         providerID: String? = nil
-    ) async throws -> AsyncStream<AscendantTurnUpdate> {
+    ) async throws -> AsyncStream<TurnUpdate> {
         let expected = try GnosticWirePayload.canonicalClientTurnID(clientTurnID)
         let events = try await updateEvents(providerID: providerID)
         let watchedProvider: String?
@@ -298,9 +298,9 @@ public final class GnosticTurnClient {
                 let evictions = await catalog.providerEvictionStream()
                 for await evicted in evictions
                 where evicted.caseInsensitiveCompare(watchedProvider) == .orderedSame {
-                    continuation.yield(AscendantTurnUpdate(
+                    continuation.yield(TurnUpdate(
                         sequence: sequence.next,
-                        kind: AscendantTurnUpdateKind.error.rawValue,
+                        kind: TurnUpdateKind.error.rawValue,
                         text: "The Timeline owner left the network before the Turn completed.",
                         terminal: true,
                         reasonCode: "providerOffline",
@@ -357,7 +357,7 @@ public final class GnosticTurnClient {
     /// Answers a pending permission request.
     ///
     /// Read `correlationID`, `timelineID`, and `clientTurnID` from an
-    /// ``AscendantTurnUpdate/permissionState`` yielded by ``updates(for:timelineID:providerID:)``.
+    /// ``TurnUpdate/permissionState`` yielded by ``updates(for:timelineID:providerID:)``.
     /// The decision travels one way over the permission response channel, so
     /// this call reports only that the event was published, not that the serve
     /// accepted it. The result of the decision arrives on the update stream:
@@ -367,7 +367,7 @@ public final class GnosticTurnClient {
     ///   - permission: The correlated permission decision.
     ///   - providerID: The serving provider that must accept the response.
     /// - Throws: A validation error when the response cannot be encoded.
-    public func respond(to permission: AscendantPermissionResponse, providerID: String) throws {
+    public func respond(to permission: TurnPermissionResponse, providerID: String) throws {
         manager.publishChannel(try AscendantPermissionProvider.responseEvent(permission.targeted(to: providerID)))
     }
 

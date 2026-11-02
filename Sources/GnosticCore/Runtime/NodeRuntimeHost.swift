@@ -12,8 +12,6 @@ final class NodeRuntimeHost {
     struct TransportWiring {
         /// The manifest node identity advertised alongside every projection.
         let nodeID: UUID
-        let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
-        let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
         let runtimeInstanceObjects: @MainActor () -> [GnosticRuntimeInstanceObject]
         let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
         let workspaceAuthorization: @MainActor @Sendable (String?, UUID?, UUID) async -> Bool
@@ -84,8 +82,6 @@ final class NodeRuntimeHost {
             lifecycle: resources.lifecycle,
             registry: registry,
             nodeID: wiring.nodeID,
-            ascendantIdentities: wiring.ascendantIdentities,
-            ascendantHealth: wiring.ascendantHealth,
             runtimeInstanceObjects: wiring.runtimeInstanceObjects,
             workspaceReferences: wiring.workspaceReferences,
             workspaceAuthorization: wiring.workspaceAuthorization,

@@ -26,11 +26,11 @@ final class InspectDiagnosticsSession {
         }
     }
 
-    /// Reads payload-free live diagnostics for one Ascendant.
-    func ascendant(_ ascendantID: UUID, providerID: String?) async throws -> AscendantDiagnostics {
+    /// Reads payload-free live diagnostics for one Runtime instance.
+    func ascendant(_ ascendantID: UUID, providerID: String?) async throws -> RuntimeInstanceDiagnostics {
         try await run { session in
             try await session.diagnosticsClient(timeout: .seconds(self.values.observeSeconds))
-                .ascendant(ascendantID, providerID: providerID)
+                .runtimeInstance(ascendantID, providerID: providerID)
         }
     }
 

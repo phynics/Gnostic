@@ -121,9 +121,9 @@ tool calls use Axoloty's unary `me.atkn.gnostic.workspace.invoke` operation.
 Gnostic does not expose direct file APIs for remote Workspaces.
 
 Read payload-free live runtime state from a running Node. These commands use
-the `me.atkn.gnostic.diagnostics.node`, `me.atkn.gnostic.diagnostics.ascendant`,
-and `me.atkn.gnostic.diagnostics.timeline` operations, gated on the
-`me.atkn.gnostic.capability.diagnostics` capability:
+the `me.atkn.gnostic.diagnostics.node`, `me.atkn.gnostic.diagnostics.runtimeInstance`,
+and `me.atkn.gnostic.diagnostics.timeline` operations. A provider offers them
+when it advertises at least one Runtime instance:
 
 ```sh
 gnostic inspect node
@@ -294,12 +294,12 @@ let replay = try await turns.replay(
 ```
 
 Every call resolves the addressed Timeline from the catalog and requires its
-Ascendant to advertise `textTurnInput`; pass `providerID` to pin the serve
+operating Runtime instance to be advertised by the same provider; pass `providerID` to pin the serve
 explicitly. A stable `clientTurnID` names the Turn so the serve retains its
 updates: `replay` re-reads them, and `updates` streams them. Omitting it leaves
 the Turn unnamed and unreplayable. `replay` does not re-run the Turn, but a
 second `run` with the same `clientTurnID` does start another Turn. There is no
-`ascendant.turn.cancel` wire operation: cancelling the surrounding Swift `Task`
+`turn.cancel` wire operation: cancelling the surrounding Swift `Task`
 stops only the local wait, not a Turn the serve already started.
 
 ## Attach and invoke Workspaces from a consumer
@@ -325,12 +325,9 @@ let result = try await workspaces.invoke(
 try await workspaces.detach(workspaceID: workspaceID, from: timelineID)
 ```
 
-`attach` refuses `approved: false` locally without a wire call. `attach` and
-`detach` both require the Timeline's operating Ascendant to advertise
-`workspaceAttachment`, so a Timeline whose Ascendant lacks it is refused locally
-for either call. `invoke` requires the Workspace provider to advertise
-`workspaceToolInvocation`. Attach and detach address the Timeline's serving
-provider, while invocation addresses the Workspace's advertising provider. `attachmentStatus(workspaceID:)` reports the
+`attach` refuses `approved: false` locally without a wire call. Attach and
+detach address the Timeline's serving provider, while invocation addresses the
+Workspace's advertising provider. `attachmentStatus(workspaceID:)` reports the
 Node's durable attachment intent; `effectiveStatus(workspaceID:)` reports
 whether that intent is usable now.
 
@@ -340,7 +337,7 @@ calls fail by transport timeout; create a new client from a new session.
 ## Create and rename Timelines from a consumer
 
 `session.timelineClient()` returns a `GnosticTimelineClient` over the session's
-own connection. It creates a Timeline under a discovered Ascendant and renames a
+own connection. It creates a Timeline under a discovered Runtime instance and renames a
 discovered Timeline, using the existing `timeline.create` and `timeline.update`
 serve handlers.
 
@@ -349,7 +346,7 @@ let timelines = try session.timelineClient()
 
 let created = try await timelines.create(
     title: "Research",
-    ascendantID: ascendantID
+    runtimeInstanceID: runtimeInstanceID
 )
 
 let renamed = try await timelines.update(
@@ -359,9 +356,9 @@ let renamed = try await timelines.update(
 ```
 
 Every call resolves the serving provider from the catalog and requires the
-Ascendant to advertise `timelineManagement`; discovery is refreshed only when
-the target is absent. Pass `providerID` to `create` to pin the Ascendant's
-provider. The client reuses the session transport, so a consumer
+operating Runtime instance to be advertised by it; discovery is refreshed only
+when the target is absent. Pass `providerID` to `create` to pin the Runtime
+instance's provider. The client reuses the session transport, so a consumer
 never opens a second connection for the same broker identity. Timeline deletion
 is not exposed because no delete operation exists in the Gnostic wire contract.
 
@@ -369,35 +366,31 @@ is not exposed because no delete operation exists in the Gnostic wire contract.
 
 Every typed client resolves its target through one policy. The catalog is
 refreshed at most once per call, and only when the target is absent (for a
-node-wide diagnostics call, when no provider advertises diagnostics). After
+node-wide diagnostics call, when no provider advertises a Runtime instance). After
 that refresh the call fails with the error below. Capability checks read the
 catalog as it stands and never refresh it. A pinned `providerID` that does not
 own the target is `providerMismatch` for every client.
 
 | Client | Failure | Public error |
 | --- | --- | --- |
-| Turn | Timeline absent, or no single operating Ascendant | `timelineUnavailable` |
+| Turn | Timeline absent, or no single operating Runtime instance | `timelineUnavailable` |
 | Turn | Timeline advertised by two providers | `timelineAmbiguous` |
 | Turn | Pinned provider does not own the Timeline | `providerMismatch` |
-| Turn | Operating Ascendant lacks `textTurnInput` | `missingCapability` |
-| Workspace attach, detach | Timeline absent, or no single operating Ascendant | `timelineUnavailable` |
-| Workspace attach, detach | Timeline advertised by two providers | `timelineAmbiguous` |
+| Turn | Operating Runtime instance not advertised by the Timeline's provider | `missingCapability` |
+| Workspace attach, detach | Timeline absent, or advertised by two providers | `timelineUnavailable`, `timelineAmbiguous` |
 | Workspace attach, detach | Pinned provider does not own the Timeline | `providerMismatch` |
-| Workspace attach, detach | Operating Ascendant lacks `workspaceAttachment` | `missingCapability` |
-| Workspace invoke | Provider advertises no `workspaceToolInvocation` | `missingCapability` |
-| Timeline create | Ascendant absent or ambiguous | `ascendantUnavailable`, `ascendantAmbiguous` |
-| Timeline create | Pinned provider does not own the Ascendant | `providerMismatch` |
-| Timeline update | Timeline absent, or no single operating Ascendant | `timelineUnavailable` |
+| Timeline create | Runtime instance absent or ambiguous | `runtimeInstanceUnavailable`, `runtimeInstanceAmbiguous` |
+| Timeline create | Pinned provider does not own the Runtime instance | `providerMismatch` |
+| Timeline update | Timeline absent, or no single operating Runtime instance | `timelineUnavailable` |
 | Timeline update | Timeline advertised by two providers | `timelineAmbiguous` |
-| Timeline update | Operating Ascendant lacks `timelineManagement` | `missingCapability` |
+| Timeline update | Operating Runtime instance not advertised by the Timeline's provider | `missingCapability` |
 | Timeline status | Timeline absent, or advertised by two providers | `timelineUnavailable`, `timelineAmbiguous` |
-| Diagnostics node | No provider advertises diagnostics | `missingCapability` |
-| Diagnostics node | Pinned provider does not advertise diagnostics | `nodeUnavailable` |
-| Diagnostics node | More than one provider advertises diagnostics | `nodeAmbiguous` |
-| Diagnostics ascendant | Ascendant absent, ambiguous, or pinned to another provider | `ascendantUnavailable`, `ascendantAmbiguous`, `providerMismatch` |
-| Diagnostics ascendant | Ascendant lacks `diagnostics` | `missingCapability` |
+| Diagnostics node | No provider advertises a Runtime instance | `missingCapability` |
+| Diagnostics node | Pinned provider advertises no Runtime instance | `nodeUnavailable` |
+| Diagnostics node | More than one provider advertises a Runtime instance | `nodeAmbiguous` |
+| Diagnostics Runtime instance | Runtime instance absent, ambiguous, or pinned to another provider | `runtimeInstanceUnavailable`, `runtimeInstanceAmbiguous`, `providerMismatch` |
 | Diagnostics timeline | Timeline absent, ambiguous, or pinned to another provider | `timelineUnavailable`, `timelineAmbiguous`, `providerMismatch` |
-| Diagnostics timeline | Operating Ascendant lacks `diagnostics`, or none names one | `missingCapability`, `timelineUnavailable` |
+| Diagnostics timeline | Operating Runtime instance not advertised by the Timeline's provider, or none named | `missingCapability`, `timelineUnavailable` |
 
 ## Use ACP
 

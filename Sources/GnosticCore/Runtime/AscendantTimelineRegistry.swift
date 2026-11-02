@@ -44,7 +44,7 @@ public struct AscendantTimelineRemoteOperations: Sendable {
 ///
 /// The registry owns the ordered Timeline table: idempotent create, the
 /// rename-not-found guard, the removal no-op, insertion order, attachment
-/// projection, and the ``AscendantBackendTimeline`` projection itself. A
+/// projection, and the ``RuntimeInstanceTimeline`` projection itself. A
 /// backend supplies only the remote operations it alone can perform. This is
 /// what keeps a backend from rebuilding the same table.
 @MainActor
@@ -52,7 +52,7 @@ public final class AscendantTimelineRegistry {
     private let ascendantID: UUID
     private let privateTimelineID: UUID
     private let remote: AscendantTimelineRemoteOperations
-    private var projections: [UUID: AscendantBackendTimeline]
+    private var projections: [UUID: RuntimeInstanceTimeline]
     private var order: [UUID]
 
     /// Creates a registry seeded from the configured Timelines.
@@ -76,13 +76,13 @@ public final class AscendantTimelineRegistry {
         self.privateTimelineID = privateTimelineID
         self.remote = remote
         let now = Date()
-        var projections: [UUID: AscendantBackendTimeline] = [:]
+        var projections: [UUID: RuntimeInstanceTimeline] = [:]
         for timeline in configured {
-            projections[timeline.id] = AscendantBackendTimeline(
+            projections[timeline.id] = RuntimeInstanceTimeline(
                 id: timeline.id,
                 title: timeline.title,
                 attachedWorkspaceIDs: timeline.attachments.map(\.workspaceID),
-                ascendantID: ascendantID,
+                runtimeInstanceID: ascendantID,
                 isArchived: false,
                 isPrivate: timeline.id == privateTimelineID,
                 createdAt: now,
@@ -94,12 +94,12 @@ public final class AscendantTimelineRegistry {
     }
 
     /// The known Timelines in insertion order.
-    public func operatedTimelines() -> [AscendantBackendTimeline] {
+    public func operatedTimelines() -> [RuntimeInstanceTimeline] {
         order.compactMap { projections[$0] }
     }
 
     /// The projection for one Timeline, or `nil` when it is unknown.
-    public func projection(id: UUID) -> AscendantBackendTimeline? { projections[id] }
+    public func projection(id: UUID) -> RuntimeInstanceTimeline? { projections[id] }
 
     /// Whether the registry knows one Timeline.
     public func contains(id: UUID) -> Bool { projections[id] != nil }
@@ -137,15 +137,15 @@ public final class AscendantTimelineRegistry {
     /// - Returns: The created or existing projection.
     /// - Throws: The remote ensure error.
     @discardableResult
-    public func create(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    public func create(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         let inserted = projections[id] == nil
         if inserted {
             let now = Date()
-            projections[id] = AscendantBackendTimeline(
+            projections[id] = RuntimeInstanceTimeline(
                 id: id,
                 title: title,
                 attachedWorkspaceIDs: [],
-                ascendantID: ascendantID,
+                runtimeInstanceID: ascendantID,
                 isArchived: false,
                 isPrivate: id == privateTimelineID,
                 createdAt: now,
@@ -184,7 +184,7 @@ public final class AscendantTimelineRegistry {
     /// - Throws: ``AscendantBackendError/timelineNotFound(_:)`` when the
     ///   Timeline is not known.
     @discardableResult
-    public func rename(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    public func rename(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         guard let current = projections[id] else {
             throw AscendantBackendError.timelineNotFound(id)
         }
@@ -230,15 +230,15 @@ public final class AscendantTimelineRegistry {
     }
 
     private static func replacing(
-        _ current: AscendantBackendTimeline,
+        _ current: RuntimeInstanceTimeline,
         title: String,
         attachedWorkspaceIDs: [UUID]
-    ) -> AscendantBackendTimeline {
-        AscendantBackendTimeline(
+    ) -> RuntimeInstanceTimeline {
+        RuntimeInstanceTimeline(
             id: current.id,
             title: title,
             attachedWorkspaceIDs: attachedWorkspaceIDs,
-            ascendantID: current.ascendantID,
+            runtimeInstanceID: current.runtimeInstanceID,
             isArchived: current.isArchived,
             isPrivate: current.isPrivate,
             createdAt: current.createdAt,

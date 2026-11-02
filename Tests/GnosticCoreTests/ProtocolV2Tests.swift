@@ -11,27 +11,16 @@ struct ProtocolV2Tests {
     private let ascendantID = UUID(uuidString: "B21D0000-0000-4000-8000-000000000001")!
     private let timelineID = UUID(uuidString: "B21D0000-0000-4000-8000-000000000002")!
 
-    @Test("Ascendant projections carry the v2 major and use the new wire type")
-    func ascendantProjectionUsesV2Contract() throws {
-        let now = Date(timeIntervalSince1970: 1_700_000_000)
-        let identity = AscendantRuntimeIdentity(
-            id: ascendantID,
-            name: "Atlas",
-            description: "Coordinates analysis.",
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
-            lastActiveAt: now,
-            createdAt: now,
-            updatedAt: now
-        )
+    @Test("Runtime instance projections carry the current major and use the Runtime instance wire type")
+    func runtimeInstanceProjectionUsesCurrentContract() throws {
+        let object = GnosticRuntimeInstanceObject(id: ascendantID, name: "Atlas", kind: "local-command")
 
-        let object = GnosticAscendantObject(identity: identity)
-
-        #expect(object.objectType == GnosticObjectType.ascendant)
+        #expect(object.objectType == GnosticObjectType.runtimeInstance)
         #expect(object.protocolMajor == GnosticProtocol.currentMajor)
         let data = try JSONEncoder().encode(object)
         let json = String(decoding: data, as: UTF8.self)
         #expect(json.contains("\"protocolMajor\":\(GnosticProtocol.currentMajor)"))
+        #expect(!json.contains("me.atkn.gnostic.Ascendant"))
         #expect(!json.contains("me.atkn.gnostic.Agent"))
     }
 
@@ -40,22 +29,22 @@ struct ProtocolV2Tests {
         // Every interoperability capability is stable except the cancellation
         // seam, which this build does not advertise. A new capability therefore
         // lands in `stable` only after an explicit review of this expectation.
-        let supported = Set(AscendantInteroperabilityCapability.allCases.map(\.rawValue))
-            .subtracting([AscendantInteroperabilityCapability.cancellation.rawValue])
+        let supported = Set(InteroperabilityCapability.allCases.map(\.rawValue))
+            .subtracting([InteroperabilityCapability.cancellation.rawValue])
         #expect(GnosticCapability.stable == supported)
-        #expect(GnosticCapability.turnCancellation == AscendantInteroperabilityCapability.cancellation.rawValue)
+        #expect(GnosticCapability.turnCancellation == InteroperabilityCapability.cancellation.rawValue)
     }
 
     @Test("Turn requests, results, replay updates, and errors carry the protocol major")
     func turnPayloadsCarryProtocolMajor() throws {
-        let request = AscendantTurnRequest(
+        let request = TurnRequest(
             message: "hello",
             timelineID: timelineID,
             clientTurnID: "turn-1"
         )
-        let result = AscendantTurnResult(clientTurnID: "turn-1", text: "world")
-        let update = AscendantTurnUpdate(sequence: 1, kind: "completion", text: "world", terminal: true)
-        let replay = AscendantTurnReplay(updates: [update], compacted: false, terminal: true)
+        let result = TurnResult(clientTurnID: "turn-1", text: "world")
+        let update = TurnUpdate(sequence: 1, kind: "completion", text: "world", terminal: true)
+        let replay = TurnReplay(updates: [update], compacted: false, terminal: true)
 
         #expect(request.protocolMajor == GnosticProtocol.currentMajor)
         #expect(result.protocolMajor == GnosticProtocol.currentMajor)
@@ -67,7 +56,7 @@ struct ProtocolV2Tests {
     @Test("unsupported turn majors are rejected at the direct call seam")
     func directCallRevalidatesProtocolMajor() async throws {
         let provider = AscendantTurnProvider { request in
-            AscendantTurnResult(clientTurnID: request.clientTurnID, text: request.message)
+            TurnResult(clientTurnID: request.clientTurnID, text: request.message)
         }
         let payload = #"{"message":"hello","timelineID":"B21D0000-0000-4000-8000-000000000002","clientTurnID":"turn-1","protocolMajor":1}"#
 
@@ -83,7 +72,7 @@ struct ProtocolV2Tests {
     @Test("every turn operation rejects an unsupported major before its fields")
     func turnOperationsRejectUnsupportedMajor() async throws {
         let provider = AscendantTurnProvider { request in
-            AscendantTurnResult(clientTurnID: request.clientTurnID, text: request.message)
+            TurnResult(clientTurnID: request.clientTurnID, text: request.message)
         }
         let payload = #"{"message":"hello","timelineID":"B21D0000-0000-4000-8000-000000000002","clientTurnID":"turn-1","protocolMajor":1}"#
 
@@ -148,7 +137,7 @@ struct ProtocolV2Tests {
     func ordinaryProviderFailuresCarryProtocolMajor() async throws {
         let timelineID = UUID()
         let turnProvider = AscendantTurnProvider(
-            execute: { _ in AscendantTurnResult(text: "unused") },
+            execute: { _ in TurnResult(text: "unused") },
             isAvailable: { false }
         )
         let turnFailure = try await turnProvider.handle(operation: AscendantTurnProvider.turnOperation, parameters: nil)
@@ -156,7 +145,7 @@ struct ProtocolV2Tests {
         let permissionProvider = AscendantPermissionProvider(
             coordinator: AscendantPermissionCoordinator(updates: AscendantTurnUpdateStore())
         )
-        let permission = AscendantPermissionResponse(
+        let permission = TurnPermissionResponse(
             correlationID: "stale",
             timelineID: timelineID,
             clientTurnID: "turn-1",
@@ -219,12 +208,12 @@ struct ProtocolV2Tests {
     func catalogFiltersIncompatibleObjectsForNormalDiscovery() async throws {
         let objectID = ascendantID.uuidString.lowercased()
         let payload = """
-        {"protocolMajor":1,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.ascendant)","name":"Old","ascendantDescription":"legacy","privateTimelineID":"\(timelineID.uuidString.lowercased())","lastActiveAt":"2023-11-14T22:13:20Z","createdAt":"2023-11-14T22:13:20Z","updatedAt":"2023-11-14T22:13:20Z"}
+        {"protocolMajor":1,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.runtimeInstance)","name":"Old","runtimeID":"\(objectID)","runtimeKind":"local-command"}
         """
         let snapshot = CoatyObjectSnapshot(
             objectId: objectID,
             coreType: .coatyObject,
-            objectType: GnosticObjectType.ascendant,
+            objectType: GnosticObjectType.runtimeInstance,
             name: "Old",
             payload: payload
         )
@@ -239,10 +228,10 @@ struct ProtocolV2Tests {
     func metadataOnlyAdvertisementPreservesCompatibleObject() async throws {
         let objectID = ascendantID.uuidString.lowercased()
         let fullPayload = """
-        {"protocolMajor":3,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.ascendant)","name":"Current","ascendantDescription":"current","privateTimelineID":"\(timelineID.uuidString.lowercased())","lastActiveAt":"2023-11-14T22:13:20Z","createdAt":"2023-11-14T22:13:20Z","updatedAt":"2023-11-14T22:13:20Z"}
+        {"protocolMajor":3,"objectId":"\(objectID)","coreType":"CoatyObject","objectType":"\(GnosticObjectType.runtimeInstance)","name":"Current","runtimeID":"\(objectID)","runtimeKind":"local-command"}
         """
-        let full = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.ascendant, name: "Current", payload: fullPayload)
-        let metadata = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.ascendant, name: "Current")
+        let full = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.runtimeInstance, name: "Current", payload: fullPayload)
+        let metadata = CoatyObjectSnapshot(objectId: objectID, coreType: .coatyObject, objectType: GnosticObjectType.runtimeInstance, name: "Current")
         let catalog = NetworkCatalog()
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider", object: full))
         await catalog.ingest(AdvertiseEventSnapshot(sourceId: "provider", object: metadata))

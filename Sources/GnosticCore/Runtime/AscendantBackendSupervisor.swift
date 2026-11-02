@@ -70,10 +70,10 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
     private var backendWorkspaceAttachment: ((UUID, UUID, UUID, UUID) async throws -> Void)?
 
     private var ascendantAdapters: [UUID: any AscendantBackend]
-    private let backendIdentities: [AscendantBackendIdentity]
+    private let backendIdentities: [RuntimeInstanceIdentity]
     private var runtimeInstanceSnapshots: [UUID: GnosticRuntimeInstanceObject] = [:]
     private let backendSpecs: [UUID: BackendSpec]
-    private var backendHealthByID: [UUID: AscendantBackendHealth]
+    private var backendHealthByID: [UUID: GnosticRuntimeInstanceHealth]
     private var quarantinedAscendantIDs: Set<UUID> = []
     private var backendLeases: [UUID: UUID]
     /// Retained so a factory cannot reissue an instance with late calls from a prior lease.
@@ -93,9 +93,9 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         backendTimelineCapabilities: [UUID: any AscendantBackendOptionalCapability] = [:],
         timelineJournalRecorder: TimelineJournalRecorder? = nil,
         ascendantAdapters: [UUID: any AscendantBackend],
-        backendIdentities: [AscendantBackendIdentity],
+        backendIdentities: [RuntimeInstanceIdentity],
         backendSpecs: [UUID: BackendSpec],
-        backendHealth: [UUID: AscendantBackendHealth],
+        backendHealth: [UUID: GnosticRuntimeInstanceHealth],
         backendLeases: [UUID: UUID]
     ) {
         self.plan = plan
@@ -118,16 +118,37 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
             guard let provider = backend as? any RuntimeInstanceSnapshotProviding,
                   let snapshot = provider.runtimeInstanceObject else { continue }
             snapshot.nodeID = plan.nodeID
-            snapshot.health = Self.runtimeInstanceHealth(backendHealth[id] ?? .unknown)
+            snapshot.health = backendHealth[id] ?? .unknown
             runtimeInstanceSnapshots[id] = snapshot
         }
     }
 
-    var identities: [AscendantBackendIdentity] { backendIdentities }
+    var identities: [RuntimeInstanceIdentity] { backendIdentities }
 
+    /// The Runtime instance objects this Node advertises: one for each
+    /// configured instance, sorted by identifier.
+    ///
+    /// The Runtime instance is the only identity a Node advertises, so it is
+    /// advertised from configuration before its Runtime connects. Once the
+    /// Runtime has answered ACP `initialize`, the advertisement carries that
+    /// answer's version, launch fingerprint, and capabilities.
     var runtimeInstanceObjects: [GnosticRuntimeInstanceObject] {
-        runtimeInstanceSnapshots.values
+        backendIdentities
+            .map(advertisedRuntimeInstance(for:))
             .sorted { $0.runtimeID.uuidString < $1.runtimeID.uuidString }
+    }
+
+    /// The initialized snapshot when the Runtime has connected, otherwise an
+    /// identity-only advertisement built from the configured instance.
+    private func advertisedRuntimeInstance(for identity: RuntimeInstanceIdentity) -> GnosticRuntimeInstanceObject {
+        if let snapshot = runtimeInstanceSnapshots[identity.id] { return snapshot }
+        return GnosticRuntimeInstanceObject(
+            id: identity.id,
+            name: identity.name,
+            kind: "local-command",
+            nodeID: plan.nodeID,
+            health: health(for: identity.id)
+        )
     }
 
     func runtimeInstanceObject(for id: UUID) -> GnosticRuntimeInstanceObject? {
@@ -143,7 +164,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         backendWorkspaceAttachment = attachWorkspace
     }
 
-    func health(for ascendantID: UUID) -> AscendantBackendHealth {
+    func health(for ascendantID: UUID) -> GnosticRuntimeInstanceHealth {
         backendHealthByID[ascendantID] ?? .unknown
     }
 
@@ -410,27 +431,17 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
         }
     }
 
-    private func readvertiseAscendant(_ ascendantID: UUID, health: AscendantBackendHealth) {
+    private func readvertiseAscendant(_ ascendantID: UUID, health: GnosticRuntimeInstanceHealth) {
         guard let identity = backendIdentities.first(where: { $0.id == ascendantID }) else { return }
-        projectionRelay.projectAscendant(identity, health: health, replacing: true)
         if let backend = ascendantAdapters[ascendantID],
            let provider = backend as? any RuntimeInstanceSnapshotProviding,
            let runtimeInstance = provider.runtimeInstanceObject {
             runtimeInstanceSnapshots[ascendantID] = runtimeInstance
         }
-        if let runtimeInstance = runtimeInstanceSnapshots[ascendantID] {
-            runtimeInstance.nodeID = plan.nodeID
-            runtimeInstance.health = Self.runtimeInstanceHealth(health)
-            projectionRelay.projectRuntimeInstance(runtimeInstance, replacing: true)
-        }
-    }
-
-    private static func runtimeInstanceHealth(_ health: AscendantBackendHealth) -> GnosticRuntimeInstanceHealth {
-        switch health {
-        case .healthy: .healthy
-        case .failed: .failed
-        case .unknown: .unknown
-        }
+        let runtimeInstance = advertisedRuntimeInstance(for: identity)
+        runtimeInstance.nodeID = plan.nodeID
+        runtimeInstance.health = health
+        projectionRelay.projectRuntimeInstance(runtimeInstance, replacing: true)
     }
 
     private func isCurrentReconstructionGeneration(_ generation: UInt64) -> Bool {
@@ -439,7 +450,7 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
 
     private static func validateReplacement(
         candidate: any AscendantBackend,
-        projected: [AscendantBackendTimeline],
+        projected: [RuntimeInstanceTimeline],
         spec: BackendSpec,
         state: NodeRegistry.BackendReconstructionState
         ) throws {
@@ -456,8 +467,8 @@ final class AscendantBackendSupervisor: BackendSessionProviding {
             throw ReconstructionFailure(detail: "replacement omitted an operated Timeline")
         }
         for timeline in projected where expectedIDs.contains(timeline.id) {
-            guard timeline.attachedAscendantID == spec.ascendant.id else {
-                throw NodeRuntimeError.unknownAscendant(timeline.attachedAscendantID ?? spec.ascendant.id)
+            guard timeline.runtimeInstanceID == spec.ascendant.id else {
+                throw NodeRuntimeError.unknownAscendant(timeline.runtimeInstanceID ?? spec.ascendant.id)
             }
         }
     }

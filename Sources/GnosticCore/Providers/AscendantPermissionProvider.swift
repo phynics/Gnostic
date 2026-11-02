@@ -4,56 +4,9 @@ import Axoloty
 import Foundation
 import GnosticProtocol
 
-public struct AscendantPermissionResponse: Codable, Sendable {
-    public let protocolMajor: Int
-    public let correlationID: String
-    public let timelineID: UUID
-    public let clientTurnID: String
-    public let approved: Bool
-    public let targetProviderID: String?
-    /// Why the client made no decision. When set, the request resolves as
-    /// unavailable, never as a denial, and `approved` must be `false`.
-    public let unavailableReason: String?
-
-    public init(correlationID: String, timelineID: UUID, clientTurnID: String, approved: Bool, targetProviderID: String? = nil, unavailableReason: String? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.correlationID = correlationID
-        self.timelineID = timelineID
-        self.clientTurnID = clientTurnID
-        self.approved = approved
-        self.targetProviderID = targetProviderID
-        self.unavailableReason = unavailableReason
-    }
-
-    private enum CodingKeys: String, CodingKey { case protocolMajor, correlationID, timelineID, clientTurnID, approved, targetProviderID, unavailableReason }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        correlationID = try container.decode(String.self, forKey: .correlationID)
-        timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try container.decode(String.self, forKey: .clientTurnID)
-        approved = try container.decode(Bool.self, forKey: .approved)
-        targetProviderID = try container.decodeIfPresent(String.self, forKey: .targetProviderID)
-        unavailableReason = try container.decodeIfPresent(String.self, forKey: .unavailableReason)
-    }
-
-    public func targeted(to providerID: String?) -> Self {
-        Self(
-            correlationID: correlationID,
-            timelineID: timelineID,
-            clientTurnID: clientTurnID,
-            approved: approved,
-            targetProviderID: providerID,
-            unavailableReason: unavailableReason,
-            protocolMajor: protocolMajor
-        )
-    }
-}
-
 public struct AscendantPermissionProvider: Sendable {
-    public static let responseOperation = "me.atkn.gnostic.ascendant.permission.respond"
-    public static let responseChannel = "me.atkn.gnostic.ascendant.permission.response"
+    public static let responseOperation = "me.atkn.gnostic.permission.respond"
+    public static let responseChannel = "me.atkn.gnostic.permission.response"
 
     private let coordinator: AscendantPermissionCoordinator
 
@@ -65,9 +18,9 @@ public struct AscendantPermissionProvider: Sendable {
         guard let parameters else {
             return .failure(GnosticProtocolError.missing)
         }
-        let response: AscendantPermissionResponse
+        let response: TurnPermissionResponse
         do {
-            response = try JSONDecoder().decode(AscendantPermissionResponse.self, from: Data(parameters.utf8))
+            response = try JSONDecoder().decode(TurnPermissionResponse.self, from: Data(parameters.utf8))
         } catch let error as GnosticProtocolError {
             return .failure(error)
         } catch {
@@ -97,7 +50,7 @@ public struct AscendantPermissionProvider: Sendable {
     }
 
     /// Observes one-way permission responses without competing with an active
-    /// `ascendant.turn` Call/Return handler on the same communication manager.
+    /// `turn` Call/Return handler on the same communication manager.
     @MainActor
     public func observeResponses(on communication: CommunicationManager, providerID: String? = nil) async throws -> Task<Void, Never> {
         let stream = try await communication.observeChannelStream(channelId: Self.responseChannel)
@@ -106,7 +59,7 @@ public struct AscendantPermissionProvider: Sendable {
                 guard !Task.isCancelled else { break }
                 guard let raw = snapshot.privateData,
                       let response = try? JSONDecoder().decode(
-                          AscendantPermissionResponse.self,
+                          TurnPermissionResponse.self,
                           from: Data(raw.utf8)
                       ) else { continue }
                 if let target = response.targetProviderID,
@@ -125,8 +78,8 @@ public struct AscendantPermissionProvider: Sendable {
     }
 
     /// Creates a generic Axoloty Channel event carrying one permission decision.
-    public static func responseEvent(_ response: AscendantPermissionResponse) throws -> ChannelEvent {
-        let data = try GnosticWirePayload.encode(response, context: "ascendant.permission.response event")
+    public static func responseEvent(_ response: TurnPermissionResponse) throws -> ChannelEvent {
+        let data = try GnosticWirePayload.encode(response, context: "permission.response event")
         guard let privateData = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
         }
@@ -134,7 +87,7 @@ public struct AscendantPermissionProvider: Sendable {
             coreType: .coatyObject,
             objectType: CoatyObject.objectType,
             objectId: CoatyUUID(),
-            name: "Gnostic ascendant permission response"
+            name: "Gnostic permission response"
         )
         return try ChannelEvent.with(
             object: marker,

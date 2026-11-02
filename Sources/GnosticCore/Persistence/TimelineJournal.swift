@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import GnosticProtocol
 
 /// One Gnostic-owned or ACP event in a Timeline's authoritative journal.
@@ -32,11 +33,11 @@ public enum TimelineJournalPayload: Codable, Sendable, Equatable {
         acpVersionTag: String,
         prompt: [ACPContentBlock]
     )
-    case acpUpdate(sessionID: String, update: TimelineTurnUpdate)
+    case acpUpdate(sessionID: String, update: TurnSessionUpdate)
     case rawACPUpdate(sessionID: String, clientTurnID: String?, update: ACPSessionUpdate)
     case turnCompleted(
         clientTurnID: String,
-        outcome: TimelineTurnTerminalOutcome,
+        outcome: TurnTerminalOutcome,
         messageID: String?
     )
     case permissionDecision(
@@ -812,7 +813,7 @@ public struct TimelineJournalRecorder: AscendantBackendOptionalCapability, Senda
     /// Commits one turn-correlated ACP update with its Gnostic replay envelope.
     public func appendTurnUpdate(
         sessionID: String,
-        update: TimelineTurnUpdate,
+        update: TurnSessionUpdate,
         causalSpanID: UUID? = nil
     ) async throws {
         let journal = try await journals.journal(for: update.timelineID)

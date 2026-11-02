@@ -13,19 +13,19 @@ struct InspectDiagnosticsCommandsTests {
     @Test("reads live node diagnostics through the CLI session without a payload")
     func readsNodeDiagnosticsThroughSession() async throws {
         let namespace = uniqueNamespace()
-        let provider = try await startProvider(namespace: namespace, capabilities: [GnosticCapability.diagnostics])
+        let provider = try await startProvider(namespace: namespace)
         defer { provider.manager.stop() }
         let secret = "sk-live-SUPERSECRET"
         let snapshot = NodeDiagnostics(
             nodeID: UUID(),
-            ascendents: [
-                DiagnosticsAscendantSummary(id: provider.ascendantID, name: "CLI Ascendant", health: .healthy, quarantined: false),
+            runtimeInstances: [
+                DiagnosticsRuntimeInstanceSummary(id: provider.ascendantID, name: "CLI Ascendant", health: .healthy, quarantined: false),
             ],
             timelines: [
                 DiagnosticsTimelineSummary(
                     id: provider.timelineID,
                     title: "CLI Timeline",
-                    operatingAscendantID: provider.ascendantID
+                    runtimeInstanceID: provider.ascendantID
                 ),
             ],
             workspaces: [],
@@ -58,16 +58,16 @@ struct InspectDiagnosticsCommandsTests {
         #expect(!json.contains("\"payload\""))
     }
 
-    @Test("degrades clearly when the Node lacks the diagnostics capability")
+    @Test("degrades clearly when the Node advertises no Runtime instance")
     func degradesWhenCapabilityIsMissing() async throws {
         let namespace = uniqueNamespace()
-        let provider = try await startProvider(namespace: namespace, capabilities: [GnosticCapability.textTurnInput])
+        let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
         defer { provider.manager.stop() }
 
         do {
             _ = try await InspectDiagnosticsSession(values: connectionValues(namespace: namespace))
                 .node(providerID: provider.providerID)
-            Issue.record("a Node without the diagnostics capability was accepted")
+            Issue.record("a Node without a Runtime instance was accepted")
         } catch let error as InspectError {
             #expect(error.reasonCode == "diagnosticsCapabilityUnavailable")
             #expect(error.errorDescription?.contains(GnosticCapability.diagnostics) == true)
@@ -89,7 +89,7 @@ struct InspectDiagnosticsCommandsTests {
         let timelineID: UUID
     }
 
-    private func startProvider(namespace: String, capabilities: [String]) async throws -> AdvertisedProvider {
+    private func startProvider(namespace: String, advertisesRuntimeInstance: Bool = true) async throws -> AdvertisedProvider {
         let manager = try CommunicationManager(
             identity: Identity(name: "gnostic-inspect-diagnostics-provider"),
             communicationOptions: CommunicationOptions(
@@ -108,22 +108,20 @@ struct InspectDiagnosticsCommandsTests {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let ascendantID = UUID()
         let timelineID = UUID()
-        manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
-            id: ascendantID,
-            name: "CLI Ascendant",
-            description: "Offline diagnostics provider.",
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
-            lastActiveAt: now,
-            createdAt: now,
-            updatedAt: now,
-            capabilities: AscendantBackendCapabilities(interoperability: Set(capabilities))
-        )))
-        manager.publishAdvertise(GnosticTimelineObject(timeline: AscendantBackendTimeline(
+        if advertisesRuntimeInstance {
+            manager.publishAdvertise(GnosticRuntimeInstanceObject(
+                id: ascendantID,
+                name: "CLI Runtime",
+                kind: "acp",
+                nodeID: UUID(),
+                rawCapabilities: ["session": .object([:])]
+            ))
+        }
+        manager.publishAdvertise(GnosticTimelineObject(timeline: RuntimeInstanceTimeline(
             id: timelineID,
             title: "CLI Timeline",
             attachedWorkspaceIDs: [],
-            attachedAscendantID: ascendantID,
+            runtimeInstanceID: ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,

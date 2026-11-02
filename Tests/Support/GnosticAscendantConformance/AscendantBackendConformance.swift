@@ -322,7 +322,7 @@ public struct AscendantBackendConformanceSuite: Sendable {
         if declared.contains(.workspace) {
             let advertised = backend.identity.capabilities.interoperability
             checks.require(
-                advertised.contains(AscendantInteroperabilityCapability.workspaceAttachment.rawValue),
+                advertised.contains(InteroperabilityCapability.workspaceAttachment.rawValue),
                 "declares .workspace but does not advertise workspaceAttachment"
             )
         }

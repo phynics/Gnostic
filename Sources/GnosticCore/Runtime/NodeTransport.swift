@@ -28,20 +28,12 @@ public final class NodeTransport {
         )
     }
 
-    /// Capabilities the serving Node injects into every Ascendant projection.
-    ///
-    /// Diagnostics are served by the Node itself, not by any Ascendant backend,
-    /// so the Node advertises the capability on every Ascendant it projects.
-    static let advertisedNodeCapabilities: Set<String> = [GnosticCapability.diagnostics]
-
     private let isAvailable: @MainActor () -> Bool
     private weak var operations: (any NodeOperations)?
     private let communication: CommunicationManager?
     private let lifecycle: ObjectLifecycleController?
     private let registry: NodeRegistry?
     private let nodeID: UUID?
-    private let ascendantIdentities: @MainActor () -> [AscendantRuntimeIdentity]
-    private let ascendantHealth: @MainActor (UUID) -> AscendantBackendHealth
     private let runtimeInstanceObjects: @MainActor () -> [GnosticRuntimeInstanceObject]
     private let workspaceReferences: @MainActor () async -> [GnosticWorkspaceReference]
     private let workspaceAuthorization: @MainActor @Sendable (String?, UUID?, UUID) async -> Bool
@@ -61,8 +53,6 @@ public final class NodeTransport {
         lifecycle: ObjectLifecycleController? = nil,
         registry: NodeRegistry? = nil,
         nodeID: UUID? = nil,
-        ascendantIdentities: @escaping @MainActor () -> [AscendantRuntimeIdentity] = { [] },
-        ascendantHealth: @escaping @MainActor (UUID) -> AscendantBackendHealth = { _ in .unknown },
         runtimeInstanceObjects: @escaping @MainActor () -> [GnosticRuntimeInstanceObject] = { [] },
         workspaceReferences: @escaping @MainActor () async -> [GnosticWorkspaceReference] = { [] },
         workspaceAuthorization: @escaping @MainActor @Sendable (String?, UUID?, UUID) async -> Bool = { _, _, _ in false },
@@ -76,8 +66,6 @@ public final class NodeTransport {
         self.lifecycle = lifecycle
         self.registry = registry
         self.nodeID = nodeID
-        self.ascendantIdentities = ascendantIdentities
-        self.ascendantHealth = ascendantHealth
         self.runtimeInstanceObjects = runtimeInstanceObjects
         self.workspaceReferences = workspaceReferences
         self.workspaceAuthorization = workspaceAuthorization
@@ -108,7 +96,7 @@ public final class NodeTransport {
         self.hooks = hooks
     }
 
-    public func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+    public func turn(_ request: TurnRequest) async throws -> TurnResult {
         guard let operations else { throw NodeRuntimeError.notRunning }
         return try await operations.turn(request)
     }
@@ -149,9 +137,9 @@ public final class NodeTransport {
                 replayStore: turnUpdates,
                 isAvailable: { [weak self] in await self?.isAvailable() == true }
             )
-            try hooks.beforeRegistration("ascendant-turn")
+            try hooks.beforeRegistration("turn")
             _ = try await registrationScope.acquire(
-                label: "ascendant-turn",
+                label: "turn",
                 acquire: { try await turnProvider.register(on: communication, context: context) },
                 cleanup: { registrations in registrations.forEach { $0.cancel() } }
             )
@@ -232,7 +220,7 @@ public final class NodeTransport {
                     guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
                     return try await operations.diagnosticsNode()
                 },
-                ascendant: { [weak self] ascendantID in
+                runtimeInstance: { [weak self] ascendantID in
                     guard let self, await self.isAvailable(), let operations = await self.operations else { throw NodeRuntimeError.notRunning }
                     return try await operations.diagnosticsAscendant(ascendantID)
                 },
@@ -295,23 +283,6 @@ public final class NodeTransport {
         else { lifecycle.advertiseDiscoverableObject(object: object) }
     }
 
-    func projectAscendant(
-        _ identity: AscendantRuntimeIdentity,
-        health: AscendantBackendHealth,
-        replacing: Bool
-    ) {
-        guard isAvailable(), let lifecycle, advertisementTeardownInstalled else { return }
-        let object = GnosticAscendantObject(
-            identity: identity,
-            backendHealth: health,
-            nodeID: nodeID,
-            nodeCapabilities: Self.advertisedNodeCapabilities
-        )
-        advertisedObjects[object.objectId.string] = object
-        if replacing { lifecycle.readvertiseDiscoverableObject(object: object) }
-        else { lifecycle.advertiseDiscoverableObject(object: object) }
-    }
-
     func projectRuntimeInstance(_ instance: GnosticRuntimeInstanceObject, replacing: Bool) {
         guard isAvailable(), let lifecycle, advertisementTeardownInstalled else { return }
         let object = networkRuntimeInstance(from: instance)
@@ -368,14 +339,7 @@ public final class NodeTransport {
     }
 
     private func discoverableObjects() async -> [CoatyObject] {
-        var objects: [CoatyObject] = ascendantIdentities().map {
-            GnosticAscendantObject(
-                identity: $0,
-                backendHealth: ascendantHealth($0.id),
-                nodeID: nodeID,
-                nodeCapabilities: Self.advertisedNodeCapabilities
-            )
-        }
+        var objects: [CoatyObject] = []
         if let registry {
             objects += await registry.listTimelines().map { GnosticTimelineObject(timeline: $0, nodeID: nodeID) }
         }

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import GnosticProtocol
 
 /// The ledger's classification of one identified Turn admission.
@@ -13,7 +14,7 @@ internal enum TurnLedgerAdmission: Sendable, Equatable {
     /// The identity is admitted and has no outcome yet.
     case inFlight
     /// The Turn has a terminal outcome to replay.
-    case replay(TurnTerminalOutcome)
+    case replay(TurnLedgerOutcome)
     /// The identity was admitted with a different message.
     case conflict
     /// The identity was admitted but its outcome cannot be replayed. This covers
@@ -26,15 +27,15 @@ internal enum TurnLedgerAdmission: Sendable, Equatable {
 }
 
 /// A terminal outcome of one identified Turn, as committed in this process.
-internal enum TurnTerminalOutcome: Sendable, Equatable {
+internal enum TurnLedgerOutcome: Sendable, Equatable {
     case succeeded(text: String)
-    case failed(AscendantTurnError)
+    case failed(TurnError)
 }
 
 /// The outcome retained for one entry. Live outcomes keep the full result for
 /// this process; recovered outcomes keep only what the journal stored.
 fileprivate enum RetainedOutcome: Sendable, Equatable {
-    case live(TurnTerminalOutcome)
+    case live(TurnLedgerOutcome)
     case recovered(TurnJournalOutcome)
 }
 
@@ -54,9 +55,9 @@ public actor AscendantTurnUpdateStore {
         public let protocolMajor: Int
         public let timelineID: UUID
         public let clientTurnID: String
-        public let update: AscendantTurnUpdate
+        public let update: TurnUpdate
 
-        public init(protocolMajor: Int = GnosticProtocol.currentMajor, timelineID: UUID, clientTurnID: String, update: AscendantTurnUpdate) {
+        public init(protocolMajor: Int = GnosticProtocol.currentMajor, timelineID: UUID, clientTurnID: String, update: TurnUpdate) {
             self.protocolMajor = protocolMajor
             self.timelineID = timelineID
             self.clientTurnID = clientTurnID
@@ -80,7 +81,7 @@ public actor AscendantTurnUpdateStore {
             clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
                 container.decode(String.self, forKey: .clientTurnID)
             )
-            update = try container.decode(AscendantTurnUpdate.self, forKey: .update)
+            update = try container.decode(TurnUpdate.self, forKey: .update)
         }
     }
 
@@ -96,7 +97,7 @@ public actor AscendantTurnUpdateStore {
     }
 
     private struct Entry: Sendable {
-        var updates: [AscendantTurnUpdate]
+        var updates: [TurnUpdate]
         var nextSequence: Int
         var bytes: Int
         var terminal: Bool
@@ -194,7 +195,7 @@ public actor AscendantTurnUpdateStore {
     /// next update, so this bounds an update and not the text a client receives.
     private static let maxAssistantTextBytes = 800
     /// Ends text that retention cut, so a client can tell it is incomplete.
-    private static let truncationMarker = AscendantTurnUpdate.truncationMarker
+    private static let truncationMarker = TurnUpdate.truncationMarker
 
     func events() -> AsyncStream<Event> { eventStream }
 
@@ -399,7 +400,7 @@ public actor AscendantTurnUpdateStore {
             let records = try await journal.replay()
             var admittedTurns = 0
             var lastSequence = 0
-            var prior: (digest: String, outcome: TimelineTurnTerminalOutcome?)?
+            var prior: (digest: String, outcome: TurnTerminalOutcome?)?
             for record in records where record.timelineID == timelineID {
                 switch record.payload {
                 case let .turnAdmitted(admittedID, admissionDigest, turnSequence, _, _):
@@ -441,7 +442,7 @@ public actor AscendantTurnUpdateStore {
     /// or may not have been inserted. It is never dispatched again.
     private static func recoveredAdmission(
         for key: Key,
-        outcome: TimelineTurnTerminalOutcome?
+        outcome: TurnTerminalOutcome?
     ) -> TurnLedgerAdmission {
         switch outcome {
         case nil, .insertionUnknown?:
@@ -473,7 +474,7 @@ public actor AscendantTurnUpdateStore {
     internal func recordOutcome(
         timelineID: UUID,
         clientTurnID: ValidatedClientTurnID,
-        outcome: TurnTerminalOutcome
+        outcome: TurnLedgerOutcome
     ) async throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         guard entries[key]?.outcome == nil,
@@ -529,14 +530,14 @@ public actor AscendantTurnUpdateStore {
     /// reason. The backend marks that on the Turn's terminal completion update.
     private func endedUnspecified(_ key: Key) -> Bool {
         guard let terminal = entries[key]?.updates.last(where: \.terminal) else { return false }
-        return terminal.kind == AscendantTurnUpdateKind.completion.rawValue
-            && terminal.reasonCode == TimelineTurnTerminalOutcome.endedUnspecified.rawValue
+        return terminal.kind == TurnUpdateKind.completion.rawValue
+            && terminal.reasonCode == TurnTerminalOutcome.endedUnspecified.rawValue
     }
 
     private static func timelineOutcome(
-        _ outcome: TurnTerminalOutcome,
+        _ outcome: TurnLedgerOutcome,
         endedUnspecified: Bool
-    ) -> TimelineTurnTerminalOutcome {
+    ) -> TurnTerminalOutcome {
         switch outcome {
         case .succeeded:
             endedUnspecified ? .endedUnspecified : .completed
@@ -555,7 +556,7 @@ public actor AscendantTurnUpdateStore {
     private func appendTerminalUpdate(
         timelineID: UUID,
         clientTurnID: ValidatedClientTurnID,
-        outcome: TurnTerminalOutcome
+        outcome: TurnLedgerOutcome
     ) {
         switch outcome {
         case let .succeeded(text):
@@ -566,19 +567,19 @@ public actor AscendantTurnUpdateStore {
                 _ = try? append(
                     timelineID: timelineID,
                     clientTurnID: clientTurnID,
-                    kind: AscendantTurnUpdateKind.assistantText.rawValue,
+                    kind: TurnUpdateKind.assistantText.rawValue,
                     text: text
                 )
             }
             _ = try? append(
                 timelineID: timelineID,
                 clientTurnID: clientTurnID,
-                kind: AscendantTurnUpdateKind.completion.rawValue,
+                kind: TurnUpdateKind.completion.rawValue,
                 text: text,
                 terminal: true
             )
         case let .failed(error):
-            let kind: AscendantTurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
+            let kind: TurnUpdateKind = if case .cancelled = error { .cancellation } else { .error }
             _ = try? append(
                 timelineID: timelineID,
                 clientTurnID: clientTurnID,
@@ -630,7 +631,7 @@ public actor AscendantTurnUpdateStore {
     }
 
     private static func admission(for entry: Entry, key: Key) -> TurnLedgerAdmission {
-        let insertionUnknown = AscendantTurnError.insertionUnknown(
+        let insertionUnknown = TurnError.insertionUnknown(
             timelineID: key.timelineID, clientTurnID: key.clientTurnID
         )
         switch entry.outcome {
@@ -651,7 +652,7 @@ public actor AscendantTurnUpdateStore {
         }
     }
 
-    private static func journalOutcome(_ outcome: TurnTerminalOutcome) -> TurnJournalOutcome {
+    private static func journalOutcome(_ outcome: TurnLedgerOutcome) -> TurnJournalOutcome {
         switch outcome {
         case let .succeeded(text):
             let bounded = GnosticWirePayload.prefix(text, maximumBytes: maxJournaledTextBytes)
@@ -713,14 +714,14 @@ public actor AscendantTurnUpdateStore {
         clientTurnID: String,
         kind: String,
         text: String? = nil,
-        toolState: AscendantToolState? = nil,
-        permissionState: AscendantPermissionState? = nil,
+        toolState: TurnToolState? = nil,
+        permissionState: TurnPermissionState? = nil,
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
         retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
-    ) throws -> AscendantTurnUpdate {
+    ) throws -> TurnUpdate {
         let validated = try validatedClientTurnID(clientTurnID)
         return try append(timelineID: timelineID, clientTurnID: validated, kind: kind, text: text, toolState: toolState, permissionState: permissionState, terminal: terminal, reasonCode: reasonCode, statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor)
     }
@@ -730,22 +731,22 @@ public actor AscendantTurnUpdateStore {
         clientTurnID: ValidatedClientTurnID,
         kind: String,
         text: String? = nil,
-        toolState: AscendantToolState? = nil,
-        permissionState: AscendantPermissionState? = nil,
+        toolState: TurnToolState? = nil,
+        permissionState: TurnPermissionState? = nil,
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
         retryable: Bool? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
-    ) throws -> AscendantTurnUpdate {
+    ) throws -> TurnUpdate {
         let limit = min(maxBytes / 2, 1_200)
         // Assistant text longer than one update continues in the next one, so a
         // client assembles all of it. Other text fields are diagnostics.
-        if kind == AscendantTurnUpdateKind.assistantText.rawValue, !terminal, toolState == nil,
+        if kind == TurnUpdateKind.assistantText.rawValue, !terminal, toolState == nil,
            permissionState == nil, let text {
             let pieces = Self.assistantTextPieces(text, kind: kind, maxBytes: limit)
             if pieces.count > 1 {
-                var last: AscendantTurnUpdate?
+                var last: TurnUpdate?
                 for piece in pieces {
                     last = try appendBounded(
                         timelineID: timelineID, clientTurnID: clientTurnID, kind: kind, text: piece,
@@ -768,15 +769,15 @@ public actor AscendantTurnUpdateStore {
         clientTurnID: ValidatedClientTurnID,
         kind: String,
         text: String?,
-        toolState: AscendantToolState?,
-        permissionState: AscendantPermissionState?,
+        toolState: TurnToolState?,
+        permissionState: TurnPermissionState?,
         terminal: Bool,
         reasonCode: String?,
         statusCode: Int?,
         retryable: Bool?,
         protocolMajor: Int,
         maxBytes limit: Int
-    ) throws -> AscendantTurnUpdate {
+    ) throws -> TurnUpdate {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         if entries[key] == nil {
             evictFinishedEntriesIfNeeded(for: key)
@@ -787,7 +788,7 @@ public actor AscendantTurnUpdateStore {
             return terminalUpdate
         }
         let update = Self.bounded(
-            AscendantTurnUpdate(
+            TurnUpdate(
                 sequence: entry.nextSequence,
                 kind: kind,
                 text: text,
@@ -816,7 +817,7 @@ public actor AscendantTurnUpdateStore {
     }
 
     /// Applies one bounded update to an entry and compacts if needed.
-    private func apply(_ update: AscendantTurnUpdate, into entry: inout Entry) {
+    private func apply(_ update: TurnUpdate, into entry: inout Entry) {
         entry.nextSequence = max(entry.nextSequence, update.sequence + 1)
         entry.updates.append(update)
         entry.bytes += Self.encodedSize(update)
@@ -827,8 +828,8 @@ public actor AscendantTurnUpdateStore {
     private func compactIfNeeded(_ entry: inout Entry) {
         guard entry.updates.count > maxEvents || entry.bytes > maxBytes else { return }
         var snapshotText = ""
-        var snapshotToolStates: [AscendantToolState] = []
-        var snapshotPermissionStates: [AscendantPermissionState] = []
+        var snapshotToolStates: [TurnToolState] = []
+        var snapshotPermissionStates: [TurnPermissionState] = []
         var snapshotSequence = 0
         // Reserve half of the byte budget for the accumulated snapshot.
         while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
@@ -854,9 +855,9 @@ public actor AscendantTurnUpdateStore {
             entry.compacted = true
         }
         if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty {
-            let snapshot = Self.bounded(AscendantTurnUpdate(
+            let snapshot = Self.bounded(TurnUpdate(
                 sequence: snapshotSequence,
-                kind: AscendantTurnUpdateKind.assistantTextSnapshot.rawValue,
+                kind: TurnUpdateKind.assistantTextSnapshot.rawValue,
                 text: snapshotText.isEmpty ? nil : snapshotText,
                 toolStates: snapshotToolStates,
                 permissionStates: snapshotPermissionStates
@@ -869,7 +870,7 @@ public actor AscendantTurnUpdateStore {
     private func applyRecoveredUpdate(
         timelineID: UUID,
         clientTurnID: ValidatedClientTurnID,
-        update: AscendantTurnUpdate
+        update: TurnUpdate
     ) throws {
         let key = Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)
         if entries[key] == nil {
@@ -886,32 +887,32 @@ public actor AscendantTurnUpdateStore {
         evictIfNeeded()
     }
 
-    public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) throws -> AscendantTurnReplay {
+    public func replay(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0) throws -> TurnReplay {
         let validated = try validatedClientTurnID(clientTurnID)
         return replay(timelineID: timelineID, clientTurnID: validated, message: message, afterSequence: afterSequence)
     }
 
-    internal func replay(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String? = nil, afterSequence: Int = 0) -> AscendantTurnReplay {
+    internal func replay(timelineID: UUID, clientTurnID: ValidatedClientTurnID, message: String? = nil, afterSequence: Int = 0) -> TurnReplay {
         guard let entry = entries[Key(timelineID: timelineID, clientTurnID: clientTurnID.rawValue)] else {
-            return AscendantTurnReplay(updates: [], compacted: false, terminal: false)
+            return TurnReplay(updates: [], compacted: false, terminal: false)
         }
         if let message, let digest = entry.messageDigest, digest != Self.messageDigest(message) {
-            return AscendantTurnReplay(updates: [], compacted: false, terminal: true, conflict: true)
+            return TurnReplay(updates: [], compacted: false, terminal: true, conflict: true)
         }
         let available = entry.updates.filter { $0.sequence > afterSequence }
-        var updates: [AscendantTurnUpdate] = []
+        var updates: [TurnUpdate] = []
         for update in available {
             let candidate = updates + [update]
-            let replay = AscendantTurnReplay(
+            let replay = TurnReplay(
                 updates: candidate,
                 compacted: entry.compacted && afterSequence < (entry.updates.first?.sequence ?? 0),
                 terminal: entry.terminal
             )
-            guard (try? GnosticWirePayload.encode(replay, context: "ascendant.turn.replay result")) != nil else { break }
+            guard (try? GnosticWirePayload.encode(replay, context: "turn.replay result")) != nil else { break }
             updates.append(update)
         }
         let nextSequence = updates.last?.sequence != available.last?.sequence ? updates.last?.sequence : nil
-        return AscendantTurnReplay(
+        return TurnReplay(
             updates: updates,
             compacted: entry.compacted && afterSequence < (entry.updates.first?.sequence ?? 0),
             terminal: entry.terminal,
@@ -946,7 +947,7 @@ public actor AscendantTurnUpdateStore {
         entries.values.reduce(0) { $0 + $1.bytes }
     }
 
-    private static func encodedSize(_ update: AscendantTurnUpdate) -> Int {
+    private static func encodedSize(_ update: TurnUpdate) -> Int {
         (try? JSONEncoder().encode(update).count) ?? 0
     }
 
@@ -991,13 +992,13 @@ public actor AscendantTurnUpdateStore {
 
     private static func fits(_ text: String, kind: String, maxBytes: Int) -> Bool {
         // The sequence is set high so a piece still fits once a real one is assigned.
-        encodedSize(AscendantTurnUpdate(sequence: Int(Int32.max), kind: kind, text: text)) <= maxBytes
+        encodedSize(TurnUpdate(sequence: Int(Int32.max), kind: kind, text: text)) <= maxBytes
     }
 
     /// `text` within `maximumBytes`. A retention snapshot that loses text says so.
     private static func clipped(_ text: String, maximumBytes: Int, kind: String) -> String {
         guard text.utf8.count > maximumBytes,
-              kind == AscendantTurnUpdateKind.assistantTextSnapshot.rawValue else {
+              kind == TurnUpdateKind.assistantTextSnapshot.rawValue else {
             return GnosticWirePayload.prefix(text, maximumBytes: maximumBytes)
         }
         return markedPrefix(text, maximumBytes: maximumBytes)
@@ -1011,7 +1012,7 @@ public actor AscendantTurnUpdateStore {
         return GnosticWirePayload.prefix(text, maximumBytes: room) + truncationMarker
     }
 
-    private static func bounded(_ update: AscendantTurnUpdate, maxBytes: Int) -> AscendantTurnUpdate {
+    private static func bounded(_ update: TurnUpdate, maxBytes: Int) -> TurnUpdate {
         var text = update.text.map { clipped($0, maximumBytes: maxAssistantTextBytes, kind: update.kind) }
         let toolState = update.toolState.map(bounded)
         var toolStates = update.toolStates.map(bounded)
@@ -1019,7 +1020,7 @@ public actor AscendantTurnUpdateStore {
         var permissionStates = update.permissionStates.map(bounded)
         let kind = GnosticWirePayload.boundedIdentifier(update.kind)
         var candidate = update
-        candidate = AscendantTurnUpdate(
+        candidate = TurnUpdate(
             sequence: update.sequence, kind: kind, text: text, toolState: toolState,
             toolStates: toolStates, permissionState: permissionState,
             permissionStates: permissionStates, terminal: update.terminal,
@@ -1029,7 +1030,7 @@ public actor AscendantTurnUpdateStore {
         while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
             // A single byte halves to nothing, so this loop always ends.
             text = clipped(current, maximumBytes: current.utf8.count / 2, kind: update.kind)
-            candidate = AscendantTurnUpdate(
+            candidate = TurnUpdate(
                 sequence: update.sequence, kind: kind,
                 text: text,
                 toolState: toolState,
@@ -1044,7 +1045,7 @@ public actor AscendantTurnUpdateStore {
         }
         while encodedSize(candidate) > maxBytes, !toolStates.isEmpty {
             toolStates.removeFirst()
-            candidate = AscendantTurnUpdate(
+            candidate = TurnUpdate(
                 sequence: update.sequence,
                 kind: kind,
                 text: text,
@@ -1060,7 +1061,7 @@ public actor AscendantTurnUpdateStore {
         }
         while encodedSize(candidate) > maxBytes, !permissionStates.isEmpty {
             permissionStates.removeFirst()
-            candidate = AscendantTurnUpdate(
+            candidate = TurnUpdate(
                 sequence: update.sequence,
                 kind: kind,
                 text: text,
@@ -1077,8 +1078,8 @@ public actor AscendantTurnUpdateStore {
         return candidate
     }
 
-    private static func bounded(_ state: AscendantToolState) -> AscendantToolState {
-        AscendantToolState(
+    private static func bounded(_ state: TurnToolState) -> TurnToolState {
+        TurnToolState(
             toolCallID: GnosticWirePayload.boundedIdentifier(state.toolCallID),
             title: state.title.map { GnosticWirePayload.boundedLabel($0) },
             status: GnosticWirePayload.boundedIdentifier(state.status),
@@ -1086,8 +1087,8 @@ public actor AscendantTurnUpdateStore {
         )
     }
 
-    private static func bounded(_ state: AscendantPermissionState) -> AscendantPermissionState {
-        AscendantPermissionState(
+    private static func bounded(_ state: TurnPermissionState) -> TurnPermissionState {
+        TurnPermissionState(
             correlationID: GnosticWirePayload.boundedIdentifier(state.correlationID),
             toolCallID: GnosticWirePayload.boundedIdentifier(state.toolCallID),
             title: GnosticWirePayload.boundedLabel(state.title),
@@ -1095,7 +1096,7 @@ public actor AscendantTurnUpdateStore {
         )
     }
 
-    private static func upsert(_ state: AscendantToolState, into states: inout [AscendantToolState]) {
+    private static func upsert(_ state: TurnToolState, into states: inout [TurnToolState]) {
         if let index = states.firstIndex(where: { $0.toolCallID == state.toolCallID }) {
             states[index] = state
         } else {
@@ -1104,8 +1105,8 @@ public actor AscendantTurnUpdateStore {
     }
 
     private static func upsert(
-        _ state: AscendantPermissionState,
-        into states: inout [AscendantPermissionState]
+        _ state: TurnPermissionState,
+        into states: inout [TurnPermissionState]
     ) {
         if let index = states.firstIndex(where: { $0.correlationID == state.correlationID }) {
             states[index] = state

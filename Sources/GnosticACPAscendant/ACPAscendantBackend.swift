@@ -2,6 +2,7 @@
 
 import GnosticProtocol
 import Foundation
+import GnosticACPWire
 import GnosticCore
 #if canImport(Darwin)
 import Darwin
@@ -48,7 +49,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     ])
 
     /// Gnostic-owned identity for the Ascendant served by this backend.
-    public let identity: AscendantBackendIdentity
+    public let identity: RuntimeInstanceIdentity
 
     /// Parsed process settings. This value does not start a process.
     public let launchSpec: ACPLaunchSpec
@@ -205,18 +206,18 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         }
 
         var interoperability: Set<String> = [
-            AscendantInteroperabilityCapability.textTurn.rawValue,
-            AscendantInteroperabilityCapability.streamedUpdates.rawValue,
-            AscendantInteroperabilityCapability.cancellation.rawValue,
-            AscendantInteroperabilityCapability.permissionMediation.rawValue,
-            AscendantInteroperabilityCapability.timelineManagement.rawValue,
+            InteroperabilityCapability.textTurn.rawValue,
+            InteroperabilityCapability.streamedUpdates.rawValue,
+            InteroperabilityCapability.cancellation.rawValue,
+            InteroperabilityCapability.permissionMediation.rawValue,
+            InteroperabilityCapability.timelineManagement.rawValue,
         ]
         if services.workspace != nil {
-            interoperability.insert(AscendantInteroperabilityCapability.workspaceAttachment.rawValue)
-            interoperability.insert(AscendantInteroperabilityCapability.workspaceToolInvocation.rawValue)
+            interoperability.insert(InteroperabilityCapability.workspaceAttachment.rawValue)
+            interoperability.insert(InteroperabilityCapability.workspaceToolInvocation.rawValue)
         }
         let now = Date()
-        identity = AscendantBackendIdentity(
+        identity = RuntimeInstanceIdentity(
             id: ascendant.id,
             name: ascendant.name,
             description: ascendant.description,
@@ -280,7 +281,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     /// Returns Gnostic Timelines whose ACP sessions still exist at the agent.
     ///
     /// - Returns: The ordered Timeline projections owned by this backend.
-    public func operatedTimelines() async throws -> [AscendantBackendTimeline] {
+    public func operatedTimelines() async throws -> [RuntimeInstanceTimeline] {
         do {
             let connection = try await requireConnection()
             let timelineIDs = timelineRegistry.operatedTimelines().map(\.id)
@@ -324,7 +325,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     ///   - id: The Gnostic-owned Timeline identifier to adopt.
     ///   - title: The Timeline title.
     /// - Returns: The new in-memory Timeline projection.
-    public func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    public func createTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         do {
             let timeline = try await timelineRegistry.create(id: id, title: title)
             projects[id] = .scratch
@@ -350,7 +351,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     /// - Returns: The updated in-memory Timeline projection.
     /// - Throws: ``AscendantBackendError/timelineNotFound(_:)`` when this
     ///   backend does not project the Timeline.
-    public func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    public func renameTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         let renamed = try await timelineRegistry.rename(id: id, title: title)
         try persistSessionMap()
         return renamed
@@ -667,7 +668,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             try await updates.append(.init(
                 kind: .completion,
                 terminal: true,
-                reasonCode: outcome.stopReason == nil ? TimelineTurnTerminalOutcome.endedUnspecified.rawValue : nil
+                reasonCode: outcome.stopReason == nil ? TurnTerminalOutcome.endedUnspecified.rawValue : nil
             ))
             return outcome.text
         } catch let error as AscendantBackendError {
@@ -1102,7 +1103,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             throw TimelineJournalError.invalidPayload("ACP update references an unknown or duplicate Session ID")
         }
         if let activeTurn = activeTurns[timelineID], activeTurn.sessionID == sessionID {
-            let terminalOutcome: TimelineTurnTerminalOutcome?
+            let terminalOutcome: TurnTerminalOutcome?
             if case let .stateUpdate(state) = update, state.isIdle {
                 terminalOutcome = .from(stopReason: state.idleStopReason)
             } else {
@@ -1110,7 +1111,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             }
             try await timelineJournalRecorder.appendTurnUpdate(
                 sessionID: sessionID,
-                update: TimelineTurnUpdate(
+                update: TurnSessionUpdate(
                     timelineID: timelineID,
                     clientTurnID: activeTurn.clientTurnID,
                     sequence: activeTurn.nextTimelineUpdateSequence(),
@@ -2013,8 +2014,8 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
 
     private nonisolated static func toolStatus(
         _ status: String?,
-        fallback: AscendantToolStatus
-    ) -> AscendantToolStatus {
+        fallback: TurnToolStatus
+    ) -> TurnToolStatus {
         switch status {
         case "pending": .pending
         case "inProgress", "in_progress": .inProgress

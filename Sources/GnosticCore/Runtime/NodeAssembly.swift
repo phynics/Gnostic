@@ -83,7 +83,7 @@ struct NodeAssembly {
         let resolvedContainer = try Container.resolve(
             components: Components(
                 controllers: ["ObjectLifecycleController": ObjectLifecycleController.self],
-                objectTypes: [GnosticAscendantObject.self, GnosticRuntimeInstanceObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self, GnosticWorkspaceToolObject.self]
+                objectTypes: [GnosticRuntimeInstanceObject.self, GnosticTimelineObject.self, GnosticWorkspaceObject.self, GnosticWorkspaceToolObject.self]
             ),
             configuration: Configuration(
                 common: CommonOptions(agentIdentity: ["name": "gnostic-node-\(plan.nodeID.uuidString.lowercased())"]),
@@ -132,7 +132,7 @@ struct NodeAssembly {
         timelineJournals: TimelineJournalStore? = nil
     ) async throws -> BackendProducts {
         var operatedTimelines: [AscendantRuntimeTimeline] = []
-        var identities: [AscendantBackendIdentity] = []
+        var identities: [RuntimeInstanceIdentity] = []
         let backendDiscovery = AxolotyWorkspaceDiscovery(
             catalog: infrastructure.catalog,
             subscription: infrastructure.subscription,
@@ -142,7 +142,7 @@ struct NodeAssembly {
         var specs: [UUID: AscendantBackendSupervisor.BackendSpec] = [:]
         var leases: [UUID: UUID] = [:]
         var instances: [UUID: any AscendantBackend] = [:]
-        var health: [UUID: AscendantBackendHealth] = [:]
+        var health: [UUID: GnosticRuntimeInstanceHealth] = [:]
         var attachmentCapabilities: [(ascendantID: UUID, lease: UUID, capability: BackendWorkspaceAttachmentCapability)] = []
         var timelineStoreCapabilities: [UUID: any AscendantBackendOptionalCapability] = [:]
 
@@ -225,7 +225,7 @@ struct NodeAssembly {
                     try await timelineJournals.ensureTimelineCreated(
                         timelineID: timeline.id,
                         title: timeline.title,
-                        runtimeInstanceID: timeline.attachedAscendantID,
+                        runtimeInstanceID: timeline.runtimeInstanceID,
                         attachments: configured?.attachments ?? []
                     )
                 }

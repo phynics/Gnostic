@@ -71,10 +71,10 @@ struct TurnLogCommandTests {
         let timelineID = UUID()
         try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .started(messageDigest: "digest-42")))
         try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .update(
-            AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")
+            TurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")
         )))
         try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .update(
-            AscendantTurnUpdate(sequence: 2, kind: "done", terminal: true)
+            TurnUpdate(sequence: 2, kind: "done", terminal: true)
         )))
         try log.append(TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .finished))
 
@@ -115,8 +115,8 @@ struct TurnLogCommandTests {
                 messageDigest: "digest-9",
                 nextSequence: 3,
                 updates: [
-                    AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi"),
-                    AscendantTurnUpdate(sequence: 2, kind: "done", terminal: true),
+                    TurnUpdate(sequence: 1, kind: "assistant_text", text: "hi"),
+                    TurnUpdate(sequence: 2, kind: "done", terminal: true),
                 ],
                 compacted: true,
                 terminal: true,

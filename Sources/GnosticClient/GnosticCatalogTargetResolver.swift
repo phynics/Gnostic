@@ -6,17 +6,13 @@ import GnosticProtocol
 
 /// The catalogued object kinds a consumer client addresses by identifier.
 enum CatalogTargetKind: Sendable, Equatable {
-    /// An Ascendant, which operates itself.
-    case ascendant
-    /// A canonical ACP Runtime instance, which replaces the legacy Ascendant
-    /// projection under ADR 0021.
+    /// A Runtime instance, which operates itself.
     case runtimeInstance
-    /// A Timeline, whose owning Runtime or legacy Ascendant the catalog names.
+    /// A Timeline, whose operating Runtime instance the catalog names.
     case timeline
 
     var objectType: String {
         switch self {
-        case .ascendant: GnosticObjectType.ascendant
         case .runtimeInstance: GnosticObjectType.runtimeInstance
         case .timeline: GnosticObjectType.timeline
         }
@@ -28,9 +24,9 @@ struct CatalogTarget: Sendable, Equatable {
     /// The provider that advertised the target, spelled as the catalog spells it.
     let providerID: String
 
-    /// The Runtime or legacy Ascendant that operates the target, when a
-    /// capability was required. It is `nil` when no capability was required.
-    let ascendantID: UUID?
+    /// The Runtime instance that operates the target, when a capability was
+    /// required. It is `nil` when no capability was required.
+    let runtimeInstanceID: UUID?
 }
 
 /// The one failure set every consumer client maps to its own public error.
@@ -49,7 +45,7 @@ enum CatalogTargetFailure: Error, Sendable, Equatable {
     /// The expected provider does not own the target.
     case providerMismatch
 
-    /// The operating Ascendant does not advertise the required capability.
+    /// The operating Runtime instance does not provide the required capability.
     case missingCapability(String)
 }
 
@@ -60,9 +56,9 @@ enum CatalogTargetFailure: Error, Sendable, Equatable {
 /// - **Refresh.** The catalog is refreshed at most once per resolution, and
 ///   only when the target is absent. For an object, absent means no advertised
 ///   object of its kind and identifier, so an unavailable object is absent. For
-///   a provider-level target, absent means no provider advertises the
-///   capability. Capability and operating-Ascendant checks read the catalog as
-///   it stands and never trigger a refresh; after the refresh, the resolution
+///   a provider-level target, absent means no provider advertises a Runtime
+///   instance. Capability and operating-instance checks read the catalog as it
+///   stands and never trigger a refresh; after the refresh, the resolution
 ///   fails.
 /// - **Ambiguity.** More than one provider advertising the target is
 ///   ``CatalogTargetFailure/ambiguous``.
@@ -71,12 +67,15 @@ enum CatalogTargetFailure: Error, Sendable, Equatable {
 ///   For a provider-level target, an expected provider outside the advertising
 ///   set is ``CatalogTargetFailure/unavailable``, because no node-wide target
 ///   can be mismatched against an object.
-/// - **Capability.** A required capability is checked on the Timeline's
-///   operating identity. A canonical Runtime provides ACP's mandatory
-///   `session/prompt` method and the Node-owned Timeline management operations;
-///   other capabilities require a legacy Ascendant advertisement. A Timeline
-///   without exactly one operating identity is
-///   ``CatalogTargetFailure/unavailable``.
+/// - **Capability.** A Runtime instance advertises no capability list. It
+///   provides the names in ``GnosticCapability/providedByRuntimeInstance`` by
+///   being advertised: ACP v2 requires `session/prompt`, and the Node that
+///   hosts the instance owns Timeline management and diagnostics. A required
+///   capability is therefore checked as "the operating Runtime instance is
+///   advertised by the resolved provider". For a Timeline the operating
+///   instance is the one the Timeline names; a Timeline without exactly one is
+///   ``CatalogTargetFailure/unavailable``. A name outside that set is
+///   ``CatalogTargetFailure/missingCapability(_:)``.
 ///
 /// The resolver owns no public error type. It ships no wire call.
 @MainActor
@@ -84,14 +83,14 @@ struct CatalogTargetResolver {
     let lookup: GnosticCatalogLookup
 
     /// Resolves one object target to its provider and, when a capability is
-    /// required, to its operating Runtime or legacy Ascendant.
+    /// required, to its operating Runtime instance.
     ///
     /// - Parameters:
     ///   - kind: The object kind addressed by `id`.
     ///   - id: The object identifier.
     ///   - expectedProviderID: The provider the caller pinned, or `nil`.
-    ///   - requiredCapability: The capability the operating identity must
-    ///     advertise, or `nil` when none is required.
+    ///   - requiredCapability: The capability the operating Runtime instance
+    ///     must provide, or `nil` when none is required.
     /// - Returns: The resolved target, or the one failure the client maps.
     func resolve(
         _ kind: CatalogTargetKind,
@@ -109,26 +108,27 @@ struct CatalogTargetResolver {
         )
     }
 
-    /// Resolves the single provider that advertises a node-wide capability,
+    /// Resolves the single provider that provides a node-wide capability,
     /// such as live diagnostics.
     ///
     /// - Parameters:
-    ///   - capability: The capability any Ascendant of the provider must advertise.
+    ///   - capability: The capability a Runtime instance of the provider must
+    ///     provide.
     ///   - expectedProviderID: The provider the caller pinned, or `nil`.
     /// - Returns: The resolved provider, or the one failure the client maps.
     ///   An absent capability is ``CatalogTargetFailure/missingCapability(_:)``.
     func resolveProvider(
-        advertising capability: String,
+        providing capability: String,
         expectedProviderID: String? = nil
     ) async -> Result<CatalogTarget, CatalogTargetFailure> {
         var providers = GnosticCatalogLookup.providers(
-            advertising: capability,
+            providing: capability,
             in: await lookup.catalog.networkObjects()
         )
         if providers.isEmpty {
             await lookup.refresh()
             providers = GnosticCatalogLookup.providers(
-                advertising: capability,
+                providing: capability,
                 in: await lookup.catalog.networkObjects()
             )
         }
@@ -141,22 +141,12 @@ struct CatalogTargetResolver {
             }) else {
                 return .failure(.unavailable)
             }
-            return .success(CatalogTarget(providerID: match, ascendantID: nil))
+            return .success(CatalogTarget(providerID: match, runtimeInstanceID: nil))
         }
         guard providers.count == 1, let providerID = providers.first else {
             return .failure(.ambiguous)
         }
-        return .success(CatalogTarget(providerID: providerID, ascendantID: nil))
-    }
-
-    /// Reports whether any Ascendant of a provider advertises a capability,
-    /// read from the catalog without a refresh.
-    func providerAdvertises(_ capability: String, providerID: String) async -> Bool {
-        GnosticCatalogLookup.ascendantAdvertises(
-            capability,
-            providerID: providerID,
-            in: await lookup.catalog.networkObjects()
-        )
+        return .success(CatalogTarget(providerID: providerID, runtimeInstanceID: nil))
     }
 
     /// Applies the resolution rules to a catalog snapshot. Pure, so the policy
@@ -181,41 +171,30 @@ struct CatalogTargetResolver {
         case .mismatch: return .failure(.providerMismatch)
         }
         guard let requiredCapability else {
-            return .success(CatalogTarget(providerID: providerID, ascendantID: nil))
+            return .success(CatalogTarget(providerID: providerID, runtimeInstanceID: nil))
         }
-        let ascendantID: UUID
+        let runtimeInstanceID: UUID
         switch kind {
-        case .ascendant:
-            ascendantID = id
         case .runtimeInstance:
-            ascendantID = id
+            runtimeInstanceID = id
         case .timeline:
-            guard let operating = GnosticCatalogLookup.operatingAscendantID(
+            guard let operating = GnosticCatalogLookup.runtimeInstanceID(
                 ofTimeline: id,
                 providerID: providerID,
                 in: entries
             ) else {
                 return .failure(.unavailable)
             }
-            ascendantID = operating
+            runtimeInstanceID = operating
         }
-        let capabilityIsAdvertised = GnosticCatalogLookup.ascendantAdvertises(
+        guard GnosticCatalogLookup.runtimeInstanceProvides(
             requiredCapability,
-            ascendantID: ascendantID,
+            runtimeInstanceID: runtimeInstanceID,
             providerID: providerID,
             in: entries
-        ) || (
-            kind == .timeline
-                && [GnosticCapability.textTurnInput, GnosticCapability.timelineManagement].contains(requiredCapability)
-                && GnosticCatalogLookup.runtimeInstanceExists(
-                    id: ascendantID,
-                    providerID: providerID,
-                    in: entries
-                )
-        )
-        guard capabilityIsAdvertised else {
+        ) else {
             return .failure(.missingCapability(requiredCapability))
         }
-        return .success(CatalogTarget(providerID: providerID, ascendantID: ascendantID))
+        return .success(CatalogTarget(providerID: providerID, runtimeInstanceID: runtimeInstanceID))
     }
 }

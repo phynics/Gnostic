@@ -127,9 +127,9 @@ public enum InspectRenderer {
             "node  \(snapshot.nodeID?.uuidString.lowercased() ?? "<unassigned>")  protocolMajor=\(snapshot.protocolMajor)",
             "turns  inFlight=\(snapshot.turns.inFlight) completed=\(snapshot.turns.completed) observationPending=\(snapshot.turns.observationPending) observationClosed=\(snapshot.turns.observationClosed)",
             "observer  live=\(snapshot.observer.liveObservations) cleanupFailures=\(snapshot.observer.cleanupFailures) retainedInFlight=\(snapshot.observer.retainedInFlight) retainedCompleted=\(snapshot.observer.retainedCompleted) retainedTombstones=\(snapshot.observer.retainedTombstones)",
-            "ascendants  \(snapshot.ascendents.count)",
+            "ascendants  \(snapshot.runtimeInstances.count)",
         ]
-        for ascendant in snapshot.ascendents {
+        for ascendant in snapshot.runtimeInstances {
             lines.append("  \(ascendantSummaryLine(ascendant))")
         }
         lines.append("timelines  \(snapshot.timelines.count)")
@@ -147,10 +147,10 @@ public enum InspectRenderer {
     ///
     /// - Parameter snapshot: The Ascendant diagnostics snapshot.
     /// - Returns: Newline-terminated text.
-    public static func ascendantText(_ snapshot: AscendantDiagnostics) -> String {
+    public static func ascendantText(_ snapshot: RuntimeInstanceDiagnostics) -> String {
         var lines: [String] = [
-            "ascendant  \(snapshot.ascendant.id.uuidString.lowercased())  \(snapshot.ascendant.name)",
-            "health=\(snapshot.ascendant.health.rawValue) quarantined=\(snapshot.ascendant.quarantined)",
+            "ascendant  \(snapshot.runtimeInstance.id.uuidString.lowercased())  \(snapshot.runtimeInstance.name)",
+            "health=\(snapshot.runtimeInstance.health.rawValue) quarantined=\(snapshot.runtimeInstance.quarantined)",
             "backend=\(snapshot.backendKind ?? "-") version=\(snapshot.backendVersion ?? "-")",
             "privateTimeline=\(snapshot.privateTimelineID.uuidString.lowercased()) primaryWorkspace=\(snapshot.primaryWorkspaceID?.uuidString.lowercased() ?? "-")",
             "capabilities=[\(snapshot.capabilities.joined(separator: ","))]",
@@ -169,7 +169,7 @@ public enum InspectRenderer {
     public static func timelineText(_ snapshot: TimelineDiagnostics) -> String {
         var lines: [String] = [
             "timeline  \(snapshot.timeline.id.uuidString.lowercased())  \(snapshot.timeline.title)",
-            "operator=\(snapshot.timeline.operatingAscendantID?.uuidString.lowercased() ?? "-")",
+            "operator=\(snapshot.timeline.runtimeInstanceID?.uuidString.lowercased() ?? "-")",
             "workspaces  \(snapshot.workspaces.count)",
         ]
         for workspace in snapshot.workspaces {
@@ -235,12 +235,12 @@ public enum InspectRenderer {
         try JSONOutput.encode(events.map(RenderedWireEvent.init)) + "\n"
     }
 
-    private static func ascendantSummaryLine(_ ascendant: DiagnosticsAscendantSummary) -> String {
+    private static func ascendantSummaryLine(_ ascendant: DiagnosticsRuntimeInstanceSummary) -> String {
         "\(ascendant.id.uuidString.lowercased())  \(ascendant.name)  health=\(ascendant.health.rawValue) quarantined=\(ascendant.quarantined)"
     }
 
     private static func timelineSummaryLine(_ timeline: DiagnosticsTimelineSummary) -> String {
-        "\(timeline.id.uuidString.lowercased())  \(timeline.title)  operator=\(timeline.operatingAscendantID?.uuidString.lowercased() ?? "-")"
+        "\(timeline.id.uuidString.lowercased())  \(timeline.title)  operator=\(timeline.runtimeInstanceID?.uuidString.lowercased() ?? "-")"
     }
 
     private static func workspaceSummaryLine(_ workspace: DiagnosticsWorkspaceSummary) -> String {

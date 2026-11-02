@@ -18,14 +18,14 @@ public enum GnosticDiagnosticsClientError: Error, Sendable, Equatable, Localized
     /// More than one live provider serves node-wide diagnostics.
     case nodeAmbiguous
 
-    /// No live provider advertised the addressed Ascendant.
-    case ascendantUnavailable(UUID)
+    /// No live provider advertised the addressed Runtime instance.
+    case runtimeInstanceUnavailable(UUID)
 
-    /// More than one provider advertised the addressed Ascendant.
-    case ascendantAmbiguous(UUID)
+    /// More than one provider advertised the addressed Runtime instance.
+    case runtimeInstanceAmbiguous(UUID)
 
     /// No live provider advertised the addressed Timeline, or the Timeline
-    /// names no operating Ascendant to gate against.
+    /// names no operating Runtime instance to gate against.
     case timelineUnavailable(UUID)
 
     /// More than one provider advertised the addressed Timeline.
@@ -47,8 +47,8 @@ public enum GnosticDiagnosticsClientError: Error, Sendable, Equatable, Localized
         case .missingCapability: "missingCapability"
         case .nodeUnavailable: "nodeUnavailable"
         case .nodeAmbiguous: "nodeAmbiguous"
-        case .ascendantUnavailable: "ascendantUnavailable"
-        case .ascendantAmbiguous: "ascendantAmbiguous"
+        case .runtimeInstanceUnavailable: "runtimeInstanceUnavailable"
+        case .runtimeInstanceAmbiguous: "runtimeInstanceAmbiguous"
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
         case .providerMismatch: "providerMismatch"
@@ -65,12 +65,12 @@ public enum GnosticDiagnosticsClientError: Error, Sendable, Equatable, Localized
             "No discovered Node serves live diagnostics."
         case .nodeAmbiguous:
             "More than one discovered Node serves live diagnostics."
-        case let .ascendantUnavailable(id):
-            "Ascendant \(id.uuidString.lowercased()) was not discovered."
-        case let .ascendantAmbiguous(id):
-            "Ascendant \(id.uuidString.lowercased()) is advertised by more than one provider."
+        case let .runtimeInstanceUnavailable(id):
+            "Runtime instance \(id.uuidString.lowercased()) was not discovered."
+        case let .runtimeInstanceAmbiguous(id):
+            "Runtime instance \(id.uuidString.lowercased()) is advertised by more than one provider."
         case let .timelineUnavailable(id):
-            "Timeline \(id.uuidString.lowercased()) was not discovered, or names no operating Ascendant."
+            "Timeline \(id.uuidString.lowercased()) was not discovered, or names no operating Runtime instance."
         case let .timelineAmbiguous(id):
             "Timeline \(id.uuidString.lowercased()) is advertised by more than one provider."
         case .providerMismatch:

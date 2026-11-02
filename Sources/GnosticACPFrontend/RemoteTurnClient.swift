@@ -169,7 +169,7 @@ public final class RemoteTurnClient: Sendable {
         timelineID: UUID,
         clientTurnID: String?,
         providerID: String? = nil
-    ) async throws -> AscendantTurnResult {
+    ) async throws -> TurnResult {
         let turns = try connectedTurns()
         return try await tracked(providerID) {
             try await turns.run(message: message, timelineID: timelineID, clientTurnID: clientTurnID, providerID: providerID)
@@ -201,7 +201,7 @@ public final class RemoteTurnClient: Sendable {
         message: String? = nil,
         afterSequence: Int = 0,
         providerID: String? = nil
-    ) async throws -> AscendantTurnReplay {
+    ) async throws -> TurnReplay {
         let turns = try connectedTurns()
         return try await tracked(providerID) {
             try await turns.replay(
@@ -220,11 +220,11 @@ public final class RemoteTurnClient: Sendable {
         for clientTurnID: String,
         timelineID: UUID,
         providerID: String
-    ) async throws -> AsyncStream<AscendantTurnUpdate> {
+    ) async throws -> AsyncStream<TurnUpdate> {
         try await connectedTurns().updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
     }
 
-    public func respondToPermission(_ permission: AscendantPermissionResponse, providerID: String) throws {
+    public func respondToPermission(_ permission: TurnPermissionResponse, providerID: String) throws {
         try connectedTurns().respond(to: permission, providerID: providerID)
     }
 
@@ -244,7 +244,7 @@ public final class RemoteTurnClient: Sendable {
     ) async throws -> TimelineStatus {
         let timelines = try connectedTimelines()
         return try await tracked(providerID) {
-            try await timelines.create(title: title, ascendantID: runtimeID, providerID: providerID)
+            try await timelines.create(title: title, runtimeInstanceID: runtimeID, providerID: providerID)
         }
     }
 
@@ -448,8 +448,8 @@ public final class RemoteTurnClient: Sendable {
             if case .tooLarge = error { RemoteTurnClientError.promptTooLarge } else { error }
         case let error as GnosticTimelineClientError:
             switch error {
-            case let .ascendantUnavailable(id): RemoteTurnClientError.ascendantUnavailable(id)
-            case .ascendantAmbiguous: RemoteTurnClientError.ambiguousAscendant
+            case let .runtimeInstanceUnavailable(id): RemoteTurnClientError.ascendantUnavailable(id)
+            case .runtimeInstanceAmbiguous: RemoteTurnClientError.ambiguousAscendant
             case let .timelineUnavailable(id): RemoteTurnClientError.timelineUnavailable(id)
             case let .timelineAmbiguous(id): RemoteTurnClientError.timelineAmbiguous(id)
             case .providerMismatch: RemoteTurnClientError.providerMismatch

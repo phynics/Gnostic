@@ -154,5 +154,5 @@ public struct NodeRuntimeMetrics: Codable, Sendable, Equatable {
 /// Gnostic's stable, provider-independent projection of an Ascendant identity.
 /// These aliases keep the runtime's existing projection seams independent of
 /// any provider-native type while the backend contract remains canonical.
-public typealias AscendantRuntimeIdentity = AscendantBackendIdentity
-public typealias AscendantRuntimeTimeline = AscendantBackendTimeline
+public typealias AscendantRuntimeIdentity = RuntimeInstanceIdentity
+public typealias AscendantRuntimeTimeline = RuntimeInstanceTimeline

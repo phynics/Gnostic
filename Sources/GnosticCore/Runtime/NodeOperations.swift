@@ -14,12 +14,12 @@ protocol NodeOperations: AnyObject, Sendable {
     /// Timeline.
     ///
     /// - Returns: The Turn result the backend produced.
-    func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult
+    func turn(_ request: TurnRequest) async throws -> TurnResult
 
     /// Cancels one admitted Turn identified by its client Turn identity.
     ///
     /// - Returns: `true` when an admitted Turn was cancelled.
-    func cancelTurn(_ request: AscendantTurnCancellationRequest) async -> Bool
+    func cancelTurn(_ request: TurnCancellationRequest) async -> Bool
 
     /// Returns the status of one Timeline.
     ///
@@ -69,7 +69,7 @@ protocol NodeOperations: AnyObject, Sendable {
     /// Returns a payload-free live snapshot for one Ascendant.
     ///
     /// - Returns: The Ascendant diagnostics snapshot.
-    func diagnosticsAscendant(_ ascendantID: UUID) async throws -> AscendantDiagnostics
+    func diagnosticsAscendant(_ ascendantID: UUID) async throws -> RuntimeInstanceDiagnostics
 
     /// Returns a payload-free live snapshot for one Timeline.
     ///

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import GnosticProtocol
 import Testing
 
@@ -10,7 +11,7 @@ import Testing
 struct AscendantTurnUpdateStoreJournalTests {
     private func makeURL() -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("ascendant-turn-journal-tests", isDirectory: true)
+            .appendingPathComponent("turn-journal-tests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent("turn-events.jsonl")
     }
@@ -256,7 +257,7 @@ struct AscendantTurnUpdateStoreJournalTests {
                 event: .checkpoint(TurnJournalCheckpoint(
                     messageDigest: nil,
                     nextSequence: 2,
-                    updates: [AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "\(index)")],
+                    updates: [TurnUpdate(sequence: 1, kind: "assistant_text", text: "\(index)")],
                     compacted: false,
                     terminal: false,
                     finished: false
@@ -416,14 +417,14 @@ struct AscendantTurnUpdateStoreJournalTests {
         let records: [TurnEventRecord] = [
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .started(messageDigest: "digest-42")),
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .update(
-                AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")
+                TurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")
             )),
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .finished),
             TurnEventRecord(timelineID: timelineID, clientTurnID: "turn-1", event: .checkpoint(
                 TurnJournalCheckpoint(
                     messageDigest: "digest-42",
                     nextSequence: 2,
-                    updates: [AscendantTurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")],
+                    updates: [TurnUpdate(sequence: 1, kind: "assistant_text", text: "hi")],
                     compacted: false,
                     terminal: false,
                     finished: true

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 
 /// The digest that identifies a Turn's prompt at admission (ADR 0021 Turn
 /// semantics).

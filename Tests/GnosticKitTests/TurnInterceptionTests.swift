@@ -175,27 +175,27 @@ struct TurnInterceptionTests {
     @Test("transcript folds assistant text, tool states, and a terminal outcome")
     func transcriptFoldsUpdates() {
         let updates = [
-            AscendantTurnUpdate(sequence: 0, kind: .assistantText, text: "Hel"),
-            AscendantTurnUpdate(sequence: 1, kind: .assistantText, text: "lo"),
-            AscendantTurnUpdate(sequence: 2, kind: .assistantTextSnapshot, text: "Hello!"),
-            AscendantTurnUpdate(
+            TurnUpdate(sequence: 0, kind: .assistantText, text: "Hel"),
+            TurnUpdate(sequence: 1, kind: .assistantText, text: "lo"),
+            TurnUpdate(sequence: 2, kind: .assistantTextSnapshot, text: "Hello!"),
+            TurnUpdate(
                 sequence: 3,
                 kind: .toolCall,
-                toolState: AscendantToolState(toolCallID: "t1", title: "Read", status: .pending)
+                toolState: TurnToolState(toolCallID: "t1", title: "Read", status: .pending)
             ),
-            AscendantTurnUpdate(
+            TurnUpdate(
                 sequence: 4,
                 kind: .toolState,
-                toolState: AscendantToolState(toolCallID: "t1", title: "Read", status: .completed, content: "ok")
+                toolState: TurnToolState(toolCallID: "t1", title: "Read", status: .completed, content: "ok")
             ),
-            AscendantTurnUpdate(sequence: 5, kind: .completion, terminal: true),
+            TurnUpdate(sequence: 5, kind: .completion, terminal: true),
         ]
 
         let transcript = TurnTranscript(updates: updates)
 
         #expect(transcript.assistantText == "Hello!")
         #expect(transcript.toolStates.count == 1)
-        #expect(transcript.toolStates.first?.status == AscendantToolStatus.completed.rawValue)
+        #expect(transcript.toolStates.first?.status == TurnToolStatus.completed.rawValue)
         #expect(transcript.isTerminal)
         #expect(transcript.failed == false)
         #expect(transcript.terminalUpdate?.updateKind == .completion)
@@ -204,8 +204,8 @@ struct TurnInterceptionTests {
     @Test("transcript reports a failed terminal outcome")
     func transcriptReportsFailure() {
         let transcript = TurnTranscript(updates: [
-            AscendantTurnUpdate(sequence: 0, kind: .assistantText, text: "partial"),
-            AscendantTurnUpdate(sequence: 1, kind: .error, terminal: true, reasonCode: "boom"),
+            TurnUpdate(sequence: 0, kind: .assistantText, text: "partial"),
+            TurnUpdate(sequence: 1, kind: .error, terminal: true, reasonCode: "boom"),
         ])
 
         #expect(transcript.assistantText == "partial")

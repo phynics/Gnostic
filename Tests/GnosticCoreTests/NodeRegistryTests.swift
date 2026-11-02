@@ -50,7 +50,7 @@ struct NodeRegistryTests {
             id: runtimeID,
             title: "Runtime",
             attachedWorkspaceIDs: [],
-            ascendantID: fixture.ascendantID,
+            runtimeInstanceID: fixture.ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,
@@ -87,7 +87,7 @@ struct NodeRegistryTests {
             id: created.id,
             title: "After rename",
             attachedWorkspaceIDs: [fixture.networkWorkspaceID],
-            ascendantID: fixture.ascendantID,
+            runtimeInstanceID: fixture.ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: created.timeline.createdAt,
@@ -196,7 +196,7 @@ struct NodeRegistryTests {
             id: fixture.operated.id,
             title: "Rejected rename",
             attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            attachedAscendantID: fixture.operated.attachedAscendantID,
+            runtimeInstanceID: fixture.operated.runtimeInstanceID,
             isArchived: fixture.operated.isArchived,
             isPrivate: fixture.operated.isPrivate,
             createdAt: fixture.operated.createdAt,
@@ -219,7 +219,7 @@ struct NodeRegistryTests {
             id: fixture.operated.id,
             title: "Accepted rename",
             attachedWorkspaceIDs: fixture.operated.attachedWorkspaceIDs,
-            attachedAscendantID: fixture.operated.attachedAscendantID,
+            runtimeInstanceID: fixture.operated.runtimeInstanceID,
             isArchived: fixture.operated.isArchived,
             isPrivate: fixture.operated.isPrivate,
             createdAt: fixture.operated.createdAt,
@@ -278,7 +278,7 @@ struct NodeRegistryTests {
                 id: id,
                 title: title,
                 attachedWorkspaceIDs: [],
-                attachedAscendantID: ascendantID,
+                runtimeInstanceID: ascendantID,
                 isArchived: false,
                 isPrivate: false,
                 createdAt: now,
@@ -288,8 +288,8 @@ struct NodeRegistryTests {
 
         init() throws {
             let now = Date(timeIntervalSince1970: 1)
-            operated = .init(id: operatedID, title: "Operated", attachedWorkspaceIDs: [networkWorkspaceID], attachedAscendantID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
-            unoperated = .init(id: unoperatedID, title: "Unoperated", attachedWorkspaceIDs: [], attachedAscendantID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            operated = .init(id: operatedID, title: "Operated", attachedWorkspaceIDs: [networkWorkspaceID], runtimeInstanceID: ascendantID, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            unoperated = .init(id: unoperatedID, title: "Unoperated", attachedWorkspaceIDs: [], runtimeInstanceID: nil, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
             plan = try NodeManifest(
                 broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-registry-tests"),
                 node: .init(id: UUID(uuidString: "B21D0000-0000-4000-8000-000000000005")!),

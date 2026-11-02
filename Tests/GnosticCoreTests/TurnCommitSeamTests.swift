@@ -26,7 +26,7 @@ struct TurnCommitSeamTests {
         let store = AscendantTurnUpdateStore(timelineJournals: journals)
         try await store.enableDurability(at: eventLog)
         let coordinator = AscendantTurnCoordinator(ledger: store)
-        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "late-terminal-1")
+        let request = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "late-terminal-1")
 
         let first = try await coordinator.execute(request, ascendantID: UUID()) { "answer" }
         #expect(first.text == "answer")
@@ -39,7 +39,7 @@ struct TurnCommitSeamTests {
         )
         try await TimelineJournalRecorder(journals: journals).appendTurnUpdate(
             sessionID: "session-late",
-            update: TimelineTurnUpdate(
+            update: TurnSessionUpdate(
                 timelineID: timelineID, clientTurnID: "late-terminal-1", sequence: 99,
                 update: .stateUpdate(.idle(stopReason: .cancelled, meta: nil)),
                 terminal: true, terminalOutcome: .cancelled
@@ -54,7 +54,7 @@ struct TurnCommitSeamTests {
         #expect(retry.replayed)
         let terminals = await store.replay(timelineID: timelineID, clientTurnID: clientTurnID).updates.filter(\.terminal)
         #expect(terminals.count == 1)
-        #expect(terminals.first?.kind == AscendantTurnUpdateKind.completion.rawValue)
+        #expect(terminals.first?.kind == TurnUpdateKind.completion.rawValue)
 
         // A restart that recovers the event log answers the committed result.
         let restartedStore = AscendantTurnUpdateStore(timelineJournals: TimelineJournalStore(
@@ -79,7 +79,7 @@ struct TurnCommitSeamTests {
                 return "duplicate"
             }
             Issue.record("The journal-only restart returned a result it cannot hold.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error.reasonCode == "replayUnavailable", "observed \(error.reasonCode)")
         }
     }
@@ -102,7 +102,7 @@ struct TurnCommitSeamTests {
                 timelineJournals: TimelineJournalStore(directoryURL: directory)
             )
             let coordinator = AscendantTurnCoordinator(ledger: restartedStore)
-            let request = AscendantTurnRequest(message: "lost", timelineID: timelineID, clientTurnID: clientTurnID)
+            let request = TurnRequest(message: "lost", timelineID: timelineID, clientTurnID: clientTurnID)
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     _ = try await restartedStore.replay(timelineID: timelineID, clientTurnID: clientTurnID)
@@ -115,7 +115,7 @@ struct TurnCommitSeamTests {
                                 return "duplicate"
                             }
                             Issue.record("A retry of an admitted Turn returned a result.")
-                        } catch let error as AscendantTurnError {
+                        } catch let error as TurnError {
                             #expect(error.reasonCode == "insertionUnknown", "observed \(error.reasonCode)")
                         }
                     }

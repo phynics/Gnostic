@@ -12,7 +12,7 @@ enum ACPUpdateRenderer {
     static func updates(
         sessionID: String,
         turnID: String,
-        update: AscendantTurnUpdate,
+        update: TurnUpdate,
         replayed: Bool
     ) -> [ACPRenderedNotification] {
         var metadata: [String: GnosticJSONValue] = [
@@ -51,7 +51,7 @@ enum ACPUpdateRenderer {
     }
 
     private static func toolPayload(
-        _ state: AscendantToolState,
+        _ state: TurnToolState,
         initial: Bool,
         metadata: [String: GnosticJSONValue]
     ) -> GnosticJSONValue {

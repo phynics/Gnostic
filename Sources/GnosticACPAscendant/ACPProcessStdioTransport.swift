@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import GnosticProtocol
 
 /// Nonblocking ACP transport for a child process's stdin and stdout pipes.

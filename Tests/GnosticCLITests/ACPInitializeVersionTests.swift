@@ -2,6 +2,7 @@
 
 import Foundation
 @testable import GnosticACPFrontend
+import GnosticACPWire
 import GnosticProtocol
 import Testing
 

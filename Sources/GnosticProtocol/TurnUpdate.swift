@@ -1,14 +1,13 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticProtocol
 
-/// The declared vocabulary of ``AscendantTurnUpdate/kind`` values.
+/// The declared vocabulary of ``TurnUpdate/kind`` values.
 ///
 /// The wire representation stays a `String` so that a peer emitting a kind
-/// from a newer build decodes without loss. Use ``AscendantTurnUpdate/updateKind``
+/// from a newer build decodes without loss. Use ``TurnUpdate/updateKind``
 /// to read a kind that this build understands.
-public enum AscendantTurnUpdateKind: String, Codable, Sendable, Equatable, CaseIterable {
+public enum TurnUpdateKind: String, Codable, Sendable, Equatable, CaseIterable {
     /// Incremental assistant output produced while a Turn runs.
     case assistantText = "assistant_text"
     /// Assistant output accumulated by retention compaction.
@@ -27,8 +26,8 @@ public enum AscendantTurnUpdateKind: String, Codable, Sendable, Equatable, CaseI
     case error
 }
 
-/// The declared vocabulary of ``AscendantToolState/status`` values.
-public enum AscendantToolStatus: String, Codable, Sendable, Equatable, CaseIterable {
+/// The declared vocabulary of ``TurnToolState/status`` values.
+public enum TurnToolStatus: String, Codable, Sendable, Equatable, CaseIterable {
     /// The tool call is announced but has not started executing.
     case pending
     /// The tool call is executing.
@@ -39,8 +38,8 @@ public enum AscendantToolStatus: String, Codable, Sendable, Equatable, CaseItera
     case failed
 }
 
-/// The declared vocabulary of ``AscendantPermissionState/status`` values.
-public enum AscendantPermissionStatus: String, Codable, Sendable, Equatable, CaseIterable {
+/// The declared vocabulary of ``TurnPermissionState/status`` values.
+public enum TurnPermissionStatus: String, Codable, Sendable, Equatable, CaseIterable {
     /// The request is awaiting a decision.
     case pending
     /// The client approved the request.
@@ -54,7 +53,7 @@ public enum AscendantPermissionStatus: String, Codable, Sendable, Equatable, Cas
 }
 
 
-public struct AscendantToolState: Codable, Sendable, Equatable {
+public struct TurnToolState: Codable, Sendable, Equatable {
     public let toolCallID: String
     public let title: String?
     public let status: String
@@ -68,16 +67,16 @@ public struct AscendantToolState: Codable, Sendable, Equatable {
     }
 
     /// Creates a tool state from a declared status.
-    public init(toolCallID: String, title: String? = nil, status: AscendantToolStatus, content: String? = nil) {
+    public init(toolCallID: String, title: String? = nil, status: TurnToolStatus, content: String? = nil) {
         self.init(toolCallID: toolCallID, title: title, status: status.rawValue, content: content)
     }
 
     /// The declared status, or `nil` when the peer sent a status this build
     /// does not know.
-    public var toolStatus: AscendantToolStatus? { .init(rawValue: status) }
+    public var toolStatus: TurnToolStatus? { .init(rawValue: status) }
 }
 
-public struct AscendantPermissionState: Codable, Sendable, Equatable {
+public struct TurnPermissionState: Codable, Sendable, Equatable {
     public let correlationID: String
     public let toolCallID: String
     public let title: String
@@ -91,26 +90,26 @@ public struct AscendantPermissionState: Codable, Sendable, Equatable {
     }
 
     /// Creates a permission state from a declared status.
-    public init(correlationID: String, toolCallID: String, title: String, status: AscendantPermissionStatus) {
+    public init(correlationID: String, toolCallID: String, title: String, status: TurnPermissionStatus) {
         self.init(correlationID: correlationID, toolCallID: toolCallID, title: title, status: status.rawValue)
     }
 
     /// The declared status, or `nil` when the peer sent a status this build
     /// does not know.
-    public var permissionStatus: AscendantPermissionStatus? { .init(rawValue: status) }
+    public var permissionStatus: TurnPermissionStatus? { .init(rawValue: status) }
 }
 
-/// A replayable, transport-neutral update emitted for an identified Ascendant
-/// turn. The ACP adapter maps these values to `session/update` notifications.
-public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
+/// A replayable, transport-neutral update emitted for an identified
+/// Turn. The ACP adapter maps these values to `session/update` notifications.
+public struct TurnUpdate: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let sequence: Int
     public let kind: String
     public let text: String?
-    public let toolState: AscendantToolState?
-    public let toolStates: [AscendantToolState]
-    public let permissionState: AscendantPermissionState?
-    public let permissionStates: [AscendantPermissionState]
+    public let toolState: TurnToolState?
+    public let toolStates: [TurnToolState]
+    public let permissionState: TurnPermissionState?
+    public let permissionStates: [TurnPermissionState]
     public let terminal: Bool
     public let reasonCode: String?
     public let statusCode: Int?
@@ -120,10 +119,10 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         sequence: Int,
         kind: String,
         text: String? = nil,
-        toolState: AscendantToolState? = nil,
-        toolStates: [AscendantToolState] = [],
-        permissionState: AscendantPermissionState? = nil,
-        permissionStates: [AscendantPermissionState] = [],
+        toolState: TurnToolState? = nil,
+        toolStates: [TurnToolState] = [],
+        permissionState: TurnPermissionState? = nil,
+        permissionStates: [TurnPermissionState] = [],
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -147,12 +146,12 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     /// Creates an update from a declared kind.
     public init(
         sequence: Int,
-        kind: AscendantTurnUpdateKind,
+        kind: TurnUpdateKind,
         text: String? = nil,
-        toolState: AscendantToolState? = nil,
-        toolStates: [AscendantToolState] = [],
-        permissionState: AscendantPermissionState? = nil,
-        permissionStates: [AscendantPermissionState] = [],
+        toolState: TurnToolState? = nil,
+        toolStates: [TurnToolState] = [],
+        permissionState: TurnPermissionState? = nil,
+        permissionStates: [TurnPermissionState] = [],
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -177,7 +176,7 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
 
     /// The declared kind, or `nil` when the peer sent a kind this build does
     /// not know.
-    public var updateKind: AscendantTurnUpdateKind? { .init(rawValue: kind) }
+    public var updateKind: TurnUpdateKind? { .init(rawValue: kind) }
 
     /// Ends text that retention or a size bound cut.
     package static let truncationMarker = "…[truncated]"
@@ -192,7 +191,7 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     }
 
     /// Whether this update terminates its Turn without a result. A successful
-    /// ``AscendantTurnUpdateKind/completion`` is terminal but not a failure.
+    /// ``TurnUpdateKind/completion`` is terminal but not a failure.
     public var isTerminalFailure: Bool {
         switch updateKind {
         case .error, .cancellation: true
@@ -210,10 +209,10 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
         sequence = try container.decode(Int.self, forKey: .sequence)
         kind = try container.decode(String.self, forKey: .kind)
         text = try container.decodeIfPresent(String.self, forKey: .text)
-        toolState = try container.decodeIfPresent(AscendantToolState.self, forKey: .toolState)
-        toolStates = try container.decodeIfPresent([AscendantToolState].self, forKey: .toolStates) ?? []
-        permissionState = try container.decodeIfPresent(AscendantPermissionState.self, forKey: .permissionState)
-        permissionStates = try container.decodeIfPresent([AscendantPermissionState].self, forKey: .permissionStates) ?? []
+        toolState = try container.decodeIfPresent(TurnToolState.self, forKey: .toolState)
+        toolStates = try container.decodeIfPresent([TurnToolState].self, forKey: .toolStates) ?? []
+        permissionState = try container.decodeIfPresent(TurnPermissionState.self, forKey: .permissionState)
+        permissionStates = try container.decodeIfPresent([TurnPermissionState].self, forKey: .permissionStates) ?? []
         terminal = try container.decode(Bool.self, forKey: .terminal)
         reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode).map(GnosticWirePayload.boundedIdentifier)
         statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode).map(GnosticProtocol.boundedStatusCode)
@@ -221,15 +220,15 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     }
 }
 
-public struct AscendantTurnReplay: Codable, Sendable, Equatable {
+public struct TurnReplay: Codable, Sendable, Equatable {
     public let protocolMajor: Int
-    public let updates: [AscendantTurnUpdate]
+    public let updates: [TurnUpdate]
     public let compacted: Bool
     public let terminal: Bool
     public let conflict: Bool
     public let nextSequence: Int?
 
-    public init(updates: [AscendantTurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false, nextSequence: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(updates: [TurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false, nextSequence: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.updates = updates
         self.compacted = compacted
@@ -245,7 +244,7 @@ public struct AscendantTurnReplay: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        updates = try container.decode([AscendantTurnUpdate].self, forKey: .updates)
+        updates = try container.decode([TurnUpdate].self, forKey: .updates)
         compacted = try container.decode(Bool.self, forKey: .compacted)
         terminal = try container.decode(Bool.self, forKey: .terminal)
         conflict = try container.decodeIfPresent(Bool.self, forKey: .conflict) ?? false

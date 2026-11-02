@@ -158,7 +158,7 @@ struct AscendantPermissionCoordinatorTests {
 
         let decision = Task { await coordinator.requestApproval(for: request) }
         try await waitUntil { await coordinator.pendingCount == 1 }
-        let parameters = try String(decoding: JSONEncoder().encode(AscendantPermissionResponse(
+        let parameters = try String(decoding: JSONEncoder().encode(TurnPermissionResponse(
             correlationID: request.correlationID,
             timelineID: timelineID,
             clientTurnID: "turn-wire",

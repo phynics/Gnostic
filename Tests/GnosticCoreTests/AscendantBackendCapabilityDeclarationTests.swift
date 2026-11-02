@@ -67,7 +67,7 @@ struct AscendantBackendCapabilityDeclarationTests {
 /// Workspace tool-call operations so one declared surface is observable.
 @MainActor
 private final class CapabilityDeclarationFixtureBackend: AscendantBackend, AscendantBackendWorkspaceCapability {
-    let identity: AscendantBackendIdentity
+    let identity: RuntimeInstanceIdentity
     nonisolated let capabilities: AscendantBackendOptionalSurfaces
 
     init(declared: AscendantBackendOptionalSurfaces) {
@@ -86,12 +86,12 @@ private final class CapabilityDeclarationFixtureBackend: AscendantBackend, Ascen
     }
 
     func validateConfiguration() throws {}
-    func operatedTimelines() async throws -> [AscendantBackendTimeline] { [] }
-    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    func operatedTimelines() async throws -> [RuntimeInstanceTimeline] { [] }
+    func createTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         throw AscendantBackendError.invalidConfiguration("unsupported in fixture")
     }
     func removeTimeline(id _: UUID) async {}
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    func renameTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         throw AscendantBackendError.timelineNotFound(id)
     }
     func runTurn(_ request: AscendantBackendTurnRequest, updates _: any AscendantBackendUpdateSink) async throws -> String {

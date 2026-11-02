@@ -363,12 +363,12 @@ code or its tests are obsolete. Remove them only through the owning issue.
 | Ascendant Backend, Agent session | ACP Runtime, Session record | ADR 0018, ADR 0020, ADR 0021. |
 | Ascendant private Timeline, Ascendant default Timeline | A Timeline created by the client | Runtime instances do not own Timelines (ADR 0018, ADR 0021). |
 | `operatingAscendantID` | Current operator (the Runtime instance of the open span) | Timelines are sequences of spans (ADR 0018). |
-| `AscendantTurnUpdateKind` (eight kinds and status vocabularies), `turn.text` capability | Turn payloads (ACP session updates) in the Turn envelope | Gnostic no longer re-encodes ACP (ADR 0018, #629). |
+| `TurnUpdateKind` (eight kinds and status vocabularies), `turn.text` capability | Turn payloads (ACP session updates) in the Turn envelope | Gnostic no longer re-encodes ACP (ADR 0018, #629). |
 | Bounded legacy Agent terminology | Runtime and Timeline definitions | Gnostic owns no "Agent" term (ADR 0020). |
 | Atlas, Image, Image invocation (as Gnostic primitives) | Harness vocabulary | Inner-module terms, not Gnostic primitives (ADR 0018). |
 | `session/load`, "loaded" span | `session/resume` with `replayFrom`, "resumed" span | ACP v2 is the protocol baseline (ADR 0019). |
 | Agent (Gnostic-owned), Agent definition | Timeline and Runtime instance | A harness carries its own identity and instructions (ADR 0020, ADR 0021). |
 | Native Runtime, special-Node Runtime | ACP Runtime process | Every Runtime uses ACP v2 over stdio; no separate in-process Runtime kind exists (ADR 0021). |
 | Gnostic harness agent | Standalone reference Runtime | The reference Runtime is a separate ACP process, not a Gnostic Agent or special Node (ADR 0021). |
-| Gnostic interoperability capability (`AscendantInteroperabilityCapability`, `GnosticCapability`), backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | Gnostic defines no capability names (ADR 0020). Removed with #629. |
+| Gnostic interoperability capability (`InteroperabilityCapability`, `GnosticCapability`), backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | Gnostic defines no capability names (ADR 0020). Removed with #629. |
 | `ACPProfile`, `gnostic acp profiles` | Runtime instances and their Timelines | ADR 0020, O7. |

@@ -4,29 +4,14 @@ import Axoloty
 import Foundation
 import GnosticProtocol
 
-/// A change retained by the catalog after ingesting a network lifecycle event.
-public enum NetworkCatalogChange: Sendable {
-    /// A supported object was advertised or resolved.
-    case advertised(NetworkCatalogEntry)
-
-    /// A listed object was deadvertised by the given provider.
-    case deadvertised(objectID: UUID, providerID: String)
-
-    /// A provider published a lifecycle identity deadvertisement.
-    ///
-    /// Every record owned by that provider was removed from the catalog.
-    case providerEvicted(String)
-}
-
 public actor NetworkCatalog {
     private static let anonymousProviderID = "<unknown-provider>"
     private static let corePropertyNames: Set<String> = [
         "objectId", "coreType", "objectType", "name", "externalId", "parentObjectId", "locationId", "isDeactivated",
     ]
     private static let knownPropertyNames: [String: Set<String>] = [
-        GnosticObjectType.ascendant: ["protocolMajor", "capabilities", "backendHealth", "backendKind", "backendVersion", "ascendantDescription", "primaryWorkspaceID", "privateTimelineID", "nodeID", "lastActiveAt", "createdAt", "updatedAt"],
         GnosticObjectType.runtimeInstance: ["protocolMajor", "runtimeID", "nodeID", "runtimeKind", "runtimeVersion", "launchFingerprint", "health", "rawCapabilities"],
-        GnosticObjectType.timeline: ["protocolMajor", "title", "isArchived", "isPrivate", "attachedAscendantID", "attachedWorkspaceIDs", "nodeID", "createdAt", "updatedAt"],
+        GnosticObjectType.timeline: ["protocolMajor", "title", "isArchived", "isPrivate", "runtimeInstanceID", "attachedWorkspaceIDs", "nodeID", "createdAt", "updatedAt"],
         GnosticObjectType.workspace: ["protocolMajor", "uri", "isAvailable", "trustLevel", "status", "effectiveStatus", "tools", "toolsComplete", "createdAt"],
         GnosticObjectType.workspaceTool: ["protocolMajor", "workspaceID", "toolID", "toolName", "toolDescription", "parametersSchema", "usageExample", "requiresPermission", "page"],
     ]

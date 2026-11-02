@@ -90,8 +90,9 @@ the host's Runtime coordination. `GnosticHost`, `GnosticRunner`, and
 `GnosticPositronicRuntime` executable; no host or test target depends on it.
 
 `GnosticClient` is the consumer SDK above the kernel. It exposes typed Turn,
-Timeline, Workspace, and Diagnostics clients over `GnosticProtocol` and
-`GnosticCore`. The host owns Timeline authority, admission, supervision, and
+Timeline, Workspace, and Diagnostics clients. Their public signatures use
+`GnosticProtocol` types only; `GnosticCore` is an implementation dependency,
+not part of the client API (D13, #675). The host owns Timeline authority, admission, supervision, and
 Workspace authorization. ACP owns Runtime session behavior. ADR 0021 defines
 these roles and their fitness checks.
 

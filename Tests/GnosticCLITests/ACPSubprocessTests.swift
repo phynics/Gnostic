@@ -16,21 +16,11 @@ import Testing
 /// fixture providers.
 @Suite("ACP subprocess", .serialized)
 struct ACPSubprocessTests {
-    @Test("ACP selection uses Runtime when its ID collides with a legacy Ascendant projection")
+    @Test("ACP selection uses the advertised Runtime instance")
     @MainActor
     func selectsCanonicalRuntimeAdvertisement() throws {
         let id = UUID(uuidString: "e51d0000-0000-4000-8000-000000000002")!
         let nodeID = UUID(uuidString: "e51d0000-0000-4000-8000-000000000001")!
-        let legacyProjection = NetworkCatalogEntry(
-            objectID: id,
-            objectType: GnosticObjectType.ascendant,
-            protocolMajor: GnosticProtocol.currentMajor,
-            providerID: "provider",
-            name: "Legacy projection",
-            knownProperties: [:],
-            dynamicProperties: [:],
-            workspace: nil
-        )
         let runtime = NetworkCatalogEntry(
             objectID: id,
             objectType: GnosticObjectType.runtimeInstance,
@@ -42,14 +32,14 @@ struct ACPSubprocessTests {
             workspace: nil
         )
 
-        let candidates = RemoteTurnClient.discoveredRuntimes(from: [legacyProjection, runtime])
+        let candidates = RemoteTurnClient.discoveredRuntimes(from: [runtime])
         let selected = try RemoteTurnClient.selectCandidate(from: candidates, id: id)
         #expect(candidates.count == 1)
         #expect(selected.runtimeID == id)
         #expect(selected.name == "ACP fixture Runtime")
         #expect(selected.nodeID == nodeID)
         let profiles = ACPCommand.profiles(
-            from: [legacyProjection, runtime],
+            from: [runtime],
             host: "127.0.0.1",
             port: 1883,
             namespace: "fixture"

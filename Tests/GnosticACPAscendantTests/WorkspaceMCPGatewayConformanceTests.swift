@@ -5,6 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 @testable import GnosticACPAscendant
+import GnosticACPWire
 @_spi(RuntimeHost) import GnosticCore
 import GnosticProtocol
 import Testing

@@ -18,7 +18,7 @@ struct TurnBusyAdmissionTests {
         let timelineID = UUID()
         let active = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "busy-first"),
+                TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "busy-first"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("first")
@@ -30,7 +30,7 @@ struct TurnBusyAdmissionTests {
 
         let rejected = await BusyOutcome.settle {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "busy-second"),
+                TurnRequest(message: "second", timelineID: timelineID, clientTurnID: "busy-second"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("second")
@@ -42,7 +42,7 @@ struct TurnBusyAdmissionTests {
         await gate.release()
         _ = try await active.value
 
-        guard case let .failure(error)? = rejected, let busy = error as? AscendantTurnError else {
+        guard case let .failure(error)? = rejected, let busy = error as? TurnError else {
             Issue.record("Expected an immediate timelineBusy rejection, observed \(String(describing: rejected)).")
             return
         }
@@ -58,8 +58,8 @@ struct TurnBusyAdmissionTests {
         let gate = BusyGate()
         let probe = BusyProbe()
         let timelineID = UUID()
-        let activeRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "retry-first")
-        let rejectedRequest = AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "retry-second")
+        let activeRequest = TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "retry-first")
+        let rejectedRequest = TurnRequest(message: "second", timelineID: timelineID, clientTurnID: "retry-second")
         let active = Task {
             try await coordinator.execute(activeRequest, ascendantID: UUID()) {
                 await probe.enter("first")
@@ -97,7 +97,7 @@ struct TurnBusyAdmissionTests {
         let coordinator = AscendantTurnCoordinator()
         let gate = BusyGate()
         let probe = BusyProbe()
-        let request = AscendantTurnRequest(message: "first", timelineID: UUID(), clientTurnID: "attach-first")
+        let request = TurnRequest(message: "first", timelineID: UUID(), clientTurnID: "attach-first")
         let active = Task {
             try await coordinator.execute(request, ascendantID: UUID()) {
                 await probe.enter("first")
@@ -130,11 +130,11 @@ struct TurnBusyAdmissionTests {
         let gate = BusyGate()
         let probe = BusyProbe()
         let timelineID = UUID()
-        let completed = AscendantTurnRequest(message: "done", timelineID: timelineID, clientTurnID: "replay-done")
+        let completed = TurnRequest(message: "done", timelineID: timelineID, clientTurnID: "replay-done")
         _ = try await coordinator.execute(completed, ascendantID: UUID()) { "done" }
         let active = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "active", timelineID: timelineID, clientTurnID: "replay-active"),
+                TurnRequest(message: "active", timelineID: timelineID, clientTurnID: "replay-active"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("active")
@@ -166,7 +166,7 @@ struct TurnBusyAdmissionTests {
         let timelineID = UUID()
         let active = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "first", timelineID: timelineID),
+                TurnRequest(message: "first", timelineID: timelineID),
                 ascendantID: UUID()
             ) {
                 await probe.enter("first")
@@ -177,7 +177,7 @@ struct TurnBusyAdmissionTests {
         await probe.waitForStarts(1)
         let rejected = await BusyOutcome.settle {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "second", timelineID: timelineID),
+                TurnRequest(message: "second", timelineID: timelineID),
                 ascendantID: UUID()
             ) {
                 await probe.enter("second")
@@ -187,7 +187,7 @@ struct TurnBusyAdmissionTests {
         await gate.release()
         _ = try await active.value
 
-        guard case let .failure(error)? = rejected, let busy = error as? AscendantTurnError else {
+        guard case let .failure(error)? = rejected, let busy = error as? TurnError else {
             Issue.record("Expected a timelineBusy rejection for the legacy Turn, observed \(String(describing: rejected)).")
             return
         }
@@ -202,7 +202,7 @@ struct TurnBusyAdmissionTests {
         let busyTimeline = UUID()
         let first = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "first", timelineID: busyTimeline, clientTurnID: "parallel-first"),
+                TurnRequest(message: "first", timelineID: busyTimeline, clientTurnID: "parallel-first"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("first")
@@ -216,7 +216,7 @@ struct TurnBusyAdmissionTests {
         await probe.waitForStarts(1)
         let other = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "other", timelineID: UUID(), clientTurnID: "parallel-other"),
+                TurnRequest(message: "other", timelineID: UUID(), clientTurnID: "parallel-other"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("other")
@@ -236,7 +236,7 @@ struct TurnBusyAdmissionTests {
         let timelineID = UUID()
         let active = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "shutdown-first"),
+                TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "shutdown-first"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("first")
@@ -248,7 +248,7 @@ struct TurnBusyAdmissionTests {
         await probe.waitForStarts(1)
         let rejected = await BusyOutcome.settle {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "shutdown-second"),
+                TurnRequest(message: "second", timelineID: timelineID, clientTurnID: "shutdown-second"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("second")
@@ -285,7 +285,7 @@ struct TurnBusyAdmissionTests {
         let timelineID = UUID()
         let active = Task {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "journal-first"),
+                TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "journal-first"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("first")
@@ -296,7 +296,7 @@ struct TurnBusyAdmissionTests {
         await probe.waitForStarts(1)
         let rejected = await BusyOutcome.settle {
             try await coordinator.execute(
-                AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "journal-second"),
+                TurnRequest(message: "second", timelineID: timelineID, clientTurnID: "journal-second"),
                 ascendantID: UUID()
             ) {
                 await probe.enter("second")

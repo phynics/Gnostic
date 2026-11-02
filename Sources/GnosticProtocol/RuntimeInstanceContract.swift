@@ -4,7 +4,7 @@ import Foundation
 
 /// Stable interoperability behaviors a remote client may select by name.
 /// Backend kind and version are intentionally not capabilities.
-public enum AscendantInteroperabilityCapability: String, Codable, Sendable, Equatable, CaseIterable {
+public enum InteroperabilityCapability: String, Codable, Sendable, Equatable, CaseIterable {
     /// A plain text prompt and reply.
     case textTurn = "me.atkn.gnostic.capability.turn.text"
     /// Incremental updates streamed while a Turn runs.
@@ -25,28 +25,14 @@ public enum AscendantInteroperabilityCapability: String, Codable, Sendable, Equa
     case diagnostics = "me.atkn.gnostic.capability.diagnostics"
 }
 
-/// Runtime health of an Ascendant's bound backend.
-///
-/// Health is deliberately separate from routability: a failed backend keeps
-/// its Gnostic-owned Ascendant and Timeline relationships available for a
-/// bounded reconstruction attempt.
-public enum AscendantBackendHealth: String, Codable, Sendable, Equatable {
-    /// The backend is bound and serving its Ascendant.
-    case healthy
-    /// The backend can no longer serve; reconstruction may be attempted.
-    case failed
-    /// No health has been observed yet.
-    case unknown
-}
-
-/// The capabilities an Ascendant advertises to remote clients.
+/// The capabilities a Runtime instance offers to remote clients.
 ///
 /// `interoperability` is a `Set<String>` rather than a set of
-/// ``AscendantInteroperabilityCapability`` on purpose: capability IDs are
+/// ``InteroperabilityCapability`` on purpose: capability IDs are
 /// negotiated with peers that may run a newer build, so a value this build
 /// does not know must survive a round trip rather than be dropped.
-public struct AscendantBackendCapabilities: Codable, Sendable, Equatable {
-    /// Interoperability capability IDs, as raw ``AscendantInteroperabilityCapability`` values.
+public struct RuntimeInstanceCapabilities: Codable, Sendable, Equatable {
+    /// Interoperability capability IDs, as raw ``InteroperabilityCapability`` values.
     public let interoperability: Set<String>
     /// Host-defined capability IDs that are not part of the interoperability contract.
     public let host: Set<String>
@@ -72,31 +58,31 @@ public struct AscendantBackendCapabilities: Codable, Sendable, Equatable {
     public static var empty: Self { .init() }
 }
 
-/// The stable identity projection owned by Gnostic for one Ascendant.
+/// The stable identity projection owned by Gnostic for one Runtime instance.
 ///
 /// A backend may use a provider-native identity internally, but that identity
 /// must never become part of the Gnostic host contract.
-public struct AscendantBackendIdentity: Sendable, Equatable {
-    /// The Gnostic-owned Ascendant identifier.
+public struct RuntimeInstanceIdentity: Sendable, Equatable {
+    /// The Gnostic-owned Runtime instance identifier.
     public let id: UUID
-    /// The Ascendant's display name.
+    /// The Runtime instance's display name.
     public let name: String
-    /// The Ascendant's description.
+    /// The Runtime instance's description.
     public let description: String
-    /// The Timeline the Ascendant operates privately.
+    /// The Timeline the Runtime instance operates privately.
     public let privateTimelineID: UUID
-    /// The Workspace bound to the Ascendant by default, if any.
+    /// The Workspace bound to the Runtime instance by default, if any.
     public let primaryWorkspaceID: UUID?
-    /// When the Ascendant last served a Turn.
+    /// When the Runtime instance last served a Turn.
     public let lastActiveAt: Date
-    /// When Gnostic created the Ascendant.
+    /// When Gnostic created the Runtime instance.
     public let createdAt: Date
-    /// When the Ascendant's projection last changed.
+    /// When the Runtime instance's projection last changed.
     public let updatedAt: Date
-    /// What the Ascendant advertises it can do.
-    public let capabilities: AscendantBackendCapabilities
+    /// What the Runtime instance offers.
+    public let capabilities: RuntimeInstanceCapabilities
 
-    /// Creates the Gnostic-owned identity projection for one Ascendant.
+    /// Creates the Gnostic-owned identity projection for one Runtime instance.
     public init(
         id: UUID,
         name: String,
@@ -106,7 +92,7 @@ public struct AscendantBackendIdentity: Sendable, Equatable {
         lastActiveAt: Date,
         createdAt: Date,
         updatedAt: Date,
-        capabilities: AscendantBackendCapabilities = .empty
+        capabilities: RuntimeInstanceCapabilities = .empty
     ) {
         self.id = id
         self.name = name
@@ -122,18 +108,18 @@ public struct AscendantBackendIdentity: Sendable, Equatable {
 }
 
 /// The backend's private projection of a Gnostic Timeline.
-public struct AscendantBackendTimeline: Sendable, Equatable {
+public struct RuntimeInstanceTimeline: Sendable, Equatable {
     /// The Gnostic-owned Timeline identifier.
     public let id: UUID
     /// The Timeline's title.
     public let title: String
     /// Workspaces currently attached to the Timeline.
     public let attachedWorkspaceIDs: [UUID]
-    /// The Ascendant operating the Timeline, if any.
-    public let ascendantID: UUID?
+    /// The Runtime instance operating the Timeline, if any.
+    public let runtimeInstanceID: UUID?
     /// Whether the Timeline is archived.
     public let isArchived: Bool
-    /// Whether the Timeline is the operating Ascendant's private Timeline.
+    /// Whether the Timeline is the operating Runtime instance's private Timeline.
     public let isPrivate: Bool
     /// When Gnostic created the Timeline.
     public let createdAt: Date
@@ -145,7 +131,7 @@ public struct AscendantBackendTimeline: Sendable, Equatable {
         id: UUID,
         title: String,
         attachedWorkspaceIDs: [UUID],
-        ascendantID: UUID?,
+        runtimeInstanceID: UUID?,
         isArchived: Bool,
         isPrivate: Bool,
         createdAt: Date,
@@ -154,36 +140,10 @@ public struct AscendantBackendTimeline: Sendable, Equatable {
         self.id = id
         self.title = title
         self.attachedWorkspaceIDs = attachedWorkspaceIDs
-        self.ascendantID = ascendantID
+        self.runtimeInstanceID = runtimeInstanceID
         self.isArchived = isArchived
         self.isPrivate = isPrivate
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
-
-    /// Compatibility initializer for the pre-reset projection spelling.
-    public init(
-        id: UUID,
-        title: String,
-        attachedWorkspaceIDs: [UUID],
-        attachedAscendantID: UUID?,
-        isArchived: Bool,
-        isPrivate: Bool,
-        createdAt: Date,
-        updatedAt: Date
-    ) {
-        self.init(
-            id: id,
-            title: title,
-            attachedWorkspaceIDs: attachedWorkspaceIDs,
-            ascendantID: attachedAscendantID,
-            isArchived: isArchived,
-            isPrivate: isPrivate,
-            createdAt: createdAt,
-            updatedAt: updatedAt
-        )
-    }
-
-    /// The pre-reset spelling of ``ascendantID``.
-    public var attachedAscendantID: UUID? { ascendantID }
 }

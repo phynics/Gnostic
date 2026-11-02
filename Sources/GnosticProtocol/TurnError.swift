@@ -3,7 +3,7 @@
 import Foundation
 
 /// Terminal failures retained by the serve-lifetime turn coordinator.
-public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
+public enum TurnError: Error, Sendable, Equatable, LocalizedError {
     case capacityExceeded(timelineID: UUID, clientTurnID: String)
     case conflict(timelineID: UUID, clientTurnID: String)
     case failed(timelineID: UUID, clientTurnID: String, detail: String)
@@ -30,13 +30,13 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case let .terminal(_, _, _, detail, _, _):
             detail
         case let .cancelled(_, clientTurnID):
-            "ascendant.turn turn \(clientTurnID) was cancelled"
+            "turn \(clientTurnID) was cancelled"
         case let .lifecycleUnusable(_, _, detail):
             detail
         case let .backendUnavailable(_, _, detail):
             detail
         case let .replayUnavailable(_, clientTurnID):
-            "the replay result for ascendant.turn turn \(clientTurnID) is no longer retained; the turn will not be rerun"
+            "the replay result for turn \(clientTurnID) is no longer retained; the turn will not be rerun"
         case .timelineBusy:
             "Timeline is busy"
         case let .insertionUnknown(_, clientTurnID):
@@ -93,15 +93,15 @@ public enum AscendantTurnError: Error, Sendable, Equatable, LocalizedError {
         case let .conflict(_, clientTurnID):
             "clientTurnID \(clientTurnID) was already used with different content"
         case .failed, .terminal:
-            "The ascendant turn failed."
+            "The Turn failed."
         case .cancelled:
-            "The ascendant turn was cancelled."
+            "The Turn was cancelled."
         case .lifecycleUnusable:
-            "The ascendant backend lifecycle is unavailable."
+            "The Runtime lifecycle is unavailable."
         case .backendUnavailable:
-            "The ascendant backend is unavailable."
+            "The Runtime is unavailable."
         case .replayUnavailable:
-            "The replay result for ascendant.turn is no longer retained."
+            "The replay result for the Turn is no longer retained."
         case .timelineBusy:
             "Timeline is busy"
         case .insertionUnknown:

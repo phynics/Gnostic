@@ -51,7 +51,6 @@ struct ClientArchitectureFitnessTests {
         for sharedService in [
             "GnosticSubscription.swift",
             "NetworkCatalog.swift",
-            "GnosticRawWireEvent.swift",
         ] {
             #expect(
                 coreServices.contains(sharedService),
