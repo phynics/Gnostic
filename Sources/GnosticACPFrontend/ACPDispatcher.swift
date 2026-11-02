@@ -510,8 +510,10 @@ final class ACPDispatcher: Sendable {
                 after = last.sequence
                 pages += 1
                 // A running Turn can add pages as fast as they are read, so one
-                // pass is bounded and the prompt loop still sees completion.
-                guard page.nextSequence != nil, turnEnded || pages < Self.catchUpPagesPerPass else { break }
+                // pass is bounded and the prompt loop still sees completion. Only
+                // replay can say the Turn is terminal: a failed call does not, as
+                // the Node's Turn can outlive it.
+                guard page.nextSequence != nil, page.terminal || pages < Self.catchUpPagesPerPass else { break }
             }
             // A partial replay can't show whether a pending request was resolved
             // on the page that failed, so a running Turn delivers none of it.
