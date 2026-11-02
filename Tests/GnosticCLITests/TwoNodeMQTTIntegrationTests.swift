@@ -15,8 +15,158 @@ import Glibc
 import Darwin
 #endif
 
-@Suite("Consumer to two owner process MQTT integration", .serialized, .timeLimit(.minutes(1)))
+@Suite("Consumer to two owner process MQTT integration", .serialized, .timeLimit(.minutes(2)))
 struct TwoNodeMQTTIntegrationTests {
+    @Test("Nodes rejoin after their broker restarts", arguments: [false, true])
+    @MainActor
+    func nodesRejoinAfterBrokerRestart(longOutage: Bool) async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "rejoin-\(UUID().uuidString.lowercased())"
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(namespace, isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let port = Int.random(in: 20000...45000)
+        let config = scratch.appendingPathComponent("mosquitto.conf")
+        try "listener \(port) 127.0.0.1\nallow_anonymous true\n".write(to: config, atomically: true, encoding: .utf8)
+        func startBroker() throws -> Process {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["mosquitto", "-c", config.path]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            return process
+        }
+        var broker = try startBroker()
+        defer { if broker.isRunning { _ = kill(broker.processIdentifier, SIGKILL); broker.waitUntilExit() } }
+        // Probe the broker with MQTT, rather than assuming process launch means ready.
+        func awaitBroker() async throws {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while ContinuousClock.now < deadline {
+                let probe = Process()
+                probe.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                probe.arguments = ["mosquitto_pub", "-h", "127.0.0.1", "-p", String(port), "-t", "ready", "-m", "ready"]
+                probe.standardOutput = FileHandle.nullDevice
+                probe.standardError = FileHandle.nullDevice
+                try probe.run(); probe.waitUntilExit()
+                if probe.terminationStatus == 0 { return }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            throw TwoNodeIntegrationError.nodeFailedToStart("broker")
+        }
+        try await awaitBroker()
+        let workspaceID = UUID()
+        let workspace = try await launchWorkspaceNode(namespace: namespace, scratch: scratch, workspaceID: workspaceID, workspaceURI: "workspace://rejoin-\(workspaceID.uuidString.lowercased())", serveBinary: serveBinary, agentFixture: agentFixture, brokerPort: port)
+        let first = try await launchNode(name: "first", namespace: namespace, serveBinary: serveBinary, agentFixture: agentFixture, scratch: scratch, timelineID: UUID(), brokerPort: port)
+        let promptStarted = scratch.appendingPathComponent("prompt-started")
+        let second = try await launchNode(name: "second", namespace: namespace, serveBinary: serveBinary, agentFixture: agentFixture, scratch: scratch, fixtureEnvironment: ["GNOSTIC_ACP_FIXTURE_PROMPT_STARTED_FILE": promptStarted.path], brokerPort: port)
+        let extra = longOutage ? try await launchNode(name: "shutdown", namespace: namespace, serveBinary: serveBinary, agentFixture: agentFixture, scratch: scratch, brokerPort: port) : nil
+        let session = try GnosticConsumerSession(broker: .init(host: "127.0.0.1", port: port, namespace: namespace), connectTimeout: .seconds(3), discoverTimeout: .seconds(2))
+        do {
+            try await session.start()
+            try await session.discover(timeout: .seconds(2))
+            let originalRouter = try #require(await providerID(for: first.timelineID, session: session))
+            let originalOwner = try #require(await providerID(for: second.timelineID, session: session))
+            let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(30))
+            let activeID = "outage-turn"
+            var active: Task<Void, Never>?
+            var observation: Task<Bool, Never>?
+            if longOutage {
+                let updates = try await client.updates(for: activeID, timelineID: second.timelineID, providerID: originalRouter)
+                observation = Task {
+                    do { for try await _ in updates {} ; return false } catch { return true }
+                }
+                active = Task { _ = try? await client.runRouted(message: "[fixture:wait]", timelineID: second.timelineID, clientTurnID: activeID, routerID: originalRouter) }
+                try await waitForFile(promptStarted, timeout: .seconds(5))
+            }
+            _ = kill(broker.processIdentifier, SIGKILL); broker.waitUntilExit()
+            if longOutage {
+                let logURL = scratch.appendingPathComponent("first/serve.log")
+                let deadline = ContinuousClock.now + .seconds(20)
+                var failures = 0
+                while ContinuousClock.now < deadline {
+                    let output = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+                    failures = output.components(separatedBy: "broker reconnect attempt failed").count - 1
+                    if failures >= 3 { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                try #require(failures >= 3, "Expected at least three failed reconnect attempts")
+                try #require(await session.networkObjects().isEmpty, "Stale peer entries remained during outage")
+                let journalDeadline = ContinuousClock.now + .seconds(30)
+                var journaled = false
+                while ContinuousClock.now < journalDeadline {
+                    let root = scratch.appendingPathComponent("second/state")
+                    if let paths = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
+                        for case let file as URL in paths where file.pathExtension == "jsonl" {
+                            let contents = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+                            if contents.split(whereSeparator: \.isNewline).contains(where: { $0.contains("turnCompleted") && $0.contains(activeID) }) {
+                                journaled = true
+                                break
+                            }
+                        }
+                    }
+                    if journaled { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                try #require(journaled, "The owner did not journal completion during the outage")
+                if let extra {
+                    let before = ContinuousClock.now
+                    await extra.shutdown()
+                    #expect(ContinuousClock.now - before < .seconds(3), "Shutdown stalled during backoff")
+                }
+            }
+            broker = try startBroker()
+            try await awaitBroker()
+            let deadline = ContinuousClock.now + .seconds(20)
+            var firstProvider: String?
+            var secondProvider: String?
+            while ContinuousClock.now < deadline {
+                try await session.discover(timeout: .seconds(2))
+                let objects = await session.networkObjects()
+                firstProvider = objects.first { $0.objectType == GnosticObjectType.timeline && $0.objectID == first.timelineID }?.providerID
+                secondProvider = objects.first { $0.objectType == GnosticObjectType.timeline && $0.objectID == second.timelineID }?.providerID
+                if firstProvider != nil && secondProvider != nil && objects.contains(where: { $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID }) { break }
+            }
+            let workspaceEntry = try #require(await session.networkObjects().first { $0.objectType == GnosticObjectType.workspace && $0.objectID == workspaceID }, "Workspace did not rejoin")
+            _ = try #require(await session.workspaceDescriptor(id: workspaceID, providerID: workspaceEntry.providerID))
+            let router = try #require(firstProvider, "First Node did not rejoin")
+            _ = try #require(secondProvider, "Second Node did not rejoin")
+            if longOutage {
+                _ = await active?.value
+                #expect(await observation?.value == true, "Lost routed observation must end with an error")
+                let terminalDeadline = ContinuousClock.now + .seconds(25)
+                var completed = false
+                while ContinuousClock.now < terminalDeadline {
+                    if let replay = try? await client.replay(timelineID: second.timelineID, clientTurnID: activeID, providerID: originalOwner), replay.updates.contains(where: { $0.terminal }) {
+                        completed = true
+                        break
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                try #require(completed, "The owner did not journal the admitted Turn")
+                let retry = try await client.run(message: "[fixture:wait]", timelineID: second.timelineID, clientTurnID: activeID, providerID: originalOwner)
+                #expect(retry.replayed)
+                let prompts = try String(contentsOf: promptStarted, encoding: .utf8).split(whereSeparator: \.isNewline)
+                #expect(prompts.count == 1, "The admitted Turn was executed again")
+            }
+            let workspaceClient = try session.workspaceClient(timeout: .seconds(10))
+            try await workspaceClient.attach(workspaceID: workspaceID, to: first.timelineID, approved: true, providerID: router)
+            let result = try await client.runRouted(message: "after restart", timelineID: second.timelineID, clientTurnID: UUID().uuidString, routerID: router)
+            #expect(result.text == "fixture reply: after restart")
+            let log = try String(contentsOf: scratch.appendingPathComponent("first/serve.log"), encoding: .utf8)
+            #expect(log.contains("broker connection lost"))
+            #expect(log.contains("broker connection regained"))
+            await session.stop()
+        } catch {
+            await session.stop()
+            if let extra, extra.process.isRunning { await extra.shutdown() }
+            await second.shutdown(); await first.shutdown(); await workspace.process.shutdown()
+            throw error
+        }
+        await second.shutdown(); await first.shutdown(); await workspace.process.shutdown()
+    }
+
     @Test("consumer runs Turns against two live Timeline owner processes")
     @MainActor
     func consumerRunsTurnsAgainstTwoLiveTimelineOwners() async throws {
@@ -1314,7 +1464,8 @@ struct TwoNodeMQTTIntegrationTests {
         timelineID requestedTimelineID: UUID? = nil,
         fixtureEnvironment extraFixtureEnvironment: [String: String] = [:],
         additionalRuntimeCount: Int = 0,
-        restarting: Bool = false
+        restarting: Bool = false,
+        brokerPort: Int = 1883
     ) async throws -> NodeProcess {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -1388,7 +1539,7 @@ struct TwoNodeMQTTIntegrationTests {
         process.executableURL = URL(fileURLWithPath: serveBinary)
         process.arguments = [
             "serve", "--config", store.path().path,
-            "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
+            "--host", "127.0.0.1", "--port", String(brokerPort), "--namespace", namespace,
         ]
         var environment = ProcessInfo.processInfo.environment
         environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path
@@ -1446,7 +1597,8 @@ struct TwoNodeMQTTIntegrationTests {
         workspaceURI: String,
         workspaceKind: String = "test-revocable-peer",
         serveBinary: String,
-        agentFixture: String
+        agentFixture: String,
+        brokerPort: Int = 1883
     ) async throws -> WorkspaceNodeProcess {
         let configDirectory = scratch.appendingPathComponent("workspace-owner", isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -1481,7 +1633,7 @@ struct TwoNodeMQTTIntegrationTests {
         process.executableURL = URL(fileURLWithPath: serveBinary)
         process.arguments = [
             "serve", "--config", store.path().path,
-            "--host", "127.0.0.1", "--port", "1883", "--namespace", namespace,
+            "--host", "127.0.0.1", "--port", String(brokerPort), "--namespace", namespace,
         ]
         var environment = ProcessInfo.processInfo.environment
         environment["GNOSTIC_STATE_HOME"] = configDirectory.appendingPathComponent("state", isDirectory: true).path

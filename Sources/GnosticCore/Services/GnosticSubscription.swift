@@ -17,6 +17,7 @@ public final class GnosticSubscription {
     private let catalog: NetworkCatalog
     private let observe: @MainActor @Sendable (String) async throws -> AsyncStream<AdvertiseEventSnapshot>
     private let observeDeadvertise: @MainActor @Sendable () async -> AsyncStream<DeadvertiseEventSnapshot>
+    private var communicationManager: CommunicationManager?
     private var scope: RuntimeEffectScope
 
     private enum LifecycleState {
@@ -51,6 +52,7 @@ public final class GnosticSubscription {
         }, observeDeadvertise: {
             await communicationManager.observeDeadvertiseStream()
         })
+        self.communicationManager = communicationManager
     }
 
     /// Starts one scoped subscription for each canonical Gnostic object type.
@@ -120,7 +122,8 @@ public final class GnosticSubscription {
         let observe = self.observe
         let observeDeadvertise = self.observeDeadvertise
         let catalog = self.catalog
-        return try await scope.withAcquisition { owner in
+        let communicationManager = self.communicationManager
+        return try await scope.withAcquisition { [self] owner in
             var acquired: [RuntimeEffectHandle] = []
             let runtimeInstance = try await observe(GnosticObjectType.runtimeInstance)
             acquired.append(try await owner.task(label: "observe-runtime-instance") {
@@ -141,6 +144,19 @@ public final class GnosticSubscription {
             acquired.append(try await owner.task(label: "observe-deadvertise") {
                 for await event in deadvertise { await catalog.ingest(event) }
             })
+            if let communicationManager {
+                let states = await communicationManager.observeCommunicationStateStream()
+                acquired.append(try await owner.task(label: "observe-transport-state") { [weak self] in
+                    for await state in states {
+                        switch state {
+                        case .offline:
+                            await catalog.invalidateRemotePresence()
+                        case .online:
+                            await self?.discover(using: communicationManager, timeout: .seconds(3))
+                        }
+                    }
+                })
+            }
             return acquired
         }
     }

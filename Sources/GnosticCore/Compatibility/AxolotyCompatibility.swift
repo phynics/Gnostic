@@ -460,7 +460,10 @@ public final class CommunicationManager {
     private var rawEventContinuations: [UUID: AsyncStream<GnosticRawWireEvent>.Continuation] = [:]
     private let dispatch: CompatibilityDispatch
     private var eventTasks: [Task<Void, Never>] = []
-    private var pendingAdvertisements: [String: [UInt8]] = [:]
+    private static let reconnectInitialDelay: Duration = .milliseconds(250)
+    private static let reconnectMaximumDelay: Duration = .seconds(10)
+    private var supervisionTask: Task<Void, Never>?
+    private var currentAdvertisements: [String: [UInt8]] = [:]
     private var isRuntimeReady = false
     private var isStarted = false
 
@@ -554,17 +557,48 @@ public final class CommunicationManager {
         guard !isStarted else { return }
         isStarted = true
         let runtime = self.runtime
-        startTask = Task { @MainActor in
+        startTask = Task { @MainActor [self] in
             do {
+                let diagnostics = await runtime.diagnostics()
                 try await runtime.start()
                 self.isRuntimeReady = true
                 self.emitState(.online)
                 self.startEventPumps()
                 await self.flushPendingAdvertisements()
+                self.supervisionTask = Task { @MainActor [weak self] in
+                    for await diagnostic in diagnostics {
+                        guard let self, !Task.isCancelled else { return }
+                        guard diagnostic.kind == .transportFailed, self.isStarted else { continue }
+                        await self.recoverConnection()
+                    }
+                }
             } catch {
                 self.emitState(.offline)
                 throw error
             }
+        }
+    }
+
+    private func recoverConnection() async {
+        guard isStarted, await runtime.state() == .reconnecting else { return }
+        isRuntimeReady = false
+        emitState(.offline)
+        ServeLogging.warn("broker connection lost", component: "transport")
+        var delay = Self.reconnectInitialDelay
+        while isStarted && !Task.isCancelled {
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard isStarted && !Task.isCancelled else { return }
+            await runtime.reconnect()
+            guard isStarted && !Task.isCancelled else { return }
+            if await runtime.state() == .running {
+                isRuntimeReady = true
+                await flushPendingAdvertisements()
+                emitState(.online)
+                ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker connection regained")
+                return
+            }
+            ServeLogging.warn("broker reconnect attempt failed", component: "transport")
+            delay = min(delay * 2, Self.reconnectMaximumDelay)
         }
     }
 
@@ -602,6 +636,8 @@ public final class CommunicationManager {
         let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
         isStarted = false
+        supervisionTask?.cancel()
+        supervisionTask = nil
         emitState(.offline)
         // Coaty-era compatibility entry point: it must stay synchronous, so
         // it cannot await. The teardown handle is stored on `stopTask` instead
@@ -615,6 +651,8 @@ public final class CommunicationManager {
         let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
         isStarted = false
+        supervisionTask?.cancel()
+        supervisionTask = nil
         emitState(.offline)
         await beginStop(runtimeWasReady: runtimeWasReady).value
     }
@@ -712,7 +750,7 @@ public final class CommunicationManager {
     public func publishAdvertise(_ object: CoatyObject) {
         guard let data = try? jsonRaw(object), let raw = try? JSONSerialization.jsonObject(with: Data(data)) else { return }
         guard let payload = try? jsonObject(["object": raw]) else { return }
-        pendingAdvertisements[object.objectId.string] = payload
+        currentAdvertisements[object.objectId.string] = payload
         Task { await dispatch.storeAdvertisedObject(object) }
         guard isRuntimeReady else { return }
         Task { _ = await runtime.publish(.advertise(payload)) }
@@ -721,20 +759,20 @@ public final class CommunicationManager {
     fileprivate func readvertiseDiscoverableObjectAndWait(_ object: CoatyObject) async {
         guard let data = try? jsonRaw(object), let raw = try? JSONSerialization.jsonObject(with: Data(data)) else { return }
         guard let payload = try? jsonObject(["object": raw]) else { return }
-        pendingAdvertisements[object.objectId.string] = payload
+        currentAdvertisements[object.objectId.string] = payload
         await dispatch.storeAdvertisedObject(object)
         guard isRuntimeReady else { return }
         _ = await runtime.publish(.advertise(payload))
     }
     fileprivate func publishDeadvertise(_ object: CoatyObject) {
-        pendingAdvertisements[object.objectId.string] = nil
+        currentAdvertisements[object.objectId.string] = nil
         Task { await dispatch.removeAdvertisedObject(id: object.objectId.string) }
         guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
         Task { _ = await runtime.publish(.deadvertise(payload)) }
     }
 
     fileprivate func publishDeadvertiseAndWait(_ object: CoatyObject) async {
-        pendingAdvertisements[object.objectId.string] = nil
+        currentAdvertisements[object.objectId.string] = nil
         await dispatch.removeAdvertisedObject(id: object.objectId.string)
         guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
         _ = await runtime.publish(.deadvertise(payload))
@@ -762,9 +800,11 @@ public final class CommunicationManager {
     private func emitState(_ state: CommunicationState) { stateContinuations.values.forEach { _ = $0.yield(state) } }
 
     private func flushPendingAdvertisements() async {
-        let payloads = pendingAdvertisements.values
-        pendingAdvertisements.removeAll()
-        for payload in payloads {
+        let advertisements = currentAdvertisements
+        for (id, payload) in advertisements {
+            // A withdrawal or replacement may have occurred while another
+            // publication was suspended on the runtime actor.
+            guard currentAdvertisements[id] == payload else { continue }
             _ = await runtime.publish(.advertise(payload))
         }
     }
