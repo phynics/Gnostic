@@ -1456,7 +1456,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             options.isEmpty ? nil : "options=[\(options.joined(separator: ","))]",
         ].compactMap { $0 }.joined(separator: " ")
         let message = "ACP permission request failed closed (\(reason)); \(context)\n"
-        FileHandle.standardError.write(Data(message.utf8))
+        BrokenPipeSignal.writeToStandardError(Data(message.utf8))
     }
 
     /// Backfills configured Gnostic Timelines as an explicit startup-hydration
@@ -1720,11 +1720,11 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         while !Task.isCancelled {
             guard let data = try? handle.read(upToCount: 4096), !data.isEmpty else {
                 let finalOutput = redactor.consume(Data(), finishing: true)
-                if !finalOutput.isEmpty { FileHandle.standardError.write(finalOutput) }
+                if !finalOutput.isEmpty { BrokenPipeSignal.writeToStandardError(finalOutput) }
                 return
             }
             let safeOutput = redactor.consume(data)
-            if !safeOutput.isEmpty { FileHandle.standardError.write(safeOutput) }
+            if !safeOutput.isEmpty { BrokenPipeSignal.writeToStandardError(safeOutput) }
         }
     }
 

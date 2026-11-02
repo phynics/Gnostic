@@ -39,6 +39,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
         let didStart = withLock {
             guard !started, !closed else { return false }
             started = true
+            BrokenPipeSignal.disable(onWriteEnd: output.fileDescriptor)
             let readerTask = Task.detached(
                 executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.stdout")
             ) { [weak self, input, messageContinuation, onSessionUpdate] in
@@ -72,7 +73,9 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                 do {
                     for await message in sendStream {
                         let data = try JSONEncoder().encode(message)
-                        try output.write(contentsOf: data + Data([0x0A]))
+                        try BrokenPipeSignal.suppressed {
+                            try output.write(contentsOf: data + Data([0x0A]))
+                        }
                     }
                 } catch {
                     self?.fail()
