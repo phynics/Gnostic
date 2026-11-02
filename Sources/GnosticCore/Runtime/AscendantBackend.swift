@@ -27,12 +27,14 @@ public struct AscendantBackendTurnRequest: Sendable, Equatable {
 public struct AscendantBackendUpdate: Sendable, Equatable {
     /// The update kind.
     public let kind: TurnUpdateKind
-    /// Assistant text, for text-bearing kinds.
+    /// Assistant or thought text, for text-bearing kinds.
     public let text: String?
     /// Tool call state, for tool-bearing kinds.
     public let toolState: TurnToolState?
     /// Permission state, for permission-bearing kinds.
     public let permissionState: TurnPermissionState?
+    /// The Runtime's plan, for a ``TurnUpdateKind/plan`` update.
+    public let plan: TurnPlan?
     /// Whether this update ends the Turn.
     public let terminal: Bool
     /// A stable, low-cardinality reason. A terminal failure names its failure
@@ -50,6 +52,7 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
         text: String? = nil,
         toolState: TurnToolState? = nil,
         permissionState: TurnPermissionState? = nil,
+        plan: TurnPlan? = nil,
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -59,6 +62,7 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
         self.text = text
         self.toolState = toolState
         self.permissionState = permissionState
+        self.plan = plan
         self.terminal = terminal
         self.reasonCode = reasonCode
         self.statusCode = statusCode

@@ -78,4 +78,13 @@ struct ACPReplayCatchUpTests {
         let update = TurnUpdate(sequence: 2, kind: .assistantText, text: "ABC")
         #expect(ACPReplayCatchUp.removingDeliveredText(from: update, deliveredTextBytes: 3)?.text == "ABC")
     }
+
+    @Test("a snapshot's plans survive when its text was already delivered")
+    func snapshotKeepsPlans() {
+        let plan = TurnPlan(planID: "p", entries: [TurnPlanEntry(content: "step", priority: "high", status: "pending")])
+        let update = TurnUpdate(sequence: 9, kind: .assistantTextSnapshot, text: "ABC", plans: [plan])
+        let result = ACPReplayCatchUp.removingDeliveredText(from: update, deliveredTextBytes: 3)
+        #expect(result?.text == nil)
+        #expect(result?.plans == [plan])
+    }
 }

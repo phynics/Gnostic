@@ -716,6 +716,7 @@ public actor AscendantTurnUpdateStore {
         text: String? = nil,
         toolState: TurnToolState? = nil,
         permissionState: TurnPermissionState? = nil,
+        plan: TurnPlan? = nil,
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -723,7 +724,7 @@ public actor AscendantTurnUpdateStore {
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) throws -> TurnUpdate {
         let validated = try validatedClientTurnID(clientTurnID)
-        return try append(timelineID: timelineID, clientTurnID: validated, kind: kind, text: text, toolState: toolState, permissionState: permissionState, terminal: terminal, reasonCode: reasonCode, statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor)
+        return try append(timelineID: timelineID, clientTurnID: validated, kind: kind, text: text, toolState: toolState, permissionState: permissionState, plan: plan, terminal: terminal, reasonCode: reasonCode, statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor)
     }
 
     internal func append(
@@ -733,6 +734,7 @@ public actor AscendantTurnUpdateStore {
         text: String? = nil,
         toolState: TurnToolState? = nil,
         permissionState: TurnPermissionState? = nil,
+        plan: TurnPlan? = nil,
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -740,17 +742,17 @@ public actor AscendantTurnUpdateStore {
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) throws -> TurnUpdate {
         let limit = min(maxBytes / 2, 1_200)
-        // Assistant text longer than one update continues in the next one, so a
-        // client assembles all of it. Other text fields are diagnostics.
-        if kind == TurnUpdateKind.assistantText.rawValue, !terminal, toolState == nil,
-           permissionState == nil, let text {
+        // Assistant and thought text longer than one update continues in the next
+        // one, so a client assembles all of it. Other text fields are diagnostics.
+        if kind == TurnUpdateKind.assistantText.rawValue || kind == TurnUpdateKind.thought.rawValue,
+           !terminal, toolState == nil, permissionState == nil, plan == nil, let text {
             let pieces = Self.assistantTextPieces(text, kind: kind, maxBytes: limit)
             if pieces.count > 1 {
                 var last: TurnUpdate?
                 for piece in pieces {
                     last = try appendBounded(
                         timelineID: timelineID, clientTurnID: clientTurnID, kind: kind, text: piece,
-                        toolState: nil, permissionState: nil, terminal: false, reasonCode: reasonCode,
+                        toolState: nil, permissionState: nil, plan: nil, terminal: false, reasonCode: reasonCode,
                         statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor, maxBytes: limit
                     )
                 }
@@ -759,7 +761,7 @@ public actor AscendantTurnUpdateStore {
         }
         return try appendBounded(
             timelineID: timelineID, clientTurnID: clientTurnID, kind: kind, text: text,
-            toolState: toolState, permissionState: permissionState, terminal: terminal, reasonCode: reasonCode,
+            toolState: toolState, permissionState: permissionState, plan: plan, terminal: terminal, reasonCode: reasonCode,
             statusCode: statusCode, retryable: retryable, protocolMajor: protocolMajor, maxBytes: limit
         )
     }
@@ -771,6 +773,7 @@ public actor AscendantTurnUpdateStore {
         text: String?,
         toolState: TurnToolState?,
         permissionState: TurnPermissionState?,
+        plan: TurnPlan?,
         terminal: Bool,
         reasonCode: String?,
         statusCode: Int?,
@@ -794,6 +797,7 @@ public actor AscendantTurnUpdateStore {
                 text: text,
                 toolState: toolState,
                 permissionState: permissionState,
+                plan: plan,
                 terminal: terminal,
                 reasonCode: reasonCode,
                 statusCode: statusCode,
@@ -830,6 +834,7 @@ public actor AscendantTurnUpdateStore {
         var snapshotText = ""
         var snapshotToolStates: [TurnToolState] = []
         var snapshotPermissionStates: [TurnPermissionState] = []
+        var snapshotPlans: [TurnPlan] = []
         var snapshotSequence = 0
         // Reserve half of the byte budget for the accumulated snapshot.
         while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2 {
@@ -837,8 +842,14 @@ public actor AscendantTurnUpdateStore {
             let removed = entry.updates.removeFirst()
             entry.bytes -= Self.encodedSize(removed)
             snapshotSequence = max(snapshotSequence, removed.sequence)
+            // Only assistant text folds into the snapshot. A removed thought is dropped,
+            // so the snapshot never mixes thought text into assistant text. A plan
+            // replaces the plan with its ID, so only the latest of each is kept.
             if removed.carriesAssistantText {
                 snapshotText += removed.text ?? ""
+            }
+            for plan in removed.plans + [removed.plan].compactMap({ $0 }) {
+                Self.upsert(plan, into: &snapshotPlans)
             }
             if let toolState = removed.toolState {
                 Self.upsert(toolState, into: &snapshotToolStates)
@@ -854,13 +865,15 @@ public actor AscendantTurnUpdateStore {
             }
             entry.compacted = true
         }
-        if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty {
+        if !snapshotText.isEmpty || !snapshotToolStates.isEmpty || !snapshotPermissionStates.isEmpty
+            || !snapshotPlans.isEmpty {
             let snapshot = Self.bounded(TurnUpdate(
                 sequence: snapshotSequence,
                 kind: TurnUpdateKind.assistantTextSnapshot.rawValue,
                 text: snapshotText.isEmpty ? nil : snapshotText,
                 toolStates: snapshotToolStates,
-                permissionStates: snapshotPermissionStates
+                permissionStates: snapshotPermissionStates,
+                plans: snapshotPlans
             ), maxBytes: max(1, maxBytes - entry.bytes))
             entry.updates.insert(snapshot, at: 0)
             entry.bytes += Self.encodedSize(snapshot)
@@ -1014,68 +1027,71 @@ public actor AscendantTurnUpdateStore {
 
     private static func bounded(_ update: TurnUpdate, maxBytes: Int) -> TurnUpdate {
         var text = update.text.map { clipped($0, maximumBytes: maxAssistantTextBytes, kind: update.kind) }
-        let toolState = update.toolState.map(bounded)
         var toolStates = update.toolStates.map(bounded)
-        let permissionState = update.permissionState.map(bounded)
         var permissionStates = update.permissionStates.map(bounded)
+        var plan = update.plan.map(bounded)
+        var plans = update.plans.map(bounded)
+        let toolState = update.toolState.map(bounded)
+        let permissionState = update.permissionState.map(bounded)
         let kind = GnosticWirePayload.boundedIdentifier(update.kind)
-        var candidate = update
-        candidate = TurnUpdate(
-            sequence: update.sequence, kind: kind, text: text, toolState: toolState,
-            toolStates: toolStates, permissionState: permissionState,
-            permissionStates: permissionStates, terminal: update.terminal,
-            reasonCode: update.reasonCode, statusCode: update.statusCode,
-            retryable: update.retryable
-        )
-        while encodedSize(candidate) > maxBytes, let current = text, !current.isEmpty {
+        func candidate() -> TurnUpdate {
+            TurnUpdate(
+                sequence: update.sequence, kind: kind, text: text, toolState: toolState,
+                toolStates: toolStates, permissionState: permissionState,
+                permissionStates: permissionStates, plan: plan, plans: plans, terminal: update.terminal,
+                reasonCode: update.reasonCode, statusCode: update.statusCode,
+                retryable: update.retryable
+            )
+        }
+        while encodedSize(candidate()) > maxBytes, let current = text, !current.isEmpty {
             // A single byte halves to nothing, so this loop always ends.
             text = clipped(current, maximumBytes: current.utf8.count / 2, kind: update.kind)
-            candidate = TurnUpdate(
-                sequence: update.sequence, kind: kind,
-                text: text,
-                toolState: toolState,
-                toolStates: toolStates,
-                permissionState: permissionState,
-                permissionStates: permissionStates,
-                terminal: update.terminal,
-                reasonCode: update.reasonCode,
-                statusCode: update.statusCode,
-                retryable: update.retryable
-            )
         }
-        while encodedSize(candidate) > maxBytes, !toolStates.isEmpty {
+        while encodedSize(candidate()) > maxBytes, !toolStates.isEmpty {
             toolStates.removeFirst()
-            candidate = TurnUpdate(
-                sequence: update.sequence,
-                kind: kind,
-                text: text,
-                toolState: toolState,
-                toolStates: toolStates,
-                permissionState: permissionState,
-                permissionStates: permissionStates,
-                terminal: update.terminal,
-                reasonCode: update.reasonCode,
-                statusCode: update.statusCode,
-                retryable: update.retryable
-            )
         }
-        while encodedSize(candidate) > maxBytes, !permissionStates.isEmpty {
+        while encodedSize(candidate()) > maxBytes, !permissionStates.isEmpty {
             permissionStates.removeFirst()
-            candidate = TurnUpdate(
-                sequence: update.sequence,
-                kind: kind,
-                text: text,
-                toolState: toolState,
-                toolStates: toolStates,
-                permissionState: update.permissionState,
-                permissionStates: permissionStates,
-                terminal: update.terminal,
-                reasonCode: update.reasonCode,
-                statusCode: update.statusCode,
-                retryable: update.retryable
-            )
         }
-        return candidate
+        // A plan is never partial: it loses trailing entries and says so. A snapshot
+        // drops its oldest plans first, because the latest of each ID is the one
+        // that matters and the journal keeps the rest.
+        while encodedSize(candidate()) > maxBytes, plans.count > 1 {
+            plans.removeFirst()
+        }
+        while encodedSize(candidate()) > maxBytes, let current = plans.last, let shrunk = shrunk(current) {
+            plans[plans.count - 1] = shrunk
+        }
+        while encodedSize(candidate()) > maxBytes, let current = plan, let shrunk = shrunk(current) {
+            plan = shrunk
+        }
+        return candidate()
+    }
+
+    /// The most entries a plan keeps. A plan also loses trailing entries until its
+    /// update fits.
+    private static let maxPlanEntries = 32
+    /// The most bytes one plan entry's content keeps.
+    private static let maxPlanEntryBytes = 120
+
+    private static func bounded(_ plan: TurnPlan) -> TurnPlan {
+        TurnPlan(
+            planID: GnosticWirePayload.boundedIdentifier(plan.planID),
+            entries: plan.entries.prefix(maxPlanEntries).map { entry in
+                TurnPlanEntry(
+                    content: markedPrefix(entry.content, maximumBytes: maxPlanEntryBytes),
+                    priority: GnosticWirePayload.boundedIdentifier(entry.priority),
+                    status: GnosticWirePayload.boundedIdentifier(entry.status)
+                )
+            },
+            truncated: plan.truncated || plan.entries.count > maxPlanEntries
+        )
+    }
+
+    /// `plan` without its last entry and marked cut, or `nil` when it has none.
+    private static func shrunk(_ plan: TurnPlan) -> TurnPlan? {
+        guard !plan.entries.isEmpty else { return nil }
+        return TurnPlan(planID: plan.planID, entries: Array(plan.entries.dropLast()), truncated: true)
     }
 
     private static func bounded(_ state: TurnToolState) -> TurnToolState {
@@ -1101,6 +1117,14 @@ public actor AscendantTurnUpdateStore {
             states[index] = state
         } else {
             states.append(state)
+        }
+    }
+
+    private static func upsert(_ plan: TurnPlan, into plans: inout [TurnPlan]) {
+        if let index = plans.firstIndex(where: { $0.planID == plan.planID }) {
+            plans[index] = plan
+        } else {
+            plans.append(plan)
         }
     }
 

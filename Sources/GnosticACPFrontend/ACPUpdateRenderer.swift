@@ -31,12 +31,30 @@ enum ACPUpdateRenderer {
                 "_meta": .dictionary(metadata),
             ]))
         }
+        if update.updateKind == .thought, let text = update.text {
+            payloads.append(.dictionary([
+                "sessionUpdate": .string("agent_thought_chunk"),
+                "messageId": .string("acp:thought:\(turnID)"),
+                "content": .dictionary(["type": .string("text"), "text": .string(text)]),
+                "_meta": .dictionary(metadata),
+            ]))
+        }
         if let toolState = update.toolState {
             payloads.append(toolPayload(toolState, initial: update.updateKind == .toolCall, metadata: metadata))
         }
         for toolState in update.toolStates {
             metadata["compacted"] = .boolean(true)
             payloads.append(toolPayload(toolState, initial: false, metadata: metadata))
+        }
+        // A plan update holds the whole plan and replaces the plan with its ID. A snapshot
+        // holds the latest plan of each ID that retention folded.
+        for plan in update.plans {
+            var planMetadata = metadata
+            planMetadata["compacted"] = .boolean(true)
+            payloads.append(planPayload(plan, metadata: planMetadata))
+        }
+        if let plan = update.plan {
+            payloads.append(planPayload(plan, metadata: metadata))
         }
 
         return payloads.map { payload in
@@ -48,6 +66,39 @@ enum ACPUpdateRenderer {
                 ])
             )
         }
+    }
+
+    /// An ACP v2 `plan_update`. A plan that lost entries ends in a marker entry and
+    /// carries `_meta.truncated`, so a client that ignores `_meta` still sees the cut.
+    private static func planPayload(
+        _ plan: TurnPlan,
+        metadata: [String: GnosticJSONValue]
+    ) -> GnosticJSONValue {
+        var metadata = metadata
+        var entries = plan.entries.map { entry in
+            GnosticJSONValue.dictionary([
+                "content": .string(entry.content),
+                "priority": .string(entry.priority),
+                "status": .string(entry.status),
+            ])
+        }
+        if plan.truncated {
+            metadata["truncated"] = .boolean(true)
+            entries.append(.dictionary([
+                "content": .string(TurnUpdate.truncationMarker),
+                "priority": .string("low"),
+                "status": .string("pending"),
+            ]))
+        }
+        return .dictionary([
+            "sessionUpdate": .string("plan_update"),
+            "plan": .dictionary([
+                "type": .string("items"),
+                "planId": .string(plan.planID),
+                "entries": .array(entries),
+            ]),
+            "_meta": .dictionary(metadata),
+        ])
     }
 
     private static func toolPayload(

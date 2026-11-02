@@ -263,16 +263,19 @@ It is not the verbatim ACP payload; the journal holds that. A Node derives it
 from the session updates it receives and keeps it only for replay.
 
 - It carries the update kinds named by `TurnUpdateKind`: assistant text (in
-  pieces of at most 800 bytes, or one compacted snapshot), tool call and tool
-  state, permission state, and the terminal `completion`, `cancellation` or
-  `error`. Other session updates, such as thought chunks, plans, usage, `_meta`
-  and unknown kinds, are in the journal but not in a Turn update.
+  pieces of at most 800 bytes, or one compacted snapshot), thought text (in the
+  same pieces, never part of the assistant text or the Turn's result), a plan
+  (a bounded `TurnPlan` that replaces the plan with the same ID), tool call and
+  tool state, permission state, and the terminal `completion`, `cancellation` or
+  `error`. Other session updates, such as usage, `_meta` and unknown kinds, are in
+  the journal but not in a Turn update (owner decision D32).
 - Its `sequence` orders the updates of one Turn. A consumer's replay cursor is
   the highest sequence it has processed. Only a Node assigns a sequence.
 - `gnostic acp` renders each Turn update back into ACP `session/update`
-  notifications (agent message chunks and tool call updates, with the sequence
-  in `_meta`). An ACP client of `gnostic acp` therefore sees a rendered subset,
-  not the Runtime's verbatim updates.
+  notifications (agent message chunks, agent thought chunks, plan updates and
+  tool call updates, with the sequence in `_meta`). An ACP client of
+  `gnostic acp` therefore sees a rendered subset, not the Runtime's verbatim
+  updates.
 
 `Documentation/Compatibility/0.5.0.md` defines the reconnect procedure.
 

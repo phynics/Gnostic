@@ -15,6 +15,8 @@ struct AscendantTurnUpdateVocabularyTests {
             "completion",
             "error",
             "permission_state",
+            "plan",
+            "thought",
             "tool_call",
             "tool_state",
         ])
@@ -41,6 +43,27 @@ struct AscendantTurnUpdateVocabularyTests {
         #expect(TurnUpdate(sequence: 2, kind: .assistantTextSnapshot, text: "b").carriesAssistantText)
         #expect(!TurnUpdate(sequence: 3, kind: .toolCall).carriesAssistantText)
         #expect(!TurnUpdate(sequence: 4, kind: .completion).carriesAssistantText)
+        // A thought and a plan are never assistant text.
+        #expect(!TurnUpdate(sequence: 5, kind: .thought, text: "hm").carriesAssistantText)
+        #expect(!TurnUpdate(sequence: 6, kind: .plan, plan: TurnPlan(planID: "p", entries: [])).carriesAssistantText)
+    }
+
+    @Test("an update without a plan encodes as it did before plans existed, and an old one decodes")
+    func planFieldsAreAdditive() throws {
+        let plain = try JSONEncoder().encode(TurnUpdate(sequence: 1, kind: .assistantText, text: "a"))
+        let object = try #require(try JSONSerialization.jsonObject(with: plain) as? [String: Any])
+        #expect(object["plan"] == nil)
+        #expect(object["plans"] == nil)
+
+        let old = #"{"protocolMajor":3,"sequence":1,"kind":"assistant_text","text":"a","toolStates":[],"permissionStates":[],"terminal":false}"#
+        let decoded = try JSONDecoder().decode(TurnUpdate.self, from: Data(old.utf8))
+        #expect(decoded.plan == nil && decoded.plans.isEmpty)
+
+        let planned = TurnUpdate(sequence: 2, kind: .plan, plan: TurnPlan(
+            planID: "p", entries: [TurnPlanEntry(content: "c", priority: "high", status: "pending")]
+        ))
+        let roundTrip = try JSONDecoder().decode(TurnUpdate.self, from: JSONEncoder().encode(planned))
+        #expect(roundTrip == planned)
     }
 
     @Test("an unknown wire kind decodes without becoming a known kind")

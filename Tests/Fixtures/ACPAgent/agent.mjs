@@ -524,6 +524,63 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
 
     const messageId = "fixture-message-1";
+    // Thoughts and plans. `thought` sends one `agent_thought_chunk` of the requested size (2455 bytes by
+    // default, built like the `long-*` text but from "t"); `thoughts:N` sends N short chunks; `plan`
+    // sends a plan and then a second plan with the same ID that replaces it; `plan-long:N` sends one
+    // plan of N entries, each far over the entry bound. They precede the reply.
+    const thought = /\[fixture:thought(?::(\d+))?\]/.exec(prompt);
+    if (thought) {
+      let text = "t".repeat(798);
+      while (Buffer.byteLength(text) < Number(thought[1] ?? 2455)) text += "\u{1F600}\u00E9\u65E5";
+      text += "|thought-end";
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_thought_chunk", messageId: "fixture-thought-1", content: { type: "text", text } },
+      });
+    }
+    const manyThoughts = /\[fixture:thoughts:(\d+)\]/.exec(prompt);
+    if (manyThoughts) {
+      for (let index = 0; index < Number(manyThoughts[1]); index++) {
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            messageId: "fixture-thought-1",
+            content: { type: "text", text: `think-${index} ` },
+          },
+        });
+      }
+    }
+    const planEntry = (content, status) => ({ content, priority: "medium", status });
+    if (prompt.includes("[fixture:plan]")) {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "plan_update",
+          plan: { type: "items", planId: "plan-1", entries: [planEntry("read the file", "in_progress"), planEntry("write the fix", "pending")] },
+        },
+      });
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "plan_update",
+          plan: {
+            type: "items",
+            planId: "plan-1",
+            entries: [planEntry("read the file", "completed"), planEntry("write the fix", "in_progress"), planEntry("run the tests", "pending")],
+          },
+        },
+      });
+    }
+    const longPlan = /\[fixture:plan-long:(\d+)\]/.exec(prompt);
+    if (longPlan) {
+      const entries = Array.from({ length: Number(longPlan[1]) }, (_, index) =>
+        planEntry(`step-${index} ${"p".repeat(200)}`, "pending"));
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "plan_update", plan: { type: "items", planId: "plan-1", entries } },
+      });
+    }
     const longMessage = /\[fixture:long-(chunk|agent-message)(?::(\d+))?\]/.exec(prompt);
     if (longMessage) {
       // One Runtime message over the live update bound. The text is 798 ASCII bytes, so a 4-byte

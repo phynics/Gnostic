@@ -7,7 +7,7 @@ import GnosticCore
 ///
 /// Every backend emits ``TurnUpdate`` values while a Turn runs. This
 /// view folds those values into the parts a consumer usually wants: the
-/// assistant output, the latest state of each tool call, the permission states,
+/// assistant output, the thoughts and plans, the latest state of each tool call, the permission states,
 /// and the terminal outcome. It works for any backend, and ACP and Letta supply
 /// it because they already emit the same updates.
 ///
@@ -21,6 +21,13 @@ public struct TurnTranscript: Sendable, Equatable {
     public let updates: [TurnUpdate]
     /// The assistant output after live fragments and snapshots are folded.
     public let assistantText: String
+    /// The thought text the folded updates carry. It is never part of
+    /// ``assistantText``. Retention drops older thoughts, so after a compacted replay it
+    /// holds only the thoughts that are still retained.
+    public let thoughtText: String
+    /// The latest plan for each plan ID, in first-announced order. A plan update
+    /// replaces the plan with its ID.
+    public let plans: [TurnPlan]
     /// The latest state of each announced tool call, in first-announced order.
     public let toolStates: [TurnToolState]
     /// The latest permission states, in first-announced order.
@@ -37,6 +44,8 @@ public struct TurnTranscript: Sendable, Equatable {
         self.updates = updates
 
         var assistant = ""
+        var thought = ""
+        var plans: [TurnPlan] = []
         var tools: [TurnToolState] = []
         var toolIndexByID: [String: Int] = [:]
         var permissions: [TurnPermissionState] = []
@@ -50,6 +59,18 @@ public struct TurnTranscript: Sendable, Equatable {
                     assistant = text
                 default:
                     assistant += text
+                }
+            }
+
+            if update.updateKind == .thought, let text = update.text {
+                thought += text
+            }
+
+            for plan in update.plans + [update.plan].compactMap({ $0 }) {
+                if let index = plans.firstIndex(where: { $0.planID == plan.planID }) {
+                    plans[index] = plan
+                } else {
+                    plans.append(plan)
                 }
             }
 
@@ -78,6 +99,8 @@ public struct TurnTranscript: Sendable, Equatable {
         }
 
         self.assistantText = assistant
+        self.thoughtText = thought
+        self.plans = plans
         self.toolStates = tools
         self.permissionStates = permissions
         self.terminalUpdate = terminal

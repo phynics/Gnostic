@@ -542,6 +542,8 @@ public enum TurnTerminalOutcome : Swift::String, Swift::Codable, Swift::Sendable
 public enum TurnUpdateKind : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable, Swift::CaseIterable {
   case assistantText
   case assistantTextSnapshot
+  case thought
+  case plan
   case toolCall
   case toolState
   case permissionState
@@ -589,6 +591,24 @@ public enum TurnPermissionStatus : Swift::String, Swift::Codable, Swift::Sendabl
     @inlinable get
   }
 }
+public struct TurnPlanEntry : Swift::Codable, Swift::Sendable, Swift::Equatable {
+  public let content: Swift::String
+  public let priority: Swift::String
+  public let status: Swift::String
+  public init(content: Swift::String, priority: Swift::String, status: Swift::String)
+  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::TurnPlanEntry, _ b: GnosticProtocol::TurnPlanEntry) -> Swift::Bool
+  public func encode(to encoder: any Swift::Encoder) throws
+  public init(from decoder: any Swift::Decoder) throws
+}
+public struct TurnPlan : Swift::Codable, Swift::Sendable, Swift::Equatable {
+  public let planID: Swift::String
+  public let entries: [GnosticProtocol::TurnPlanEntry]
+  public let truncated: Swift::Bool
+  public init(planID: Swift::String, entries: [GnosticProtocol::TurnPlanEntry], truncated: Swift::Bool = false)
+  public init(from decoder: any Swift::Decoder) throws
+  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::TurnPlan, _ b: GnosticProtocol::TurnPlan) -> Swift::Bool
+  public func encode(to encoder: any Swift::Encoder) throws
+}
 public struct TurnToolState : Swift::Codable, Swift::Sendable, Swift::Equatable {
   public let toolCallID: Swift::String
   public let title: Swift::String?
@@ -626,12 +646,14 @@ public struct TurnUpdate : Swift::Codable, Swift::Sendable, Swift::Equatable {
   public let toolStates: [GnosticProtocol::TurnToolState]
   public let permissionState: GnosticProtocol::TurnPermissionState?
   public let permissionStates: [GnosticProtocol::TurnPermissionState]
+  public let plan: GnosticProtocol::TurnPlan?
+  public let plans: [GnosticProtocol::TurnPlan]
   public let terminal: Swift::Bool
   public let reasonCode: Swift::String?
   public let statusCode: Swift::Int?
   public let retryable: Swift::Bool?
-  public init(sequence: Swift::Int, kind: Swift::String, text: Swift::String? = nil, toolState: GnosticProtocol::TurnToolState? = nil, toolStates: [GnosticProtocol::TurnToolState] = [], permissionState: GnosticProtocol::TurnPermissionState? = nil, permissionStates: [GnosticProtocol::TurnPermissionState] = [], terminal: Swift::Bool = false, reasonCode: Swift::String? = nil, statusCode: Swift::Int? = nil, retryable: Swift::Bool? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
-  public init(sequence: Swift::Int, kind: GnosticProtocol::TurnUpdateKind, text: Swift::String? = nil, toolState: GnosticProtocol::TurnToolState? = nil, toolStates: [GnosticProtocol::TurnToolState] = [], permissionState: GnosticProtocol::TurnPermissionState? = nil, permissionStates: [GnosticProtocol::TurnPermissionState] = [], terminal: Swift::Bool = false, reasonCode: Swift::String? = nil, statusCode: Swift::Int? = nil, retryable: Swift::Bool? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
+  public init(sequence: Swift::Int, kind: Swift::String, text: Swift::String? = nil, toolState: GnosticProtocol::TurnToolState? = nil, toolStates: [GnosticProtocol::TurnToolState] = [], permissionState: GnosticProtocol::TurnPermissionState? = nil, permissionStates: [GnosticProtocol::TurnPermissionState] = [], plan: GnosticProtocol::TurnPlan? = nil, plans: [GnosticProtocol::TurnPlan] = [], terminal: Swift::Bool = false, reasonCode: Swift::String? = nil, statusCode: Swift::Int? = nil, retryable: Swift::Bool? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
+  public init(sequence: Swift::Int, kind: GnosticProtocol::TurnUpdateKind, text: Swift::String? = nil, toolState: GnosticProtocol::TurnToolState? = nil, toolStates: [GnosticProtocol::TurnToolState] = [], permissionState: GnosticProtocol::TurnPermissionState? = nil, permissionStates: [GnosticProtocol::TurnPermissionState] = [], plan: GnosticProtocol::TurnPlan? = nil, plans: [GnosticProtocol::TurnPlan] = [], terminal: Swift::Bool = false, reasonCode: Swift::String? = nil, statusCode: Swift::Int? = nil, retryable: Swift::Bool? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
   public var updateKind: GnosticProtocol::TurnUpdateKind? {
     get
   }
@@ -641,9 +663,9 @@ public struct TurnUpdate : Swift::Codable, Swift::Sendable, Swift::Equatable {
   public var isTerminalFailure: Swift::Bool {
     get
   }
+  public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::TurnUpdate, _ b: GnosticProtocol::TurnUpdate) -> Swift::Bool
-  public func encode(to encoder: any Swift::Encoder) throws
 }
 public struct TurnReplay : Swift::Codable, Swift::Sendable, Swift::Equatable {
   public let protocolMajor: Swift::Int
