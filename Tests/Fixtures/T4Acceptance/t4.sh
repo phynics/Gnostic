@@ -11,7 +11,20 @@
 # Every process runs in the background. Its log is $T4_WORK/logs/<name>.log and
 # its process ID is in $T4_WORK/pids/<name>.
 
+# _t4_running <name> <command word>: succeed when the process ID recorded for <name> is
+# alive and is a <command word> process. A frozen process (SIGSTOP) counts as alive.
+_t4_running() {
+	[ -f "$T4_WORK/pids/$1" ] || return 1
+	_alive_pid=$(cat "$T4_WORK/pids/$1")
+	kill -0 "$_alive_pid" 2> /dev/null || return 1
+	case $(ps -p "$_alive_pid" -o args= 2> /dev/null) in *"$2"*) return 0 ;; *) return 1 ;; esac
+}
+
 t4_broker_start() {
+	if _t4_running broker mosquitto; then
+		echo "broker is already running (pid $(cat "$T4_WORK/pids/broker")); run t4_broker_stop first" >&2
+		return 1
+	fi
 	mkdir -p "$T4_WORK/logs" "$T4_WORK/pids"
 	cat > "$T4_WORK/mosquitto.conf" <<EOF
 per_listener_settings true
@@ -36,6 +49,12 @@ EOF
 # t4_node_start <name> <manifest> <state-dir>
 t4_node_start() {
 	_name=$1 _manifest=$2 _state=$3
+	# A second Node with the same configuration and identity would overwrite the recorded
+	# process ID and leave the first Node running with no record.
+	if _t4_running "$_name" gnostic; then
+		echo "node $_name is already running (pid $(cat "$T4_WORK/pids/$_name")); run t4_node_stop $_name first" >&2
+		return 1
+	fi
 	mkdir -p "$T4_WORK/logs" "$T4_WORK/pids" "$_state"
 	GNOSTIC_STATE_HOME="$_state" "$T4_BIN/gnostic" serve --config "$_manifest" \
 		--host "$T4_BROKER_HOST" --port "$T4_BROKER_PORT" --namespace "$T4_NAMESPACE" \
@@ -75,6 +94,59 @@ t4_node_kill() {
 	done
 	echo "node $1 survived SIGKILL" >&2
 	return 1
+}
+
+# t4_wait_prompts <count> <seconds>: wait until the Runtime has received more than <count>
+# prompts, which $T4_WORK/fixture/prompts.log counts. Fail after <seconds>.
+t4_wait_prompts() {
+	_deadline=$(( $(date +%s) + $2 ))
+	while [ "$(wc -l < "$T4_WORK/fixture/prompts.log" 2> /dev/null | tr -d ' ')" -le "$1" ]; do
+		if [ "$(date +%s)" -ge "$_deadline" ]; then
+			echo "the Runtime did not receive a prompt within $2 seconds" >&2
+			return 1
+		fi
+		sleep 0.2
+	done
+}
+
+# t4_kill_during_call <client-log> <node> <seconds>: freeze <node> (SIGSTOP) while the
+# client waits to answer its permission request, wait for the answer, then kill the Node
+# <seconds> after it. The approved Workspace call is then in flight to a Node that cannot
+# answer. The function fails, and leaves the Node running, when the client never shows the
+# request, when the client fails before it shows one, or when the answer does not arrive
+# within 30 seconds (T4_WAIT_SECONDS changes the 30). If you interrupt it, it kills the Node, so no Node stays frozen.
+t4_kill_during_call() {
+	_log=$1 _node=$2 _after=$3
+	_node_pid=$(cat "$T4_WORK/pids/$_node")
+	_deadline=$(( $(date +%s) + ${T4_WAIT_SECONDS:-30} ))
+	until grep -q "permission request 1:" "$_log" 2> /dev/null; do
+		if grep -qE "FAILED|TIMED OUT|connection ended" "$_log" 2> /dev/null; then
+			echo "the client failed before it showed a permission request; Node $_node was not frozen" >&2
+			return 1
+		fi
+		if [ "$(date +%s)" -ge "$_deadline" ]; then
+			echo "no permission request within ${T4_WAIT_SECONDS:-30} seconds; Node $_node was not frozen" >&2
+			return 1
+		fi
+		sleep 0.2
+	done
+	trap 'kill -KILL "$_node_pid" 2> /dev/null; trap - INT TERM HUP' INT TERM HUP
+	kill -STOP "$_node_pid"
+	echo "node $_node frozen (SIGSTOP) while the permission request waits"
+	_deadline=$(( $(date +%s) + ${T4_WAIT_SECONDS:-30} ))
+	until grep -q "answered" "$_log" 2> /dev/null; do
+		if [ "$(date +%s)" -ge "$_deadline" ] || grep -qE "FAILED|TIMED OUT|connection ended" "$_log" 2> /dev/null; then
+			kill -CONT "$_node_pid" 2> /dev/null
+			trap - INT TERM HUP
+			echo "the permission request was not answered; node $_node resumed" >&2
+			return 1
+		fi
+		sleep 0.2
+	done
+	sleep "$_after"
+	kill -KILL "$_node_pid" 2> /dev/null
+	trap - INT TERM HUP
+	echo "node $_node killed (SIGKILL, pid $_node_pid) $_after seconds after the answer"
 }
 
 t4_broker_stop() {
