@@ -247,29 +247,44 @@ public final class GnosticTurnClient {
 
     /// Streams the live updates for one identified Turn.
     ///
-    /// Subscribe before running the Turn so no update is missed. The stream is
-    /// bounded and finishes after it yields the Turn's terminal update, so a
-    /// `for await` loop exits at completion instead of waiting for transport
-    /// teardown.
+    /// Subscribe before running the Turn so no update is missed. The two ways
+    /// the stream ends mean different things:
+    ///
+    /// - It **finishes normally** only after it yields the Turn's terminal
+    ///   update. That is the one live signal that the Turn ended.
+    /// - It **throws** a ``GnosticTurnClientError`` when observation is lost.
+    ///   The Timeline owner left the network and the catalog evicted it:
+    ///   `callFailed(reasonCode: "providerOffline", statusCode: 503, retryable: true)`,
+    ///   the error ``run(message:timelineID:clientTurnID:providerID:)`` throws
+    ///   for the same eviction. The observed transport ended before a terminal
+    ///   update: `callFailed(reasonCode: "observationEnded", statusCode: 503, retryable: true)`.
+    ///
+    /// A thrown error is not a ``TurnUpdate``. It has no sequence and never
+    /// moves a replay cursor, and it does not prove the Turn ended: the owner
+    /// can still run the Turn. To resume, keep the cursor (the highest sequence
+    /// you processed), replace the session, and replay with
+    /// ``replay(timelineID:clientTurnID:message:afterSequence:providerID:)``.
     ///
     /// The bounded buffer is latest-biased: under backpressure it drops the
     /// oldest pending update. A caller that must observe every update reliably
-    /// should recover from ``replay(timelineID:clientTurnID:message:afterSequence:providerID:)``
-    /// instead of trusting the live stream to be lossless.
+    /// should recover from replay instead of trusting the live stream to be
+    /// lossless. See `Documentation/Compatibility/0.5.0.md`, "Observe a Turn and
+    /// reconnect".
     ///
     /// - Parameters:
     ///   - clientTurnID: The identifier used to run the Turn.
     ///   - timelineID: The Timeline the Turn runs on.
     ///   - providerID: The provider to filter on, or `nil` for every provider.
     /// - Returns: A bounded stream of Turn updates that finishes on the
-    ///   terminal update.
+    ///   terminal update and throws ``GnosticTurnClientError`` when observation
+    ///   is lost.
     /// - Throws: ``GnosticWirePayload`` validation errors for an invalid
     ///   `clientTurnID`.
     public func updates(
         for clientTurnID: String,
         timelineID: UUID,
         providerID: String? = nil
-    ) async throws -> AsyncStream<TurnUpdate> {
+    ) async throws -> AsyncThrowingStream<TurnUpdate, any Error> {
         let expected = try GnosticWirePayload.canonicalClientTurnID(clientTurnID)
         let events = try await updateEvents(providerID: providerID)
         let watchedProvider: String?
@@ -278,36 +293,37 @@ public final class GnosticTurnClient {
         } else {
             watchedProvider = await catalog.timelineOwnerID(id: timelineID)
         }
-        return AsyncStream(bufferingPolicy: .bufferingNewest(64)) { continuation in
-            let sequence = TurnUpdateSequence()
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(64)) { continuation in
             let eventTask = Task { @MainActor in
                 for await event in events {
                     guard event.timelineID == timelineID,
                           event.clientTurnID == expected else { continue }
-                    sequence.advance(to: event.update.sequence)
                     continuation.yield(event.update)
                     if event.update.terminal {
                         continuation.finish()
                         return
                     }
                 }
-                continuation.finish()
+                // The transport ended without a terminal update: the Turn may
+                // still be running, so this is a lost observation, not an end.
+                continuation.finish(throwing: GnosticTurnClientError.callFailed(
+                    reasonCode: "observationEnded",
+                    statusCode: 503,
+                    retryable: true
+                ))
             }
             let evictionTask = Task { @MainActor [catalog] in
                 guard let watchedProvider else { return }
                 let evictions = await catalog.providerEvictionStream()
                 for await evicted in evictions
                 where evicted.caseInsensitiveCompare(watchedProvider) == .orderedSame {
-                    continuation.yield(TurnUpdate(
-                        sequence: sequence.next,
-                        kind: TurnUpdateKind.error.rawValue,
-                        text: "The Timeline owner left the network before the Turn completed.",
-                        terminal: true,
+                    // No update is fabricated: a synthetic sequence could equal
+                    // a real one that the owner still holds for replay.
+                    continuation.finish(throwing: GnosticTurnClientError.callFailed(
                         reasonCode: "providerOffline",
                         statusCode: 503,
                         retryable: true
                     ))
-                    continuation.finish()
                     return
                 }
             }
@@ -419,12 +435,4 @@ private final class ProviderEvictionFlag {
     private(set) var isMarked = false
 
     func mark() { isMarked = true }
-}
-
-@MainActor
-private final class TurnUpdateSequence {
-    private var last = 0
-
-    func advance(to sequence: Int) { last = max(last, sequence) }
-    var next: Int { last + 1 }
 }

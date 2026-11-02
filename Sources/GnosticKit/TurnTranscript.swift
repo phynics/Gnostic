@@ -10,6 +10,12 @@ import GnosticCore
 /// assistant output, the latest state of each tool call, the permission states,
 /// and the terminal outcome. It works for any backend, and ACP and Letta supply
 /// it because they already emit the same updates.
+///
+/// ``isTerminal`` is true only when the folded updates include a terminal
+/// update the owner produced. A stream that stopped because observation was
+/// lost (`GnosticTurnClient.updates(for:timelineID:providerID:)` throws)
+/// yields no terminal update, so a transcript of what arrived is not terminal.
+/// Replay the Turn to learn how it ended.
 public struct TurnTranscript: Sendable, Equatable {
     /// The updates the view folded, in the order they arrived.
     public let updates: [TurnUpdate]

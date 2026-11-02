@@ -121,9 +121,14 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let observation = Task {
                 var received: [TurnUpdate] = []
-                for await update in updates {
-                    received.append(update)
-                    if update.terminal { break }
+                do {
+                    for try await update in updates {
+                        received.append(update)
+                        if update.terminal { break }
+                    }
+                } catch {
+                    // A lost observation leaves `received` without its terminal
+                    // update, which the assertions below report.
                 }
                 return received
             }
@@ -160,7 +165,7 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let completedRetryCollector = PeerLossUpdateCollector()
             let completedRetryObservation = Task { @MainActor in
-                for await update in retryUpdates { completedRetryCollector.received.append(update) }
+                do { for try await update in retryUpdates { completedRetryCollector.received.append(update) } } catch {}
             }
             defer { completedRetryObservation.cancel() }
             let completedRetry = try await client.runRouted(
@@ -185,7 +190,7 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let collector = PeerLossUpdateCollector()
             let activeObservation = Task { @MainActor in
-                for await update in activeUpdates { collector.received.append(update) }
+                do { for try await update in activeUpdates { collector.received.append(update) } } catch {}
             }
             defer { activeObservation.cancel() }
             let active = Task { @MainActor in
@@ -220,7 +225,7 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let busyCollector = PeerLossUpdateCollector()
             let busyObservation = Task { @MainActor in
-                for await update in busyUpdates { busyCollector.received.append(update) }
+                do { for try await update in busyUpdates { busyCollector.received.append(update) } } catch {}
             }
             defer { busyObservation.cancel() }
             let routedBusy = await rejectionWithin(.seconds(6)) {
@@ -279,7 +284,7 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let failedRetryCollector = PeerLossUpdateCollector()
             let failedRetryObservation = Task { @MainActor in
-                for await update in failedRetryUpdates { failedRetryCollector.received.append(update) }
+                do { for try await update in failedRetryUpdates { failedRetryCollector.received.append(update) } } catch {}
             }
             defer { failedRetryObservation.cancel() }
             do {
@@ -304,7 +309,7 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let missingCollector = PeerLossUpdateCollector()
             let missingObservation = Task { @MainActor in
-                for await update in missingUpdates { missingCollector.received.append(update) }
+                do { for try await update in missingUpdates { missingCollector.received.append(update) } } catch {}
             }
             defer { missingObservation.cancel() }
             do {
@@ -506,10 +511,15 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let collector = PeerLossUpdateCollector()
             let observation = Task { @MainActor in
-                for await update in updates {
-                    collector.received.append(update)
-                    if update.terminal { break }
+                do {
+                    for try await update in updates {
+                        collector.received.append(update)
+                        if update.terminal { break }
+                    }
+                } catch {
+                    collector.observationError = error
                 }
+                collector.streamEnded = true
             }
             defer { observation.cancel() }
             let run = Task { @MainActor in
@@ -553,13 +563,17 @@ struct TwoNodeMQTTIntegrationTests {
 
             let observationClock = ContinuousClock()
             let observationDeadline = observationClock.now + .seconds(10)
-            while observationClock.now < observationDeadline,
-                  collector.received.last?.terminal != true {
+            while observationClock.now < observationDeadline, !collector.streamEnded {
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            let terminal = try #require(collector.received.last)
-            #expect(terminal.terminal == true)
-            #expect(terminal.reasonCode == "providerOffline")
+            // Losing the owner is a lost observation, not a Turn end: the stream
+            // throws, and it yields no terminal update with a fabricated sequence.
+            #expect(collector.streamEnded)
+            #expect(collector.received.allSatisfy { !$0.terminal })
+            #expect(
+                (collector.observationError as? GnosticTurnClientError)?.reasonCode == "providerOffline",
+                Comment(rawValue: "Unexpected observation end: \(String(describing: collector.observationError))")
+            )
 
             try await session.discover(timeout: .seconds(2))
             let remaining = await session.networkObjects().filter { $0.objectID == owner.timelineID }
@@ -1052,7 +1066,7 @@ struct TwoNodeMQTTIntegrationTests {
         trace.record("\(stagePrefix).updates.subscribed")
         let permissionResponder = Task { () async throws -> Bool in
             var receivedAndAnsweredPermission = false
-            for await update in updates {
+            for try await update in updates {
                 trace.record("\(stagePrefix).update.received", [
                     "clientTurnID": clientTurnID,
                     "sequence": String(update.sequence),
@@ -1123,9 +1137,14 @@ struct TwoNodeMQTTIntegrationTests {
                 let updates = try await client.updates(for: clientTurnID, timelineID: node.timelineID)
                 let observation = Task {
                     var received: [TurnUpdate] = []
-                    for await update in updates {
-                        received.append(update)
-                        if update.terminal { break }
+                    do {
+                        for try await update in updates {
+                            received.append(update)
+                            if update.terminal { break }
+                        }
+                    } catch {
+                        // A lost observation leaves `received` without its terminal
+                        // update, which the assertions below report.
                     }
                     return received
                 }
@@ -1504,6 +1523,9 @@ private final class WorkspaceScenarioTrace {
 @MainActor
 private final class PeerLossUpdateCollector {
     var received: [TurnUpdate] = []
+    /// The error that ended the stream, when observation was lost.
+    var observationError: (any Error)?
+    var streamEnded = false
 }
 
 /// Runs `operation` and reports its result, or `nil` when it has not settled

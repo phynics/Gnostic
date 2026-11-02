@@ -410,9 +410,14 @@ final class ACPDispatcher: Sendable {
         let channel = try await client.turnUpdates(for: turnID, timelineID: record.timelineID, providerID: providerID)
         let inbox = TurnUpdateInbox()
         let collector = Task {
-            for await update in channel {
-                await inbox.append(update)
-            }
+            // A lost observation ends the stream with an error, not with an
+            // update. It advances nothing: the loop below fills gaps from
+            // replay, and the Turn call or replay reports how the Turn ended.
+            do {
+                for try await update in channel {
+                    await inbox.append(update)
+                }
+            } catch {}
         }
         let turnTask = Task {
             try await client.turn(
