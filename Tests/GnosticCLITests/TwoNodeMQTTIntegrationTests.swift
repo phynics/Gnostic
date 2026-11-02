@@ -309,7 +309,12 @@ struct TwoNodeMQTTIntegrationTests {
             )
             let missingCollector = PeerLossUpdateCollector()
             let missingObservation = Task { @MainActor in
-                do { for try await update in missingUpdates { missingCollector.received.append(update) } } catch {}
+                do {
+                    for try await update in missingUpdates { missingCollector.received.append(update) }
+                } catch {
+                    missingCollector.observationError = error
+                }
+                missingCollector.streamEnded = true
             }
             defer { missingObservation.cancel() }
             do {
@@ -333,11 +338,12 @@ struct TwoNodeMQTTIntegrationTests {
             }
 
             let missingDeadline = ContinuousClock.now + .seconds(2)
-            while missingCollector.received.last?.terminal != true && ContinuousClock.now < missingDeadline {
+            while !missingCollector.streamEnded && ContinuousClock.now < missingDeadline {
                 try await Task.sleep(for: .milliseconds(20))
             }
-            #expect(missingCollector.received.last?.reasonCode == "missingTimeline")
-            #expect(missingCollector.received.last?.terminal == true)
+            // A router that never reached an owner reports a lost observation, not an update.
+            #expect(missingCollector.received.isEmpty)
+            #expect((missingCollector.observationError as? GnosticTurnClientError)?.reasonCode == "missingTimeline")
 
             await session.stop()
         } catch {

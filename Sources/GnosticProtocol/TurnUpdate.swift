@@ -181,6 +181,10 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
     /// Ends text that retention or a size bound cut.
     package static let truncationMarker = "…[truncated]"
 
+    /// The sequence of a router's report that it lost a Turn's owner. Real
+    /// updates start at 1, so this can never be saved as a replay cursor.
+    package static let observationLostSequence = 0
+
     /// Whether ``text`` holds assistant output, whether streamed live or
     /// accumulated by retention compaction.
     public var carriesAssistantText: Bool {

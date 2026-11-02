@@ -298,6 +298,15 @@ public final class GnosticTurnClient {
                 for await event in events {
                     guard event.timelineID == timelineID,
                           event.clientTurnID == expected else { continue }
+                    // A router's report that it lost the owner, not a Turn update.
+                    if event.update.sequence == TurnUpdate.observationLostSequence {
+                        continuation.finish(throwing: GnosticTurnClientError.callFailed(
+                            reasonCode: event.update.reasonCode ?? "observationEnded",
+                            statusCode: event.update.statusCode ?? 503,
+                            retryable: event.update.retryable ?? true
+                        ))
+                        return
+                    }
                     continuation.yield(event.update)
                     if event.update.terminal {
                         continuation.finish()
