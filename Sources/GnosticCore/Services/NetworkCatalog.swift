@@ -237,7 +237,11 @@ public actor NetworkCatalog {
             return
         }
         for rawID in event.objectIds {
+            // Axoloty delivers any well-formed deadvertisement, including IDs that
+            // aren't UUIDs, unknown objects, and repeats. Only what this source
+            // still owns changes anything.
             guard let objectID = UUID(uuidString: rawID) else { continue }
+            let wasOwned = entries[objectID]?[providerID] != nil
             if entries[objectID]?[providerID]?.objectType == GnosticObjectType.workspace {
                 advanceWorkspaceAdvertisementGeneration(workspaceID: objectID, providerID: providerID)
                 advanceWorkspaceToolCatalogGeneration(workspaceID: objectID, providerID: providerID)
@@ -265,7 +269,7 @@ public actor NetworkCatalog {
             if entries[objectID]?.isEmpty == true {
                 entries[objectID] = nil
             }
-            emitChange(.deadvertised(objectID: objectID, providerID: providerID))
+            if wasOwned { emitChange(.deadvertised(objectID: objectID, providerID: providerID)) }
         }
     }
 

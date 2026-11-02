@@ -688,7 +688,8 @@ struct TwoNodeMQTTIntegrationTests {
             await owner.shutdown()
             owner = try await launchNode(
                 name: "owner", namespace: namespace, serveBinary: serveBinary,
-                agentFixture: agentFixture, scratch: scratch, fixtureEnvironment: ownerEnvironment
+                agentFixture: agentFixture, scratch: scratch, fixtureEnvironment: ownerEnvironment,
+                restarting: true
             )
             let retryID = acp.sendPrompt(sessionID: sessionID, text: "[fixture:wait]", clientTurnID: clientTurnID)
             let retry = await acp.wire.response(id: retryID, timeout: .seconds(30))
@@ -1307,7 +1308,8 @@ struct TwoNodeMQTTIntegrationTests {
         scratch: URL,
         timelineID requestedTimelineID: UUID? = nil,
         fixtureEnvironment extraFixtureEnvironment: [String: String] = [:],
-        additionalRuntimeCount: Int = 0
+        additionalRuntimeCount: Int = 0,
+        restarting: Bool = false
     ) async throws -> NodeProcess {
         let configDirectory = scratch.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -1412,8 +1414,9 @@ struct TwoNodeMQTTIntegrationTests {
             for _ in 0..<(100 + 10 * additionalRuntimeCount) {
                 try log.synchronize()
                 let output = try String(contentsOf: logURL, encoding: .utf8)
+                // A restarted Node can log a Timeline a Session created, which the manifest doesn't list.
                 if output.contains("advertised objects"),
-                   advertisedTimelineIDs.contains(where: { output.contains("timeline=\($0.uuidString.lowercased())") }) {
+                   restarting || advertisedTimelineIDs.contains(where: { output.contains("timeline=\($0.uuidString.lowercased())") }) {
                     online = true
                     break
                 }
