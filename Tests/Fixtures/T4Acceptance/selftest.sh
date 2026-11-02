@@ -171,6 +171,23 @@ check "a reused PID is never signalled, and the record is cleared and reported" 
 ) && ok=0 || ok=1
 check "a recorded process keeps its identity in another time zone or locale" test "$ok" = 0
 
+# A record stays valid in a terminal of another width, with a long command line.
+(
+	t4env width
+	. "$t4sh"
+	long=$(printf 'x%.0s' $(seq 1 400))
+	sh -c 'sleep 60; : "$0"' "$long" & live=$!
+	sleep 0.2
+	echo "$live" > "$T4_WORK/pids/b"
+	COLUMNS=500 _t4_record b "$live"
+	COLUMNS=40 _t4_owned b; first=$?
+	COLUMNS=500 _t4_owned b; second=$?
+	kept=$(cat "$T4_WORK/pids/b" 2> /dev/null)
+	kill "$live" 2> /dev/null
+	[ "$first" = 0 ] && [ "$second" = 0 ] && [ "$kept" = "$live" ]
+) && ok=0 || ok=1
+check "a recorded process keeps its identity in a terminal of another width" test "$ok" = 0
+
 # The broker guard.
 (
 	t4env broker

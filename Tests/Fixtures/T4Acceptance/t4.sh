@@ -19,10 +19,10 @@
 # process, or refuses because one is alive, checks the record first with _t4_owned.
 
 # _t4_identity <pid>: print the start time and command line of a process. ps prints the
-# start time in the shell's time zone and locale, and another terminal can differ, so both
-# are fixed here.
+# start time in the shell's time zone and locale, and cuts the command line to COLUMNS, and
+# another terminal can differ. So both settings are fixed here, and -ww asks for full width.
 _t4_identity() {
-	LC_ALL=C TZ=UTC ps -o lstart= -o command= -p "$1" 2> /dev/null
+	LC_ALL=C TZ=UTC ps -ww -o lstart= -o command= -p "$1" 2> /dev/null
 }
 
 # _t4_record <name> <pid>: record the identity of a process we started.
