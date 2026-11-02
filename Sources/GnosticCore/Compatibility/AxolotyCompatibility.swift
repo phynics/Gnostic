@@ -463,6 +463,35 @@ public final class CommunicationManager {
     private static let reconnectInitialDelay: Duration = .milliseconds(250)
     private static let reconnectMaximumDelay: Duration = .seconds(10)
     private var supervisionTask: Task<Void, Never>?
+    /// True from the moment the supervisor commits to a recovery until it has
+    /// returned. Shutdown joins on this flag because Axoloty's `reconnect()`
+    /// ignores cancellation (see `settleReconnectAttempt`).
+    private var recoveryActive = false
+    /// True while shutdown keeps closing the transport under a reconnect attempt.
+    private var closingTransport = false
+    /// Shutdown keeps closing the transport until this instant. It is set when
+    /// a reconnect attempt returns during shutdown (see `recoverConnection`).
+    private var closeTransportUntil: ContinuousClock.Instant?
+    /// How long shutdown keeps closing the transport after an attempt it
+    /// overlapped has returned. MQTTNIO assigns its connection only once the
+    /// TCP connect completes, so a `disconnect()` that lands earlier throws
+    /// `noConnection` and the connect later finishes unowned. A repeated
+    /// `stop()` closes it once it exists. A connect slower than this window
+    /// is not covered.
+    var reconnectLinger: Duration = .seconds(1)
+    /// How long shutdown waits for an in-flight reconnect attempt to return.
+    var reconnectSettleTimeout: Duration = .seconds(5)
+    /// The operations of one reconnect attempt, so a test can stand in for
+    /// Axoloty's `reconnect()` and replay its suspensions deterministically.
+    struct ReconnectAttemptControls {
+        /// Axoloty's `reconnect()`.
+        var reconnect: @MainActor () async -> Void
+        /// What `reconnect()` does when it finally reaches the transport.
+        var openTransport: @MainActor () async -> Void
+        /// Whether the runtime has finished stopping.
+        var runtimeHasStopped: @MainActor () async -> Bool
+    }
+    var reconnectAttempt: @MainActor (ReconnectAttemptControls) async -> Void = { await $0.reconnect() }
     private var currentAdvertisements: [String: [UInt8]] = [:]
     private var isRuntimeReady = false
     private var isStarted = false
@@ -565,6 +594,7 @@ public final class CommunicationManager {
                 self.emitState(.online)
                 self.startEventPumps()
                 await self.flushPendingAdvertisements()
+                guard self.isStarted else { return }
                 self.supervisionTask = Task { @MainActor [weak self] in
                     for await diagnostic in diagnostics {
                         guard let self, !Task.isCancelled else { return }
@@ -580,6 +610,8 @@ public final class CommunicationManager {
     }
 
     private func recoverConnection() async {
+        recoveryActive = true
+        defer { recoveryActive = false }
         guard isStarted, await runtime.state() == .reconnecting else { return }
         isRuntimeReady = false
         emitState(.offline)
@@ -589,8 +621,23 @@ public final class CommunicationManager {
             do { try await Task.sleep(for: delay) } catch { return }
             guard isStarted && !Task.isCancelled else { return }
             ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker reconnect attempt started")
-            await runtime.reconnect()
-            guard isStarted && !Task.isCancelled else { return }
+            let runtime = self.runtime
+            let transport = self.transport
+            await reconnectAttempt(.init(
+                reconnect: { await runtime.reconnect() },
+                openTransport: { try? await transport.start(receive: { _ in }, lastWill: nil) },
+                runtimeHasStopped: { await runtime.state() == .stopped }
+            ))
+            guard isStarted && !Task.isCancelled else {
+                // Shutdown overtook the attempt. Axoloty's `reconnect()` can
+                // resume after the runtime stopped and open the transport,
+                // then return on its epoch check without closing it. Close
+                // it here, once the attempt has returned, and keep closing
+                // for `reconnectLinger` for a connect still in flight.
+                closeTransportUntil = ContinuousClock.now + reconnectLinger
+                await transport.stop()
+                return
+            }
             if await runtime.state() == .running {
                 isRuntimeReady = true
                 await flushPendingAdvertisements()
@@ -672,20 +719,59 @@ public final class CommunicationManager {
     }
 
     private func drain(runtimeWasReady: Bool) async {
-        // A ready runtime owns shutdown ordering: it must drain its
-        // deadvertisements before the transport disconnects. A pending start
-        // has no runtime lifecycle to drain, so cancel its transport first to
-        // release the start continuation. MQTTBinding fails that continuation
-        // before it awaits socket teardown, so a broker handshake cannot hold
-        // the lifecycle owner until its deadline.
-        if runtimeWasReady {
+        // A ready runtime with no reconnect in flight owns shutdown ordering:
+        // it must drain its deadvertisements before the transport
+        // disconnects. Otherwise the runtime has no lifecycle to drain, so
+        // close the transport first to release a pending start. MQTTBinding
+        // fails that continuation before it awaits socket teardown, so a
+        // broker handshake cannot hold the lifecycle owner until its
+        // deadline.
+        if runtimeWasReady && !recoveryActive {
             await runtime.stop()
         } else {
             await transport.stop()
+            // Axoloty's `reconnect()` ignores cancellation and can reach
+            // `transport.start()` after `runtime.stop()` has returned. Keep
+            // closing the transport until the attempt has returned, so that
+            // a late start fails at once instead of waiting out the broker
+            // handshake. If the attempt outlives the settle bound, this task
+            // outlives the drain and ends `reconnectLinger` after the attempt.
+            closingTransport = true
+            let closer = Task { @MainActor [weak self] in
+                while let self, self.closingTransport || self.recoveryActive
+                    || self.closeTransportUntil.map({ ContinuousClock.now < $0 }) == true {
+                    await self.transport.stop()
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+            }
             await runtime.stop()
+            await settleReconnectAttempt()
+            closingTransport = false
+            // Join the closer unless the attempt outlived the bound; then it
+            // ends by itself after the attempt returns.
+            if !recoveryActive { await closer.value }
         }
+        // Final cleanup: no connection outlives shutdown.
+        await transport.stop()
         eventTasks.forEach { $0.cancel() }
         eventTasks.removeAll()
+    }
+
+    /// Waits for the supervisor to leave `recoverConnection()`.
+    ///
+    /// The wait is bounded by `reconnectSettleTimeout`. At the bound,
+    /// shutdown logs a warning and returns; the attempt then closes the
+    /// transport itself when it returns, because `recoverConnection()` sees
+    /// that shutdown began.
+    private func settleReconnectAttempt() async {
+        let deadline = ContinuousClock.now + reconnectSettleTimeout
+        while recoveryActive {
+            guard ContinuousClock.now < deadline else {
+                ServeLogging.warn("reconnect attempt still running at shutdown; it closes the transport when it returns", component: "transport")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     public func observeCommunicationStateStream() async -> AsyncStream<CommunicationState> {

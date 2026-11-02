@@ -15,7 +15,7 @@ import Glibc
 import Darwin
 #endif
 
-@Suite("Consumer to two owner process MQTT integration", .serialized, .timeLimit(.minutes(2)))
+@Suite("Consumer to two owner process MQTT integration", .serialized, .timeLimit(.minutes(3)))
 struct TwoNodeMQTTIntegrationTests {
     @Test("Nodes rejoin after their broker restarts", arguments: [false, true])
     @MainActor
@@ -83,6 +83,10 @@ struct TwoNodeMQTTIntegrationTests {
             _ = kill(broker.processIdentifier, SIGKILL); broker.waitUntilExit()
             if longOutage {
                 let logURL = scratch.appendingPathComponent("first/serve.log")
+                // Count attempts that began, not attempts that failed. A refused
+                // connection fails at once on Linux, but on macOS each attempt
+                // runs to Axoloty's 10 s connection timeout, so an outage of
+                // about 20 s only completes one failure there.
                 let deadline = ContinuousClock.now + .seconds(60)
                 var attempts = 0
                 while ContinuousClock.now < deadline {
@@ -118,7 +122,9 @@ struct TwoNodeMQTTIntegrationTests {
             }
             broker = try startBroker()
             try await awaitBroker()
-            let deadline = ContinuousClock.now + .seconds(20)
+            // After a long outage an attempt may be mid-way through a 10 s
+            // connection timeout on macOS, followed by up to 10 s of backoff.
+            let deadline = ContinuousClock.now + .seconds(longOutage ? 45 : 20)
             var firstProvider: String?
             var secondProvider: String?
             while ContinuousClock.now < deadline {
