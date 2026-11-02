@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
+import Foundation
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -19,25 +20,37 @@ enum BrokenPipeSignal {
         #endif
     }
 
-    /// Blocks `SIGPIPE` for this thread while `operation` runs. Linux directs the
-    /// signal at the writing thread. It stays pending while blocked, so it is
-    /// drained before the mask returns; otherwise it would end the process then.
+    /// Runs one write that can hit a closed pipe. On Linux the signal goes to the
+    /// writing thread, so it is blocked for this thread and removed before the
+    /// mask returns; otherwise it would end the process then. Only a `SIGPIPE`
+    /// this write raised is removed, and removing it never waits, because another
+    /// thread may already have taken one pending for the process.
     static func suppressed<T>(_ operation: () throws -> T) rethrows -> T {
-        var blocked = sigset_t()
-        sigemptyset(&blocked)
-        sigaddset(&blocked, SIGPIPE)
+        #if os(Linux)
+        var onlyBrokenPipe = sigset_t()
+        sigemptyset(&onlyBrokenPipe)
+        sigaddset(&onlyBrokenPipe, SIGPIPE)
         var previous = sigset_t()
-        pthread_sigmask(SIG_BLOCK, &blocked, &previous)
+        pthread_sigmask(SIG_BLOCK, &onlyBrokenPipe, &previous)
+        var pendingBefore = sigset_t()
+        sigpending(&pendingBefore)
+        let wasPending = sigismember(&pendingBefore, SIGPIPE) == 1
         defer {
-            var pending = sigset_t()
-            sigemptyset(&pending)
-            sigpending(&pending)
-            if sigismember(&pending, SIGPIPE) == 1 {
-                var received: Int32 = 0
-                sigwait(&pending, &received)
+            if !wasPending {
+                var immediately = timespec(tv_sec: 0, tv_nsec: 0)
+                _ = sigtimedwait(&onlyBrokenPipe, nil, &immediately)
             }
             pthread_sigmask(SIG_SETMASK, &previous, nil)
         }
+        #endif
         return try operation()
+    }
+
+    /// Writes to this process's stderr. A reader that has gone away loses the
+    /// output, and must not end the host.
+    static func writeToStandardError(_ data: Data) {
+        let handle = FileHandle.standardError
+        disable(onWriteEnd: handle.fileDescriptor)
+        suppressed { try? handle.write(contentsOf: data) }
     }
 }

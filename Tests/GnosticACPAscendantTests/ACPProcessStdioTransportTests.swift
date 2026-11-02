@@ -115,7 +115,9 @@ struct ACPProcessStdioTransportTests {
         // which drops anything still queued.
         var received = Data()
         while received.filter({ $0 == 0x0A }).count < 50 {
-            received.append(pipes.stdin.fileHandleForReading.availableData)
+            let chunk = pipes.stdin.fileHandleForReading.availableData
+            guard !chunk.isEmpty else { break }
+            received.append(chunk)
         }
         try? pipes.stdout.fileHandleForWriting.close()
         await transport.close()
