@@ -3,9 +3,11 @@
 import Foundation
 
 // The Axoloty 0.7 compatibility object model. These reference types are the
-// base every Gnostic wire projection inherits, so they live with the wire
-// contracts rather than in the kernel. Retiring the Coaty object model is
-// recorded as an architecture exception in
+// base the Gnostic*Object transport projections inherit. They live in
+// GnosticCore, outside the stable GnosticProtocol and GnosticClient products,
+// because they are mutable and not Sendable in fact (issue #717, decision D29
+// on #551). Consumers read the immutable snapshots in GnosticProtocol instead.
+// Retiring the Coaty object model is recorded as an architecture exception in
 // Documentation/Architecture/exceptions.json.
 
 public enum CoreType: String, Codable, Sendable {
@@ -44,6 +46,9 @@ public struct CoatyUUID: Codable, CustomStringConvertible, Hashable, Sendable {
     }
 
     public var description: String { string }
+
+    /// The same identifier as a Foundation `UUID`.
+    package var foundationUUID: UUID { uuid }
 }
 
 open class CoatyObject: Codable, @unchecked Sendable { // SAFETY: Axoloty-compatible reference base; shared instances stay within one isolation domain.

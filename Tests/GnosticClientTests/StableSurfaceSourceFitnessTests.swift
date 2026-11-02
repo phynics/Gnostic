@@ -71,6 +71,25 @@ struct StableSurfaceSourceFitnessTests {
         #expect(violations.isEmpty, "GnosticCore types leak into GnosticClient's public API (D13): \(violations)")
     }
 
+    @Test("no source of a stable product declares a public class outside the listed exceptions or an unchecked Sendable type (D29)")
+    func noMutableReferenceTypeInStableSources() throws {
+        var violations: [String] = []
+        for target in ["GnosticProtocol", "GnosticClient"] {
+            for source in try Self.sources(in: "Sources/\(target)") where source.code.contains("@unchecked") {
+                violations.append("\(source.path): @unchecked")
+            }
+            for declaration in try Self.declarations(in: "Sources/\(target)") where declaration.isPublic {
+                let head = declaration.text
+                guard let match = head.range(of: #"\bclass\s+([A-Z]\w*)"#, options: .regularExpression) else { continue }
+                let name = head[match].split(separator: " ").last.map(String.init) ?? ""
+                if StableSurfaceFitnessTests.deliberateReferenceTypes[name] == nil || head.hasPrefix("open ") {
+                    violations.append("\(declaration.path): \(head.prefix(120))")
+                }
+            }
+        }
+        #expect(violations.isEmpty, "A stable product declares a mutable reference type (D29): \(violations)")
+    }
+
     @Test("GnosticProtocol publishes no ACP typealias")
     func protocolPublishesNoACPAlias() throws {
         let aliases = try Self.declarations(in: "Sources/GnosticProtocol")

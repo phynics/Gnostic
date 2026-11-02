@@ -17,6 +17,21 @@ import Testing
 struct StableSurfaceFitnessTests {
     private static let products = ["GnosticProtocol", "GnosticClient"]
 
+    /// Public reference types that stay in a stable product (owner decision
+    /// D29 on #551, issue #717). Each entry needs a reason, and
+    /// `Documentation/Compatibility/0.5.0.md` repeats the list. A data type is
+    /// never an exception: it is an immutable `Sendable` value.
+    static let deliberateReferenceTypes: [String: String] = {
+        let reason = "A `@MainActor final` service handle, not data. It has no public settable property, and actor isolation makes its Sendable conformance checked."
+        return [
+            "GnosticConsumerSession": reason,
+            "GnosticDiagnosticsClient": reason,
+            "GnosticTimelineClient": reason,
+            "GnosticTurnClient": reason,
+            "GnosticWorkspaceClient": reason,
+        ]
+    }()
+
     private static var root: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -67,6 +82,61 @@ struct StableSurfaceFitnessTests {
         for product in Self.products {
             let leaked = try Self.baselineLines(of: product).filter { $0.contains("GnosticACPWire::") }
             #expect(leaked.isEmpty, "A preview ACP type is in \(product)'s public API (D27): \(leaked)")
+        }
+    }
+
+    @Test("no open class and no unchecked Sendable type is public, apart from listed exceptions (D29)")
+    func noMutableReferenceOrUncheckedSendableInBaselines() throws {
+        var declared: Set<String> = []
+        for product in Self.products {
+            for line in try Self.baselineLines(of: product) {
+                let words = line.split(separator: " ").map(String.init)
+                #expect(!words.contains("open"), "An open declaration is public in \(product) (D29): \(line)")
+                #expect(!line.contains("@unchecked"), "An unchecked Sendable type is public in \(product) (D29): \(line)")
+                guard let index = words.firstIndex(of: "class"), index > 0, index + 1 < words.count,
+                      ["public", "open"].contains(words[index - 1]) else { continue }
+                // `class var` and `class func` are members. A type has a name.
+                let name = words[index + 1]
+                guard !["var", "let", "func", "init", "subscript"].contains(name) else { continue }
+                declared.insert(name)
+                #expect(
+                    Self.deliberateReferenceTypes[name] != nil,
+                    "\(name) is a public reference type in \(product) without a listed exception (D29): \(line)"
+                )
+                #expect(words.contains("final"), "\(name) is a public class that is not final (D29): \(line)")
+            }
+        }
+        for name in Self.deliberateReferenceTypes.keys {
+            #expect(declared.contains(name), "\(name) is listed as a reference-type exception but is not public any more; remove it.")
+        }
+    }
+
+    @Test("no public property of a stable product is settable (D29)")
+    func noSettablePublicProperty() throws {
+        for product in Self.products {
+            for line in try Self.baselineLines(of: product) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                // A stored `var` prints without a body. A computed one prints `{`
+                // and a `set` accessor on its own line.
+                let storedVar = trimmed.range(of: #"\bpublic (?:static )?var [^{]*$"#, options: .regularExpression) != nil
+                let setter = trimmed == "set" || trimmed.hasSuffix(" set")
+                #expect(!storedVar && !setter, "A settable public property is in \(product) (D29): \(line)")
+            }
+        }
+    }
+
+    @Test("the Coaty object model and the Gnostic*Object transport classes are not public (D29)")
+    func transportObjectsStayOutOfTheBaseline() throws {
+        let names = [
+            "CoatyObject", "CoatyUUID", "CoreType", "GnosticRuntimeInstanceObject",
+            "GnosticTimelineObject", "GnosticWorkspaceObject", "GnosticWorkspaceToolObject",
+        ]
+        for product in Self.products {
+            let lines = try Self.baselineLines(of: product)
+            for name in names {
+                let named = lines.filter { $0.contains(name) }
+                #expect(named.isEmpty, "\(name) is a mutable transport type and must stay out of \(product) (D29): \(named)")
+            }
         }
     }
 

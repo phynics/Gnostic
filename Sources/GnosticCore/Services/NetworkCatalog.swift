@@ -113,11 +113,9 @@ public actor NetworkCatalog {
         let isProtocolCompatible = GnosticProtocol.isCompatible(protocolMajor)
         let knownProperties = knownProperties(from: snapshot)
         let dynamicProperties = dynamicProperties(from: snapshot)
-        let workspaceTool = workspaceTool(from: snapshot)
-        if snapshot.objectType == GnosticObjectType.workspaceTool,
-           let workspaceTool,
-           let payload = snapshot.payload,
-            let toolObject = try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8)) {
+        let toolObject = workspaceToolObject(from: snapshot)
+        let workspaceTool = toolObject?.tool
+        if let toolObject, let workspaceTool {
             workspaceTools[toolObject.workspaceID, default: [:]][providerID, default: [:]][workspaceTool.id] = workspaceTool
             workspaceToolOwners[objectID] = (toolObject.workspaceID, providerID, workspaceTool.id)
         }
@@ -137,7 +135,10 @@ public actor NetworkCatalog {
             dynamicProperties: dynamicProperties,
             workspace: workspace,
             effectiveStatus: effectiveStatus,
-            workspaceTool: workspaceTool
+            workspaceTool: workspaceTool,
+            runtimeInstance: runtimeInstanceObject(from: snapshot)?.snapshot,
+            timeline: timelineObject(from: snapshot)?.snapshot,
+            workspaceToolSnapshot: toolObject?.snapshot
         )
         entries[objectID, default: [:]][providerID] = entry
         emitChange(.advertised(entry))
@@ -504,13 +505,22 @@ public actor NetworkCatalog {
         ), id: id, providerID: providerID)
     }
 
-    private func workspaceTool(from snapshot: CoatyObjectSnapshot) -> GnosticWorkspaceTool? {
+    private func workspaceToolObject(from snapshot: CoatyObjectSnapshot) -> GnosticWorkspaceToolObject? {
         guard snapshot.objectType == GnosticObjectType.workspaceTool,
-              let payload = snapshot.payload,
-              let object = try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8)) else {
-            return nil
-        }
-        return object.tool
+              let payload = snapshot.payload else { return nil }
+        return try? JSONDecoder().decode(GnosticWorkspaceToolObject.self, from: Data(payload.utf8))
+    }
+
+    private func runtimeInstanceObject(from snapshot: CoatyObjectSnapshot) -> GnosticRuntimeInstanceObject? {
+        guard snapshot.objectType == GnosticObjectType.runtimeInstance,
+              let payload = snapshot.payload else { return nil }
+        return try? JSONDecoder().decode(GnosticRuntimeInstanceObject.self, from: Data(payload.utf8))
+    }
+
+    private func timelineObject(from snapshot: CoatyObjectSnapshot) -> GnosticTimelineObject? {
+        guard snapshot.objectType == GnosticObjectType.timeline,
+              let payload = snapshot.payload else { return nil }
+        return try? JSONDecoder().decode(GnosticTimelineObject.self, from: Data(payload.utf8))
     }
 
     private func mergedWorkspaceEntry(_ entry: NetworkCatalogEntry) -> NetworkCatalogEntry {
@@ -527,7 +537,10 @@ public actor NetworkCatalog {
             dynamicProperties: entry.dynamicProperties,
             workspace: mergedWorkspaceDescriptor(workspace, id: entry.objectID, providerID: entry.providerID),
             effectiveStatus: entry.effectiveStatus,
-            workspaceTool: entry.workspaceTool
+            workspaceTool: entry.workspaceTool,
+            runtimeInstance: entry.runtimeInstance,
+            timeline: entry.timeline,
+            workspaceToolSnapshot: entry.workspaceToolSnapshot
         )
     }
 
