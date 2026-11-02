@@ -100,21 +100,21 @@ struct AscendantTurnUpdateThoughtPlanTests {
         try await append("thought", text: "THOUGHT-2")
         try await append("plan", plan: Self.plan(steps: 2))
         try await append("assistant_text", text: "B")
-        for index in 0..<4 { try await append("thought", text: "late-\(index)") }
-        try await append("assistant_text", text: "C")
+        // Thoughts go first, so only more assistant text forces a snapshot.
+        for text in ["C", "D", "E", "F", "G"] { try await append("assistant_text", text: text) }
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "turn")
         #expect(replay.compacted)
         let snapshot = try #require(replay.updates.first)
         #expect(snapshot.kind == "assistant_text_snapshot")
-        #expect(snapshot.text == "AB")
+        #expect(snapshot.text?.hasPrefix("AB") == true)
         #expect(snapshot.plans.map(\.planID) == ["plan"])
         #expect(snapshot.plans.first?.entries.count == 2)
         #expect(!(snapshot.text ?? "").contains("THOUGHT"))
 
         // The folded view still gives assistant text without any thought text.
         let assistant = replay.updates.filter(\.carriesAssistantText)
-        #expect(assistant.compactMap(\.text).joined() == "ABC")
+        #expect(assistant.compactMap(\.text).joined() == "ABCDEFG")
         #expect(replay.updates.count <= 6)
     }
 
@@ -132,7 +132,46 @@ struct AscendantTurnUpdateThoughtPlanTests {
         #expect(replay.updates.count <= 8)
         #expect(replay.compacted)
         #expect(replay.updates.filter(\.carriesAssistantText).compactMap(\.text).joined() == "early late")
-        #expect(replay.updates.contains { $0.updateKind == .assistantTextSnapshot && $0.text == "early " })
+#expect(!replay.updates.contains { $0.updateKind == .assistantTextSnapshot })
+    }
+
+    @Test("thoughts go before any assistant text is folded, so a long answer survives replay")
+    func thoughtsDoNotEvictAssistantText() async throws {
+        let store = AscendantTurnUpdateStore()
+        let timelineID = UUID()
+        let answer = String(repeating: "a", count: 3_200)
+        _ = try await store.append(timelineID: timelineID, clientTurnID: "turn", kind: "assistant_text", text: answer)
+        for _ in 0..<1_021 {
+            _ = try await store.append(timelineID: timelineID, clientTurnID: "turn", kind: "thought", text: "t")
+        }
+
+        var text = ""
+        var after = 0
+        while true {
+            let page = try await store.replay(timelineID: timelineID, clientTurnID: "turn", afterSequence: after)
+            text += page.updates.filter(\.carriesAssistantText).compactMap(\.text).joined()
+            guard let next = page.nextSequence else { break }
+            after = next
+        }
+        #expect(text == answer)
+    }
+
+    @Test("two long plan IDs that share a prefix stay two plans")
+    func longPlanIDsStayDistinct() async throws {
+        let store = AscendantTurnUpdateStore()
+        let timelineID = UUID()
+        let entry = TurnPlanEntry(content: "step", priority: "high", status: "pending")
+        let prefix = String(repeating: "x", count: 128)
+        for id in [prefix + "A", prefix + "B"] {
+            _ = try await store.append(
+                timelineID: timelineID, clientTurnID: "turn", kind: "plan",
+                plan: TurnPlan(planID: id, entries: [entry])
+            )
+        }
+
+        let ids = try await store.replay(timelineID: timelineID, clientTurnID: "turn").updates.compactMap(\.plan?.planID)
+        #expect(Set(ids).count == 2)
+        #expect(ids.allSatisfy { $0.utf8.count <= 128 })
     }
 
     @Test("thoughts and plans survive a durable recovery")

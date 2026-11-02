@@ -829,7 +829,25 @@ public actor AscendantTurnUpdateStore {
         compactIfNeeded(&entry)
     }
 
+    /// Removes retained thoughts, oldest first, until retention is back in bounds.
+    /// A thought has no lasting value in a replay, so it goes before any assistant
+    /// text is folded into a snapshot, which keeps at most 800 bytes of it.
+    private func dropThoughts(from entry: inout Entry) {
+        var index = 0
+        while entry.updates.count >= maxEvents || entry.bytes > maxBytes / 2, index < entry.updates.count {
+            guard entry.updates[index].updateKind == .thought else {
+                index += 1
+                continue
+            }
+            let removed = entry.updates.remove(at: index)
+            entry.bytes -= Self.encodedSize(removed)
+            entry.compacted = true
+        }
+    }
+
     private func compactIfNeeded(_ entry: inout Entry) {
+        guard entry.updates.count > maxEvents || entry.bytes > maxBytes else { return }
+        dropThoughts(from: &entry)
         guard entry.updates.count > maxEvents || entry.bytes > maxBytes else { return }
         var snapshotText = ""
         var snapshotToolStates: [TurnToolState] = []
@@ -1076,7 +1094,7 @@ public actor AscendantTurnUpdateStore {
 
     private static func bounded(_ plan: TurnPlan) -> TurnPlan {
         TurnPlan(
-            planID: GnosticWirePayload.boundedIdentifier(plan.planID),
+            planID: boundedPlanID(plan.planID),
             entries: plan.entries.prefix(maxPlanEntries).map { entry in
                 TurnPlanEntry(
                     content: markedPrefix(entry.content, maximumBytes: maxPlanEntryBytes),
@@ -1086,6 +1104,16 @@ public actor AscendantTurnUpdateStore {
             },
             truncated: plan.truncated || plan.entries.count > maxPlanEntries
         )
+    }
+
+    /// A plan's ID within the identifier bound. A later update replaces a plan with
+    /// the same ID, so a long ID keeps a digest: two distinct plans must not merge.
+    private static func boundedPlanID(_ id: String) -> String {
+        let bounded = GnosticWirePayload.boundedIdentifier(id)
+        guard bounded != id else { return id }
+        let digest = SHA256.hexDigest(id)
+        let room = bounded.utf8.count - digest.utf8.count - 1
+        return GnosticWirePayload.prefix(id, maximumBytes: max(room, 0)) + "-" + digest
     }
 
     /// `plan` without its last entry and marked cut, or `nil` when it has none.
