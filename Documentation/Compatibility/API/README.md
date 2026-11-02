@@ -110,6 +110,7 @@ works in the pinned container from a standalone clone:
 git clone https://github.com/phynics/Gnostic.git /tmp/gnostic-patch-check
 cd /tmp/gnostic-patch-check
 git checkout <patch-branch>
+make image CONTAINER_RUNTIME=podman
 CONTAINER_RUNTIME=podman ./.devcontainer/run.sh bash -o pipefail -c \
   'git config --global --add safe.directory /workspace
    swift package --cache-path /workspace/.swiftpm-cache diagnose-api-breaking-changes 0.5.0-rc.1 \
