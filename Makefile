@@ -32,10 +32,10 @@ DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" BUILD_LOCK_TIMEOUT="$(BUILD_LOCK_TIMEOUT)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 CONTAINER_RUN_ENV = BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK_TIMEOUT="$(BUILD_LOCK_TIMEOUT)" CONTAINER_TIMEOUT="$(CONTAINER_TIMEOUT)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" EXTRA_CONTAINER_ENV="$(EXTRA_CONTAINER_ENV)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)"
 
-.PHONY: help image require-package require-build-configuration require-filter require-repeat-count require-test-timeout resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke macos-product-proof soak verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package require-build-configuration require-filter require-repeat-count require-test-timeout resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke api-check api-update acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke macos-product-proof soak verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke macos-product-proof soak verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke api-check api-update acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke macos-product-proof soak verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" IMAGE="$(IMAGE)" ./.devcontainer/build-image.sh "$(CONTAINER_RUNTIME)" "$(IMAGE)" .
@@ -117,6 +117,18 @@ acp-smoke: build
 	@mkdir -p .testing
 	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; pgrep mosquitto >/dev/null 2>&1 || mosquitto -c /etc/mosquitto/gnostic.conf -d; npm ci --prefix Tests/Fixtures/OfficialACPClient --cache .build/npm-cache; npm ci --legacy-peer-deps --prefix Tests/Fixtures/PiACPClient --cache .build/npm-cache; npm ci --prefix Tests/Fixtures/ACPAgent --cache .build/npm-cache; bin=$$(cat .build/gnostic-bin-path); test -x "$$bin" || { echo "Could not locate built gnostic executable at $$bin" >&2; exit 1; }; runtime_bin=$$(swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic-pk-runtime --show-bin-path)/gnostic-pk-runtime; test -x "$$runtime_bin" || { echo "Could not locate gnostic-pk-runtime at $$runtime_bin" >&2; exit 1; }; swift build $(SWIFT_LOCKED_ARGS) --build-tests; GNOSTIC_PK_RUNTIME_BINARY="$$runtime_bin" timeout --signal=TERM --kill-after=5s 120s node Tests/Fixtures/PositronicRuntime/lifecycle.mjs | tee .testing/runtime-acp-smoke.log; GNOSTIC_PK_RUNTIME_BINARY="$$runtime_bin" timeout --signal=TERM --kill-after=5s 120s node Tests/Fixtures/PositronicRuntime/persistence.mjs | tee .testing/runtime-persistence-smoke.log; GNOSTIC_PK_RUNTIME_BINARY="$$runtime_bin" timeout --signal=TERM --kill-after=5s 120s node Tests/Fixtures/PositronicRuntime/history.mjs | tee .testing/runtime-history-smoke.log; GNOSTIC_PK_RUNTIME_BINARY="$$runtime_bin" timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --skip-build --filter RuntimeACPSubprocessTests | tee .testing/runtime-acp-swift-tests.log; grep -Eq "Test run with [1-9][0-9]* tests" .testing/runtime-acp-swift-tests.log; GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --skip-build --filter GnosticACPAscendantTests | tee .testing/acp-backend-smoke.log; grep -Eq "Test run with [1-9][0-9]* tests" .testing/acp-backend-smoke.log; GNOSTIC_ACP_BINARY="$$bin" GNOSTIC_ACP_OFFICIAL_CLIENT=/workspace/Tests/Fixtures/OfficialACPClient/lifecycle.mjs GNOSTIC_PI_ACP_CLIENT_FIXTURE=/workspace/Tests/Fixtures/PiACPClient/lifecycle.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --skip-build --filter ACPSubprocessTests | tee .testing/acp-smoke.log; grep -Eq "Test run with [1-9][0-9]* tests" .testing/acp-smoke.log'
 
+# Public API baseline for the stable products GnosticProtocol and GnosticClient
+# (#676). The compiler emits the API text, so the check sees every public
+# declaration, not a source scan. Linux only: Foundation types print with a
+# different module name on macOS. After a deliberate API change, run
+# `make api-update` and commit the baseline; that makes the pull request
+# review-required (AGENTS.md).
+api-check: require-package require-build-configuration image
+	@SWIFT_FLAGS="$(SWIFT_CACHE_ARGS) --disable-automatic-resolution $(SWIFT_BUILD_SYSTEM_ARGS)" $(CONTAINER_RUN_ENV) ./.devcontainer/run.sh /workspace/Scripts/public-api.sh check
+
+api-update: require-package require-build-configuration image
+	@SWIFT_FLAGS="$(SWIFT_CACHE_ARGS) --disable-automatic-resolution $(SWIFT_BUILD_SYSTEM_ARGS)" $(CONTAINER_RUN_ENV) ./.devcontainer/run.sh /workspace/Scripts/public-api.sh update
+
 acp-backend-test: require-package require-build-configuration image
 	@mkdir -p .testing
 	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'set -e; npm ci --prefix Tests/Fixtures/ACPAgent --cache .build/npm-cache; swift build $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --product gnostic; swift build $(SWIFT_LOCKED_ARGS) --build-tests; GNOSTIC_ACP_AGENT_FIXTURE=/workspace/Tests/Fixtures/ACPAgent/agent.mjs timeout --signal=TERM --kill-after=5s 120s swift test $(SWIFT_LOCKED_ARGS) $(SWIFT_WARNING_ARGS) --skip-build --filter "$(ACP_TEST_FILTER)" | tee .testing/acp-backend-tests.log; grep -Eq "Test run with [1-9][0-9]* tests?" .testing/acp-backend-tests.log'
@@ -152,7 +164,7 @@ sbom: require-package image
 	@mkdir -p .testing/sbom
 	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash -o pipefail -c 'rm -rf .testing/sbom; mkdir -p .testing/sbom; swift package generate-sbom --cache-path /workspace/.swiftpm-cache --sbom-spec spdx --sbom-spec cyclonedx --sbom-output-dir .testing/sbom && ls -1 .testing/sbom'
 
-verify: docs-check lint test
+verify: docs-check lint api-check test
 
 shell: image
 	@$(CONTAINER_RUN_ENV) ./.devcontainer/run.sh bash
