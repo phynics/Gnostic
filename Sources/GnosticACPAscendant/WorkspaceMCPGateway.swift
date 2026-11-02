@@ -282,7 +282,9 @@ private final class WorkspaceMCPHTTPServer {
             meta: nil
         )
         let fd = socketFD
-        acceptTask = Task.detached { [weak self] in
+        acceptTask = Task.detached(
+            executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.workspace-mcp")
+        ) { [weak self] in
             while !Task.isCancelled {
                 let client = accept(fd, nil, nil)
                 guard client >= 0 else { break }

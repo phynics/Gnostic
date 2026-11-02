@@ -32,10 +32,10 @@ DEV_BROKER_PORT ?= 1884
 DEV_STACK_ENV = CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" GNOSTIC_IMAGE="$(IMAGE)" GNOSTIC_BUILD_ROOT="$(BUILD_DIR)" BUILD_LOCK_TIMEOUT="$(BUILD_LOCK_TIMEOUT)" DEV_BROKER_PORT="$(DEV_BROKER_PORT)"
 CONTAINER_RUN_ENV = BUILD_DIR="$(BUILD_DIR)" BUILD_LOCK_TIMEOUT="$(BUILD_LOCK_TIMEOUT)" CONTAINER_TIMEOUT="$(CONTAINER_TIMEOUT)" SPM_CACHE_DIR="$(SPM_CACHE_DIR)" EXTRA_CONTAINER_MOUNTS="$(EXTRA_CONTAINER_MOUNTS)" EXTRA_CONTAINER_ENV="$(EXTRA_CONTAINER_ENV)" IMAGE="$(IMAGE)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)"
 
-.PHONY: help image require-package require-build-configuration require-filter require-repeat-count require-test-timeout resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke soak verify shell clean dev-up dev-status dev-down sbom
+.PHONY: help image require-package require-build-configuration require-filter require-repeat-count require-test-timeout resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke macos-product-proof soak verify shell clean dev-up dev-status dev-down sbom
 
 help:
-	@echo "Targets: image require-package resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke soak verify shell clean dev-up dev-status dev-down sbom"
+	@echo "Targets: image require-package resolve worktree-bootstrap build test test-one test-one-repeat benchmark scenario-stage0 scenario-stage1 scenario-live scenario-live-preflight docs-check lint harness-test runner-smoke acp-backend-test acp-smoke acp-live-smoke container-smoke macos-rlm-smoke macos-product-proof soak verify shell clean dev-up dev-status dev-down sbom"
 
 image:
 	@CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" IMAGE="$(IMAGE)" ./.devcontainer/build-image.sh "$(CONTAINER_RUNTIME)" "$(IMAGE)" .
@@ -138,6 +138,11 @@ soak: require-package image
 
 macos-rlm-smoke: require-package
 	@bash Scripts/macos-rlm-smoke.sh
+
+# Runs on macOS only (CI job `macos-product`): release build, full Swift test
+# suite against a local broker, and the filesystem Workspace release proof.
+macos-product-proof: require-package
+	@bash Scripts/macos-product-proof.sh
 
 # Release-time SBOM for the SwiftPM dependency graph. Not part of verify: the
 # output embeds a random serial number and creation timestamp, and SwiftPM

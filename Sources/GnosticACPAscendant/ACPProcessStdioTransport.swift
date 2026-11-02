@@ -39,7 +39,9 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
         let didStart = withLock {
             guard !started, !closed else { return false }
             started = true
-            let readerTask = Task.detached { [weak self, input, messageContinuation, onSessionUpdate] in
+            let readerTask = Task.detached(
+                executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.stdout")
+            ) { [weak self, input, messageContinuation, onSessionUpdate] in
                 defer {
                     messageContinuation.finish()
                 }
@@ -64,7 +66,9 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                     self?.fail()
                 }
             }
-            let writerTask = Task.detached { [weak self, output, sendStream] in
+            let writerTask = Task.detached(
+                executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.stdin")
+            ) { [weak self, output, sendStream] in
                 do {
                     for await message in sendStream {
                         let data = try JSONEncoder().encode(message)

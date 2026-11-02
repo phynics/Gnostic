@@ -152,3 +152,54 @@ jobs:
           path: .testing/macos-rlm-smoke.log
           if-no-files-found: ignore
           retention-days: 7
+
+  # Builds the shipped product on macOS and runs the whole Swift test suite
+  # there (#694). `xcode-27` is the runner image with Xcode 27 selected as the
+  # default toolchain; the `macos-26` image still defaults to Xcode 26.6, whose
+  # Swift is too old for this package's tools version.
+  macos-product:
+    name: macOS product build and tests
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+
+      # A cold run spends about 20 of its 30 minutes compiling the release and
+      # debug builds.
+      - name: Restore SwiftPM and build caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .build
+            .swiftpm-cache
+          key: macos-xcode27-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            macos-xcode27-${{ hashFiles('Package.resolved') }}-
+            macos-xcode27-
+
+      - name: Install broker and Guile
+        run: brew install mosquitto guile
+
+      - name: Build release binaries, run the test suite and the release proof
+        run: make macos-product-proof
+
+      - name: Save SwiftPM and build caches
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .build
+            .swiftpm-cache
+          key: macos-xcode27-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+
+      - name: Upload macOS product logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-product-proof-logs
+          # Includes the per-Node diagnostics that the two-Node tests save
+          # under .testing/two-node-workspace.
+          path: .testing/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

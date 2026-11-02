@@ -905,7 +905,9 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             try? errorOutput.fileHandleForWriting.close()
             process = child
             stderrPipe = errorOutput
-            stderrDrainTask = Task.detached { [readHandle = errorOutput.fileHandleForReading, secrets = launchSpec.environment.values] in
+            stderrDrainTask = Task.detached(
+                executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.stderr")
+            ) { [readHandle = errorOutput.fileHandleForReading, secrets = launchSpec.environment.values] in
                 await Self.drainStderr(readHandle, redacting: Array(secrets))
             }
             let processTransport = ACPProcessStdioTransport(
