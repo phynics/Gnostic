@@ -189,37 +189,220 @@ struct StableSurfaceFitnessTests {
         }
     }
 
-    @Test("0.5.0.md lists every public GnosticProtocol enum with a raw value as frozen or open (D30)")
-    func enumPolicyCoversEveryRawValueEnum() throws {
-        // A nested enum is named `Parent.Child`, as the policy table writes it.
-        var parent = ""
-        var enums: [String] = []
-        for line in try Self.baselineLines(of: "GnosticProtocol") {
-            let indented = line.hasPrefix(" ")
-            let words = line.trimmingCharacters(in: .whitespaces).split(separator: " ").map(String.init)
-            guard let publicIndex = words.firstIndex(of: "public"), words.count > publicIndex + 2 else { continue }
-            let keyword = words[publicIndex + 1]
-            guard ["struct", "enum", "class"].contains(keyword) else { continue }
-            let name = words[publicIndex + 2].trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-            if !indented { parent = name }
-            if keyword == "enum", line.contains(": Swift::String") {
-                enums.append(indented ? "\(parent).\(name)" : name)
+    @Test("0.5.0.md classifies every public case-bearing enum, and a Frozen row lists the baseline's cases (D30, D34)")
+    func enumPolicyMatchesTheBaselines() throws {
+        let baselines = try Self.products.map { try Self.baselineLines(of: $0) }
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.isEmpty, "\(problems.joined(separator: "\n"))")
+    }
+
+    @Test("the enum policy scan reads names and cases from the baselines")
+    func enumPolicyScanFindsTheEnums() throws {
+        let enums = try Self.products.flatMap { try Self.publicEnums(in: Self.baselineLines(of: $0)) }
+        let names = Set(enums.map(\.name))
+        for name in [
+            "GnosticRuntimeInstanceHealth", "NetworkDynamicValue", "Project.Kind", "GnosticWirePayload.Error",
+            "GnosticTurnClientError", "GnosticJSONValue", "WorkspaceAttachmentStatus", "GnosticRawWireEventKind",
+        ] {
+            #expect(names.contains(name), "The scan did not find \(name): \(names.sorted())")
+        }
+        #expect(enums.contains { $0.name == "GnosticRuntimeInstanceHealth" && $0.cases.contains("healthy") })
+        #expect(enums.contains { $0.name == "Project.Kind" && $0.cases == ["local", "scratch"] })
+        #expect(enums.contains { $0.name == "GnosticWirePayload" && $0.cases.isEmpty })
+        #expect(enums.contains { $0.name == "GnosticWirePayload.Error" && $0.isError && $0.cases.count == 2 })
+    }
+
+    @Test("the enum policy check fails when a Frozen enum gains a case")
+    func enumPolicyCatchesAnAddedCase() throws {
+        let baselines = try Self.products.map { try Self.baselineLines(of: $0) }.map { lines in
+            lines.flatMap { line -> [String] in
+                line.hasPrefix("public enum GnosticRuntimeInstanceHealth") ? [line, "  case degraded"] : [line]
             }
         }
-        #expect(enums.count >= 8, "The scan found too few raw-value enums: \(enums)")
-        let declaration = try String(
-            contentsOf: Self.root.appendingPathComponent("Documentation/Compatibility/0.5.0.md"),
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("GnosticRuntimeInstanceHealth") && $0.contains("degraded") }, "\(problems)")
+    }
+
+    @Test("the enum policy check fails when a Frozen enum loses a case")
+    func enumPolicyCatchesARemovedCase() throws {
+        let baselines = try Self.products.map { try Self.baselineLines(of: $0) }.map { lines in
+            lines.filter { $0 != "  case providerEvicted(Swift::String)" }
+        }
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("NetworkCatalogChange") && $0.contains("providerEvicted") }, "\(problems)")
+    }
+
+    @Test("the enum policy check fails when a table row is missing")
+    func enumPolicyCatchesAMissingRow() throws {
+        let baselines = try Self.products.map { try Self.baselineLines(of: $0) }
+        let declaration = try Self.declaration().split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.hasPrefix("| `WorkspaceAttachmentStatus` |") }.joined(separator: "\n")
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: declaration)
+        #expect(problems.contains { $0.contains("WorkspaceAttachmentStatus") && $0.contains("not classified") }, "\(problems)")
+    }
+
+    @Test("the enum policy check fails for a new enum and for an error enum missing from the unfrozen list")
+    func enumPolicyCatchesAnUnclassifiedEnum() throws {
+        var baselines = try Self.products.map { try Self.baselineLines(of: $0) }
+        baselines[0] += ["public enum GnosticBrandNewMode : Swift::Sendable {", "  case one", "}"]
+        baselines[0] += ["public enum GnosticBrandNewError : Swift::Error, Swift::Sendable {", "  case broken", "}"]
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("GnosticBrandNewMode") && $0.contains("not classified") }, "\(problems)")
+        #expect(problems.contains { $0.contains("GnosticBrandNewError") && $0.contains("not classified") }, "\(problems)")
+    }
+
+    private static func declaration() throws -> String {
+        try String(
+            contentsOf: root.appendingPathComponent("Documentation/Compatibility/0.5.0.md"),
             encoding: .utf8
         )
-        let rows = declaration.split(separator: "\n").filter { $0.hasPrefix("| `") }
-        for name in enums {
-            let row = rows.first { $0.hasPrefix("| `\(name)` |") }
-            #expect(row != nil, "\(name) is missing from the enum policy table in 0.5.0.md (D30).")
-            #expect(
-                row.map { $0.contains("| Frozen |") || $0.contains("| Open |") } ?? false,
-                "\(name) must be Frozen or Open in the enum policy table."
-            )
+    }
+
+    /// A public enum read from a baseline. A nested enum is named `Parent.Child`,
+    /// as the policy table writes it. A namespace has no cases.
+    struct BaselineEnum {
+        var name: String
+        var isError: Bool
+        var indent: Int
+        var cases: [String] = []
+    }
+
+    /// Enums with an owner decision that is not a table row. `GnosticJSONValue`
+    /// follows the JSON data model and does not change; the enum policy section
+    /// says so, and `enumPolicyProblems` fails if that sentence goes away.
+    private static let namedExemptions: Set<String> = ["GnosticJSONValue"]
+
+    /// Reads every public enum, with its cases, from baseline lines. The compiler
+    /// writes one declaration per line and indents members by two spaces.
+    static func publicEnums(in lines: [String]) -> [BaselineEnum] {
+        var finished: [BaselineEnum] = []
+        var open: [BaselineEnum] = []
+        var topLevel = ""
+        for line in lines {
+            let indent = line.prefix { $0 == " " }.count
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            while let last = open.last, last.indent >= indent { finished.append(open.removeLast()) }
+            let words = trimmed.split(separator: " ").map(String.init)
+            if let last = open.last, indent == last.indent + 2, trimmed.hasPrefix("case ") {
+                open[open.count - 1].cases += caseNames(in: String(trimmed.dropFirst("case ".count)))
+                continue
+            }
+            if indent == 0, let keyword = words.firstIndex(where: { ["struct", "class", "actor", "enum"].contains($0) }),
+               words.count > keyword + 1 {
+                topLevel = words[keyword + 1].trimmingCharacters(in: CharacterSet(charactersIn: ":<"))
+            }
+            guard let keyword = words.firstIndex(of: "enum"), keyword > 0, words[keyword - 1] == "public",
+                  words.count > keyword + 1 else { continue }
+            let name = words[keyword + 1].trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            let qualified = indent == 0 ? name : "\(open.last?.name ?? topLevel).\(name)"
+            open.append(BaselineEnum(name: qualified, isError: trimmed.contains("Swift::Error"), indent: indent))
         }
+        while let last = open.popLast() { finished.append(last) }
+        return finished
+    }
+
+    /// The case names of one `case` line: `a`, `a(Type)`, `a(x: X, y: Y)`, or `a, b`.
+    /// Only a comma outside parentheses separates two cases.
+    private static func caseNames(in declaration: String) -> [String] {
+        var pieces: [String] = [""]
+        var depth = 0
+        for character in declaration {
+            if character == "(" { depth += 1 }
+            if character == ")" { depth -= 1 }
+            if character == ",", depth == 0 {
+                pieces.append("")
+            } else {
+                pieces[pieces.count - 1].append(character)
+            }
+        }
+        return pieces.compactMap { piece in
+            let name = piece.trimmingCharacters(in: .whitespaces).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+            return name.isEmpty ? nil : String(name)
+        }
+    }
+
+    /// The backtick-quoted words in a piece of Markdown.
+    private static func backticked(_ text: String) -> [String] {
+        text.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+    }
+
+    /// Checks the enum policy in `0.5.0.md` against the enums in the stable
+    /// baselines. Every problem names its enum.
+    ///
+    /// - A public enum with cases is a table row, an entry of the unfrozen error
+    ///   list, or a named exemption. An enum with no cases is a namespace.
+    /// - An enum that conforms to `Error` is on the unfrozen list (D34).
+    /// - A Frozen row lists exactly the baseline's cases (D30).
+    /// - A row or list entry names an enum that is in a baseline.
+    static func enumPolicyProblems(baselines: [[String]], declaration: String) -> [String] {
+        guard let start = declaration.range(of: "##### Enum policy"),
+              let end = declaration.range(of: "#### Immutable snapshots") else {
+            return ["0.5.0.md has no `##### Enum policy` section before `#### Immutable snapshots`."]
+        }
+        let section = String(declaration[start.upperBound ..< end.lowerBound])
+        let flat = section.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var problems: [String] = []
+
+        var rows: [String: (policy: String, cases: [String])] = [:]
+        for line in section.split(separator: "\n") where line.hasPrefix("| `") {
+            let cells = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard cells.count == 3, let name = backticked(cells[0]).first else {
+                problems.append("The enum policy table has a malformed row: \(line)")
+                continue
+            }
+            if rows[name] != nil { problems.append("\(name) has two rows in the enum policy table.") }
+            rows[name] = (cells[1], backticked(cells[2]))
+        }
+
+        var errorNames: [String] = []
+        if let list = flat.range(of: "error enums (") {
+            let tail = flat[list.upperBound...]
+            errorNames = backticked(String(tail.prefix { $0 != ")" }))
+        } else {
+            problems.append("The enum policy section has no `error enums (...)` list of unfrozen enums (D34).")
+        }
+        if !flat.contains("`GnosticJSONValue` follows the JSON data model") {
+            problems.append("GnosticJSONValue is exempt from the table, and the policy section no longer says why.")
+        }
+
+        let enums = baselines.flatMap { publicEnums(in: $0) }
+        let enumNames = Set(enums.filter { !$0.cases.isEmpty }.map(\.name))
+        for found in enums where !found.cases.isEmpty {
+            if namedExemptions.contains(found.name) || errorNames.contains(found.name) { continue }
+            if found.isError {
+                problems.append("\(found.name) is not classified: an error enum belongs on the unfrozen list in 0.5.0.md (D34).")
+                continue
+            }
+            guard let row = rows[found.name] else {
+                problems.append("\(found.name) is not classified: add a Frozen or Open row to the enum policy table in 0.5.0.md (D30).")
+                continue
+            }
+            guard row.policy == "Frozen" || row.policy == "Open" else {
+                problems.append("\(found.name) must be Frozen or Open in the enum policy table, not `\(row.policy)`.")
+                continue
+            }
+            guard row.policy == "Frozen" else { continue }
+            let missing = found.cases.filter { !row.cases.contains($0) }
+            let stale = row.cases.filter { !found.cases.contains($0) }
+            if !missing.isEmpty {
+                problems.append("\(found.name) is Frozen, and its baseline has case \(missing.joined(separator: ", ")) that the table row lacks.")
+            }
+            if !stale.isEmpty {
+                problems.append("\(found.name) is Frozen, and its table row lists \(stale.joined(separator: ", ")), which the baseline lacks.")
+            }
+            if Set(row.cases).count != row.cases.count {
+                problems.append("\(found.name) lists a case twice in its table row.")
+            }
+        }
+        for name in rows.keys where !enumNames.contains(name) {
+            problems.append("\(name) has a table row, and no public case-bearing enum of that name is in a baseline.")
+        }
+        for name in errorNames where !enumNames.contains(name) {
+            problems.append("\(name) is on the unfrozen error list, and no public enum of that name is in a baseline.")
+        }
+        return problems
     }
 
     /// Whether a baseline line declares a type of this name.
