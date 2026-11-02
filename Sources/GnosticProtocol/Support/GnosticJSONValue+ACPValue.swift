@@ -11,6 +11,7 @@ extension GnosticJSONValue {
         switch value {
         case let .string(text): self = .string(text)
         case let .int(number): self = .integer(Int64(number))
+        case let .uint(number): self = .unsignedInteger(number)
         case let .double(number): self = .number(number)
         case let .bool(flag): self = .boolean(flag)
         case let .object(fields): self = .dictionary(fields.mapValues(GnosticJSONValue.init(acp:)))

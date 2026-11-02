@@ -320,6 +320,26 @@ struct WorkspaceMCPGatewayConformanceTests {
         ])
     }
 
+    @Test("an unsigned integer above Int.max stays exact in arguments and in both result forms")
+    @MainActor
+    func unsignedIntegersStayExact() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.gateway.stop() }
+        let value: GnosticJSONValue = .dictionary(["id": .unsignedInteger(UInt64.max)])
+        fixture.service.outcome = .success(BackendWorkspaceResult(value: value))
+
+        let reply = try await fixture.call(arguments: .object(["id": .uint(UInt64.max)]))
+
+        #expect(fixture.service.invocations.first?.arguments == ["id": .unsignedInteger(UInt64.max)])
+        let fields = try resultFields(reply.message)
+        #expect(fields["structuredContent"] == .object(["id": .uint(UInt64.max)]))
+        let text = try #require(resultText(fields))
+        #expect(text.contains("18446744073709551615"))
+        let encoded = try JSONEncoder().encode(fields["structuredContent"])
+        #expect(String(decoding: encoded, as: UTF8.self).contains("18446744073709551615"))
+        #expect(try JSONDecoder().decode(ACPValue.self, from: encoded) == .object(["id": .uint(UInt64.max)]))
+    }
+
     // MARK: Results and protocol errors
 
     @Test("a structured success returns text and structured content without an error")

@@ -223,7 +223,7 @@ final class WorkspaceMCPGateway {
         switch value {
         case let .string(value): .string(value)
         case let .integer(value): Int(exactly: value).map(ACPValue.int) ?? .double(Double(value))
-        case let .unsignedInteger(value): Int(exactly: value).map(ACPValue.int) ?? .double(Double(value))
+        case let .unsignedInteger(value): Int(exactly: value).map(ACPValue.int) ?? .uint(value)
         case let .number(value): .double(value)
         case let .boolean(value): .bool(value)
         case let .array(values): .array(values.map(acpValue))
@@ -243,6 +243,7 @@ final class WorkspaceMCPGateway {
         switch value {
         case let .string(value): .string(value)
         case let .int(value): .integer(Int64(value))
+        case let .uint(value): .unsignedInteger(value)
         case let .double(value): .number(value)
         case let .bool(value): .boolean(value)
         case let .array(values): .array(values.map(manifestValue))

@@ -8,6 +8,8 @@ import Foundation
 public enum ACPValue: Codable, Sendable, Equatable, Hashable {
     case string(String)
     case int(Int)
+    /// A JSON integer above `Int.max`, kept exact.
+    case uint(UInt64)
     case double(Double)
     case bool(Bool)
     case object([String: ACPValue])
@@ -26,6 +28,10 @@ public enum ACPValue: Codable, Sendable, Equatable, Hashable {
         }
         if let intVal = try? container.decode(Int.self) {
             self = .int(intVal)
+            return
+        }
+        if let unsignedVal = try? container.decode(UInt64.self) {
+            self = .uint(unsignedVal)
             return
         }
         if let doubleVal = try? container.decode(Double.self) {
@@ -57,6 +63,8 @@ public enum ACPValue: Codable, Sendable, Equatable, Hashable {
             try container.encode(value)
         case let .int(value):
             try container.encode(value)
+        case let .uint(value):
+            try container.encode(value)
         case let .double(value):
             try container.encode(value)
         case let .bool(value):
@@ -83,6 +91,7 @@ public enum ACPValue: Codable, Sendable, Equatable, Hashable {
     public var doubleValue: Double? {
         switch self {
         case let .int(v): return Double(v)
+        case let .uint(v): return Double(v)
         case let .double(v): return v
         default: return nil
         }
