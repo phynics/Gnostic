@@ -14,6 +14,19 @@
 > (no Gnostic capabilities), and Q1, Q2, and Q14's opt-in. It amends §3, §4,
 > §5, §6 (a scratch Project with gateway Workspaces first), Q3, and the
 > invariants. Read "Agent" as "Runtime instance" where it names the operator.
+>
+> **Amended (2026-11-02):** §4's prompt content blocks and its size rule narrow
+> for 0.5.x (owner decision D33 on
+> [#551](https://github.com/phynics/Gnostic/issues/551), issue
+> [#732](https://github.com/phynics/Gnostic/issues/732)). A 0.5.x prompt is text
+> only. `gnostic acp` rejects a non-text content block (image, audio, resource,
+> resource link) with invalid params and joins several text blocks into one
+> prompt. The resource-link rule for oversized content does not apply: Gnostic
+> rejects a prompt over `GnosticWirePayload.maximumTurnMessageBytes` with
+> `GnosticWirePayload.Error.tooLarge`.
+> [#731](https://github.com/phynics/Gnostic/issues/731) tracks multimedia
+> prompt support. This also narrows
+> [#629](https://github.com/phynics/Gnostic/issues/629) for 0.5.x.
 
 **Accepted** (2026-10-15). The owner accepted the recommended answer to every
 open question (Q1–Q14), and then made two further decisions the same day:

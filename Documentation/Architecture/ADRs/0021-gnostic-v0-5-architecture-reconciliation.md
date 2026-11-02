@@ -60,7 +60,12 @@ override the contracts below.
   A Project change opens a new Session record on the same Timeline (§6).
 - **§4, ACP Turn payloads:** the Timeline envelope and ACP v2 payload boundary
   remain. Admission, busy rejection, retries, completion, and cancellation are
-  governed by §4 here.
+  governed by §4 here. Amended 2026-11-02 (owner decision D33 on #551, issue
+  #732): a 0.5.x prompt is text only. `gnostic acp` rejects a non-text content
+  block with invalid params and joins several text blocks into one prompt, so
+  the prompt content in the admission digest is text. The resource-link rule for
+  oversized content does not apply. [#731](https://github.com/phynics/Gnostic/issues/731)
+  tracks multimedia prompt support.
 - **§5, Axoloty:** discovery and routing remain. Gnostic alone owns Timeline
   authority, admission, journaling, Runtime supervision, and Workspace access
   decisions (§7).
