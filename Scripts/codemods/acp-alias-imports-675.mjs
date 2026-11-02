@@ -51,9 +51,15 @@ for (const file of [...swiftFiles("Sources"), ...swiftFiles("Tests")]) {
   missing += 1;
   if (check) continue;
   const lines = text.split("\n");
+  // Only top-level imports count. An import inside #if applies to one platform.
+  let conditionalDepth = 0;
   const importAt = lines
     .map((line, index) => ({ line, index }))
-    .filter(({ line }) => /^(@testable |@_exported )?import \w+/.test(line));
+    .filter(({ line }) => {
+      if (line.startsWith("#if")) conditionalDepth += 1;
+      else if (line.startsWith("#endif")) conditionalDepth -= 1;
+      return conditionalDepth === 0 && /^(@testable |@_exported )?import \w+/.test(line);
+    });
   const module = (line) => line.replace(/^(@testable |@_exported )?import /, "");
   let insertAt;
   if (importAt.length === 0) {

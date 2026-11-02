@@ -5,6 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 @testable import GnosticACPAscendant
+import GnosticACPWire
 import GnosticAscendantConformance
 @_spi(RuntimeHost) import GnosticCore
 @testable import GnosticCore
@@ -14,7 +15,6 @@ import Testing
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
-import GnosticACPWire
 #endif
 
 @Suite("ACP Ascendant backend", .serialized)

@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import GnosticCore
 import GnosticProtocol
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
-import GnosticACPWire
 #endif
 
 @MainActor

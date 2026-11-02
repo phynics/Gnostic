@@ -2,12 +2,12 @@
 
 import GnosticProtocol
 import Foundation
+import GnosticACPWire
 import GnosticCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
-import GnosticACPWire
 #endif
 
 /// An optional backend configuration surface for an external ACP agent.
