@@ -332,6 +332,18 @@ struct StableSurfaceFitnessTests {
         #expect(problems.contains { $0.contains("braces do not balance") }, "\(problems)")
     }
 
+    @Test("the enum policy check fails on a string interpolation, even when the braces cancel out")
+    func enumPolicyCatchesInterpolation() throws {
+        var baselines = try Self.products.map { try Self.baselineLines(of: $0) }
+        baselines[0] += [
+            #"@inlinable public func before() -> Swift::String { "\("{")" }"#,
+            "public enum Hidden {", "  case added", "}",
+            #"@inlinable public func after() -> Swift::String { "\("}")" }"#,
+        ]
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("cannot read a baseline") }, "\(problems)")
+    }
+
     private static func declaration() throws -> String {
         try String(
             contentsOf: root.appendingPathComponent("Documentation/Compatibility/0.5.0.md"),
@@ -369,11 +381,15 @@ struct StableSurfaceFitnessTests {
     }
 
     /// Finds the braces of baseline lines that are code. It skips strings, raw
-    /// strings, multi-line strings, and comments, including across lines.
+    /// strings, multi-line strings, and comments, including across lines. It does
+    /// not read string interpolation: it records that it saw one, and the scan then
+    /// fails, because quotes inside an interpolation could hide a scope.
     private struct BaselineBraceLexer {
         private var closer: [Character]?
         private var hashes = 0
         private var isMultiline = false
+
+        private(set) var sawInterpolation = false
 
         var isInsideLiteral: Bool { closer != nil }
 
@@ -388,6 +404,7 @@ struct StableSurfaceFitnessTests {
                 if let closer {
                     let escape = [Character("\\")] + Array(repeating: Character("#"), count: hashes)
                     if closer != ["*", "/"], starts(escape, at: index) {
+                        if starts(["("], at: index + escape.count) { sawInterpolation = true }
                         index += escape.count + 1
                     } else if starts(closer, at: index) {
                         index += closer.count
@@ -430,10 +447,10 @@ struct StableSurfaceFitnessTests {
         scanEnums(in: lines).enums
     }
 
-    /// The scan behind `publicEnums`. `isBalanced` is false when the braces do not
-    /// close exactly, which means the scan lost track of scope and its result can
-    /// hide an enum.
-    private static func scanEnums(in lines: [String]) -> (enums: [BaselineEnum], isBalanced: Bool) {
+    /// The scan behind `publicEnums`. `isReliable` is false when the braces do not
+    /// close exactly or a string has an interpolation, because then the scan can
+    /// lose track of scope and hide an enum.
+    private static func scanEnums(in lines: [String]) -> (enums: [BaselineEnum], isReliable: Bool) {
         var found: [BaselineEnum] = []
         var scopes: [BaselineScope] = []
         var pending: BaselineDeclaration?
@@ -459,7 +476,7 @@ struct StableSurfaceFitnessTests {
                 }
             }
         }
-        return (found, isBalanced && scopes.isEmpty && !lexer.isInsideLiteral)
+        return (found, isBalanced && scopes.isEmpty && !lexer.isInsideLiteral && !lexer.sawInterpolation)
     }
 
     /// The scope a `{` opens. A type inside a function body stays unnamed, because
@@ -602,8 +619,10 @@ struct StableSurfaceFitnessTests {
         }
 
         let scans = baselines.map { scanEnums(in: $0) }
-        if scans.contains(where: { !$0.isBalanced }) {
-            problems.append("A baseline's braces do not balance in the enum scan, so an enum could be hidden.")
+        if scans.contains(where: { !$0.isReliable }) {
+            problems.append(
+                "The enum scan cannot read a baseline, so an enum could be hidden: its braces do not balance, or a string has an interpolation."
+            )
         }
         let enums = scans.flatMap(\.enums)
         let enumNames = Set(enums.filter { !$0.cases.isEmpty }.map(\.name))
