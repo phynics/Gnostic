@@ -167,8 +167,9 @@ sample_tree() {
 # Runs a command, sampling and then terminating it and its descendants after $1
 # seconds, and returns 124 if that happened. macOS has no timeout(1). The watchdog
 # logs to $timeout_marker, not to the pipe. It records the descendants before it
-# signals them, because a descendant that outlives its parent can no longer be
-# found through the parent, and it finishes escalating before this returns.
+# samples, and again before it signals them, because a descendant that outlives
+# its parent can no longer be found through the parent. It finishes escalating
+# before this returns.
 run_bounded() {
     local seconds=$1 status=0 pid watchdog child
     shift
@@ -178,8 +179,9 @@ run_bounded() {
         exec >/dev/null 2>&1
         sleep "$seconds"
         echo "Timed out after ${seconds}s: $*" >"$timeout_marker"
-        sample_tree "$pid"
         targets="$(descendants "$pid") $pid"
+        sample_tree "$pid"
+        targets="$targets $(descendants "$pid")"
         # shellcheck disable=SC2086
         kill -TERM $targets 2>/dev/null || true
         sleep 10
