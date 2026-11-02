@@ -519,6 +519,9 @@ final class ACPDispatcher: Sendable {
                 after = last.sequence
                 guard page.nextSequence != nil else { break }
             }
+            // A partial replay can't show whether a pending request was resolved
+            // on the page that failed, so a running Turn treats it as a gap.
+            if replayFailed && !turnEnded { return false }
             let skipped = ACPReplayCatchUp.permissionsToSkip(in: missed, turnEnded: turnEnded)
             for update in missed where update.sequence > lastSequence {
                 let adjusted = ACPReplayCatchUp.removingDeliveredText(
