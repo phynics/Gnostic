@@ -12,6 +12,11 @@ public enum TurnUpdateKind: String, Codable, Sendable, Equatable, CaseIterable {
     case assistantText = "assistant_text"
     /// Assistant output accumulated by retention compaction.
     case assistantTextSnapshot = "assistant_text_snapshot"
+    /// Incremental Runtime thought (reasoning) text. It is never assistant text.
+    case thought
+    /// The Runtime's current plan. Each update holds the whole plan and replaces
+    /// the plan with the same ``TurnPlan/planID``.
+    case plan
     /// The first update announcing a tool call.
     case toolCall = "tool_call"
     /// A subsequent state change for an announced tool call.
@@ -52,6 +57,53 @@ public enum TurnPermissionStatus: String, Codable, Sendable, Equatable, CaseIter
     case connectionLost = "connection_lost"
 }
 
+
+/// One step of a ``TurnPlan``.
+public struct TurnPlanEntry: Codable, Sendable, Equatable {
+    /// The step's description, at most 120 bytes. A longer one ends in ``TurnUpdate/truncationMarker``.
+    public let content: String
+    /// The Runtime's priority, usually `high`, `medium` or `low`.
+    public let priority: String
+    /// The Runtime's status, usually `pending`, `in_progress` or `completed`.
+    public let status: String
+
+    public init(content: String, priority: String, status: String) {
+        self.content = content
+        self.priority = priority
+        self.status = status
+    }
+}
+
+/// A Runtime plan, bounded to fit one ``TurnUpdate``.
+///
+/// A plan update replaces the plan with the same ``planID``: it holds every step,
+/// not a change to the previous plan. A consumer replaces and never appends. A plan
+/// over the bound keeps its leading entries and sets ``truncated``. The journal
+/// keeps the whole plan.
+public struct TurnPlan: Codable, Sendable, Equatable {
+    /// The Runtime's plan identifier.
+    public let planID: String
+    /// The plan's steps, in order. At most 32, and fewer when they do not fit one update.
+    public let entries: [TurnPlanEntry]
+    /// Whether the plan lost entries to the bound. The rendered ACP plan then ends in a
+    /// marker entry.
+    public let truncated: Bool
+
+    public init(planID: String, entries: [TurnPlanEntry], truncated: Bool = false) {
+        self.planID = planID
+        self.entries = entries
+        self.truncated = truncated
+    }
+
+    private enum CodingKeys: String, CodingKey { case planID, entries, truncated }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planID = try container.decode(String.self, forKey: .planID)
+        entries = try container.decode([TurnPlanEntry].self, forKey: .entries)
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+    }
+}
 
 public struct TurnToolState: Codable, Sendable, Equatable {
     public let toolCallID: String
@@ -110,6 +162,10 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
     public let toolStates: [TurnToolState]
     public let permissionState: TurnPermissionState?
     public let permissionStates: [TurnPermissionState]
+    /// The plan of a ``TurnUpdateKind/plan`` update.
+    public let plan: TurnPlan?
+    /// The latest plan for each plan ID that retention folded into a snapshot.
+    public let plans: [TurnPlan]
     public let terminal: Bool
     public let reasonCode: String?
     public let statusCode: Int?
@@ -123,6 +179,8 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
         toolStates: [TurnToolState] = [],
         permissionState: TurnPermissionState? = nil,
         permissionStates: [TurnPermissionState] = [],
+        plan: TurnPlan? = nil,
+        plans: [TurnPlan] = [],
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -137,6 +195,8 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
         self.toolStates = toolStates
         self.permissionState = permissionState
         self.permissionStates = permissionStates
+        self.plan = plan
+        self.plans = plans
         self.terminal = terminal
         self.reasonCode = reasonCode.map(GnosticWirePayload.boundedIdentifier)
         self.statusCode = statusCode.map(GnosticProtocol.boundedStatusCode)
@@ -152,6 +212,8 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
         toolStates: [TurnToolState] = [],
         permissionState: TurnPermissionState? = nil,
         permissionStates: [TurnPermissionState] = [],
+        plan: TurnPlan? = nil,
+        plans: [TurnPlan] = [],
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -166,6 +228,8 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
             toolStates: toolStates,
             permissionState: permissionState,
             permissionStates: permissionStates,
+            plan: plan,
+            plans: plans,
             terminal: terminal,
             reasonCode: reasonCode,
             statusCode: statusCode,
@@ -204,7 +268,26 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case protocolMajor, sequence, kind, text, toolState, toolStates, permissionState, permissionStates, terminal, reasonCode, statusCode, retryable
+        case protocolMajor, sequence, kind, text, toolState, toolStates, permissionState, permissionStates, plan, plans, terminal, reasonCode, statusCode, retryable
+    }
+
+    /// Omits an empty ``plans`` so an update without a plan encodes as it did before plans existed.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(sequence, forKey: .sequence)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(text, forKey: .text)
+        try container.encodeIfPresent(toolState, forKey: .toolState)
+        try container.encode(toolStates, forKey: .toolStates)
+        try container.encodeIfPresent(permissionState, forKey: .permissionState)
+        try container.encode(permissionStates, forKey: .permissionStates)
+        try container.encodeIfPresent(plan, forKey: .plan)
+        if !plans.isEmpty { try container.encode(plans, forKey: .plans) }
+        try container.encode(terminal, forKey: .terminal)
+        try container.encodeIfPresent(reasonCode, forKey: .reasonCode)
+        try container.encodeIfPresent(statusCode, forKey: .statusCode)
+        try container.encodeIfPresent(retryable, forKey: .retryable)
     }
 
     public init(from decoder: Decoder) throws {
@@ -217,6 +300,8 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
         toolStates = try container.decodeIfPresent([TurnToolState].self, forKey: .toolStates) ?? []
         permissionState = try container.decodeIfPresent(TurnPermissionState.self, forKey: .permissionState)
         permissionStates = try container.decodeIfPresent([TurnPermissionState].self, forKey: .permissionStates) ?? []
+        plan = try container.decodeIfPresent(TurnPlan.self, forKey: .plan)
+        plans = try container.decodeIfPresent([TurnPlan].self, forKey: .plans) ?? []
         terminal = try container.decode(Bool.self, forKey: .terminal)
         reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode).map(GnosticWirePayload.boundedIdentifier)
         statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode).map(GnosticProtocol.boundedStatusCode)

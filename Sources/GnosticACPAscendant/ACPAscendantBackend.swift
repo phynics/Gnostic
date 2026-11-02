@@ -1972,6 +1972,21 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             guard !text.isEmpty else { return nil }
             assistantText = text
             return .init(kind: .assistantText, text: text)
+        case .agentThoughtChunk(let chunk):
+            // A thought is never assistant text, so it stays out of `assistantText`,
+            // which becomes the Turn's result. A whole-message `agent_thought` upsert
+            // would replace earlier thought text; the Turn update has no replace, so
+            // it stays in the journal only.
+            guard case let .text(text) = chunk.content, !text.text.isEmpty else { return nil }
+            return .init(kind: .thought, text: text.text)
+        case .planUpdate(let update):
+            // Only the `items` plan has entries a consumer can show. Another plan type
+            // stays in the journal only.
+            guard case let .items(planId, entries, _) = update.plan else { return nil }
+            return .init(kind: .plan, plan: TurnPlan(
+                planID: planId,
+                entries: entries.map { TurnPlanEntry(content: $0.content, priority: $0.priority, status: $0.status) }
+            ))
         case .toolCallUpdate(let toolCall):
             let isInitial = seenToolCalls.insert(toolCall.toolCallId).inserted
             return .init(

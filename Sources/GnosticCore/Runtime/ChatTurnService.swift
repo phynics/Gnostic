@@ -142,6 +142,7 @@ private struct BackendTurnUpdateSink: AscendantBackendUpdateSink {
             text: update.text,
             toolState: update.toolState,
             permissionState: update.permissionState,
+            plan: update.plan,
             terminal: update.terminal,
             reasonCode: update.reasonCode,
             statusCode: update.statusCode,

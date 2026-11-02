@@ -227,4 +227,39 @@ struct TurnInterceptionTests {
         #expect(transcript.failed)
         #expect(transcript.terminalUpdate?.updateKind == .error)
     }
+
+    @Test("transcript keeps thoughts and plans out of the assistant text")
+    func transcriptSeparatesThoughtsAndPlans() {
+        func plan(_ id: String, _ steps: [String]) -> TurnPlan {
+            TurnPlan(planID: id, entries: steps.map { TurnPlanEntry(content: $0, priority: "medium", status: "pending") })
+        }
+        let transcript = TurnTranscript(updates: [
+            TurnUpdate(sequence: 1, kind: .thought, text: "think "),
+            TurnUpdate(sequence: 2, kind: .plan, plan: plan("a", ["one"])),
+            TurnUpdate(sequence: 3, kind: .assistantText, text: "Hello"),
+            TurnUpdate(sequence: 4, kind: .thought, text: "more"),
+            TurnUpdate(sequence: 5, kind: .plan, plan: plan("a", ["one", "two"])),
+            TurnUpdate(sequence: 6, kind: .plan, plan: plan("b", ["other"])),
+            TurnUpdate(sequence: 7, kind: .completion, text: "Hello", terminal: true),
+        ])
+
+        #expect(transcript.assistantText == "Hello")
+        #expect(transcript.thoughtText == "think more")
+        // A plan replaces the plan with its ID; it never appends.
+        #expect(transcript.plans.map(\.planID) == ["a", "b"])
+        #expect(transcript.plans.first?.entries.map(\.content) == ["one", "two"])
+    }
+
+    @Test("a snapshot's plans replace the plans folded before it")
+    func transcriptSnapshotPlansReplace() {
+        let old = TurnPlan(planID: "a", entries: [TurnPlanEntry(content: "old", priority: "low", status: "pending")])
+        let latest = TurnPlan(planID: "a", entries: [TurnPlanEntry(content: "new", priority: "low", status: "pending")])
+        let transcript = TurnTranscript(updates: [
+            TurnUpdate(sequence: 1, kind: .plan, plan: old),
+            TurnUpdate(sequence: 9, kind: .assistantTextSnapshot, text: "text", plans: [latest]),
+        ])
+        #expect(transcript.plans == [latest])
+        #expect(transcript.assistantText == "text")
+        #expect(transcript.thoughtText.isEmpty)
+    }
 }

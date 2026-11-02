@@ -28,6 +28,8 @@ enum ACPReplayCatchUp {
     ///
     /// A prompt never delivers past a gap, so what the client holds is always a
     /// prefix of the snapshot and the byte offset falls on a scalar boundary.
+    /// `deliveredTextBytes` counts assistant text only. A snapshot holds no thought
+    /// text, so thought bytes the client received must not shift the offset.
     static func removingDeliveredText(
         from update: TurnUpdate,
         deliveredTextBytes: Int
@@ -43,14 +45,15 @@ enum ACPReplayCatchUp {
         } else {
             isCut ? marker : nil
         }
-        let hasStates = !update.toolStates.isEmpty || !update.permissionStates.isEmpty
+        let hasStates = !update.toolStates.isEmpty || !update.permissionStates.isEmpty || !update.plans.isEmpty
         guard remaining != nil || hasStates else { return nil }
         return TurnUpdate(
             sequence: update.sequence,
             kind: update.kind,
             text: remaining,
             toolStates: update.toolStates,
-            permissionStates: update.permissionStates
+            permissionStates: update.permissionStates,
+            plans: update.plans
         )
     }
 }
