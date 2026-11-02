@@ -26,12 +26,11 @@ enum ACPReplayCatchUp {
     /// snapshot is cut before the point the client reached, only the marker is
     /// new: it says text after that point was lost.
     ///
-    /// After a gap, what the client holds is not a prefix of the snapshot, so a
-    /// byte offset could land inside a scalar. It then receives only the marker.
+    /// A prompt never delivers past a gap, so what the client holds is always a
+    /// prefix of the snapshot and the byte offset falls on a scalar boundary.
     static func removingDeliveredText(
         from update: AscendantTurnUpdate,
-        deliveredTextBytes: Int,
-        deliveredTextIsContiguous: Bool = true
+        deliveredTextBytes: Int
     ) -> AscendantTurnUpdate? {
         guard deliveredTextBytes > 0,
               update.updateKind == .assistantTextSnapshot,
@@ -39,9 +38,7 @@ enum ACPReplayCatchUp {
         let marker = AscendantTurnUpdate.truncationMarker
         let isCut = text.hasSuffix(marker)
         let bodyBytes = text.utf8.count - (isCut ? marker.utf8.count : 0)
-        let remaining: String? = if !deliveredTextIsContiguous {
-            marker
-        } else if deliveredTextBytes < bodyBytes {
+        let remaining: String? = if deliveredTextBytes < bodyBytes {
             String(decoding: text.utf8.dropFirst(deliveredTextBytes), as: UTF8.self)
         } else {
             isCut ? marker : nil

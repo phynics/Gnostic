@@ -487,19 +487,9 @@ final class ACPDispatcher: Sendable {
         // Turn can complete with updates still in transit. Replay is the
         // authoritative record, so it fills what the live path missed.
         //
-        // Returns false when replay failed, because the owner may be gone.
-        // What is missing then can't be recovered, so the client is told.
-        var deliveredTextIsContiguous = true
-
-        func markPossibleLoss() async throws {
-            deliveredTextIsContiguous = false
-            try await deliver(AscendantTurnUpdate(
-                sequence: lastSequence,
-                kind: .assistantText,
-                text: AscendantTurnUpdate.truncationMarker
-            ))
-        }
-
+        // Returns false when replay failed. A running Turn then keeps its
+        // position and tries again later, because moving past a gap would lose
+        // that text for good. Everything dropped here stays in replay.
         func catchUp(turnEnded: Bool) async throws -> Bool {
             var missed: [AscendantTurnUpdate] = []
             var after = lastSequence
@@ -520,14 +510,13 @@ final class ACPDispatcher: Sendable {
                 guard page.nextSequence != nil else { break }
             }
             // A partial replay can't show whether a pending request was resolved
-            // on the page that failed, so a running Turn treats it as a gap.
+            // on the page that failed, so a running Turn delivers none of it.
             if replayFailed && !turnEnded { return false }
             let skipped = ACPReplayCatchUp.permissionsToSkip(in: missed, turnEnded: turnEnded)
             for update in missed where update.sequence > lastSequence {
                 let adjusted = ACPReplayCatchUp.removingDeliveredText(
                     from: update,
-                    deliveredTextBytes: deliveredTextBytes,
-                    deliveredTextIsContiguous: deliveredTextIsContiguous
+                    deliveredTextBytes: deliveredTextBytes
                 )
                 if let adjusted {
                     try await deliver(adjusted, skippingPermissions: skipped)
@@ -542,16 +531,27 @@ final class ACPDispatcher: Sendable {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(40))
 
-            for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
-                if update.sequence > lastSequence + 1 { _ = try await catchUp(turnEnded: false) }
-                guard update.sequence > lastSequence else { continue }
-                if update.sequence > lastSequence + 1 { try await markPossibleLoss() }
-                try await deliver(update)
+            drained: for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
+                if update.sequence > lastSequence + 1, try await !catchUp(turnEnded: false) { break drained }
+                if update.sequence > lastSequence { try await deliver(update) }
             }
 
             switch await completion.value() {
             case .completed(let result):
-                if try await !catchUp(turnEnded: true) { try await markPossibleLoss() }
+                // The owner may have stopped answering for only a moment, so a
+                // failure is retried before the client is told text may be missing.
+                var replayed = try await catchUp(turnEnded: true)
+                for _ in 0..<2 where !replayed {
+                    try await Task.sleep(for: .milliseconds(500))
+                    replayed = try await catchUp(turnEnded: true)
+                }
+                if !replayed {
+                    try await deliver(AscendantTurnUpdate(
+                        sequence: lastSequence,
+                        kind: .assistantText,
+                        text: AscendantTurnUpdate.truncationMarker
+                    ))
+                }
                 return (result, lastSequence, endedUnspecified)
             case .failed(let failure):
                 _ = try await catchUp(turnEnded: true)
