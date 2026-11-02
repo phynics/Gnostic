@@ -49,7 +49,14 @@ struct JSONNestingTests {
         let text = String(repeating: "[", count: 100_000)
         #expect(deepest(text, stoppingAbove: 128) == 129)
         #expect(deepest(text, stoppingAbove: 128) > JSONNesting.maximumDecodedDepth)
-        #expect(!JSONNesting.exceedsMaximumDecodedDepth(Array(String(repeating: "[", count: 128).utf8)))
-        #expect(JSONNesting.exceedsMaximumDecodedDepth(Array(String(repeating: "[", count: 129).utf8)))
+        #expect(JSONNesting.isSafeToDecode(Array(String(repeating: "[", count: 128).utf8)))
+        #expect(!JSONNesting.isSafeToDecode(Array(String(repeating: "[", count: 129).utf8)))
+    }
+
+    @Test("a NUL byte makes a text unsafe, because a decoder can read it as UTF-16 or UTF-32")
+    func nulBytesAreUnsafe() {
+        #expect(!JSONNesting.isSafeToDecode(Array("{}".utf8) + [0x00]))
+        #expect(!JSONNesting.isSafeToDecode("{}".utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }))
+        #expect(JSONNesting.isSafeToDecode(Array(#"{"a":"é"}"#.utf8)))
     }
 }

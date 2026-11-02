@@ -86,7 +86,10 @@ update, and the Turn does not fail. The journal's `sessionID` field repeats the
 frame's `sessionId`. A reader gets the typed form by decoding `params.update` of
 the stored text. It must not treat the typed form as the record of the update.
 
-These lines are not journaled, and none of them fails the transport or a Turn:
+These lines are not journaled. A line itself fails neither the transport nor a
+Turn. Skipping one can still affect a Turn: a skipped prompt response ends the
+Turn as `insertionUnknown` when its timeout expires, and a skipped idle
+`state_update` can end the Turn as a failure.
 
 - A `session/update` notification with no usable `sessionId` cannot belong to a
   Timeline. The transport logs a warning, which names no Runtime content.
@@ -95,7 +98,9 @@ These lines are not journaled, and none of them fails the transport or a Turn:
   line. It logs a warning, which names no Runtime content, and skips the line.
   A response that is this deep is skipped too, so its request waits for its own
   timeout. The bound keeps a Runtime from overflowing a thread's stack with one
-  frame.
+  frame. A line with a NUL byte is skipped the same way, because a decoder can
+  read it as UTF-16 or UTF-32, and the measurement would not hold. The Workspace
+  gateway applies both checks to a request body and answers HTTP 400.
 - A `session/update` notification that has no typed update and names a Session
   that Gnostic does not know, which includes one that arrives while a Session is
   being created for another Timeline. The backend logs a warning, which names no

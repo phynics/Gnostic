@@ -327,8 +327,8 @@ private final class WorkspaceMCPHTTPServer {
             return HTTPReply(status: 406, body: Data())
         }
         guard payload.headers["authorization"] == "Bearer \(token)" else { return HTTPReply(status: 401, body: Data()) }
-        // The body is a Runtime's text, so bound its nesting before the recursive decode.
-        guard !JSONNesting.exceedsMaximumDecodedDepth(payload.body),
+        // The body is a Runtime's text, so check it before the recursive decode.
+        guard JSONNesting.isSafeToDecode(payload.body),
               let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: payload.body) else {
             return HTTPReply(status: 400, body: Data())
         }

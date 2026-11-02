@@ -57,10 +57,10 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                             self?.fail()
                             return
                         }
-                        // The text is a Runtime's. Bound its nesting before anything recursive decodes it.
+                        // The text is a Runtime's. Check it before anything recursive decodes it.
                         let bytes = Data(line.utf8)
-                        guard !JSONNesting.exceedsMaximumDecodedDepth(bytes) else {
-                            onDiagnostic("Ignored a message nested deeper than \(JSONNesting.maximumDecodedDepth) levels.")
+                        guard JSONNesting.isSafeToDecode(bytes) else {
+                            onDiagnostic("Ignored a message that has a NUL byte or nests deeper than \(JSONNesting.maximumDecodedDepth) levels.")
                             continue
                         }
                         // A byte order mark stays in the frame text, but the decoder does not need it.

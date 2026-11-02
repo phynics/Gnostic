@@ -177,6 +177,41 @@ struct ACPProcessStdioTransportTests {
         #expect(failures.count == 1, "Only the Runtime's exit fails the transport.")
     }
 
+    @Test("a UTF-16 line cannot hide its nesting from the bound")
+    @MainActor
+    func utf16LinesAreNotDecoded() async throws {
+        let pipes = RuntimePipes()
+        let recorder = Recorder()
+        let failures = Counter()
+        let transport = ACPProcessStdioTransport(
+            input: pipes.stdout.fileHandleForReading,
+            output: pipes.stdin.fileHandleForWriting,
+            onSessionUpdate: { recorder.record($0, $1) },
+            onFailure: { failures.increment() },
+            onDiagnostic: { recorder.diagnose($0) }
+        )
+        try await transport.start()
+        var iterator = transport.messages.makeAsyncIterator()
+
+        // The escaped quote puts a byte scan of this text out of step with a decoder
+        // that reads it as UTF-16, so the scan alone would measure a shallow text.
+        let frame = #"{"a":"\"","jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"vendor_x","deep":"#
+            + String(repeating: "[", count: 200) + String(repeating: "]", count: 200) + "}}}"
+        let utf16 = Data(frame.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+        try pipes.stdout.fileHandleForWriting.write(contentsOf: utf16 + Data([0x0A]))
+        try pipes.runtimeWrites(#"{"jsonrpc":"2.0","method":"last"}"# + "\n")
+
+        #expect(Self.method(of: await iterator.next()) == "last")
+        try pipes.stdout.fileHandleForWriting.close()
+        #expect(await iterator.next() == nil)
+        await transport.close()
+
+        let seen = recorder.snapshot
+        #expect(seen.updates.isEmpty)
+        #expect(seen.diagnostics.count == 1)
+        #expect(failures.count == 1, "Only the Runtime's exit fails the transport.")
+    }
+
     @Test("a frame keeps a leading byte order mark and a trailing carriage return, and invalid UTF-8 is not repaired")
     @MainActor
     func frameTextKeepsItsBytes() async throws {

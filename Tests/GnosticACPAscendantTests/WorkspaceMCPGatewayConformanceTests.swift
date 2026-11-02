@@ -487,6 +487,32 @@ struct WorkspaceMCPGatewayConformanceTests {
         #expect(fixture.service.invocations.isEmpty)
     }
 
+    @Test("a body past the nesting bound, or in UTF-16, is rejected at HTTP and dispatches nothing")
+    @MainActor
+    func unsafeBodies() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.gateway.stop() }
+
+        // The envelope and `params` take two levels.
+        func body(depth: Int, prefix: String = "") -> String {
+            #"{\#(prefix)"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"deep":"#
+                + String(repeating: "[", count: depth) + String(repeating: "]", count: depth) + "}}"
+        }
+        let bound = JSONNesting.maximumDecodedDepth
+        let atBound = try await fixture.post(Data(body(depth: bound - 2).utf8))
+        #expect(atBound.status != 400)
+
+        for unsafe in [
+            Data(body(depth: bound - 1).utf8),
+            Data(body(depth: 100_000).utf8),
+            Data(body(depth: 200, prefix: #""a":"\"","#).utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }),
+        ] {
+            let reply = try await fixture.post(unsafe)
+            #expect(reply.status == 400)
+        }
+        #expect(fixture.service.invocations.isEmpty)
+    }
+
     @Test("an unknown MCP method is method not found")
     @MainActor
     func unknownMethod() async throws {

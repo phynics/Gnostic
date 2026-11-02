@@ -58,8 +58,13 @@ enum JSONNesting {
         return deepest
     }
 
-    /// Whether `bytes` nests deeper than `maximumDecodedDepth`.
-    static func exceedsMaximumDecodedDepth(_ bytes: some Sequence<UInt8>) -> Bool {
-        deepest(in: bytes, stoppingAbove: maximumDecodedDepth) > maximumDecodedDepth
+    /// Whether a recursive decoder can safely read `bytes`.
+    ///
+    /// The depth counts UTF-8 bytes, but `JSONDecoder` detects UTF-16 and UTF-32
+    /// from the NUL bytes in a text, and then reads escapes differently, so the
+    /// count would not hold for that text. UTF-8 JSON never has a raw NUL, because
+    /// a string must escape it, so a text with one is refused.
+    static func isSafeToDecode(_ bytes: some Sequence<UInt8>) -> Bool {
+        !bytes.contains(0) && deepest(in: bytes, stoppingAbove: maximumDecodedDepth) <= maximumDecodedDepth
     }
 }
