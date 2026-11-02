@@ -8,47 +8,6 @@ import Swift
 import _Concurrency
 import _StringProcessing
 import _SwiftConcurrencyShims
-public enum CoreType : Swift::String, Swift::Codable, Swift::Sendable {
-  case coatyObject
-  case identity
-  @inlinable public init?(rawValue: Swift::String)
-  public typealias RawValue = Swift::String
-  public var rawValue: Swift::String {
-    @inlinable get
-  }
-}
-public struct CoatyUUID : Swift::Codable, Swift::CustomStringConvertible, Swift::Hashable, Swift::Sendable {
-  public let string: Swift::String
-  public init()
-  public init?(uuidString: Swift::String)
-  public init(from decoder: any Swift::Decoder) throws
-  public func encode(to encoder: any Swift::Encoder) throws
-  public var description: Swift::String {
-    get
-  }
-  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::CoatyUUID, _ b: GnosticProtocol::CoatyUUID) -> Swift::Bool
-  public func hash(into hasher: inout Swift::Hasher)
-  public var hashValue: Swift::Int {
-    get
-  }
-}
-open class CoatyObject : Swift::Codable, @unchecked Swift::Sendable {
-  open class var objectType: Swift::String {
-    get
-  }
-  public var coreType: GnosticProtocol::CoreType
-  public var objectType: Swift::String
-  public var objectId: GnosticProtocol::CoatyUUID
-  public var name: Swift::String
-  @_hasInitialValue public var externalId: Swift::String?
-  @_hasInitialValue public var parentObjectId: GnosticProtocol::CoatyUUID?
-  @_hasInitialValue public var locationId: GnosticProtocol::CoatyUUID?
-  @_hasInitialValue public var isDeactivated: Swift::Bool?
-  public init(coreType: GnosticProtocol::CoreType, objectType: Swift::String, objectId: GnosticProtocol::CoatyUUID, name: Swift::String)
-  required public init(from decoder: any Swift::Decoder) throws
-  public func encode(to encoder: any Swift::Encoder) throws
-  deinit
-}
 public struct DiagnosticsNodeRequest : Swift::Codable, Swift::Sendable, Swift::Equatable {
   public let protocolMajor: Swift::Int
   public init(protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
@@ -349,51 +308,6 @@ public struct GnosticRawWireEvent : Swift::Codable, Swift::Sendable, Swift::Equa
   public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
 }
-public enum GnosticRuntimeInstanceHealth : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable {
-  case healthy
-  case failed
-  case unknown
-  @inlinable public init?(rawValue: Swift::String)
-  public typealias RawValue = Swift::String
-  public var rawValue: Swift::String {
-    @inlinable get
-  }
-}
-final public class GnosticRuntimeInstanceObject : GnosticProtocol::CoatyObject, @unchecked Swift::Sendable {
-  final public var protocolMajor: Swift::Int
-  final public var runtimeInstanceID: FoundationEssentials::UUID
-  @_hasInitialValue final public var nodeID: FoundationEssentials::UUID?
-  final public var runtimeKind: Swift::String
-  @_hasInitialValue final public var runtimeVersion: Swift::String?
-  @_hasInitialValue final public var launchFingerprint: Swift::String?
-  final public var health: GnosticProtocol::GnosticRuntimeInstanceHealth
-  final public var rawCapabilities: [Swift::String : GnosticProtocol::GnosticJSONValue]
-  override final public class var objectType: Swift::String {
-    get
-  }
-  public init(id: FoundationEssentials::UUID, name: Swift::String, kind: Swift::String, nodeID: FoundationEssentials::UUID? = nil, version: Swift::String? = nil, launchFingerprint: Swift::String? = nil, health: GnosticProtocol::GnosticRuntimeInstanceHealth = .unknown, rawCapabilities: [Swift::String : GnosticProtocol::GnosticJSONValue] = [:], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
-  required public init(from decoder: any Swift::Decoder) throws
-  override final public func encode(to encoder: any Swift::Encoder) throws
-  deinit
-}
-final public class GnosticTimelineObject : GnosticProtocol::CoatyObject, @unchecked Swift::Sendable {
-  final public let protocolMajor: Swift::Int
-  final public var title: Swift::String
-  final public var isArchived: Swift::Bool
-  final public var isPrivate: Swift::Bool
-  @_hasInitialValue final public var runtimeInstanceID: FoundationEssentials::UUID?
-  final public var attachedWorkspaceIDs: [FoundationEssentials::UUID]
-  @_hasInitialValue final public var nodeID: FoundationEssentials::UUID?
-  final public var createdAt: FoundationEssentials::Date
-  final public var updatedAt: FoundationEssentials::Date
-  override final public class var objectType: Swift::String {
-    get
-  }
-  public init(id: FoundationEssentials::UUID, title: Swift::String, attachedWorkspaceIDs: [FoundationEssentials::UUID] = [], runtimeInstanceID: FoundationEssentials::UUID? = nil, isArchived: Swift::Bool = false, isPrivate: Swift::Bool = false, createdAt: FoundationEssentials::Date, updatedAt: FoundationEssentials::Date, nodeID: FoundationEssentials::UUID? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
-  required public init(from decoder: any Swift::Decoder) throws
-  override final public func encode(to encoder: any Swift::Encoder) throws
-  deinit
-}
 public enum GnosticWirePayload {
   @_hasInitialValue public static let maximumBytes: Swift::Int
   @_hasInitialValue public static let maximumTopicBytes: Swift::Int
@@ -426,50 +340,6 @@ public struct GnosticWorkspaceTool : Swift::Codable, Swift::Sendable, Swift::Equ
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::GnosticWorkspaceTool, _ b: GnosticProtocol::GnosticWorkspaceTool) -> Swift::Bool
   public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
-}
-final public class GnosticWorkspaceObject : GnosticProtocol::CoatyObject, @unchecked Swift::Sendable {
-  final public let protocolMajor: Swift::Int
-  final public var uri: Swift::String
-  final public var isAvailable: Swift::Bool {
-    get
-  }
-  final public var trustLevel: GnosticProtocol::GnosticWorkspaceTrustLevel
-  final public var status: GnosticProtocol::GnosticWorkspaceStatus
-  final public var effectiveStatus: GnosticProtocol::GnosticWorkspaceEffectiveStatus
-  final public var tools: [GnosticProtocol::GnosticWorkspaceTool]
-  @_hasStorage final public var toolsComplete: Swift::Bool {
-    get
-  }
-  final public var createdAt: FoundationEssentials::Date
-  override final public class var objectType: Swift::String {
-    get
-  }
-  public init(workspace: GnosticProtocol::GnosticWorkspaceReference, protocolMajor: Swift::Int = GnosticProtocol.currentMajor, includeTools: Swift::Bool = true)
-  required public init(from decoder: any Swift::Decoder) throws
-  override final public func encode(to encoder: any Swift::Encoder) throws
-  deinit
-}
-@_hasMissingDesignatedInitializers final public class GnosticWorkspaceToolObject : GnosticProtocol::CoatyObject, @unchecked Swift::Sendable {
-  final public let protocolMajor: Swift::Int
-  final public let workspaceID: FoundationEssentials::UUID
-  final public let toolID: Swift::String
-  final public let toolName: Swift::String
-  final public let toolDescription: Swift::String
-  final public let parametersSchema: [Swift::String : GnosticProtocol::GnosticJSONValue]
-  final public let usageExample: Swift::String?
-  final public let requiresPermission: Swift::Bool
-  final public let page: Swift::Int
-  final public let schemaTruncated: Swift::Bool
-  override final public class var objectType: Swift::String {
-    get
-  }
-  convenience public init(workspaceID: FoundationEssentials::UUID, definition: GnosticProtocol::GnosticWorkspaceToolDefinition, page: Swift::Int = 0, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
-  required public init(from decoder: any Swift::Decoder) throws
-  override final public func encode(to encoder: any Swift::Encoder) throws
-  final public var tool: GnosticProtocol::GnosticWorkspaceTool {
-    get
-  }
-  deinit
 }
 public enum GnosticWorkspaceTrustLevel : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable {
   case full
@@ -574,7 +444,10 @@ public struct NetworkCatalogEntry : Swift::Sendable {
   public let workspace: GnosticProtocol::NetworkWorkspaceDescriptor?
   public let workspaceTool: GnosticProtocol::GnosticWorkspaceTool?
   public let effectiveStatus: GnosticProtocol::GnosticWorkspaceEffectiveStatus?
-  public init(objectID: FoundationEssentials::UUID, objectType: Swift::String, protocolMajor: Swift::Int? = nil, isProtocolCompatible: Swift::Bool? = nil, providerID: Swift::String, name: Swift::String, knownProperties: [Swift::String : GnosticProtocol::NetworkDynamicValue], dynamicProperties: [Swift::String : GnosticProtocol::NetworkDynamicValue], workspace: GnosticProtocol::NetworkWorkspaceDescriptor?, effectiveStatus: GnosticProtocol::GnosticWorkspaceEffectiveStatus? = nil, workspaceTool: GnosticProtocol::GnosticWorkspaceTool? = nil)
+  public let runtimeInstance: GnosticProtocol::RuntimeInstanceSnapshot?
+  public let timeline: GnosticProtocol::TimelineSnapshot?
+  public let workspaceToolSnapshot: GnosticProtocol::WorkspaceToolSnapshot?
+  public init(objectID: FoundationEssentials::UUID, objectType: Swift::String, protocolMajor: Swift::Int? = nil, isProtocolCompatible: Swift::Bool? = nil, providerID: Swift::String, name: Swift::String, knownProperties: [Swift::String : GnosticProtocol::NetworkDynamicValue], dynamicProperties: [Swift::String : GnosticProtocol::NetworkDynamicValue], workspace: GnosticProtocol::NetworkWorkspaceDescriptor?, effectiveStatus: GnosticProtocol::GnosticWorkspaceEffectiveStatus? = nil, workspaceTool: GnosticProtocol::GnosticWorkspaceTool? = nil, runtimeInstance: GnosticProtocol::RuntimeInstanceSnapshot? = nil, timeline: GnosticProtocol::TimelineSnapshot? = nil, workspaceToolSnapshot: GnosticProtocol::WorkspaceToolSnapshot? = nil)
 }
 public struct NetworkWorkspaceDescriptor : Swift::Sendable {
   public let id: FoundationEssentials::UUID
@@ -617,6 +490,46 @@ public enum InteroperabilityCapability : Swift::String, Swift::Codable, Swift::S
   public var rawValue: Swift::String {
     @inlinable get
   }
+}
+public enum GnosticRuntimeInstanceHealth : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable {
+  case healthy
+  case failed
+  case unknown
+  @inlinable public init?(rawValue: Swift::String)
+  public typealias RawValue = Swift::String
+  public var rawValue: Swift::String {
+    @inlinable get
+  }
+}
+public struct RuntimeInstanceSnapshot : Swift::Sendable, Swift::Equatable {
+  public let id: FoundationEssentials::UUID
+  public let name: Swift::String
+  public let protocolMajor: Swift::Int
+  public let nodeID: FoundationEssentials::UUID?
+  public let runtimeKind: Swift::String
+  public let runtimeVersion: Swift::String?
+  public let launchFingerprint: Swift::String?
+  public let health: GnosticProtocol::GnosticRuntimeInstanceHealth
+  public let rawCapabilities: [Swift::String : GnosticProtocol::GnosticJSONValue]
+  public init(id: FoundationEssentials::UUID, name: Swift::String, protocolMajor: Swift::Int = GnosticProtocol.currentMajor, nodeID: FoundationEssentials::UUID? = nil, runtimeKind: Swift::String, runtimeVersion: Swift::String? = nil, launchFingerprint: Swift::String? = nil, health: GnosticProtocol::GnosticRuntimeInstanceHealth = .unknown, rawCapabilities: [Swift::String : GnosticProtocol::GnosticJSONValue] = [:])
+  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::RuntimeInstanceSnapshot, _ b: GnosticProtocol::RuntimeInstanceSnapshot) -> Swift::Bool
+}
+public struct TimelineSnapshot : Swift::Sendable, Swift::Equatable {
+  public let id: FoundationEssentials::UUID
+  public let protocolMajor: Swift::Int
+  public let title: Swift::String
+  public let isArchived: Swift::Bool
+  public let isPrivate: Swift::Bool
+  public let runtimeInstanceID: FoundationEssentials::UUID?
+  public let attachedWorkspaceIDs: [FoundationEssentials::UUID]
+  public let nodeID: FoundationEssentials::UUID?
+  public let createdAt: FoundationEssentials::Date
+  public let updatedAt: FoundationEssentials::Date
+  public var status: GnosticProtocol::TimelineStatus {
+    get
+  }
+  public init(id: FoundationEssentials::UUID, protocolMajor: Swift::Int = GnosticProtocol.currentMajor, title: Swift::String, isArchived: Swift::Bool = false, isPrivate: Swift::Bool = false, runtimeInstanceID: FoundationEssentials::UUID? = nil, attachedWorkspaceIDs: [FoundationEssentials::UUID] = [], nodeID: FoundationEssentials::UUID? = nil, createdAt: FoundationEssentials::Date, updatedAt: FoundationEssentials::Date)
+  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::TimelineSnapshot, _ b: GnosticProtocol::TimelineSnapshot) -> Swift::Bool
 }
 public struct TimelineStatusRequest : Swift::Codable, Swift::Sendable {
   public let protocolMajor: Swift::Int
@@ -822,9 +735,15 @@ public struct TurnCancellationResult : Swift::Codable, Swift::Sendable {
   public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
 }
-extension GnosticProtocol::CoreType : Swift::Equatable {}
-extension GnosticProtocol::CoreType : Swift::Hashable {}
-extension GnosticProtocol::CoreType : Swift::RawRepresentable {}
+public struct WorkspaceToolSnapshot : Swift::Sendable, Swift::Equatable {
+  public let protocolMajor: Swift::Int
+  public let workspaceID: FoundationEssentials::UUID
+  public let tool: GnosticProtocol::GnosticWorkspaceTool
+  public let page: Swift::Int
+  public let schemaTruncated: Swift::Bool
+  public init(protocolMajor: Swift::Int = GnosticProtocol.currentMajor, workspaceID: FoundationEssentials::UUID, tool: GnosticProtocol::GnosticWorkspaceTool, page: Swift::Int = 0, schemaTruncated: Swift::Bool = false)
+  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::WorkspaceToolSnapshot, _ b: GnosticProtocol::WorkspaceToolSnapshot) -> Swift::Bool
+}
 extension GnosticProtocol::DiagnosticsTimelineSessionState : Swift::Hashable {}
 extension GnosticProtocol::DiagnosticsTimelineSessionState : Swift::RawRepresentable {}
 extension GnosticProtocol::DiagnosticsTimelineJournalState : Swift::Hashable {}
@@ -832,8 +751,6 @@ extension GnosticProtocol::DiagnosticsTimelineJournalState : Swift::RawRepresent
 extension GnosticProtocol::Project.GnosticProtocol::Kind : Swift::RawRepresentable {}
 extension GnosticProtocol::GnosticRawWireEventKind : Swift::Hashable {}
 extension GnosticProtocol::GnosticRawWireEventKind : Swift::RawRepresentable {}
-extension GnosticProtocol::GnosticRuntimeInstanceHealth : Swift::Hashable {}
-extension GnosticProtocol::GnosticRuntimeInstanceHealth : Swift::RawRepresentable {}
 extension GnosticProtocol::GnosticWorkspaceTrustLevel : Swift::Hashable {}
 extension GnosticProtocol::GnosticWorkspaceTrustLevel : Swift::RawRepresentable {}
 extension GnosticProtocol::GnosticWorkspaceStatus : Swift::Hashable {}
@@ -844,6 +761,8 @@ extension GnosticProtocol::GnosticWorkspaceLocation : Swift::Hashable {}
 extension GnosticProtocol::GnosticWorkspaceLocation : Swift::RawRepresentable {}
 extension GnosticProtocol::InteroperabilityCapability : Swift::Hashable {}
 extension GnosticProtocol::InteroperabilityCapability : Swift::RawRepresentable {}
+extension GnosticProtocol::GnosticRuntimeInstanceHealth : Swift::Hashable {}
+extension GnosticProtocol::GnosticRuntimeInstanceHealth : Swift::RawRepresentable {}
 extension GnosticProtocol::TurnTerminalOutcome : Swift::Hashable {}
 extension GnosticProtocol::TurnTerminalOutcome : Swift::RawRepresentable {}
 extension GnosticProtocol::TurnUpdateKind : Swift::Hashable {}

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// A safe network projection of a Gnostic Timeline.
 public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.

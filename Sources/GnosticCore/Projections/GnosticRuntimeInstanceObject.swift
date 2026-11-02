@@ -1,14 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import AxolotyWire
 import Foundation
-
-/// Current process health for one discovered Runtime instance.
-public enum GnosticRuntimeInstanceHealth: String, Codable, Sendable, Equatable {
-    case healthy
-    case failed
-    case unknown
-}
+import GnosticProtocol
 
 /// Discovered Runtime Instance object advertised on the Axoloty network.
 ///

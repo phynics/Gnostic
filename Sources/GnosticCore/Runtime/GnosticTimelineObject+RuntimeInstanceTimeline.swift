@@ -6,7 +6,7 @@ import GnosticProtocol
 extension GnosticTimelineObject {
     /// Creates a network projection from the Core's Timeline record.
     ///
-    /// The stable initializer is
+    /// The memberwise initializer is
     /// ``init(id:title:attachedWorkspaceIDs:runtimeInstanceID:isArchived:isPrivate:createdAt:updatedAt:nodeID:protocolMajor:)``.
     public convenience init(
         timeline: RuntimeInstanceTimeline,

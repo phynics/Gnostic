@@ -1,38 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import Axoloty
 import Foundation
-
-/// The safe subset of a Workspace tool definition advertised by Gnostic.
-public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
-    /// The stable tool identifier.
-    public let id: String
-
-    /// The display name of the tool.
-    public let name: String
-
-    /// The tool's user-facing description.
-    public let toolDescription: String
-
-    /// The tool's parameter schema.
-    public let parametersSchema: [String: GnosticJSONValue]
-
-    /// An optional usage example.
-    public let usageExample: String?
-
-    /// Whether execution requires user approval.
-    public let requiresPermission: Bool
-
-    /// Creates a safe tool projection.
-    public init(definition: GnosticWorkspaceToolDefinition) {
-        id = definition.id
-        name = definition.name
-        toolDescription = definition.description
-        parametersSchema = definition.parametersSchema
-        usageExample = definition.usageExample
-        requiresPermission = definition.requiresPermission
-    }
-}
+import GnosticProtocol
 
 /// A safe network projection of a Gnostic Workspace reference.
 public final class GnosticWorkspaceObject: CoatyObject, @unchecked Sendable { // SAFETY: CoatyObject projection; mutable routing fields are confined to the owning actor.

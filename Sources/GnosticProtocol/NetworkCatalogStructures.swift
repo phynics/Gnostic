@@ -115,6 +115,18 @@ public struct NetworkCatalogEntry: Sendable {
     /// The effective Workspace status, including malformed or incompatible entries.
     public let effectiveStatus: GnosticWorkspaceEffectiveStatus?
 
+    /// A typed Runtime instance snapshot, when this is a well-formed Runtime
+    /// instance at a compatible protocol major.
+    public let runtimeInstance: RuntimeInstanceSnapshot?
+
+    /// A typed Timeline snapshot, when this is a well-formed Timeline at a
+    /// compatible protocol major.
+    public let timeline: TimelineSnapshot?
+
+    /// A typed Workspace tool snapshot, when this is a well-formed tool object
+    /// at a compatible protocol major.
+    public let workspaceToolSnapshot: WorkspaceToolSnapshot?
+
     /// Creates a catalogued entry.
     public init(
         objectID: UUID,
@@ -127,7 +139,10 @@ public struct NetworkCatalogEntry: Sendable {
         dynamicProperties: [String: NetworkDynamicValue],
         workspace: NetworkWorkspaceDescriptor?,
         effectiveStatus: GnosticWorkspaceEffectiveStatus? = nil,
-        workspaceTool: GnosticWorkspaceTool? = nil
+        workspaceTool: GnosticWorkspaceTool? = nil,
+        runtimeInstance: RuntimeInstanceSnapshot? = nil,
+        timeline: TimelineSnapshot? = nil,
+        workspaceToolSnapshot: WorkspaceToolSnapshot? = nil
     ) {
         self.objectID = objectID
         self.objectType = objectType
@@ -140,6 +155,9 @@ public struct NetworkCatalogEntry: Sendable {
         self.workspace = workspace
         self.effectiveStatus = effectiveStatus ?? workspace?.effectiveStatus
         self.workspaceTool = workspaceTool
+        self.runtimeInstance = runtimeInstance
+        self.timeline = timeline
+        self.workspaceToolSnapshot = workspaceToolSnapshot
     }
 }
 

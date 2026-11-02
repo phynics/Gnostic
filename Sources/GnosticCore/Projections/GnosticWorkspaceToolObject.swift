@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import Axoloty
 import Foundation
+import GnosticProtocol
 
 /// A public Workspace tool returned by Axoloty Query/Retrieve.
 ///
@@ -106,16 +106,5 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
             usageExample: usageExample,
             requiresPermission: requiresPermission
         )
-    }
-}
-
-private extension GnosticWorkspaceTool {
-    init(id: String, name: String, toolDescription: String, parametersSchema: [String: GnosticJSONValue], usageExample: String?, requiresPermission: Bool) {
-        self.id = id
-        self.name = name
-        self.toolDescription = toolDescription
-        self.parametersSchema = parametersSchema
-        self.usageExample = usageExample
-        self.requiresPermission = requiresPermission
     }
 }
