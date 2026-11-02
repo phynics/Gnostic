@@ -45,8 +45,6 @@ public enum GnosticWorkspaceEffectiveStatus: String, Codable, Sendable, Equatabl
 public enum GnosticWorkspaceLocation: String, Codable, Sendable, Equatable {
     /// A Workspace owned directly by the runtime.
     case runtime
-    /// A Workspace specific to a runtime thread.
-    case runtimeThread
     /// A Workspace attached from outside the runtime.
     case attached
 }
@@ -63,7 +61,7 @@ public struct GnosticWorkspaceToolDefinition: Codable, Sendable, Equatable {
     public let description: String
 
     /// The tool's parameter schema.
-    public let parametersSchema: [String: ManifestJSONValue]
+    public let parametersSchema: [String: GnosticJSONValue]
 
     /// An optional usage example.
     public let usageExample: String?
@@ -78,7 +76,7 @@ public struct GnosticWorkspaceToolDefinition: Codable, Sendable, Equatable {
         id: String,
         name: String,
         description: String,
-        parametersSchema: [String: ManifestJSONValue] = [:],
+        parametersSchema: [String: GnosticJSONValue] = [:],
         usageExample: String? = nil,
         requiresPermission: Bool = false
     ) {

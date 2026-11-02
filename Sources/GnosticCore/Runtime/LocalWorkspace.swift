@@ -33,7 +33,7 @@ public protocol LocalWorkspace: Sendable {
     ///     validate them and report a failure for arguments it cannot accept.
     /// - Returns: The tool result.
     /// - Throws: When the tool is unknown or rejects the call.
-    func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult
+    func executeTool(id: String, parameters: [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult
 }
 
 /// Optional direct file access for a host-local Workspace.

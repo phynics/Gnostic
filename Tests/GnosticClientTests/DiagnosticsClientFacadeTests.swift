@@ -235,11 +235,7 @@ struct DiagnosticsClientFacadeTests {
         RuntimeInstanceDiagnostics(
             runtimeInstance: DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Diagnostics Ascendant", health: .healthy, quarantined: false),
             description: "Offline diagnostics provider.",
-            backendKind: "test",
-            backendVersion: "1.0.0",
             capabilities: [GnosticCapability.diagnostics],
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
             timelines: []
         )
     }
@@ -305,7 +301,7 @@ struct DiagnosticsClientFacadeTests {
                 name: "Diagnostics Runtime",
                 kind: "acp",
                 nodeID: UUID(),
-                rawCapabilities: ["session": .object([:])]
+                rawCapabilities: ["session": .dictionary([:])]
             ))
         }
         manager.publishAdvertise(GnosticTimelineObject(timeline: RuntimeInstanceTimeline(

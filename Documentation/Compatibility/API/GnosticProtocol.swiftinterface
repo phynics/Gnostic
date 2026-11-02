@@ -44,11 +44,9 @@ open class CoatyObject : Swift::Codable, @unchecked Swift::Sendable {
   @_hasInitialValue public var parentObjectId: GnosticProtocol::CoatyUUID?
   @_hasInitialValue public var locationId: GnosticProtocol::CoatyUUID?
   @_hasInitialValue public var isDeactivated: Swift::Bool?
-  @_hasInitialValue public var custom: [Swift::String : Swift::String]
   public init(coreType: GnosticProtocol::CoreType, objectType: Swift::String, objectId: GnosticProtocol::CoatyUUID, name: Swift::String)
   required public init(from decoder: any Swift::Decoder) throws
   public func encode(to encoder: any Swift::Encoder) throws
-  public static func register(objectType: Swift::String, with _: GnosticProtocol::CoatyObject.Type) -> Swift::String
   deinit
 }
 public struct DiagnosticsNodeRequest : Swift::Codable, Swift::Sendable, Swift::Equatable {
@@ -169,13 +167,9 @@ public struct RuntimeInstanceDiagnostics : Swift::Codable, Swift::Sendable, Swif
   public let protocolMajor: Swift::Int
   public let runtimeInstance: GnosticProtocol::DiagnosticsRuntimeInstanceSummary
   public let description: Swift::String
-  public let backendKind: Swift::String?
-  public let backendVersion: Swift::String?
   public let capabilities: [Swift::String]
-  public let privateTimelineID: FoundationEssentials::UUID
-  public let primaryWorkspaceID: FoundationEssentials::UUID?
   public let timelines: [GnosticProtocol::DiagnosticsTimelineSummary]
-  public init(runtimeInstance: GnosticProtocol::DiagnosticsRuntimeInstanceSummary, description: Swift::String, backendKind: Swift::String?, backendVersion: Swift::String?, capabilities: [Swift::String], privateTimelineID: FoundationEssentials::UUID, primaryWorkspaceID: FoundationEssentials::UUID?, timelines: [GnosticProtocol::DiagnosticsTimelineSummary], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
+  public init(runtimeInstance: GnosticProtocol::DiagnosticsRuntimeInstanceSummary, description: Swift::String, capabilities: [Swift::String], timelines: [GnosticProtocol::DiagnosticsTimelineSummary], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::RuntimeInstanceDiagnostics, _ b: GnosticProtocol::RuntimeInstanceDiagnostics) -> Swift::Bool
   public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
@@ -284,21 +278,10 @@ public struct GnosticProtocolFailure : Swift::Codable, Swift::Sendable, Swift::E
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::GnosticProtocolFailure, _ b: GnosticProtocol::GnosticProtocolFailure) -> Swift::Bool
   public func encode(to encoder: any Swift::Encoder) throws
 }
-public struct GnosticPublicFailure : Swift::Sendable, Swift::Equatable {
-  public let code: Swift::Int
-  public let message: Swift::String
-  public let retryable: Swift::Bool
-  public init(code: Swift::Int, message: Swift::String, retryable: Swift::Bool = false)
-  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::GnosticPublicFailure, _ b: GnosticProtocol::GnosticPublicFailure) -> Swift::Bool
-}
 public enum GnosticProtocol {
   @_hasInitialValue public static let currentMajor: Swift::Int
-  public static func failureMessage(reasonCode: Swift::String, message: Swift::String, statusCode: Swift::Int = 500, retryable: Swift::Bool = false) -> Swift::String
-  public static func boundedStatusCode(_ value: Swift::Int) -> Swift::Int
   public static func isCompatible(_ protocolMajor: Swift::Int?) -> Swift::Bool
   public static func validate(_ protocolMajor: Swift::Int?) throws
-  public static func validatePayload(_ parameters: Swift::String?) throws
-  public static func decodeMajor<K>(from container: Swift::KeyedDecodingContainer<K>, key: K) throws -> Swift::Int where K : Swift::CodingKey
 }
 public enum GnosticCapability {
   @_hasInitialValue public static let textTurnInput: Swift::String
@@ -324,9 +307,6 @@ public enum GnosticProtocolError : Swift::Error, Swift::Codable, Swift::Sendable
     get
   }
   public var errorDescription: Swift::String? {
-    get
-  }
-  public var failureMessage: Swift::String {
     get
   }
   public func encode(to encoder: any Swift::Encoder) throws
@@ -381,17 +361,17 @@ public enum GnosticRuntimeInstanceHealth : Swift::String, Swift::Codable, Swift:
 }
 final public class GnosticRuntimeInstanceObject : GnosticProtocol::CoatyObject, @unchecked Swift::Sendable {
   final public var protocolMajor: Swift::Int
-  final public var runtimeID: FoundationEssentials::UUID
+  final public var runtimeInstanceID: FoundationEssentials::UUID
   @_hasInitialValue final public var nodeID: FoundationEssentials::UUID?
   final public var runtimeKind: Swift::String
   @_hasInitialValue final public var runtimeVersion: Swift::String?
   @_hasInitialValue final public var launchFingerprint: Swift::String?
   final public var health: GnosticProtocol::GnosticRuntimeInstanceHealth
-  final public var rawCapabilities: [Swift::String : GnosticACPWire::ACPValue]
+  final public var rawCapabilities: [Swift::String : GnosticProtocol::GnosticJSONValue]
   override final public class var objectType: Swift::String {
     get
   }
-  public init(id: FoundationEssentials::UUID, name: Swift::String, kind: Swift::String, nodeID: FoundationEssentials::UUID? = nil, version: Swift::String? = nil, launchFingerprint: Swift::String? = nil, health: GnosticProtocol::GnosticRuntimeInstanceHealth = .unknown, rawCapabilities: [Swift::String : GnosticACPWire::ACPValue] = [:], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
+  public init(id: FoundationEssentials::UUID, name: Swift::String, kind: Swift::String, nodeID: FoundationEssentials::UUID? = nil, version: Swift::String? = nil, launchFingerprint: Swift::String? = nil, health: GnosticProtocol::GnosticRuntimeInstanceHealth = .unknown, rawCapabilities: [Swift::String : GnosticProtocol::GnosticJSONValue] = [:], protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
   required public init(from decoder: any Swift::Decoder) throws
   override final public func encode(to encoder: any Swift::Encoder) throws
   deinit
@@ -409,7 +389,7 @@ final public class GnosticTimelineObject : GnosticProtocol::CoatyObject, @unchec
   override final public class var objectType: Swift::String {
     get
   }
-  public init(timeline: GnosticProtocol::RuntimeInstanceTimeline, nodeID: FoundationEssentials::UUID? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
+  public init(id: FoundationEssentials::UUID, title: Swift::String, attachedWorkspaceIDs: [FoundationEssentials::UUID] = [], runtimeInstanceID: FoundationEssentials::UUID? = nil, isArchived: Swift::Bool = false, isPrivate: Swift::Bool = false, createdAt: FoundationEssentials::Date, updatedAt: FoundationEssentials::Date, nodeID: FoundationEssentials::UUID? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
   required public init(from decoder: any Swift::Decoder) throws
   override final public func encode(to encoder: any Swift::Encoder) throws
   deinit
@@ -432,20 +412,14 @@ public enum GnosticWirePayload {
     }
     @_semantics("derived_enum_equals") @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_enum_equals(_ a: GnosticProtocol::GnosticWirePayload.GnosticProtocol::Error, _ b: GnosticProtocol::GnosticWirePayload.GnosticProtocol::Error) -> Swift::Bool
   }
-  public static func encode<T>(_ value: T, context: Swift::String) throws -> FoundationEssentials::Data where T : Swift::Encodable
-  public static func validateEvent(_ data: FoundationEssentials::Data, context: Swift::String) throws
-  public static func prefix(_ value: Swift::String, maximumBytes: Swift::Int) -> Swift::String
-  public static func boundedLabel(_ value: Swift::String) -> Swift::String
-  public static func boundedIdentifier(_ value: Swift::String) -> Swift::String
   public static func canonicalTurnMessage(_ value: Swift::String, context: Swift::String = "turn message") throws -> Swift::String
   public static func canonicalClientTurnID(_ value: Swift::String) throws -> Swift::String
-  public static func boundedWorkspaceIDs(_ values: [FoundationEssentials::UUID]) -> [FoundationEssentials::UUID]
 }
 public struct GnosticWorkspaceTool : Swift::Codable, Swift::Sendable, Swift::Equatable {
   public let id: Swift::String
   public let name: Swift::String
   public let toolDescription: Swift::String
-  public let parametersSchema: [Swift::String : GnosticProtocol::ManifestJSONValue]
+  public let parametersSchema: [Swift::String : GnosticProtocol::GnosticJSONValue]
   public let usageExample: Swift::String?
   public let requiresPermission: Swift::Bool
   public init(definition: GnosticProtocol::GnosticWorkspaceToolDefinition)
@@ -481,7 +455,7 @@ final public class GnosticWorkspaceObject : GnosticProtocol::CoatyObject, @unche
   final public let toolID: Swift::String
   final public let toolName: Swift::String
   final public let toolDescription: Swift::String
-  final public let parametersSchema: [Swift::String : GnosticProtocol::ManifestJSONValue]
+  final public let parametersSchema: [Swift::String : GnosticProtocol::GnosticJSONValue]
   final public let usageExample: Swift::String?
   final public let requiresPermission: Swift::Bool
   final public let page: Swift::Int
@@ -534,7 +508,6 @@ public enum GnosticWorkspaceEffectiveStatus : Swift::String, Swift::Codable, Swi
 }
 public enum GnosticWorkspaceLocation : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable {
   case runtime
-  case runtimeThread
   case attached
   @inlinable public init?(rawValue: Swift::String)
   public typealias RawValue = Swift::String
@@ -546,13 +519,13 @@ public struct GnosticWorkspaceToolDefinition : Swift::Codable, Swift::Sendable, 
   public let id: Swift::String
   public let name: Swift::String
   public let description: Swift::String
-  public let parametersSchema: [Swift::String : GnosticProtocol::ManifestJSONValue]
+  public let parametersSchema: [Swift::String : GnosticProtocol::GnosticJSONValue]
   public let usageExample: Swift::String?
   public let requiresPermission: Swift::Bool
   public var toolID: Swift::String {
     get
   }
-  public init(id: Swift::String, name: Swift::String, description: Swift::String, parametersSchema: [Swift::String : GnosticProtocol::ManifestJSONValue] = [:], usageExample: Swift::String? = nil, requiresPermission: Swift::Bool = false)
+  public init(id: Swift::String, name: Swift::String, description: Swift::String, parametersSchema: [Swift::String : GnosticProtocol::GnosticJSONValue] = [:], usageExample: Swift::String? = nil, requiresPermission: Swift::Bool = false)
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::GnosticWorkspaceToolDefinition, _ b: GnosticProtocol::GnosticWorkspaceToolDefinition) -> Swift::Bool
   public func encode(to encoder: any Swift::Encoder) throws
   public init(from decoder: any Swift::Decoder) throws
@@ -570,21 +543,6 @@ public struct GnosticWorkspaceReference : Swift::Codable, Swift::Sendable, Swift
   public init(from decoder: any Swift::Decoder) throws
   public func encode(to encoder: any Swift::Encoder) throws
   @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::GnosticWorkspaceReference, _ b: GnosticProtocol::GnosticWorkspaceReference) -> Swift::Bool
-}
-public enum ManifestJSONValue : Swift::Codable, Swift::Equatable, Swift::Sendable {
-  case string(Swift::String)
-  case number(Swift::Double)
-  case bool(Swift::Bool)
-  case object([Swift::String : GnosticProtocol::ManifestJSONValue])
-  case array([GnosticProtocol::ManifestJSONValue])
-  case null
-  public init(from decoder: any Swift::Decoder) throws
-  public func encode(to encoder: any Swift::Encoder) throws
-  public var stringValue: Swift::String? {
-    get
-  }
-  public func isWithinLimits(maxDepth: Swift::Int, maxEntries: Swift::Int) -> Swift::Bool
-  @_semantics("derived_enum_equals") @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_enum_equals(_ a: GnosticProtocol::ManifestJSONValue, _ b: GnosticProtocol::ManifestJSONValue) -> Swift::Bool
 }
 public enum NetworkCatalogChange : Swift::Sendable {
   case advertised(GnosticProtocol::NetworkCatalogEntry)
@@ -660,44 +618,6 @@ public enum InteroperabilityCapability : Swift::String, Swift::Codable, Swift::S
     @inlinable get
   }
 }
-public struct RuntimeInstanceCapabilities : Swift::Codable, Swift::Sendable, Swift::Equatable {
-  public let interoperability: Swift::Set<Swift::String>
-  public let host: Swift::Set<Swift::String>
-  public let backendKind: Swift::String?
-  public let backendVersion: Swift::String?
-  public init(interoperability: Swift::Set<Swift::String> = [], host: Swift::Set<Swift::String> = [], backendKind: Swift::String? = nil, backendVersion: Swift::String? = nil)
-  public static var empty: GnosticProtocol::RuntimeInstanceCapabilities {
-    get
-  }
-  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::RuntimeInstanceCapabilities, _ b: GnosticProtocol::RuntimeInstanceCapabilities) -> Swift::Bool
-  public func encode(to encoder: any Swift::Encoder) throws
-  public init(from decoder: any Swift::Decoder) throws
-}
-public struct RuntimeInstanceIdentity : Swift::Sendable, Swift::Equatable {
-  public let id: FoundationEssentials::UUID
-  public let name: Swift::String
-  public let description: Swift::String
-  public let privateTimelineID: FoundationEssentials::UUID
-  public let primaryWorkspaceID: FoundationEssentials::UUID?
-  public let lastActiveAt: FoundationEssentials::Date
-  public let createdAt: FoundationEssentials::Date
-  public let updatedAt: FoundationEssentials::Date
-  public let capabilities: GnosticProtocol::RuntimeInstanceCapabilities
-  public init(id: FoundationEssentials::UUID, name: Swift::String, description: Swift::String, privateTimelineID: FoundationEssentials::UUID, primaryWorkspaceID: FoundationEssentials::UUID?, lastActiveAt: FoundationEssentials::Date, createdAt: FoundationEssentials::Date, updatedAt: FoundationEssentials::Date, capabilities: GnosticProtocol::RuntimeInstanceCapabilities = .empty)
-  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::RuntimeInstanceIdentity, _ b: GnosticProtocol::RuntimeInstanceIdentity) -> Swift::Bool
-}
-public struct RuntimeInstanceTimeline : Swift::Sendable, Swift::Equatable {
-  public let id: FoundationEssentials::UUID
-  public let title: Swift::String
-  public let attachedWorkspaceIDs: [FoundationEssentials::UUID]
-  public let runtimeInstanceID: FoundationEssentials::UUID?
-  public let isArchived: Swift::Bool
-  public let isPrivate: Swift::Bool
-  public let createdAt: FoundationEssentials::Date
-  public let updatedAt: FoundationEssentials::Date
-  public init(id: FoundationEssentials::UUID, title: Swift::String, attachedWorkspaceIDs: [FoundationEssentials::UUID], runtimeInstanceID: FoundationEssentials::UUID?, isArchived: Swift::Bool, isPrivate: Swift::Bool, createdAt: FoundationEssentials::Date, updatedAt: FoundationEssentials::Date)
-  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::RuntimeInstanceTimeline, _ b: GnosticProtocol::RuntimeInstanceTimeline) -> Swift::Bool
-}
 public struct TimelineStatusRequest : Swift::Codable, Swift::Sendable {
   public let protocolMajor: Swift::Int
   public let timelineID: FoundationEssentials::UUID
@@ -716,34 +636,6 @@ public struct TimelineStatus : Swift::Codable, Swift::Sendable {
   public init(from decoder: any Swift::Decoder) throws
   public func encode(to encoder: any Swift::Encoder) throws
 }
-public enum TurnError : Swift::Error, Swift::Sendable, Swift::Equatable, FoundationEssentials::LocalizedError {
-  case capacityExceeded(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String)
-  case conflict(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String)
-  case failed(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, detail: Swift::String)
-  case terminal(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, code: Swift::String, detail: Swift::String, retryable: Swift::Bool, statusCode: Swift::Int = 500)
-  case cancelled(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String)
-  case lifecycleUnusable(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, detail: Swift::String)
-  case backendUnavailable(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, detail: Swift::String)
-  case replayUnavailable(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String)
-  case timelineBusy(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String)
-  case insertionUnknown(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String)
-  public var errorDescription: Swift::String? {
-    get
-  }
-  public var statusCode: Swift::Int {
-    get
-  }
-  public var reasonCode: Swift::String {
-    get
-  }
-  public var retryable: Swift::Bool {
-    get
-  }
-  public var publicMessage: Swift::String {
-    get
-  }
-  @_semantics("derived_enum_equals") @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_enum_equals(_ a: GnosticProtocol::TurnError, _ b: GnosticProtocol::TurnError) -> Swift::Bool
-}
 public struct TurnPermissionResponse : Swift::Codable, Swift::Sendable {
   public let protocolMajor: Swift::Int
   public let correlationID: Swift::String
@@ -754,7 +646,6 @@ public struct TurnPermissionResponse : Swift::Codable, Swift::Sendable {
   public let unavailableReason: Swift::String?
   public init(correlationID: Swift::String, timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, approved: Swift::Bool, targetProviderID: Swift::String? = nil, unavailableReason: Swift::String? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
   public init(from decoder: any Swift::Decoder) throws
-  public func targeted(to providerID: Swift::String?) -> GnosticProtocol::TurnPermissionResponse
   public func encode(to encoder: any Swift::Encoder) throws
 }
 public enum TurnTerminalOutcome : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable {
@@ -764,25 +655,11 @@ public enum TurnTerminalOutcome : Swift::String, Swift::Codable, Swift::Sendable
   case failed
   case insertionUnknown
   case unavailable
-  public static func from(stopReason: GnosticACPWire::ACPStopReason?) -> GnosticProtocol::TurnTerminalOutcome
   @inlinable public init?(rawValue: Swift::String)
   public typealias RawValue = Swift::String
   public var rawValue: Swift::String {
     @inlinable get
   }
-}
-public struct TurnSessionUpdate : Swift::Codable, Swift::Sendable, Swift::Equatable {
-  public let protocolMajor: Swift::Int
-  public let timelineID: FoundationEssentials::UUID
-  public let clientTurnID: Swift::String
-  public let sequence: Swift::Int
-  public let update: GnosticACPWire::ACPSessionUpdate
-  public let terminal: Swift::Bool
-  public let terminalOutcome: GnosticProtocol::TurnTerminalOutcome?
-  public init(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, sequence: Swift::Int, update: GnosticACPWire::ACPSessionUpdate, terminal: Swift::Bool = false, terminalOutcome: GnosticProtocol::TurnTerminalOutcome? = nil, protocolMajor: Swift::Int = GnosticProtocol.currentMajor)
-  public init(from decoder: any Swift::Decoder) throws
-  @_implements(Swift::Equatable, ==(_:_:)) public static func __derived_struct_equals(_ a: GnosticProtocol::TurnSessionUpdate, _ b: GnosticProtocol::TurnSessionUpdate) -> Swift::Bool
-  public func encode(to encoder: any Swift::Encoder) throws
 }
 public enum TurnUpdateKind : Swift::String, Swift::Codable, Swift::Sendable, Swift::Equatable, Swift::CaseIterable {
   case assistantText

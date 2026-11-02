@@ -62,16 +62,11 @@ struct InspectDiagnosticsRendererTests {
         let ascendant = RuntimeInstanceDiagnostics(
             runtimeInstance: DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Ascendant", health: .healthy, quarantined: false),
             description: "Test ascendant",
-            backendKind: "test",
-            backendVersion: "1.0.0",
             capabilities: [GnosticCapability.diagnostics],
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
             timelines: []
         )
         let ascendantText = InspectRenderer.ascendantText(ascendant)
         #expect(ascendantText.contains("health=healthy quarantined=false"))
-        #expect(ascendantText.contains("backend=test version=1.0.0"))
         #expect(ascendantText.contains(GnosticCapability.diagnostics))
 
         let timeline = TimelineDiagnostics(

@@ -1,34 +1,14 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
-import AxolotyWire
 import Foundation
 import GnosticACPWire
+import GnosticProtocol
 
-/// Terminal state classification of a completed Timeline Turn.
-public enum TurnTerminalOutcome: String, Codable, Sendable, Equatable {
-    case completed
-    case endedUnspecified
-    case cancelled
-    case failed
-    case insertionUnknown
-    case unavailable
-
-    public static func from(stopReason: ACPStopReason?) -> TurnTerminalOutcome {
-        guard let stopReason else { return .endedUnspecified }
-        switch stopReason {
-        case .endTurn, .maxTokens, .maxTurnRequests:
-            return .completed
-        case .cancelled:
-            return .cancelled
-        case .error, .refusal:
-            return .failed
-        case .other:
-            return .endedUnspecified
-        }
-    }
-}
-
-/// An incremental or terminal update streamed during a Timeline Turn.
+/// An incremental or terminal update that the Timeline journal records for a Turn.
+///
+/// This type lives in `GnosticCore`, outside the stable products, because the
+/// journaled `update` is an ACP wire value. The encoding is the journal format
+/// and does not change.
 public struct TurnSessionUpdate: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let timelineID: UUID

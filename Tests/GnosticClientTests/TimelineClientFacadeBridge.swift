@@ -278,7 +278,7 @@ enum TimelineClientFacadeBridge {
                 name: "Timeline Runtime",
                 kind: "acp",
                 nodeID: UUID(),
-                rawCapabilities: ["session": .object([:])]
+                rawCapabilities: ["session": .dictionary([:])]
             ))
         }
         manager.publishAdvertise(GnosticTimelineObject(timeline: RuntimeInstanceTimeline(

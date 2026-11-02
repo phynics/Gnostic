@@ -218,7 +218,7 @@ public final class GnosticWorkspaceClient {
         timelineID: UUID,
         workspaceID: UUID,
         toolID: String,
-        arguments: [String: ManifestJSONValue] = [:],
+        arguments: [String: GnosticJSONValue] = [:],
         permissionApproved: Bool = false,
         providerID: String? = nil
     ) async throws -> GnosticWorkspaceToolResult {

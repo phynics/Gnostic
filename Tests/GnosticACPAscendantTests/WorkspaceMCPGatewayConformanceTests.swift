@@ -133,7 +133,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         }
     }
 
-    private static func searchTool(requiresPermission: Bool = false, schema: ManifestJSONValue? = nil) -> BackendWorkspaceTool {
+    private static func searchTool(requiresPermission: Bool = false, schema: GnosticJSONValue? = nil) -> BackendWorkspaceTool {
         BackendWorkspaceTool(
             id: "search",
             name: "Search",
@@ -193,9 +193,9 @@ struct WorkspaceMCPGatewayConformanceTests {
         )
     }
 
-    private func manifestValue(_ value: ACPValue?) throws -> ManifestJSONValue {
+    private func manifestValue(_ value: ACPValue?) throws -> GnosticJSONValue {
         let value = try #require(value)
-        return try JSONDecoder().decode(ManifestJSONValue.self, from: JSONEncoder().encode(value))
+        return try JSONDecoder().decode(GnosticJSONValue.self, from: JSONEncoder().encode(value))
     }
 
     private func resultFields(_ message: ACPJSONRPCResponse?) throws -> [String: ACPValue] {
@@ -221,38 +221,38 @@ struct WorkspaceMCPGatewayConformanceTests {
     @Test("tools/list advertises a provider schema with semantic parity")
     @MainActor
     func schemaParity() async throws {
-        let schema: ManifestJSONValue = .object([
+        let schema: GnosticJSONValue = .dictionary([
             "type": .string("object"),
             "required": .array([.string("query"), .string("target")]),
-            "additionalProperties": .bool(false),
-            "properties": .object([
-                "query": .object(["type": .string("string"), "minLength": .number(1)]),
-                "limit": .object(["type": .string("integer"), "minimum": .number(1), "default": .number(20)]),
-                "ratio": .object(["type": .string("number"), "maximum": .number(0.5)]),
-                "nullable": .object(["type": .array([.string("string"), .string("null")]), "default": .null]),
-                "tags": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
-                "target": .object([
+            "additionalProperties": .boolean(false),
+            "properties": .dictionary([
+                "query": .dictionary(["type": .string("string"), "minLength": .integer(1)]),
+                "limit": .dictionary(["type": .string("integer"), "minimum": .integer(1), "default": .integer(20)]),
+                "ratio": .dictionary(["type": .string("number"), "maximum": .number(0.5)]),
+                "nullable": .dictionary(["type": .array([.string("string"), .string("null")]), "default": .null]),
+                "tags": .dictionary(["type": .string("array"), "items": .dictionary(["type": .string("string")])]),
+                "target": .dictionary([
                     "oneOf": .array([
-                        .object([
+                        .dictionary([
                             "type": .string("object"),
                             "required": .array([.string("kind"), .string("path")]),
-                            "properties": .object([
-                                "kind": .object(["const": .string("file")]),
-                                "path": .object(["type": .string("string")]),
+                            "properties": .dictionary([
+                                "kind": .dictionary(["const": .string("file")]),
+                                "path": .dictionary(["type": .string("string")]),
                             ]),
                         ]),
-                        .object([
+                        .dictionary([
                             "type": .string("object"),
                             "required": .array([.string("kind"), .string("uri")]),
-                            "properties": .object([
-                                "kind": .object(["const": .string("remote")]),
-                                "uri": .object(["type": .string("string"), "format": .string("uri")]),
+                            "properties": .dictionary([
+                                "kind": .dictionary(["const": .string("remote")]),
+                                "uri": .dictionary(["type": .string("string"), "format": .string("uri")]),
                             ]),
                         ]),
                     ]),
                 ]),
             ]),
-            "x-provider-extension": .object(["cost": .number(3), "stable": .bool(true)]),
+            "x-provider-extension": .dictionary(["cost": .integer(3), "stable": .boolean(true)]),
         ])
         let fixture = try makeFixture(tools: [Self.searchTool(schema: schema)])
         defer { fixture.gateway.stop() }
@@ -265,7 +265,7 @@ struct WorkspaceMCPGatewayConformanceTests {
     @Test("an absent schema is advertised as an unconstrained object, and a schema without a type becomes an object")
     @MainActor
     func absentAndUntypedSchemas() async throws {
-        let untyped: ManifestJSONValue = .object(["properties": .object(["query": .object(["type": .string("string")])])])
+        let untyped: GnosticJSONValue = .dictionary(["properties": .dictionary(["query": .dictionary(["type": .string("string")])])])
         let fixture = try makeFixture(tools: [
             Self.searchTool(),
             BackendWorkspaceTool(id: "untyped", name: "Untyped", description: "No type", parametersSchema: untyped),
@@ -274,20 +274,20 @@ struct WorkspaceMCPGatewayConformanceTests {
 
         let tools = try await fixture.listedTools()
 
-        #expect(try manifestValue(tools[fixture.toolName]?["inputSchema"]) == .object(["type": .string("object")]))
-        #expect(try manifestValue(tools[fixture.toolName(for: "untyped")]?["inputSchema"]) == .object([
+        #expect(try manifestValue(tools[fixture.toolName]?["inputSchema"]) == .dictionary(["type": .string("object")]))
+        #expect(try manifestValue(tools[fixture.toolName(for: "untyped")]?["inputSchema"]) == .dictionary([
             "type": .string("object"),
-            "properties": .object(["query": .object(["type": .string("string")])]),
+            "properties": .dictionary(["query": .dictionary(["type": .string("string")])]),
         ]))
     }
 
     @Test("the gateway does not validate arguments against the schema: they reach the provider, and its failure is a tool result")
     @MainActor
     func gatewayForwardsArgumentsWithoutSchemaValidation() async throws {
-        let schema: ManifestJSONValue = .object([
+        let schema: GnosticJSONValue = .dictionary([
             "type": .string("object"),
             "required": .array([.string("query")]),
-            "properties": .object(["query": .object(["type": .string("string")])]),
+            "properties": .dictionary(["query": .dictionary(["type": .string("string")])]),
         ])
         let fixture = try makeFixture(tools: [Self.searchTool(schema: schema)])
         defer { fixture.gateway.stop() }
@@ -298,11 +298,26 @@ struct WorkspaceMCPGatewayConformanceTests {
         ]))
 
         #expect(fixture.service.invocations.first?.arguments == [
-            "nested": .object(["list": .array([.number(1), .number(1.5), .bool(true), .null, .string("text")])]),
+            "nested": .dictionary(["list": .array([.integer(1), .number(1.5), .boolean(true), .null, .string("text")])]),
         ])
         let fields = try resultFields(reply.message)
         #expect(fields["isError"] == .bool(true))
         #expect(resultText(fields) == "query is required")
+    }
+
+    @Test("an integer argument above 2^53 reaches the provider unchanged")
+    @MainActor
+    func largeIntegerArgumentsStayExact() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.gateway.stop() }
+        let beyondDouble = 9_007_199_254_740_993
+
+        _ = try await fixture.call(arguments: .object(["id": .int(beyondDouble), "ids": .array([.int(Int.max), .int(Int.min)])]))
+
+        #expect(fixture.service.invocations.first?.arguments == [
+            "id": .integer(Int64(beyondDouble)),
+            "ids": .array([.integer(Int64.max), .integer(Int64.min)]),
+        ])
     }
 
     // MARK: Results and protocol errors
@@ -312,7 +327,7 @@ struct WorkspaceMCPGatewayConformanceTests {
     func structuredSuccess() async throws {
         let fixture = try makeFixture()
         defer { fixture.gateway.stop() }
-        let value: ManifestJSONValue = .object(["count": .number(2), "items": .array([.string("a"), .string("b")])])
+        let value: GnosticJSONValue = .dictionary(["count": .integer(2), "items": .array([.string("a"), .string("b")])])
         fixture.service.outcome = .success(BackendWorkspaceResult(value: value))
 
         let reply = try await fixture.call()
@@ -322,20 +337,20 @@ struct WorkspaceMCPGatewayConformanceTests {
         #expect(fields["isError"] == .bool(false))
         #expect(try manifestValue(fields["structuredContent"]) == value)
         let text = try #require(resultText(fields))
-        #expect(try JSONDecoder().decode(ManifestJSONValue.self, from: Data(text.utf8)) == value)
+        #expect(try JSONDecoder().decode(GnosticJSONValue.self, from: Data(text.utf8)) == value)
     }
 
     @Test(
         "a non-object tool value stays in text content because MCP structured content must be an object",
         arguments: [
-            ManifestJSONValue.string("plain text"),
+            GnosticJSONValue.string("plain text"),
             .array([.string("a"), .string("b")]),
-            .number(3),
-            .bool(true),
+            .integer(3),
+            .boolean(true),
         ]
     )
     @MainActor
-    func nonObjectValuesAreNotStructuredContent(value: ManifestJSONValue) async throws {
+    func nonObjectValuesAreNotStructuredContent(value: GnosticJSONValue) async throws {
         let fixture = try makeFixture()
         defer { fixture.gateway.stop() }
         fixture.service.outcome = .success(BackendWorkspaceResult(value: value))

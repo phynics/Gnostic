@@ -73,7 +73,7 @@ public enum WorkspaceReferenceProjection {
                     id: tool.id,
                     name: tool.name,
                     description: tool.toolDescription,
-                    parametersSchema: .object(tool.parametersSchema),
+                    parametersSchema: .dictionary(tool.parametersSchema),
                     requiresPermission: tool.requiresPermission
                 )
             },
@@ -82,8 +82,8 @@ public enum WorkspaceReferenceProjection {
         )
     }
 
-    private static func parametersSchema(_ schema: ManifestJSONValue?) -> [String: ManifestJSONValue] {
-        guard case let .object(value)? = schema else { return [:] }
+    private static func parametersSchema(_ schema: GnosticJSONValue?) -> [String: GnosticJSONValue] {
+        guard case let .dictionary(value)? = schema else { return [:] }
         return value
     }
 }

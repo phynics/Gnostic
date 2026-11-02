@@ -42,7 +42,7 @@ private final class RevocablePeerWorkspace: LocalWorkspace, LocalWorkspaceHealth
                 id: String(format: "peer-tool-%02d", index),
                 name: "Peer tool \(index)",
                 description: "A paged peer Workspace tool definition used by the two-Node fixture. \(String(repeating: "detail ", count: 8))",
-                parametersSchema: .object(["type": .string("object")]),
+                parametersSchema: .dictionary(["type": .string("object")]),
                 requiresPermission: false
             )
         }
@@ -54,7 +54,7 @@ private final class RevocablePeerWorkspace: LocalWorkspace, LocalWorkspaceHealth
                 id: "search",
                 name: "Search",
                 description: "Search the remote Workspace fixture",
-                parametersSchema: .object(["type": .string("object")]),
+                parametersSchema: .dictionary(["type": .string("object")]),
                 requiresPermission: true
             )] + supplementalTools
         )
@@ -62,7 +62,7 @@ private final class RevocablePeerWorkspace: LocalWorkspace, LocalWorkspaceHealth
 
     func listTools() async throws -> [BackendWorkspaceTool] { reference.tools }
 
-    func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+    func executeTool(id: String, parameters: [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult {
         let currentCount = Int((try? String(contentsOf: invocationURL, encoding: .utf8)) ?? "0") ?? 0
         try String(currentCount + 1).write(to: invocationURL, atomically: true, encoding: .utf8)
         let query: String

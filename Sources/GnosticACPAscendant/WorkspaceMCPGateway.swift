@@ -109,7 +109,7 @@ final class WorkspaceMCPGateway {
               case let .string(name)? = params["name"] else {
             return error(request.id, code: ACPv2Protocol.ErrorCode.invalidParams, "tools/call requires a tool name.")
         }
-        let arguments: [String: ManifestJSONValue]
+        let arguments: [String: GnosticJSONValue]
         switch params["arguments"] {
         case nil:
             arguments = [:]
@@ -174,7 +174,7 @@ final class WorkspaceMCPGateway {
                 "isError": .bool(!result.isSuccess),
             ]
             // MCP defines structured content as an object. Other values stay in the text content.
-            if case .object? = result.value, let value = result.value {
+            if case .dictionary? = result.value, let value = result.value {
                 fields["structuredContent"] = Self.acpValue(value)
             }
             return response(id: request.id, result: .object(fields))
@@ -212,20 +212,22 @@ final class WorkspaceMCPGateway {
         ACPJSONRPCResponse(id: id, error: ACPJSONRPCError(code: code, message: message))
     }
 
-    private static func schema(_ value: ManifestJSONValue?) -> ACPValue {
-        guard case let .object(properties)? = value else { return .object(["type": .string("object")]) }
+    private static func schema(_ value: GnosticJSONValue?) -> ACPValue {
+        guard case let .dictionary(properties)? = value else { return .object(["type": .string("object")]) }
         var output = properties.mapValues(acpValue)
         output["type"] = output["type"] ?? .string("object")
         return .object(output)
     }
 
-    private static func acpValue(_ value: ManifestJSONValue) -> ACPValue {
+    private static func acpValue(_ value: GnosticJSONValue) -> ACPValue {
         switch value {
         case let .string(value): .string(value)
+        case let .integer(value): Int(exactly: value).map(ACPValue.int) ?? .double(Double(value))
+        case let .unsignedInteger(value): Int(exactly: value).map(ACPValue.int) ?? .double(Double(value))
         case let .number(value): .double(value)
-        case let .bool(value): .bool(value)
+        case let .boolean(value): .bool(value)
         case let .array(values): .array(values.map(acpValue))
-        case let .object(values): .object(values.mapValues(acpValue))
+        case let .dictionary(values): .object(values.mapValues(acpValue))
         case .null: .null
         }
     }
@@ -237,14 +239,14 @@ final class WorkspaceMCPGateway {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func manifestValue(_ value: ACPValue) -> ManifestJSONValue {
+    private static func manifestValue(_ value: ACPValue) -> GnosticJSONValue {
         switch value {
         case let .string(value): .string(value)
-        case let .int(value): .number(Double(value))
+        case let .int(value): .integer(Int64(value))
         case let .double(value): .number(value)
-        case let .bool(value): .bool(value)
+        case let .bool(value): .boolean(value)
         case let .array(values): .array(values.map(manifestValue))
-        case let .object(values): .object(values.mapValues(manifestValue))
+        case let .object(values): .dictionary(values.mapValues(manifestValue))
         case .null: .null
         }
     }

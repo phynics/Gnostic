@@ -967,7 +967,7 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
                 version: response.info.version,
                 launchFingerprint: launchSpec.launchFingerprint,
                 health: .healthy,
-                rawCapabilities: response.rawCapabilities ?? [:]
+                rawCapabilities: (response.rawCapabilities ?? [:]).mapValues(GnosticJSONValue.init(acp:))
             )
             return protocolConnection
         } catch {

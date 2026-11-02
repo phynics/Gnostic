@@ -350,7 +350,7 @@ public final class NodeTransport {
 
     private func networkRuntimeInstance(from instance: GnosticRuntimeInstanceObject) -> GnosticRuntimeInstanceObject {
         GnosticRuntimeInstanceObject(
-            id: instance.runtimeID,
+            id: instance.runtimeInstanceID,
             name: instance.name,
             kind: instance.runtimeKind,
             nodeID: nodeID,

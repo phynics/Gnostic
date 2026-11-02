@@ -71,7 +71,7 @@ struct FilesystemWorkspaceTests {
     private func call(
         _ workspace: any LocalWorkspace,
         _ tool: String,
-        _ arguments: [String: ManifestJSONValue]
+        _ arguments: [String: GnosticJSONValue]
     ) async throws -> BackendWorkspaceResult {
         try await workspace.executeTool(id: tool, parameters: arguments)
     }
@@ -133,18 +133,18 @@ struct FilesystemWorkspaceTests {
         #expect(files.reference.uri == fixture.root.path)
         #expect(files.reference.status == .available)
         for tool in tools {
-            guard case let .object(schema)? = tool.parametersSchema else {
+            guard case let .dictionary(schema)? = tool.parametersSchema else {
                 Issue.record("\(tool.id) declares no object schema")
                 continue
             }
             #expect(schema["type"] == .string("object"))
-            guard case let .object(properties)? = schema["properties"] else {
+            guard case let .dictionary(properties)? = schema["properties"] else {
                 Issue.record("\(tool.id) schema has no properties")
                 continue
             }
             #expect(properties["path"] != nil)
         }
-        guard case let .object(readSchema)? = tools.first(where: { $0.id == "read_file" })?.parametersSchema else {
+        guard case let .dictionary(readSchema)? = tools.first(where: { $0.id == "read_file" })?.parametersSchema else {
             Issue.record("read_file schema missing"); return
         }
         #expect(readSchema["required"] == .array([.string("path")]))
@@ -168,7 +168,7 @@ struct FilesystemWorkspaceTests {
     func listsRoot() async throws {
         let fixture = try Fixture(); defer { fixture.tearDown() }
         let files = try workspace(at: fixture.root.path)
-        for arguments: [String: ManifestJSONValue] in [[:], ["path": .string(".")], ["path": .string("")], ["path": .string("./nested/..")]] {
+        for arguments: [String: GnosticJSONValue] in [[:], ["path": .string(".")], ["path": .string("")], ["path": .string("./nested/..")]] {
             let result = try await call(files, "list_directory", arguments)
             if arguments["path"] == .string("./nested/..") {
                 // `..` is rejected rather than normalized.
@@ -309,17 +309,18 @@ struct FilesystemWorkspaceTests {
     // MARK: - Argument validation
 
     @Test("malformed arguments fail as tool results", arguments: [
-        [String: ManifestJSONValue](),
-        ["path": ManifestJSONValue.number(3)],
-        ["path": .bool(true)],
+        [String: GnosticJSONValue](),
+        ["path": GnosticJSONValue.number(3)],
+        ["path": .integer(3)],
+        ["path": .boolean(true)],
         ["path": .null],
         ["path": .array([.string("hello.txt")])],
-        ["path": .object(["a": .string("b")])],
+        ["path": .dictionary(["a": .string("b")])],
         ["path": .string("hello.txt"), "extra": .string("x")],
         ["path": .string("hello\u{0}.txt")],
         ["path": .string("")],
     ])
-    func readRejectsMalformedArguments(arguments: [String: ManifestJSONValue]) async throws {
+    func readRejectsMalformedArguments(arguments: [String: GnosticJSONValue]) async throws {
         let fixture = try Fixture(); defer { fixture.tearDown() }
         let files = try workspace(at: fixture.root.path)
         let result = try await call(files, "read_file", arguments)
@@ -327,14 +328,14 @@ struct FilesystemWorkspaceTests {
     }
 
     @Test("list_directory rejects wrongly typed or unknown arguments", arguments: [
-        ["path": ManifestJSONValue.number(3)],
+        ["path": GnosticJSONValue.number(3)],
         ["path": .null],
         ["path": .array([])],
-        ["path": .string("."), "extra": .bool(true)],
+        ["path": .string("."), "extra": .boolean(true)],
         ["other": .string("x")],
         ["path": .string("nested\u{0}")],
     ])
-    func listRejectsMalformedArguments(arguments: [String: ManifestJSONValue]) async throws {
+    func listRejectsMalformedArguments(arguments: [String: GnosticJSONValue]) async throws {
         let fixture = try Fixture(); defer { fixture.tearDown() }
         let files = try workspace(at: fixture.root.path)
         let result = try await call(files, "list_directory", arguments)

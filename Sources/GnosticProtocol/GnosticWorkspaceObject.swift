@@ -15,7 +15,7 @@ public struct GnosticWorkspaceTool: Codable, Sendable, Equatable {
     public let toolDescription: String
 
     /// The tool's parameter schema.
-    public let parametersSchema: [String: ManifestJSONValue]
+    public let parametersSchema: [String: GnosticJSONValue]
 
     /// An optional usage example.
     public let usageExample: String?

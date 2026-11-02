@@ -68,7 +68,7 @@ public final class WorkspaceService {
         return projections
     }
 
-    func executeLocalTool(workspaceID: UUID, toolID: String, arguments: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+    func executeLocalTool(workspaceID: UUID, toolID: String, arguments: [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult {
         guard backendProvider.isRunning else { throw NodeRuntimeError.notRunning }
         guard let workspace = localWorkspaces[workspaceID] else { throw NodeRuntimeError.missingWorkspace(workspaceID) }
         let status = await registry.effectiveWorkspaceStatus(id: workspaceID)

@@ -10,6 +10,11 @@
 uses the Gnostic-owned `GnosticACPWire` target. The Runtime does not depend
 on `GnosticProtocol`, because that target also links Axoloty.
 
+**Amended by owner decision D30 on #551 (2026-11-02, [#716](https://github.com/phynics/Gnostic/issues/716)).**
+The Workspace network contract uses `GnosticJSONValue`, not `ManifestJSONValue`,
+for tool arguments and schemas, so integers keep their exact value.
+`ManifestJSONValue` is manifest vocabulary in `GnosticCore`.
+
 **Amended by owner decision D19 on #551 (2026-11-02, issue #675).**
 `GnosticProtocol` no longer re-exports the ACP v2 declarations. The 87 public
 typealiases are removed, because ACP v2 is a preview outside the 0.5.x

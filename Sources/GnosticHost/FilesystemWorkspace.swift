@@ -130,7 +130,7 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
 
     func listTools() async throws -> [BackendWorkspaceTool] { Self.tools }
 
-    func executeTool(id: String, parameters: [String: ManifestJSONValue]) async throws -> BackendWorkspaceResult {
+    func executeTool(id: String, parameters: [String: GnosticJSONValue]) async throws -> BackendWorkspaceResult {
         switch id {
         case Self.listToolID:
             switch Self.pathArgument(parameters, required: false) {
@@ -150,17 +150,17 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
     // MARK: - Tool catalog
 
     private static var tools: [BackendWorkspaceTool] {
-        func schema(pathDescription: String, required: Bool) -> ManifestJSONValue {
-            var fields: [String: ManifestJSONValue] = [
+        func schema(pathDescription: String, required: Bool) -> GnosticJSONValue {
+            var fields: [String: GnosticJSONValue] = [
                 "type": .string("object"),
-                "properties": .object(["path": .object([
+                "properties": .dictionary(["path": .dictionary([
                     "type": .string("string"),
                     "description": .string(pathDescription),
                 ])]),
-                "additionalProperties": .bool(false),
+                "additionalProperties": .boolean(false),
             ]
             if required { fields["required"] = .array([.string("path")]) }
-            return .object(fields)
+            return .dictionary(fields)
         }
         return [
             BackendWorkspaceTool(
@@ -186,7 +186,7 @@ final class FilesystemWorkspace: LocalWorkspace, LocalWorkspaceHealth {
     // MARK: - Arguments
 
     private static func pathArgument(
-        _ parameters: [String: ManifestJSONValue],
+        _ parameters: [String: GnosticJSONValue],
         required: Bool
     ) -> Result<String, ToolFailure> {
         guard parameters.keys.allSatisfy({ $0 == "path" }) else {

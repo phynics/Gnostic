@@ -300,14 +300,13 @@ public final class GnosticConsumerSession {
 
     /// Observes the raw wire events this session receives.
     ///
-    /// This is a bounded, best-effort diagnostic view of the connection: it
-    /// reports advertisements, deadvertisements, discover/query responses,
-    /// call/return traffic, and channel traffic (including channels whose
-    /// identifiers the caller does not know in advance). The stream retains at
-    /// most 64 pending events and drops the oldest when an observer falls
-    /// behind, so it never blocks the runtime. Events are not persisted or
-    /// replayed, and this API is not a contract for automation; use the typed
-    /// clients for behavior.
+    /// This is a bounded view of the connection: it reports advertisements,
+    /// deadvertisements, discover/query responses, call/return traffic, and
+    /// channel traffic (including channels whose identifiers the caller does not
+    /// know in advance). The signatures are supported. Only delivery is best
+    /// effort: the stream retains at most 64 pending events and drops the oldest
+    /// when an observer falls behind, so it never blocks the runtime. Events are
+    /// not persisted or replayed.
     ///
     /// Observation begins at ``start()`` and stops at ``stop()``. The stream
     /// does not end with the session, so callers cancel their iteration at

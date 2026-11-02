@@ -3,6 +3,9 @@
 import Foundation
 
 /// A JSON value used by backend-owned manifest settings.
+///
+/// This is manifest vocabulary, not a stable product type. Workspace tool
+/// arguments and schemas use `GnosticJSONValue`, which keeps integers exact.
 public enum ManifestJSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)

@@ -151,8 +151,8 @@ public actor MultiplexedWorkspaceProvider {
     }
 
     private static func definition(from tool: BackendWorkspaceTool) -> GnosticWorkspaceToolDefinition {
-        let parameters: [String: ManifestJSONValue]
-        if case let .object(values)? = tool.parametersSchema {
+        let parameters: [String: GnosticJSONValue]
+        if case let .dictionary(values)? = tool.parametersSchema {
             parameters = values
         } else {
             parameters = [:]

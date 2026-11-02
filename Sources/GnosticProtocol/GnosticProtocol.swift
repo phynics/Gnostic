@@ -36,20 +36,6 @@ public struct GnosticProtocolFailure: Codable, Sendable, Equatable {
     }
 }
 
-/// A safe failure ready for the Axoloty Call/Return boundary.
-public struct GnosticPublicFailure: Sendable, Equatable {
-    public let code: Int
-    public let message: String
-
-    public let retryable: Bool
-
-    public init(code: Int, message: String, retryable: Bool = false) {
-        self.code = code
-        self.message = message
-        self.retryable = retryable
-    }
-}
-
 /// The single incompatible network contract implemented by this Gnostic node.
 ///
 /// The major is deliberately explicit on every Gnostic advertisement and
@@ -58,7 +44,7 @@ public struct GnosticPublicFailure: Sendable, Equatable {
 public enum GnosticProtocol {
     public static let currentMajor = 3
 
-    public static func failureMessage(
+    package static func failureMessage(
         reasonCode: String,
         message: String,
         statusCode: Int = 500,
@@ -82,7 +68,7 @@ public enum GnosticProtocol {
     ///
     /// A value outside `100...599` becomes `500`, so a malformed peer status
     /// cannot escape the protocol envelope.
-    public static func boundedStatusCode(_ value: Int) -> Int {
+    package static func boundedStatusCode(_ value: Int) -> Int {
         guard (100...599).contains(value) else { return 500 }
         return value
     }
@@ -101,7 +87,7 @@ public enum GnosticProtocol {
     /// Validates the explicit major in a JSON object before decoding a
     /// concrete operation payload.  This keeps missing and stale majors
     /// distinguishable on Axoloty's string-only handler boundary.
-    public static func validatePayload(_ parameters: String?) throws {
+    package static func validatePayload(_ parameters: String?) throws {
         guard let parameters, let data = parameters.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let major = object["protocolMajor"] as? Int else {
@@ -110,7 +96,7 @@ public enum GnosticProtocol {
         try validate(major)
     }
 
-    public static func decodeMajor<K: CodingKey>(from container: KeyedDecodingContainer<K>, key: K) throws -> Int {
+    package static func decodeMajor<K: CodingKey>(from container: KeyedDecodingContainer<K>, key: K) throws -> Int {
         let value = try container.decodeIfPresent(Int.self, forKey: key)
         try validate(value)
         return value!
@@ -198,7 +184,7 @@ public enum GnosticProtocolError: Error, Codable, Sendable, Equatable, Localized
     /// A deterministic message for Axoloty's string-only Call/Return failure
     /// surface.  The response still carries the current major for clients that
     /// need to recover without guessing.
-    public var failureMessage: String { GnosticProtocol.failureMessage(reasonCode: reasonCode, message: errorDescription ?? reasonCode, statusCode: statusCode) }
+    package var failureMessage: String { GnosticProtocol.failureMessage(reasonCode: reasonCode, message: errorDescription ?? reasonCode, statusCode: statusCode) }
 
     private enum CodingKeys: String, CodingKey { case protocolMajor, reasonCode, message }
 

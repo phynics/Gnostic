@@ -246,7 +246,7 @@ private func makeACPProfileProvider(
             name: runtime.name,
             kind: "fixture",
             nodeID: runtime.nodeID,
-            rawCapabilities: ["session": .object([:])]
+            rawCapabilities: ["session": .dictionary([:])]
         ))
     }
     return manager

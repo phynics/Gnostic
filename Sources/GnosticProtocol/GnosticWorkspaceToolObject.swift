@@ -14,7 +14,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
     public let toolID: String
     public let toolName: String
     public let toolDescription: String
-    public let parametersSchema: [String: ManifestJSONValue]
+    public let parametersSchema: [String: GnosticJSONValue]
     public let usageExample: String?
     public let requiresPermission: Bool
     public let page: Int
@@ -40,7 +40,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
         )
     }
 
-    private init(workspaceID: UUID, toolID: String, toolName: String, toolDescription: String, parametersSchema: [String: ManifestJSONValue], usageExample: String?, requiresPermission: Bool, page: Int, protocolMajor: Int) {
+    private init(workspaceID: UUID, toolID: String, toolName: String, toolDescription: String, parametersSchema: [String: GnosticJSONValue], usageExample: String?, requiresPermission: Bool, page: Int, protocolMajor: Int) {
         self.protocolMajor = protocolMajor
         self.workspaceID = workspaceID
         self.toolID = toolID
@@ -74,7 +74,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
         toolID = try container.decode(String.self, forKey: .toolID)
         toolName = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .toolName))
         toolDescription = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .toolDescription))
-        parametersSchema = try container.decode([String: ManifestJSONValue].self, forKey: .parametersSchema)
+        parametersSchema = try container.decode([String: GnosticJSONValue].self, forKey: .parametersSchema)
         usageExample = try container.decodeIfPresent(String.self, forKey: .usageExample).map { GnosticWirePayload.boundedLabel($0) }
         requiresPermission = try container.decode(Bool.self, forKey: .requiresPermission)
         page = try container.decodeIfPresent(Int.self, forKey: .page) ?? 0
@@ -110,7 +110,7 @@ public final class GnosticWorkspaceToolObject: CoatyObject, @unchecked Sendable 
 }
 
 private extension GnosticWorkspaceTool {
-    init(id: String, name: String, toolDescription: String, parametersSchema: [String: ManifestJSONValue], usageExample: String?, requiresPermission: Bool) {
+    init(id: String, name: String, toolDescription: String, parametersSchema: [String: GnosticJSONValue], usageExample: String?, requiresPermission: Bool) {
         self.id = id
         self.name = name
         self.toolDescription = toolDescription
