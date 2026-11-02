@@ -291,14 +291,30 @@ final class ACPDispatcher: Sendable {
             if existing.conflict {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
             }
-            if let error = existing.updates.last(where: \.isTerminalFailure) {
+            // Text longer than one update spans pages, and the terminal update
+            // comes last. A later page that fails ends this retry with that
+            // error, because a partial replay must not report `end_turn`.
+            var updates = existing.updates
+            var nextSequence = existing.nextSequence
+            while let after = nextSequence {
+                let page = try await client.replay(
+                    timelineID: record.timelineID,
+                    clientTurnID: turnID,
+                    message: text,
+                    afterSequence: after,
+                    providerID: try await boundProviderID(for: record)
+                )
+                updates += page.updates
+                nextSequence = page.updates.isEmpty ? nil : page.nextSequence
+            }
+            if let error = updates.last(where: \.isTerminalFailure) {
                 // A retry of a Turn whose insertion is unknown gets that state
                 // back, structured, and never a second prompt.
                 if error.reasonCode == "insertionUnknown" { throw RemoteTurnClientError.insertionUnknown }
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
-            for update in existing.updates {
+            for update in updates {
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
@@ -309,7 +325,7 @@ final class ACPDispatcher: Sendable {
             publishState(
                 sessionID: record.id,
                 state: "idle",
-                stopReason: Self.endedUnspecified(existing.updates) ? nil : "end_turn",
+                stopReason: Self.endedUnspecified(updates) ? nil : "end_turn",
                 turnID: turnID
             )
             return .dictionary(["messageId": .string(messageID)])
@@ -445,7 +461,9 @@ final class ACPDispatcher: Sendable {
         var lastSequence = 0
         var endedUnspecified = false
 
-        func deliver(_ update: AscendantTurnUpdate) async throws {
+        var deliveredTextBytes = 0
+
+        func deliver(_ update: AscendantTurnUpdate, skippingPermissions skipped: Set<String> = []) async throws {
             announce()
             publishUpdate(
                 sessionID: record.id,
@@ -453,11 +471,13 @@ final class ACPDispatcher: Sendable {
                 update: update,
                 replayed: false
             )
+            if update.carriesAssistantText { deliveredTextBytes += update.text?.utf8.count ?? 0 }
             try await handlePermissionUpdate(
                 update,
                 sessionID: record.id,
                 timelineID: record.timelineID,
-                turnID: turnID
+                turnID: turnID,
+                skipping: skipped
             )
             lastSequence = max(lastSequence, update.sequence)
             endedUnspecified = endedUnspecified || Self.endedUnspecified([update])
@@ -467,17 +487,27 @@ final class ACPDispatcher: Sendable {
         // Turn can complete with updates still in transit. Replay is the
         // authoritative record, so it fills what the live path missed. A
         // failed replay leaves the gap, because the owner may be gone.
-        func catchUp() async throws {
+        func catchUp(turnEnded: Bool) async throws {
+            var missed: [AscendantTurnUpdate] = []
+            var after = lastSequence
             while let page = try? await client.replay(
                 timelineID: record.timelineID,
                 clientTurnID: turnID,
-                afterSequence: lastSequence,
+                afterSequence: after,
                 providerID: providerID
-            ), !page.updates.isEmpty {
-                for update in page.updates where update.sequence > lastSequence {
-                    try await deliver(update)
+            ), let last = page.updates.last, last.sequence > after {
+                missed += page.updates.filter { $0.sequence > after }
+                after = last.sequence
+                guard page.nextSequence != nil else { break }
+            }
+            let skipped = ACPReplayCatchUp.permissionsToSkip(in: missed, turnEnded: turnEnded)
+            for update in missed where update.sequence > lastSequence {
+                let adjusted = ACPReplayCatchUp.removingDeliveredText(from: update, deliveredTextBytes: deliveredTextBytes)
+                if let adjusted {
+                    try await deliver(adjusted, skippingPermissions: skipped)
+                } else {
+                    lastSequence = max(lastSequence, update.sequence)
                 }
-                guard page.nextSequence != nil else { return }
             }
         }
 
@@ -486,16 +516,16 @@ final class ACPDispatcher: Sendable {
             try await Task.sleep(for: .milliseconds(40))
 
             for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
-                if update.sequence > lastSequence + 1 { try await catchUp() }
+                if update.sequence > lastSequence + 1 { try await catchUp(turnEnded: false) }
                 if update.sequence > lastSequence { try await deliver(update) }
             }
 
             switch await completion.value() {
             case .completed(let result):
-                try await catchUp()
+                try await catchUp(turnEnded: true)
                 return (result, lastSequence, endedUnspecified)
             case .failed(let failure):
-                try await catchUp()
+                try await catchUp(turnEnded: true)
                 throw failure.thrown
             case .cancelled: throw CancellationError()
             case nil: break
@@ -542,10 +572,11 @@ final class ACPDispatcher: Sendable {
         _ update: AscendantTurnUpdate,
         sessionID: String,
         timelineID: UUID,
-        turnID: String
+        turnID: String,
+        skipping skipped: Set<String> = []
     ) async throws {
         let states = [update.permissionState].compactMap { $0 } + update.permissionStates
-        for state in states where state.status == "pending" {
+        for state in states where state.status == "pending" && !skipped.contains(state.correlationID) {
             guard requestedPermissionIDs.insert(state.correlationID).inserted else { continue }
             defer { requestedPermissionIDs.remove(state.correlationID) }
             let permissionToken = UUID()

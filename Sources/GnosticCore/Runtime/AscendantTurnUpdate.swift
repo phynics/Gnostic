@@ -179,6 +179,9 @@ public struct AscendantTurnUpdate: Codable, Sendable, Equatable {
     /// not know.
     public var updateKind: AscendantTurnUpdateKind? { .init(rawValue: kind) }
 
+    /// Ends text that retention or a size bound cut.
+    package static let truncationMarker = "…[truncated]"
+
     /// Whether ``text`` holds assistant output, whether streamed live or
     /// accumulated by retention compaction.
     public var carriesAssistantText: Bool {

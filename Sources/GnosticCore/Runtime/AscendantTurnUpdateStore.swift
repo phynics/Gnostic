@@ -194,7 +194,7 @@ public actor AscendantTurnUpdateStore {
     /// next update, so this bounds an update and not the text a client receives.
     private static let maxAssistantTextBytes = 800
     /// Ends text that retention cut, so a client can tell it is incomplete.
-    private static let truncationMarker = "…[truncated]"
+    private static let truncationMarker = AscendantTurnUpdate.truncationMarker
 
     func events() -> AsyncStream<Event> { eventStream }
 

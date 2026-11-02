@@ -55,7 +55,30 @@ struct ACPUpdateTextBoundTests {
         await harness.tearDown()
     }
 
-    private static func agentChunks(_ notifications: [String]) -> [(sequence: Int, text: String)] {
+    @Test(
+        "a retry of a completed Turn replays text that spans replay pages",
+        .timeLimit(.minutes(2)),
+        .enabled(
+            if: ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"] != nil,
+            "GNOSTIC_ACP_AGENT_FIXTURE is not set"
+        )
+    )
+    @MainActor
+    func retryReplaysEveryPage() async throws {
+        guard let harness = try await ACPFrontendHarness.start(promptTimeout: .seconds(90)) else { return }
+        let directive = "[fixture:long-chunk:12000]"
+        let expected = Self.longText(bytes: 12_000)
+        let first = await harness.prompt(directive, clientTurnID: "long-retry")
+        #expect(await harness.wire.response(id: first, timeout: .seconds(90))?.error == nil)
+
+        let retry = await harness.prompt(directive, clientTurnID: "long-retry")
+        #expect(await harness.wire.response(id: retry, timeout: .seconds(30))?.error == nil)
+        let replayed = await Self.agentChunks(harness.wire.notificationsAfterBoundary(), replayed: true)
+        #expect(replayed.map(\.text).joined() == expected)
+        await harness.tearDown()
+    }
+
+    private static func agentChunks(_ notifications: [String], replayed: Bool = false) -> [(sequence: Int, text: String)] {
         notifications.compactMap { line in
             guard line.hasPrefix("session/update "),
                   let object = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(15).utf8)) as? [String: Any],
@@ -64,7 +87,8 @@ struct ACPUpdateTextBoundTests {
                   let content = update["content"] as? [String: Any],
                   let text = content["text"] as? String,
                   let meta = update["_meta"] as? [String: Any],
-                  let sequence = meta["sequence"] as? Int else { return nil }
+                  let sequence = meta["sequence"] as? Int,
+                  (meta["replayed"] as? Bool ?? false) == replayed else { return nil }
             return (sequence, text)
         }
     }
