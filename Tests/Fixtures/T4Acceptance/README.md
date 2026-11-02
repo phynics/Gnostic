@@ -12,8 +12,8 @@ symbol except `gnostic-workspace-attach`.
 | `manifests/node-b.template.json` | Node B: one `filesystem` Workspace. |
 | `container-shell.sh` | Opens an interactive shell in the pinned development container, or runs one command in it. `make shell` cannot. A command holds the build directory lock and may write it. A shell holds no lock and mounts the build directory read-only. |
 | `journal.mjs` | Reads a Timeline journal. It parses the preserved frame text of an `acpUpdate`, strips a byte order mark, and reports a frame it cannot read instead of stopping. `t4.sh` calls it. |
-| `selftest.sh` | Checks the lock behavior of `container-shell.sh` with a fake runtime, and `journal.mjs` with journal-shaped records. Needs `sh`, `flock` and `node`; no container. |
-| `t4.sh` | Shell functions that start and stop the broker and the Nodes, run the client, and print a Timeline journal (`t4_journal_summary`, `t4_journal_text`). |
+| `selftest.sh` | Checks the lock behavior of `container-shell.sh` with a fake runtime, `journal.mjs` with journal-shaped records, and the `t4.sh` process helpers (start guards, PID reuse, freeze and interrupt, prompt wait) with stand-in processes. `T4_SELFTEST_T4=<file>` runs the checks against another copy of `t4.sh`. Needs `sh`, `flock` and `node`; no container. |
+| `t4.sh` | Shell functions that start and stop the broker and the Nodes, run the client, and print a Timeline journal (`t4_journal_summary`, `t4_journal_text`). They record each process's PID, start time and command line, and signal or refuse only after the record still matches the live process, so a reused PID is never signalled. |
 | `client.mjs` | An ACP v2 client that spawns `gnostic acp` and answers permission requests. |
 | `package.json`, `package-lock.json` | Pin `@agentclientprotocol/sdk` `2.0.0`, the same version as the `ACPAgent` fixture. |
 

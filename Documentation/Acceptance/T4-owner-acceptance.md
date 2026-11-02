@@ -678,11 +678,14 @@ Turn, and that Gnostic never runs an admitted Turn twice.
 
    `t4_node_kill a` sends `SIGKILL` to the `gnostic serve` process. The same
    command works on macOS and Linux, and the process gets no chance to shut down.
-   To kill from another terminal, signal the process ID that `t4_node_start` saved
-   for this work directory: `kill -KILL "$(cat "$T4_WORK/pids/a")"`. Do not match
-   the command line with `pkill -f`: it also kills Node A of any other acceptance
-   work directory on the machine. The Runtime child of Node A also ends when its
-   stdio closes.
+   To kill from another terminal, export the same `T4_WORK` there, source
+   `t4.sh`, and run `t4_node_kill a`. Do not use `kill "$(cat "$T4_WORK/pids/a")"`
+   or `pkill -f`: the system reuses a process ID after the process exits, and
+   `pkill -f` also matches Node A of any other acceptance work directory. The
+   helpers record the start time and the command line next to the PID, as
+   `ps -o lstart= -o command= -p <pid>` prints them, and check both before every
+   signal. A process that does not match is not signalled: the helper says so and
+   clears the record. The Runtime child of Node A also ends when its stdio closes.
 
 3. Look at the broker's view five seconds later, then wait for the client:
 
@@ -950,7 +953,8 @@ apply, and each one fails in a defined way.
 Drill 4 left Node A and Node B running. Stop both and start them again, with
 the `large` variant for Node A. Its Workspace tool reads `large.txt`, which is
 6,200 bytes. `t4_node_start` refuses to start a Node whose recorded process is
-still alive, so a Node that you forgot to stop cannot run twice:
+still alive (the record holds the start time and command line, so a recycled process
+ID is not mistaken for the Node), and a Node that you forgot to stop cannot run twice:
 
 ```sh
 t4_node_stop a; t4_node_stop b
@@ -1131,7 +1135,8 @@ t4_node_stop a; t4_node_stop b; t4_broker_stop
 rm -rf "$T4_WORK"
 ```
 
-If a process does not stop, `kill -KILL "$(cat "$T4_WORK/pids/<name>")"`.
+If a process does not stop, run `t4_node_kill <name>`. It checks the recorded start
+time and command line first, so it never signals a process that is not yours.
 
 ## Record the result
 
