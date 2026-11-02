@@ -6,8 +6,10 @@ import GnosticProtocol
 
 /// One Gnostic-owned or ACP event in a Timeline's authoritative journal.
 ///
-/// ACP updates are retained as their protocol value, including `_meta` and
-/// update kinds this version of Gnostic does not recognize. A Turn admission
+/// ACP updates are retained as the text of the frame the Runtime sent, so the
+/// journal keeps fields the typed form does not model, `_meta`, update kinds
+/// this version of Gnostic does not recognize, and updates that do not fit
+/// their type. A Turn admission
 /// retains the prompt blocks and their canonical digest.
 public enum TimelineJournalPayload: Codable, Sendable, Equatable {
     case timelineCreated(
@@ -34,7 +36,7 @@ public enum TimelineJournalPayload: Codable, Sendable, Equatable {
         prompt: [ACPContentBlock]
     )
     case acpUpdate(sessionID: String, update: TurnSessionUpdate)
-    case rawACPUpdate(sessionID: String, clientTurnID: String?, update: ACPSessionUpdate)
+    case rawACPUpdate(sessionID: String, clientTurnID: String?, update: ReceivedACPUpdate)
     case turnCompleted(
         clientTurnID: String,
         outcome: TurnTerminalOutcome,
@@ -803,9 +805,26 @@ public struct TimelineJournalRecorder: AscendantBackendOptionalCapability, Senda
         update: ACPSessionUpdate,
         causalSpanID: UUID? = nil
     ) async throws {
+        try await appendRawACPUpdate(
+            timelineID: timelineID,
+            sessionID: sessionID,
+            clientTurnID: clientTurnID,
+            receivedUpdate: ReceivedACPUpdate(update),
+            causalSpanID: causalSpanID
+        )
+    }
+
+    /// Commits one ACP update that is outside an identified Turn, exactly as received.
+    public func appendRawACPUpdate(
+        timelineID: UUID,
+        sessionID: String,
+        clientTurnID: String?,
+        receivedUpdate: ReceivedACPUpdate,
+        causalSpanID: UUID? = nil
+    ) async throws {
         let journal = try await journals.journal(for: timelineID)
         try await journal.append(
-            .rawACPUpdate(sessionID: sessionID, clientTurnID: clientTurnID, update: update),
+            .rawACPUpdate(sessionID: sessionID, clientTurnID: clientTurnID, update: receivedUpdate),
             causalSpanID: causalSpanID
         )
     }

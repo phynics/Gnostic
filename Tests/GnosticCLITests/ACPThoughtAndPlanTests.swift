@@ -153,7 +153,7 @@ struct ACPThoughtAndPlanTests {
         for timelineID in try await store.timelineIDs() {
             for record in try await store.journal(for: timelineID).replay() {
                 guard case let .acpUpdate(_, journaled) = record.payload,
-                      case let .planUpdate(update) = journaled.update,
+                      case let .planUpdate(update)? = journaled.update,
                       case let .items(_, entries, _) = update.plan else { continue }
                 count = max(count, entries.count)
             }

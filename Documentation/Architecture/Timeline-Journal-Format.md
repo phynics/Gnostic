@@ -68,8 +68,58 @@ sequence the Timeline has admitted, so it increases in admission order. A reader
 recomputes the digest from the stored prompt and tag, and it quarantines the
 Timeline when they disagree. A Turn completion stores the Turn's outcome:
 `completed`, `endedUnspecified`, `cancelled`, `failed`, `insertionUnknown`, or
-`unavailable`. An ACP update stores the `ACPSessionUpdate` value as received.
-That value keeps `_meta` and unknown update kinds.
+`unavailable`. An ACP update stores the received `session/update` frame as a
+JSON string in its `update` field. The string is the exact text of the line the
+Runtime wrote, without its newline, as UTF-8 bytes. That includes a leading byte
+order mark and a trailing carriage return when the Runtime wrote them. Gnostic
+does not decode and encode the text again, so it keeps `_meta`, unknown update
+kinds, fields that Gnostic's typed form of a known kind does not model, number
+text such as `1.0` or `18446744073709551617`, duplicate keys, key order, and
+spacing. Text that is not valid UTF-8 is not a line: the transport ends, as it
+always has, and nothing is repaired or journaled.
+
+The transport journals a `session/update` notification when its `sessionId` is a
+string that is not empty, and its text is nested at most 128 levels deep. A
+frame is journaled when its `update` is not an object, has no `sessionUpdate`,
+or does not fit the fixed type of its kind. Gnostic's own consumers skip such an
+update, and the Turn does not fail. The journal's `sessionID` field repeats the
+frame's `sessionId`. A reader gets the typed form by decoding `params.update` of
+the stored text. It must not treat the typed form as the record of the update.
+
+These lines are not journaled. A line itself fails neither the transport nor a
+Turn. Skipping one can still affect a Turn: a skipped prompt response ends the
+Turn as `insertionUnknown` when its timeout expires, and a skipped idle
+`state_update` can end the Turn as a failure.
+
+- A `session/update` notification with no usable `sessionId` cannot belong to a
+  Timeline. The transport logs a warning, which names no Runtime content.
+- A message nested more than 128 levels deep. The transport measures the
+  nesting of every line it reads, outside JSON strings, before it decodes the
+  line. It logs a warning, which names no Runtime content, and skips the line.
+  A response that is this deep is skipped too, so its request waits for its own
+  timeout. The bound keeps a Runtime from overflowing a thread's stack with one
+  frame. A line with a NUL byte is skipped the same way, because a decoder can
+  read it as UTF-16 or UTF-32, and the measurement would not hold. The Workspace
+  gateway applies both checks to a request body and answers HTTP 400.
+- A `session/update` notification that has no typed update and names a Session
+  that Gnostic does not know, which includes one that arrives while a Session is
+  being created for another Timeline. The backend logs a warning, which names no
+  Runtime content. A frame that has a typed update and names an unknown Session
+  is still an error that ends the connection.
+- A line that is not valid JSON-RPC is not a message. The transport drops it
+  without a log entry, as it always has. That includes a frame too malformed to
+  decode.
+
+A reader also accepts the earlier shape of the `update` field, a JSON object
+that holds the update. It reads that object as a typed update with no frame.
+The committed fixture `timeline-v1.golden.jsonl` has both ACP payloads in this
+shape.
+
+A frame is part of its record, so the record is as large as the frame plus its
+JSON escapes. The journal sets no limit on the size of a record. The transport
+sets none on the size of a line, so a large frame is journaled whole. A frame
+of N bytes takes more than N bytes of journal, up to six times N when it is
+mostly control characters.
 
 A `projectChanged` event stores the desired `Project` and retires the latest
 Session projection before the old Session is closed. Recovery uses this desired
@@ -116,6 +166,14 @@ development build wrote fails the digest check when Gnostic opens it, so the
 Timeline is quarantined and nothing is rewritten. Discard such a journal.
 After the first release, a digest change needs a new format version and a
 migration.
+
+Before release, Gnostic also changed what an ACP update record holds. It
+stored the update as a JSON object that it rebuilt from a typed value, which
+dropped fields and dropped a known kind that did not fit its type. Then it
+stored a decoded JSON value, which changed number text and could not be encoded
+again at great depth. It now stores the text of the received frame. The record
+layout and the format version did not change. A journal that an earlier
+development build wrote still opens and replays in its stored shape.
 
 ## Schema changes
 

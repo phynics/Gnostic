@@ -148,7 +148,9 @@ struct TimelineJournalGoldenTests {
         #expect(payloads[9] == .rawACPUpdate(
             sessionID: "session-golden",
             clientTurnID: nil,
-            update: .other(sessionUpdate: "vendor_idle", fields: ["_meta": .object(["k": .string("v")])])
+            update: ReceivedACPUpdate(
+                .other(sessionUpdate: "vendor_idle", fields: ["_meta": .object(["k": .string("v")])])
+            )
         ))
         #expect(payloads[10] == .permissionDecision(
             correlationID: "perm-1", clientTurnID: "golden-turn", decision: "unavailable", approved: false

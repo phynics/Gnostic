@@ -2,6 +2,7 @@
 
 import Foundation
 import GnosticACPWire
+import GnosticCore
 import GnosticProtocol
 
 /// Nonblocking ACP transport for a child process's stdin and stdout pipes.
@@ -13,8 +14,9 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     private let sendContinuation: AsyncStream<ACPJSONRPCMessage>.Continuation
     private let input: FileHandle
     private let output: FileHandle
-    private let onSessionUpdate: @Sendable (String, ACPSessionUpdate) async throws -> Void
+    private let onSessionUpdate: @Sendable (String, ReceivedACPUpdate) async throws -> Void
     private let onFailure: @Sendable () -> Void
+    private let onDiagnostic: @Sendable (String) -> Void
     private let lock = NSLock()
     private var started = false
     private var closed = false
@@ -25,13 +27,15 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (String, ACPSessionUpdate) async throws -> Void,
-        onFailure: @escaping @Sendable () -> Void
+        onSessionUpdate: @escaping @Sendable (String, ReceivedACPUpdate) async throws -> Void,
+        onFailure: @escaping @Sendable () -> Void,
+        onDiagnostic: @escaping @Sendable (String) -> Void = { ServeLogging.warn($0, component: "acp.transport") }
     ) {
         self.input = input
         self.output = output
         self.onSessionUpdate = onSessionUpdate
         self.onFailure = onFailure
+        self.onDiagnostic = onDiagnostic
         (messages, messageContinuation) = AsyncStream.makeStream()
         (sendStream, sendContinuation) = AsyncStream.makeStream()
     }
@@ -43,7 +47,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
             BrokenPipeSignal.disable(onWriteEnd: output.fileDescriptor)
             let readerTask = Task.detached(
                 executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.stdout")
-            ) { [weak self, input, messageContinuation, onSessionUpdate] in
+            ) { [weak self, input, messageContinuation, onSessionUpdate, onDiagnostic] in
                 defer {
                     messageContinuation.finish()
                 }
@@ -53,14 +57,24 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                             self?.fail()
                             return
                         }
-                        guard let data = line.data(using: .utf8) else { continue }
-                        guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: data) else { continue }
+                        // The text is a Runtime's. Check it before anything recursive decodes it.
+                        let bytes = Data(line.utf8)
+                        guard JSONNesting.isSafeToDecode(bytes) else {
+                            onDiagnostic("Ignored a message that has a NUL byte or nests deeper than \(JSONNesting.maximumDecodedDepth) levels.")
+                            continue
+                        }
+                        // A byte order mark stays in the frame text, but the decoder does not need it.
+                        let decodable = bytes.starts(with: [0xEF, 0xBB, 0xBF]) ? Data(bytes.dropFirst(3)) : bytes
+                        guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: decodable) else { continue }
                         if case .notification(let notification) = message,
-                           notification.method == ACPv2Protocol.ClientMethod.sessionUpdate,
-                           let params = notification.params,
-                           let paramsData = try? JSONEncoder().encode(params),
-                           let sessionNotification = try? JSONDecoder().decode(ACPSessionNotification.self, from: paramsData) {
-                             try await onSessionUpdate(sessionNotification.sessionId, sessionNotification.update)
+                           notification.method == ACPv2Protocol.ClientMethod.sessionUpdate {
+                            // The journal keeps the text of the line. A frame with a usable
+                            // sessionId is journaled even when its update does not decode.
+                            if let sessionID = Self.sessionID(in: notification.params) {
+                                try await onSessionUpdate(sessionID, ReceivedACPUpdate(frame: line))
+                            } else {
+                                onDiagnostic("Ignored a session/update without a usable sessionId; it cannot belong to a Timeline.")
+                            }
                         }
                         messageContinuation.yield(message)
                     }
@@ -87,6 +101,14 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
             return true
         }
         guard didStart else { throw ACPTransportError.transportClosed }
+    }
+
+    /// The notification's `sessionId`, when it is a non-empty string.
+    private static func sessionID(in params: ACPValue?) -> String? {
+        guard case let .object(fields)? = params,
+              case let .string(sessionID)? = fields["sessionId"],
+              !sessionID.isEmpty else { return nil }
+        return sessionID
     }
 
     func send(_ message: ACPJSONRPCMessage) async throws {
@@ -148,12 +170,21 @@ private extension FileHandle {
         var data = Data()
         while true {
             guard let byte = try read(upToCount: 1), !byte.isEmpty else {
-                return data.isEmpty ? nil : String(data: data, encoding: .utf8)
+                return data.isEmpty ? nil : Self.text(of: data)
             }
             if byte[0] == 0x0A {
-                return String(data: data, encoding: .utf8)
+                return Self.text(of: data)
             }
             data.append(byte)
         }
+    }
+
+    /// The UTF-8 text of `data`, or `nil` when `data` is not valid UTF-8.
+    ///
+    /// `String(data:encoding:)` drops a leading byte order mark, so it only decides
+    /// validity. The returned text keeps every byte, and invalid input is never repaired.
+    private static func text(of data: Data) -> String? {
+        guard String(data: data, encoding: .utf8) != nil else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 }
