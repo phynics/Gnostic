@@ -166,15 +166,19 @@ sample_tree() {
 
 # Runs a command, sampling and then terminating it and its descendants after $1
 # seconds, and returns 124 if that happened. macOS has no timeout(1). The watchdog
-# logs to $timeout_marker, not to the pipe. It records the descendants before it
-# samples, and again before it signals them, because a descendant that outlives
-# its parent can no longer be found through the parent. It finishes escalating
-# before this returns.
+# logs to $timeout_marker, not to the pipe. It signals the command's process group
+# and the descendants recorded before and after sampling, because a Runtime can
+# lead its own group, and a descendant that outlives its parent can no longer be
+# found through the parent. It finishes escalating before this returns.
 run_bounded() {
     local seconds=$1 status=0 pid watchdog child
     shift
+    # Job control gives the command its own process group. Its members can still
+    # be signalled after their parent dies, including any started during sampling.
+    set -m
     "$@" &
     pid=$!
+    set +m
     (
         exec >/dev/null 2>&1
         sleep "$seconds"
@@ -183,10 +187,10 @@ run_bounded() {
         sample_tree "$pid"
         targets="$targets $(descendants "$pid")"
         # shellcheck disable=SC2086
-        kill -TERM $targets 2>/dev/null || true
+        kill -TERM -- "-$pid" $targets 2>/dev/null || true
         sleep 10
         # shellcheck disable=SC2086
-        kill -KILL $targets 2>/dev/null || true
+        kill -KILL -- "-$pid" $targets 2>/dev/null || true
     ) &
     watchdog=$!
     wait "$pid" || status=$?
