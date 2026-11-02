@@ -48,7 +48,7 @@ struct RuntimeObservationIntegrationTests {
 
         let runtime = try await NodeRuntime(plan: manifest.compileLaunchPlan(), adapters: adapters)
         try await runtime.start()
-        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "installed-observer")
+        let request = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "installed-observer")
         let first = try await runtime.turn(request)
         let replay = try await runtime.turn(request)
 
@@ -71,9 +71,9 @@ struct RuntimeObservationIntegrationTests {
             "transport-advertisements",
         ]
         let allowedLabels: Set<String> = [
-            "observe-ascendant", "observe-runtime-instance", "observe-timeline", "observe-workspace", "observe-deadvertise",
-            "turn-observation", "workspace-handler", "workspace-query-responder", "ascendant-turn",
-            "ascendant-turn-replay", "ascendant-turn-cancel", "permission-handler", "permission-observation", "timeline-status",
+            "observe-runtime-instance", "observe-timeline", "observe-workspace", "observe-deadvertise",
+            "turn-observation", "workspace-handler", "workspace-query-responder", "turn",
+            "turn-replay", "turn-cancel", "permission-handler", "permission-observation", "timeline-status",
             "timeline-management", "workspace-operations", "diagnostics", "discover-responder", "advertisement-teardown",
             "advertisements", "permission", "registrations", "responders", "turn-update-publisher",
             "network-resolution", "subscription", "transport",

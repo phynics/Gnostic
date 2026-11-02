@@ -14,14 +14,6 @@ final class NodeProjectionRelay {
         transport?.projectTimeline(timeline, replacing: replacing)
     }
 
-    func projectAscendant(
-        _ identity: AscendantRuntimeIdentity,
-        health: AscendantBackendHealth,
-        replacing: Bool
-    ) {
-        transport?.projectAscendant(identity, health: health, replacing: replacing)
-    }
-
     func projectRuntimeInstance(_ instance: GnosticRuntimeInstanceObject, replacing: Bool) {
         transport?.projectRuntimeInstance(instance, replacing: replacing)
     }

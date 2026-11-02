@@ -52,26 +52,26 @@ struct ServeOperationContractTests {
         try validateReturnEvent(String(decoding: inner, as: UTF8.self))
     }
 
-    @Test("ascendant.turn decodes the request, runs the closure, and encodes the result")
+    @Test("turn decodes the request, runs the closure, and encodes the result")
     func turnContract() async throws {
         let provider = AscendantTurnProvider { request in
-            AscendantTurnResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
+            TurnResult(clientTurnID: request.clientTurnID, text: "echo: \(request.message)")
         }
-        let request = AscendantTurnRequest(message: "hello over mqtt", timelineID: UUID(), clientTurnID: "pi:entry-1")
+        let request = TurnRequest(message: "hello over mqtt", timelineID: UUID(), clientTurnID: "pi:entry-1")
         let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(request))
-        let result = try JSONDecoder().decode(AscendantTurnResult.self, from: Data(try resultText(response).utf8))
+        let result = try JSONDecoder().decode(TurnResult.self, from: Data(try resultText(response).utf8))
         #expect(result.text == "echo: hello over mqtt")
         #expect(result.clientTurnID == request.clientTurnID)
         #expect(!result.replayed)
     }
 
-    @Test("ascendant.turn hides unexpected executor details at the wire seam")
+    @Test("turn hides unexpected executor details at the wire seam")
     func turnUnexpectedFailureDoesNotLeakDetails() async throws {
         struct SentinelFailure: Error { let detail = "sentinel-secret-turn" }
         let provider = AscendantTurnProvider { _ in throw SentinelFailure() }
         let response = try await provider.handle(
             operation: AscendantTurnProvider.turnOperation,
-            parameters: payload(AscendantTurnRequest(message: "hello", timelineID: UUID()))
+            parameters: payload(TurnRequest(message: "hello", timelineID: UUID()))
         )
         guard case let .failure(code, message, _) = response else {
             Issue.record("expected a structured turn failure")
@@ -80,11 +80,11 @@ struct ServeOperationContractTests {
         #expect(code == 500)
         let failure = try JSONDecoder().decode(GnosticProtocolFailure.self, from: Data(message.utf8))
         #expect(failure.reasonCode == "internalError")
-        #expect(failure.message == "The ascendant turn failed.")
+        #expect(failure.message == "The Turn failed.")
         #expect(!message.contains("sentinel-secret-turn"))
     }
 
-    @Test("ascendant.turn coordinator redacts sentinel details in replay updates")
+    @Test("turn coordinator redacts sentinel details in replay updates")
     func turnCoordinatorReplayFailureDoesNotLeakDetails() async throws {
         let timelineID = UUID()
         let store = AscendantTurnUpdateStore()
@@ -97,7 +97,7 @@ struct ServeOperationContractTests {
             },
             replayStore: store
         )
-        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "coordinator-sentinel")
+        let request = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "coordinator-sentinel")
         let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(request))
         guard case let .failure(code, message, _) = response else {
             Issue.record("expected a structured coordinator failure")
@@ -108,11 +108,11 @@ struct ServeOperationContractTests {
         #expect(!message.contains("sentinel-secret-coordinator"))
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "coordinator-sentinel")
-        #expect(replay.updates.last?.text == "The ascendant turn failed.")
+        #expect(replay.updates.last?.text == "The Turn failed.")
         #expect(!replay.updates.contains { $0.text?.contains("sentinel-secret-coordinator") == true })
     }
 
-    @Test("ascendant.turn preserves backend status, reason, retry, and safe replay metadata")
+    @Test("turn preserves backend status, reason, retry, and safe replay metadata")
     func turnBackendFailuresPreserveStructuredMetadata() async throws {
         let failures: [(String, AscendantBackendError, Int, String, Bool)] = [
             ("invalid", .invalidConfiguration("secret invalid configuration"), 400, "invalidConfiguration", false),
@@ -130,7 +130,7 @@ struct ServeOperationContractTests {
                 },
                 replayStore: store
             )
-            let request = AscendantTurnRequest(message: id, timelineID: timelineID, clientTurnID: "turn-\(id)")
+            let request = TurnRequest(message: id, timelineID: timelineID, clientTurnID: "turn-\(id)")
             let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(request))
             guard case let .failure(code, message, _) = response else {
                 Issue.record("expected backend failure for \(id)")
@@ -152,26 +152,26 @@ struct ServeOperationContractTests {
         }
     }
 
-    @Test("ascendant.turn preserves direct cancellation")
+    @Test("turn preserves direct cancellation")
     func turnCancellationIsRethrown() async throws {
         let provider = AscendantTurnProvider { _ in throw CancellationError() }
         await #expect(throws: CancellationError.self) {
             _ = try await provider.handle(
                 operation: AscendantTurnProvider.turnOperation,
-                parameters: payload(AscendantTurnRequest(message: "hello", timelineID: UUID()))
+                parameters: payload(TurnRequest(message: "hello", timelineID: UUID()))
             )
         }
     }
 
-    @Test("ascendant.turn conflict is a structured failure")
+    @Test("turn conflict is a structured failure")
     func turnConflictContract() async throws {
         let coordinator = AscendantTurnCoordinator()
         let provider = AscendantTurnProvider { request in
             try await coordinator.execute(request, ascendantID: UUID()) { "echo: \(request.message)" }
         }
         let timelineID = UUID()
-        let first = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
-        let conflict = AscendantTurnRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-1")
+        let first = TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
+        let conflict = TurnRequest(message: "second", timelineID: timelineID, clientTurnID: "turn-1")
 
         _ = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(first))
         let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(conflict))
@@ -193,10 +193,10 @@ struct ServeOperationContractTests {
             },
             replayStore: store
         )
-        let first = AscendantTurnRequest(message: "first", timelineID: UUID(), clientTurnID: "first")
+        let first = TurnRequest(message: "first", timelineID: UUID(), clientTurnID: "first")
         _ = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(first))
 
-        let rejected = AscendantTurnRequest(message: "rejected", timelineID: UUID(), clientTurnID: "rejected")
+        let rejected = TurnRequest(message: "rejected", timelineID: UUID(), clientTurnID: "rejected")
         let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(rejected))
         guard case let .failure(code, _, _) = response else {
             Issue.record("expected a structured capacity failure")
@@ -231,7 +231,7 @@ struct ServeOperationContractTests {
             replayStore: store
         )
         _ = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(
-            AscendantTurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: "active-terminal")
+            TurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: "active-terminal")
         ))
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "active-terminal")
@@ -239,7 +239,7 @@ struct ServeOperationContractTests {
         #expect(replay.updates.first?.kind == "cancellation")
     }
 
-    @Test("ascendant.turn.replay returns bounded identified-turn updates")
+    @Test("turn.replay returns bounded identified-turn updates")
     func turnReplayContract() async throws {
         let timelineID = UUID()
         let store = AscendantTurnUpdateStore()
@@ -252,13 +252,13 @@ struct ServeOperationContractTests {
             },
             replayStore: store
         )
-        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-replay")
+        let request = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-replay")
         _ = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(request))
 
-        let replayRequest = AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: "turn-replay")
+        let replayRequest = TurnReplayRequest(timelineID: timelineID, clientTurnID: "turn-replay")
         let response = try await provider.handle(operation: AscendantTurnProvider.replayOperation, parameters: payload(replayRequest))
         let replay = try JSONDecoder().decode(
-            AscendantTurnReplay.self,
+            TurnReplay.self,
             from: Data(try resultText(response).utf8)
         )
         #expect(replay.updates.map(\.kind) == ["assistant_text", "completion"])
@@ -266,7 +266,7 @@ struct ServeOperationContractTests {
         #expect(replay.updates.last?.text == "echo: hello")
     }
 
-    @Test("ascendant.turn keeps streamed text without appending a duplicate final message")
+    @Test("turn keeps streamed text without appending a duplicate final message")
     func turnStreamReplayContract() async throws {
         let timelineID = UUID()
         let store = AscendantTurnUpdateStore()
@@ -292,7 +292,7 @@ struct ServeOperationContractTests {
             replayStore: store
         )
         _ = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(
-            AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
+            TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-stream")
         ))
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "turn-stream")
@@ -309,13 +309,13 @@ struct ServeOperationContractTests {
         let provider = AscendantTurnProvider(
             execute: { request in
                 try await coordinator.execute(request, ascendantID: UUID()) {
-                    throw AscendantTurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+                    throw TurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
                 }
             },
             replayStore: store
         )
         _ = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(
-            AscendantTurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: clientTurnID)
+            TurnRequest(message: "cancel", timelineID: timelineID, clientTurnID: clientTurnID)
         ))
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: clientTurnID)
@@ -323,16 +323,16 @@ struct ServeOperationContractTests {
         #expect(replay.updates.last?.kind == "cancellation")
     }
 
-    @Test("ascendant.turn result decoder rejects a missing protocol major")
+    @Test("turn result decoder rejects a missing protocol major")
     func turnResultRejectsMissingProtocolMajor() {
         #expect(throws: GnosticProtocolError.self) {
-            _ = try JSONDecoder().decode(AscendantTurnResult.self, from: Data(#"{"text":"legacy"}"#.utf8))
+            _ = try JSONDecoder().decode(TurnResult.self, from: Data(#"{"text":"legacy"}"#.utf8))
         }
     }
 
-    @Test("ascendant.turn rejects a malformed payload")
+    @Test("turn rejects a malformed payload")
     func turnRejectsMalformed() async throws {
-        let provider = AscendantTurnProvider { _ in AscendantTurnResult(text: "unused") }
+        let provider = AscendantTurnProvider { _ in TurnResult(text: "unused") }
         let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: "not-json")
         guard case .failure(let code, _, _) = response else {
             Issue.record("expected failure for malformed payload")
@@ -341,10 +341,10 @@ struct ServeOperationContractTests {
         #expect(code == 400)
     }
 
-    @Test("ascendant.turn rejects a blank client turn id")
+    @Test("turn rejects a blank client turn id")
     func turnRejectsBlankTurnID() async throws {
-        let provider = AscendantTurnProvider { _ in AscendantTurnResult(text: "unused") }
-        let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "  ")
+        let provider = AscendantTurnProvider { _ in TurnResult(text: "unused") }
+        let request = TurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "  ")
         let response = try await provider.handle(operation: AscendantTurnProvider.turnOperation, parameters: payload(request))
         guard case let .failure(code, _, _) = response else {
             Issue.record("expected failure for a blank client turn id")
@@ -372,7 +372,7 @@ struct ServeOperationContractTests {
             try await Task.sleep(for: .milliseconds(5))
         }
 
-        let accepted = try await provider.handle(parameters: payload(AscendantPermissionResponse(
+        let accepted = try await provider.handle(parameters: payload(TurnPermissionResponse(
             correlationID: request.correlationID,
             timelineID: timelineID,
             clientTurnID: request.clientTurnID,
@@ -384,7 +384,7 @@ struct ServeOperationContractTests {
         }
         #expect(await decision.value == .approved)
 
-        let duplicate = try await provider.handle(parameters: payload(AscendantPermissionResponse(
+        let duplicate = try await provider.handle(parameters: payload(TurnPermissionResponse(
             correlationID: request.correlationID,
             timelineID: timelineID,
             clientTurnID: request.clientTurnID,

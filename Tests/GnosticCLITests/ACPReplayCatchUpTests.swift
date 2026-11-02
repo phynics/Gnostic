@@ -7,16 +7,16 @@ import Testing
 /// What a prompt takes from replay after it missed live updates (issue #698).
 @Suite("ACP replay catch-up")
 struct ACPReplayCatchUpTests {
-    private func permission(_ id: String, _ status: String) -> AscendantTurnUpdate {
-        AscendantTurnUpdate(
+    private func permission(_ id: String, _ status: String) -> TurnUpdate {
+        TurnUpdate(
             sequence: 1,
             kind: .permissionState,
-            permissionState: AscendantPermissionState(correlationID: id, toolCallID: "tool", title: "Run", status: status)
+            permissionState: TurnPermissionState(correlationID: id, toolCallID: "tool", title: "Run", status: status)
         )
     }
 
-    private func snapshot(_ text: String) -> AscendantTurnUpdate {
-        AscendantTurnUpdate(sequence: 9, kind: .assistantTextSnapshot, text: text)
+    private func snapshot(_ text: String) -> TurnUpdate {
+        TurnUpdate(sequence: 9, kind: .assistantTextSnapshot, text: text)
     }
 
     @Test("a mid-Turn catch-up mediates only a request still pending")
@@ -50,23 +50,23 @@ struct ACPReplayCatchUpTests {
 
     @Test("a snapshot cut before the client's position yields only the marker")
     func cutSnapshotKeepsTheMarker() {
-        let cut = "AB" + AscendantTurnUpdate.truncationMarker
+        let cut = "AB" + TurnUpdate.truncationMarker
         let result = ACPReplayCatchUp.removingDeliveredText(from: snapshot(cut), deliveredTextBytes: 500)
-        #expect(result?.text == AscendantTurnUpdate.truncationMarker)
+        #expect(result?.text == TurnUpdate.truncationMarker)
     }
 
     @Test("a snapshot cut after the client's position keeps the new text and the marker")
     func cutSnapshotKeepsNewText() {
-        let cut = "ABCD" + AscendantTurnUpdate.truncationMarker
+        let cut = "ABCD" + TurnUpdate.truncationMarker
         let result = ACPReplayCatchUp.removingDeliveredText(from: snapshot(cut), deliveredTextBytes: 2)
-        #expect(result?.text == "CD" + AscendantTurnUpdate.truncationMarker)
+        #expect(result?.text == "CD" + TurnUpdate.truncationMarker)
     }
 
     @Test("a snapshot keeps its tool states when it adds no text")
     func snapshotKeepsToolStates() {
-        let update = AscendantTurnUpdate(
+        let update = TurnUpdate(
             sequence: 9, kind: .assistantTextSnapshot, text: "ABC",
-            toolStates: [AscendantToolState(toolCallID: "tool", status: "completed")]
+            toolStates: [TurnToolState(toolCallID: "tool", status: "completed")]
         )
         let result = ACPReplayCatchUp.removingDeliveredText(from: update, deliveredTextBytes: 3)
         #expect(result?.text == nil)
@@ -75,7 +75,7 @@ struct ACPReplayCatchUpTests {
 
     @Test("other updates pass through unchanged")
     func otherUpdatesAreUntouched() {
-        let update = AscendantTurnUpdate(sequence: 2, kind: .assistantText, text: "ABC")
+        let update = TurnUpdate(sequence: 2, kind: .assistantText, text: "ABC")
         #expect(ACPReplayCatchUp.removingDeliveredText(from: update, deliveredTextBytes: 3)?.text == "ABC")
     }
 }

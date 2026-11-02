@@ -4,99 +4,19 @@ import Axoloty
 import Foundation
 import GnosticProtocol
 
-/// The wire payload for a remote Ascendant Turn.
-public struct AscendantTurnRequest: Codable, Sendable {
-    public let protocolMajor: Int
-    public let message: String
-    public let timelineID: UUID
-    public let clientTurnID: String?
-
-    public init(message: String, timelineID: UUID, clientTurnID: String? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.message = message
-        self.timelineID = timelineID
-        self.clientTurnID = clientTurnID
-    }
-
-    private enum CodingKeys: String, CodingKey { case protocolMajor, message, timelineID, clientTurnID }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(protocolMajor, forKey: .protocolMajor)
-        try container.encode(try GnosticWirePayload.canonicalTurnMessage(message), forKey: .message)
-        try container.encode(timelineID, forKey: .timelineID)
-        try container.encodeIfPresent(clientTurnID, forKey: .clientTurnID)
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        message = try GnosticWirePayload.canonicalTurnMessage(try container.decode(String.self, forKey: .message))
-        timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
-            try GnosticWirePayload.canonicalClientTurnID($0)
-        }
-    }
-}
-
-/// The wire result of a remote Ascendant Turn.
-public struct AscendantTurnResult: Codable, Sendable {
-    public let protocolMajor: Int
-    public let clientTurnID: String?
-    public let text: String
-    public let replayed: Bool
-
-    public init(clientTurnID: String? = nil, text: String, replayed: Bool = false, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.clientTurnID = clientTurnID
-        self.text = GnosticWirePayload.prefix(text, maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes)
-        self.replayed = replayed
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case protocolMajor
-        case clientTurnID
-        case text
-        case replayed
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(protocolMajor, forKey: .protocolMajor)
-        if let clientTurnID {
-            try container.encode(try GnosticWirePayload.canonicalClientTurnID(clientTurnID), forKey: .clientTurnID)
-        }
-        try container.encode(text, forKey: .text)
-        try container.encode(replayed, forKey: .replayed)
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        clientTurnID = try container.decodeIfPresent(String.self, forKey: .clientTurnID).map {
-            try GnosticWirePayload.canonicalClientTurnID($0)
-        }
-        text = GnosticWirePayload.prefix(
-            try container.decode(String.self, forKey: .text),
-            maximumBytes: GnosticWirePayload.maximumTurnResultTextBytes
-        )
-        replayed = try container.decodeIfPresent(Bool.self, forKey: .replayed) ?? false
-    }
-}
-
-/// Hosts the `me.atkn.gnostic.ascendant.turn` unary Call/Return operation.
+/// Hosts the `me.atkn.gnostic.turn` unary Call/Return operation.
 ///
-/// A thin wire adapter: decodes an `AscendantTurnRequest`, invokes the injected
+/// A thin wire adapter: decodes an `TurnRequest`, invokes the injected
 /// turn closure (owned by the serve runtime), and encodes the result —
 /// mirroring `WorkspaceProvider`'s contract.
 public struct AscendantTurnProvider: Sendable {
-    public static let turnOperation = "me.atkn.gnostic.ascendant.turn"
-    public static let cancelOperation = "me.atkn.gnostic.ascendant.turn.cancel"
-    public static let replayOperation = "me.atkn.gnostic.ascendant.turn.replay"
-    public static let updateChannel = "me.atkn.gnostic.ascendant.turn.update"
+    public static let turnOperation = "me.atkn.gnostic.turn"
+    public static let cancelOperation = "me.atkn.gnostic.turn.cancel"
+    public static let replayOperation = "me.atkn.gnostic.turn.replay"
+    public static let updateChannel = "me.atkn.gnostic.turn.update"
 
-    public typealias TurnExecutor = @Sendable (AscendantTurnRequest) async throws -> AscendantTurnResult
-    public typealias TurnCancellation = @Sendable (AscendantTurnCancellationRequest) async -> Bool
+    public typealias TurnExecutor = @Sendable (TurnRequest) async throws -> TurnResult
+    public typealias TurnCancellation = @Sendable (TurnCancellationRequest) async -> Bool
 
     private let executor: TurnExecutor
     private let cancellation: TurnCancellation
@@ -141,26 +61,26 @@ public struct AscendantTurnProvider: Sendable {
 
     private static func invalidReasonCode(for operation: String) -> String {
         switch operation {
-        case turnOperation: "invalidAscendantTurnPayload"
-        case replayOperation: "invalidAscendantTurnReplayPayload"
-        default: "invalidAscendantTurnCancellationPayload"
+        case turnOperation: "invalidTurnPayload"
+        case replayOperation: "invalidTurnReplayPayload"
+        default: "invalidTurnCancellationPayload"
         }
     }
 
     private static func invalidMessage(for operation: String) -> String {
         switch operation {
-        case turnOperation: "Invalid ascendant.turn payload"
-        case replayOperation: "Invalid ascendant.turn.replay payload"
-        default: "Invalid ascendant.turn.cancel payload"
+        case turnOperation: "Invalid turn payload"
+        case replayOperation: "Invalid turn.replay payload"
+        default: "Invalid turn.cancel payload"
         }
     }
 
     private func handleTurn(_ parameters: String?) async throws -> CallHandlerResult {
         switch GnosticCallHandling.decode(
-            AscendantTurnRequest.self,
+            TurnRequest.self,
             from: parameters,
-            invalidReasonCode: "invalidAscendantTurnPayload",
-            invalidMessage: "Invalid ascendant.turn payload",
+            invalidReasonCode: "invalidTurnPayload",
+            invalidMessage: "Invalid turn payload",
             identifierReasonCode: "invalidClientTurnID",
             overBudgetReasonCode: "promptTooLarge"
         ) {
@@ -169,21 +89,21 @@ public struct AscendantTurnProvider: Sendable {
         case let .value(request):
             return try await GnosticCallHandling.run(
                 fallbackReasonCode: "internalError",
-                fallbackMessage: "The ascendant turn failed."
+                fallbackMessage: "The Turn failed."
             ) {
                 // The Turn ledger owns every replay update. The coordinator
                 // records the terminal outcome and its bounded update before it
                 // returns the result, so this adapter only maps values to the
                 // wire.
                 let executedResult = try await executor(request)
-                let result = AscendantTurnResult(
+                let result = TurnResult(
                     clientTurnID: request.clientTurnID ?? executedResult.clientTurnID,
                     text: executedResult.text,
                     replayed: executedResult.replayed,
                     protocolMajor: executedResult.protocolMajor
                 )
                 try GnosticProtocol.validate(result.protocolMajor)
-                return try .encoded(result, context: "ascendant.turn result")
+                return try .encoded(result, context: "turn result")
             }
         }
     }
@@ -193,10 +113,10 @@ public struct AscendantTurnProvider: Sendable {
             return .failure(code: 400, reasonCode: "replayUnavailable", message: "Replay is not configured for this provider.")
         }
         switch GnosticCallHandling.decode(
-            AscendantTurnReplayRequest.self,
+            TurnReplayRequest.self,
             from: parameters,
-            invalidReasonCode: "invalidAscendantTurnReplayPayload",
-            invalidMessage: "Invalid ascendant.turn.replay payload",
+            invalidReasonCode: "invalidTurnReplayPayload",
+            invalidMessage: "Invalid turn.replay payload",
             identifierReasonCode: "invalidClientTurnID",
             overBudgetReasonCode: "promptTooLarge"
         ) {
@@ -205,7 +125,7 @@ public struct AscendantTurnProvider: Sendable {
         case let .value(request):
             return try await GnosticCallHandling.run(
                 fallbackReasonCode: "internalError",
-                fallbackMessage: "The ascendant turn replay failed."
+                fallbackMessage: "The Turn replay failed."
             ) {
                 let replay = try await replayStore.replay(
                     timelineID: request.timelineID,
@@ -217,17 +137,17 @@ public struct AscendantTurnProvider: Sendable {
                     return .failure(code: 409, reasonCode: "turnConflict", message: "clientTurnID was already used with different content")
                 }
                 try GnosticProtocol.validate(replay.protocolMajor)
-                return try .encoded(replay, context: "ascendant.turn.replay result")
+                return try .encoded(replay, context: "turn.replay result")
             }
         }
     }
 
     private func handleCancellation(_ parameters: String?) async throws -> CallHandlerResult {
         switch GnosticCallHandling.decode(
-            AscendantTurnCancellationRequest.self,
+            TurnCancellationRequest.self,
             from: parameters,
-            invalidReasonCode: "invalidAscendantTurnCancellationPayload",
-            invalidMessage: "Invalid ascendant.turn.cancel payload",
+            invalidReasonCode: "invalidTurnCancellationPayload",
+            invalidMessage: "Invalid turn.cancel payload",
             identifierReasonCode: "invalidClientTurnID",
             overBudgetReasonCode: "promptTooLarge"
         ) {
@@ -236,8 +156,8 @@ public struct AscendantTurnProvider: Sendable {
         case let .value(request):
             let cancelled = await cancellation(request)
             return try .encoded(
-                AscendantTurnCancellationResult(cancelled: cancelled),
-                context: "ascendant.turn.cancel result"
+                TurnCancellationResult(cancelled: cancelled),
+                context: "turn.cancel result"
             )
         }
     }
@@ -254,7 +174,7 @@ public struct AscendantTurnProvider: Sendable {
     }
 
     public static func updateEvent(_ event: AscendantTurnUpdateStore.Event) throws -> ChannelEvent {
-        let data = try GnosticWirePayload.encode(event, context: "ascendant.turn.update event")
+        let data = try GnosticWirePayload.encode(event, context: "turn.update event")
         guard let privateData = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
         }
@@ -263,89 +183,10 @@ public struct AscendantTurnProvider: Sendable {
                 coreType: .coatyObject,
                 objectType: CoatyObject.objectType,
                 objectId: CoatyUUID(),
-                name: "Gnostic Ascendant turn update"
+                name: "Gnostic turn update"
             ),
             channelId: updateChannel,
             privateData: privateData
         )
-    }
-}
-
-public struct AscendantTurnReplayRequest: Codable, Sendable {
-    public let protocolMajor: Int
-    public let timelineID: UUID
-    public let clientTurnID: String
-    public let message: String?
-    public let afterSequence: Int
-
-    public init(timelineID: UUID, clientTurnID: String, message: String? = nil, afterSequence: Int = 0, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.timelineID = timelineID
-        self.clientTurnID = clientTurnID
-        self.message = message
-        self.afterSequence = afterSequence
-    }
-
-    private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID, message, afterSequence }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(protocolMajor, forKey: .protocolMajor)
-        try container.encode(timelineID, forKey: .timelineID)
-        try container.encode(clientTurnID, forKey: .clientTurnID)
-        if let message {
-            try container.encode(
-                try GnosticWirePayload.canonicalTurnMessage(message, context: "ascendant.turn.replay message"),
-                forKey: .message
-            )
-        }
-        try container.encode(afterSequence, forKey: .afterSequence)
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
-            container.decode(String.self, forKey: .clientTurnID)
-        )
-        message = try container.decodeIfPresent(String.self, forKey: .message).map {
-            try GnosticWirePayload.canonicalTurnMessage($0, context: "ascendant.turn.replay message")
-        }
-        afterSequence = try container.decodeIfPresent(Int.self, forKey: .afterSequence) ?? 0
-    }
-}
-
-/// Identifies the admitted Turn that an explicit client cancellation targets.
-public struct AscendantTurnCancellationRequest: Codable, Sendable {
-    public let protocolMajor: Int
-    public let timelineID: UUID
-    public let clientTurnID: String
-
-    public init(timelineID: UUID, clientTurnID: String, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.timelineID = timelineID
-        self.clientTurnID = clientTurnID
-    }
-
-    private enum CodingKeys: String, CodingKey { case protocolMajor, timelineID, clientTurnID }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
-        timelineID = try container.decode(UUID.self, forKey: .timelineID)
-        clientTurnID = try GnosticWirePayload.canonicalClientTurnID(
-            container.decode(String.self, forKey: .clientTurnID)
-        )
-    }
-}
-
-public struct AscendantTurnCancellationResult: Codable, Sendable {
-    public let protocolMajor: Int
-    public let cancelled: Bool
-
-    public init(cancelled: Bool, protocolMajor: Int = GnosticProtocol.currentMajor) {
-        self.protocolMajor = protocolMajor
-        self.cancelled = cancelled
     }
 }

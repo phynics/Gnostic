@@ -9,7 +9,7 @@ import GnosticProtocol
 ///
 /// A Timeline has at most one active foreground Turn (ADR 0021). A distinct
 /// Turn that arrives while another is active is rejected with
-/// ``AscendantTurnError/timelineBusy(timelineID:clientTurnID:)`` before the
+/// ``TurnError/timelineBusy(timelineID:clientTurnID:)`` before the
 /// ledger admits it or the backend sees it. It is never queued.
 ///
 /// Admission identity, the message digest, and terminal outcomes live in the
@@ -239,18 +239,18 @@ public actor AscendantTurnCoordinator {
     /// one task per `(timelineID, clientTurnID)` key. A distinct request is
     /// rejected as busy while another Turn is active on the Timeline.
     public func execute(
-        _ request: AscendantTurnRequest,
+        _ request: TurnRequest,
         ascendantID: UUID,
         cancel: @escaping @Sendable () async -> Void = {},
         operation: @escaping TurnOperation
-    ) async throws -> AscendantTurnResult {
+    ) async throws -> TurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
         guard acceptingTurns else {
             throw Self.shuttingDown(for: request)
         }
         // The wire edge canonicalizes the client turn ID once; the ledger
         // receives the same canonical value.
-        let canonicalRequest = AscendantTurnRequest(
+        let canonicalRequest = TurnRequest(
             message: request.message,
             timelineID: request.timelineID,
             clientTurnID: try request.clientTurnID.map { try GnosticWirePayload.canonicalClientTurnID($0) },
@@ -270,7 +270,7 @@ public actor AscendantTurnCoordinator {
             return try await replay(task, request: canonicalRequest)
         case let .started(task):
             let text = try await task.value
-            return AscendantTurnResult(
+            return TurnResult(
                 clientTurnID: canonicalRequest.clientTurnID ?? UUID().uuidString.lowercased(),
                 text: text,
                 replayed: false
@@ -284,14 +284,14 @@ public actor AscendantTurnCoordinator {
         /// An identical retry that waits on the active Turn.
         case attached(Task<String, Error>)
         /// An identical retry answered from the ledger.
-        case replayed(AscendantTurnResult)
+        case replayed(TurnResult)
     }
 
     /// Classifies one request while holding its Timeline's admission, so two
     /// distinct Turns can never both be admitted to one Timeline. A `.started`
     /// result has already registered the active Turn before admission ends.
     private func admit(
-        _ request: AscendantTurnRequest,
+        _ request: TurnRequest,
         ascendantID: UUID,
         operationID: String,
         cancel: @escaping @Sendable () async -> Void,
@@ -305,7 +305,7 @@ public actor AscendantTurnCoordinator {
 
         guard let clientTurnID = request.clientTurnID else {
             guard !timelineIsBusy else {
-                throw AscendantTurnError.timelineBusy(timelineID: timelineID, clientTurnID: "")
+                throw TurnError.timelineBusy(timelineID: timelineID, clientTurnID: "")
             }
             return .started(start(
                 request, key: nil, ascendantID: ascendantID, operationID: operationID,
@@ -323,7 +323,7 @@ public actor AscendantTurnCoordinator {
                 admitNew: !timelineIsBusy
             )
         } catch AscendantTurnUpdateStore.Error.capacityExceeded {
-            throw AscendantTurnError.capacityExceeded(timelineID: timelineID, clientTurnID: clientTurnID)
+            throw TurnError.capacityExceeded(timelineID: timelineID, clientTurnID: clientTurnID)
         }
         switch admission {
         case .new:
@@ -335,19 +335,19 @@ public actor AscendantTurnCoordinator {
             guard let existing = inFlight[key] else {
                 // Admitted but unregistered without a coordinator task: fail
                 // closed rather than rerun the identity.
-                throw AscendantTurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+                throw TurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
             }
             return .attached(existing.task)
         case let .replay(.succeeded(text)):
-            return .replayed(AscendantTurnResult(clientTurnID: clientTurnID, text: text, replayed: true))
+            return .replayed(TurnResult(clientTurnID: clientTurnID, text: text, replayed: true))
         case let .replay(.failed(error)):
             throw error
         case .conflict:
-            throw AscendantTurnError.conflict(timelineID: timelineID, clientTurnID: clientTurnID)
+            throw TurnError.conflict(timelineID: timelineID, clientTurnID: clientTurnID)
         case .unavailable:
-            throw AscendantTurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+            throw TurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
         case .busy:
-            throw AscendantTurnError.timelineBusy(timelineID: timelineID, clientTurnID: clientTurnID)
+            throw TurnError.timelineBusy(timelineID: timelineID, clientTurnID: clientTurnID)
         }
     }
 
@@ -355,7 +355,7 @@ public actor AscendantTurnCoordinator {
     /// Nothing suspends between creating the task and registering it, so the
     /// task's completion always finds its registration.
     private func start(
-        _ request: AscendantTurnRequest,
+        _ request: TurnRequest,
         key: Key?,
         ascendantID: UUID,
         operationID: String,
@@ -408,23 +408,23 @@ public actor AscendantTurnCoordinator {
         do {
             return try await operation()
         } catch is CancellationError {
-            throw AscendantTurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+            throw TurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
         } catch let error as AscendantBackendError {
             if case .cancelled = error {
-                throw AscendantTurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
+                throw TurnError.cancelled(timelineID: timelineID, clientTurnID: clientTurnID)
             }
             if case let .lifecycleUnusable(failure) = error {
-                throw AscendantTurnError.lifecycleUnusable(
+                throw TurnError.lifecycleUnusable(
                     timelineID: timelineID,
                     clientTurnID: clientTurnID,
                     detail: failure.message
                 )
             }
             if case .insertionUnknown = error {
-                throw AscendantTurnError.insertionUnknown(timelineID: timelineID, clientTurnID: clientTurnID)
+                throw TurnError.insertionUnknown(timelineID: timelineID, clientTurnID: clientTurnID)
             }
             if case let .terminal(failure) = error {
-                throw AscendantTurnError.terminal(
+                throw TurnError.terminal(
                     timelineID: timelineID,
                     clientTurnID: clientTurnID,
                     code: failure.code,
@@ -433,7 +433,7 @@ public actor AscendantTurnCoordinator {
                     statusCode: 500
                 )
             }
-            throw AscendantTurnError.terminal(
+            throw TurnError.terminal(
                 timelineID: timelineID,
                 clientTurnID: clientTurnID,
                 code: error.reasonCode,
@@ -441,10 +441,10 @@ public actor AscendantTurnCoordinator {
                 retryable: false,
                 statusCode: error.statusCode
             )
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             throw error
         } catch {
-            throw AscendantTurnError.failed(
+            throw TurnError.failed(
                 timelineID: timelineID,
                 clientTurnID: clientTurnID,
                 detail: String(describing: error)
@@ -452,7 +452,7 @@ public actor AscendantTurnCoordinator {
         }
     }
 
-    private static func shuttingDown(for request: AscendantTurnRequest) -> AscendantTurnError {
+    private static func shuttingDown(for request: TurnRequest) -> TurnError {
         .backendUnavailable(
             timelineID: request.timelineID,
             clientTurnID: request.clientTurnID ?? "",
@@ -483,11 +483,11 @@ public actor AscendantTurnCoordinator {
 
     private func replay(
         _ task: Task<String, Error>,
-        request: AscendantTurnRequest
-    ) async throws -> AscendantTurnResult {
+        request: TurnRequest
+    ) async throws -> TurnResult {
         do {
             let text = try await task.value
-            return AscendantTurnResult(clientTurnID: request.clientTurnID, text: text, replayed: true)
+            return TurnResult(clientTurnID: request.clientTurnID, text: text, replayed: true)
         } catch {
             throw error
         }
@@ -495,7 +495,7 @@ public actor AscendantTurnCoordinator {
 
     private func recordCompletion(
         key: Key?,
-        request: AscendantTurnRequest,
+        request: TurnRequest,
         ascendantID: UUID,
         operationID: String,
         result: Result<String, Error>
@@ -506,15 +506,15 @@ public actor AscendantTurnCoordinator {
             committedOperationID = active.operationID
         }
 
-        let outcome: TurnTerminalOutcome
+        let outcome: TurnLedgerOutcome
         let terminalOutcome: TerminalTurnOutcome
         switch result {
         case let .success(text):
             outcome = .succeeded(text: text)
             terminalOutcome = .succeeded
         case let .failure(error):
-            let terminal: AscendantTurnError
-            if let error = error as? AscendantTurnError {
+            let terminal: TurnError
+            if let error = error as? TurnError {
                 terminal = error
             } else if error is CancellationError {
                 terminal = .cancelled(
@@ -600,7 +600,7 @@ public actor AscendantTurnCoordinator {
         waiters.forEach { $0.resume() }
     }
 
-    private static func observationOutcome(for error: AscendantTurnError) -> TerminalTurnOutcome {
+    private static func observationOutcome(for error: TurnError) -> TerminalTurnOutcome {
         if case .cancelled = error { return .cancelled }
         return .failed(TerminalTurnFailure(
             reasonCode: error.reasonCode,
@@ -613,7 +613,7 @@ public actor AscendantTurnCoordinator {
         UUID().uuidString.lowercased()
     }
 
-    private static func bounded(_ error: AscendantTurnError) -> AscendantTurnError {
+    private static func bounded(_ error: TurnError) -> TurnError {
         switch error {
         case let .capacityExceeded(timelineID, clientTurnID):
             return .capacityExceeded(timelineID: timelineID, clientTurnID: clientTurnID)

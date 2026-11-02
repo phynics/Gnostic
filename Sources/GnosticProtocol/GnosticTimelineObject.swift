@@ -17,8 +17,8 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
     /// Whether the timeline is private.
     public var isPrivate: Bool
 
-    /// The attached Ascendant relationship, when present.
-    public var attachedAscendantID: UUID?
+    /// The Runtime instance that operates the Timeline, when one does.
+    public var runtimeInstanceID: UUID?
 
     /// The attached workspace relationships.
     public var attachedWorkspaceIDs: [UUID]
@@ -43,7 +43,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
 
     /// Creates a network projection without exposing a provider's Timeline type.
     public init(
-        timeline: AscendantBackendTimeline,
+        timeline: RuntimeInstanceTimeline,
         nodeID: UUID? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
@@ -51,7 +51,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
         title = GnosticWirePayload.boundedLabel(timeline.title)
         isArchived = timeline.isArchived
         isPrivate = timeline.isPrivate
-        attachedAscendantID = timeline.attachedAscendantID
+        runtimeInstanceID = timeline.runtimeInstanceID
         attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(timeline.attachedWorkspaceIDs)
         self.nodeID = nodeID
         createdAt = timeline.createdAt
@@ -69,7 +69,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
         case protocolMajor
         case isArchived
         case isPrivate
-        case attachedAscendantID
+        case runtimeInstanceID
         case attachedWorkspaceIDs
         case nodeID
         case createdAt
@@ -85,7 +85,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
         title = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .title))
         isArchived = try container.decode(Bool.self, forKey: .isArchived)
         isPrivate = try container.decode(Bool.self, forKey: .isPrivate)
-        attachedAscendantID = try container.decodeIfPresent(UUID.self, forKey: .attachedAscendantID)
+        runtimeInstanceID = try container.decodeIfPresent(UUID.self, forKey: .runtimeInstanceID)
         attachedWorkspaceIDs = GnosticWirePayload.boundedWorkspaceIDs(try container.decode([UUID].self, forKey: .attachedWorkspaceIDs))
         nodeID = try container.decodeIfPresent(UUID.self, forKey: .nodeID)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
@@ -103,7 +103,7 @@ public final class GnosticTimelineObject: CoatyObject, @unchecked Sendable { // 
         try container.encode(title, forKey: .title)
         try container.encode(isArchived, forKey: .isArchived)
         try container.encode(isPrivate, forKey: .isPrivate)
-        try container.encodeIfPresent(attachedAscendantID, forKey: .attachedAscendantID)
+        try container.encodeIfPresent(runtimeInstanceID, forKey: .runtimeInstanceID)
         try container.encode(attachedWorkspaceIDs, forKey: .attachedWorkspaceIDs)
         try container.encodeIfPresent(nodeID, forKey: .nodeID)
         try container.encode(createdAt, forKey: .createdAt)

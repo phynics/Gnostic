@@ -14,13 +14,13 @@ import Testing
 @MainActor
 final class EchoAscendantBackend: AscendantBackend {
     nonisolated var capabilities: AscendantBackendOptionalSurfaces { [] }
-    let identity: AscendantBackendIdentity
-    private var timelines: [AscendantBackendTimeline]
+    let identity: RuntimeInstanceIdentity
+    private var timelines: [RuntimeInstanceTimeline]
     private var cancelled = false
 
     init(ascendant: NodeManifest.Ascendant, timelines: [NodeManifest.Timeline]) {
         let now = Date()
-        identity = AscendantBackendIdentity(
+        identity = RuntimeInstanceIdentity(
             id: ascendant.id,
             name: ascendant.name,
             description: ascendant.description,
@@ -30,15 +30,15 @@ final class EchoAscendantBackend: AscendantBackend {
             createdAt: now,
             updatedAt: now,
             // Advertise only what this backend genuinely supports.
-            capabilities: AscendantBackendCapabilities(
-                interoperability: [AscendantInteroperabilityCapability.textTurn.rawValue],
+            capabilities: RuntimeInstanceCapabilities(
+                interoperability: [InteroperabilityCapability.textTurn.rawValue],
                 backendKind: "example-echo"
             )
         )
         self.timelines = timelines.map {
-            AscendantBackendTimeline(
+            RuntimeInstanceTimeline(
                 id: $0.id, title: $0.title, attachedWorkspaceIDs: [],
-                ascendantID: ascendant.id, isArchived: false, isPrivate: false,
+                runtimeInstanceID: ascendant.id, isArchived: false, isPrivate: false,
                 createdAt: now, updatedAt: now
             )
         }
@@ -48,12 +48,12 @@ final class EchoAscendantBackend: AscendantBackend {
     /// validated by `AscendantBackendConfigurationValidator`.
     func validateConfiguration() throws {}
 
-    func operatedTimelines() async throws -> [AscendantBackendTimeline] { timelines }
+    func operatedTimelines() async throws -> [RuntimeInstanceTimeline] { timelines }
 
-    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    func createTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         let now = Date()
-        let timeline = AscendantBackendTimeline(
-            id: id, title: title, attachedWorkspaceIDs: [], ascendantID: identity.id,
+        let timeline = RuntimeInstanceTimeline(
+            id: id, title: title, attachedWorkspaceIDs: [], runtimeInstanceID: identity.id,
             isArchived: false, isPrivate: false, createdAt: now, updatedAt: now
         )
         timelines.append(timeline)
@@ -62,14 +62,14 @@ final class EchoAscendantBackend: AscendantBackend {
 
     func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
 
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    func renameTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         guard let index = timelines.firstIndex(where: { $0.id == id }) else {
             throw AscendantBackendError.timelineNotFound(id)
         }
         let current = timelines[index]
-        let renamed = AscendantBackendTimeline(
+        let renamed = RuntimeInstanceTimeline(
             id: current.id, title: title, attachedWorkspaceIDs: current.attachedWorkspaceIDs,
-            ascendantID: current.ascendantID, isArchived: current.isArchived,
+            runtimeInstanceID: current.runtimeInstanceID, isArchived: current.isArchived,
             isPrivate: current.isPrivate, createdAt: current.createdAt, updatedAt: Date()
         )
         timelines[index] = renamed

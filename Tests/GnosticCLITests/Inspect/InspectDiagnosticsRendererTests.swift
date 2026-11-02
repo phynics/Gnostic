@@ -15,11 +15,11 @@ struct InspectDiagnosticsRendererTests {
     private func nodeSnapshot() -> NodeDiagnostics {
         NodeDiagnostics(
             nodeID: UUID(uuidString: "D1A60000-0000-4000-8000-000000000001")!,
-            ascendents: [
-                DiagnosticsAscendantSummary(id: ascendantID, name: "Ascendant", health: .failed, quarantined: true),
+            runtimeInstances: [
+                DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Ascendant", health: .failed, quarantined: true),
             ],
             timelines: [
-                DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+                DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             ],
             workspaces: [
                 DiagnosticsWorkspaceSummary(id: workspaceID, uri: "workspace://alpha", status: .unavailable),
@@ -59,8 +59,8 @@ struct InspectDiagnosticsRendererTests {
 
     @Test("ascendant and timeline text render their payload-free summaries")
     func ascendantAndTimelineText() {
-        let ascendant = AscendantDiagnostics(
-            ascendant: DiagnosticsAscendantSummary(id: ascendantID, name: "Ascendant", health: .healthy, quarantined: false),
+        let ascendant = RuntimeInstanceDiagnostics(
+            runtimeInstance: DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Ascendant", health: .healthy, quarantined: false),
             description: "Test ascendant",
             backendKind: "test",
             backendVersion: "1.0.0",
@@ -75,7 +75,7 @@ struct InspectDiagnosticsRendererTests {
         #expect(ascendantText.contains(GnosticCapability.diagnostics))
 
         let timeline = TimelineDiagnostics(
-            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             workspaces: [DiagnosticsWorkspaceSummary(id: workspaceID, uri: "workspace://alpha", status: .available)]
         )
         let timelineText = InspectRenderer.timelineText(timeline)
@@ -87,7 +87,7 @@ struct InspectDiagnosticsRendererTests {
     func quarantinedTimelineJournalRenders() throws {
         let message = "The Timeline journal is quarantined and read-only. Gnostic admits no new Turn on this Timeline."
         let timeline = TimelineDiagnostics(
-            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             workspaces: [],
             journal: DiagnosticsTimelineJournal(state: .quarantined, message: message)
         )
@@ -109,7 +109,7 @@ struct InspectDiagnosticsRendererTests {
 
     private func timelineText(_ recovery: DiagnosticsTimelineSessionRecovery?) -> String {
         InspectRenderer.timelineText(TimelineDiagnostics(
-            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             workspaces: [],
             sessionRecovery: recovery
         ))
@@ -159,7 +159,7 @@ struct InspectDiagnosticsRendererTests {
             kind: .call,
             sourceId: "provider-a",
             correlationId: "corr-1",
-            objectType: GnosticObjectType.ascendant,
+            objectType: GnosticObjectType.runtimeInstance,
             targetObjectId: ascendantID,
             channelId: "me.atkn.gnostic.channel.turn",
             payload: "{\"prompt\":\"\(secret)\"}"
@@ -192,7 +192,7 @@ struct InspectDiagnosticsRendererTests {
         #expect(missing.reasonCode == "diagnosticsCapabilityUnavailable")
         #expect(missing.errorDescription?.contains(GnosticCapability.diagnostics) == true)
 
-        let unavailable = InspectError(.ascendantUnavailable(ascendantID))
+        let unavailable = InspectError(.runtimeInstanceUnavailable(ascendantID))
         #expect(unavailable.reasonCode == "ascendantUnavailable")
 
         let failed = InspectError(.callFailed(reasonCode: "diagnosticsConflict", statusCode: 409, retryable: false))

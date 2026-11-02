@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import Testing
 @testable import GnosticCore
 @testable import GnosticProtocol
@@ -135,7 +136,7 @@ struct TimelineJournalGoldenTests {
             acpVersionTag: "acp-v2@39ae6a2",
             prompt: prompt
         ))
-        #expect(payloads[8] == .acpUpdate(sessionID: "session-golden", update: TimelineTurnUpdate(
+        #expect(payloads[8] == .acpUpdate(sessionID: "session-golden", update: TurnSessionUpdate(
             timelineID: Self.timelineID,
             clientTurnID: "golden-turn",
             sequence: 1,

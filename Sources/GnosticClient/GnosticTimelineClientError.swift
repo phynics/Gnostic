@@ -6,11 +6,11 @@ import GnosticProtocol
 
 /// Failures produced by the public Timeline client.
 public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedError {
-    /// No live provider advertised the addressed Ascendant.
-    case ascendantUnavailable(UUID)
+    /// No live provider advertised the addressed Runtime instance.
+    case runtimeInstanceUnavailable(UUID)
 
-    /// More than one provider advertised the addressed Ascendant.
-    case ascendantAmbiguous(UUID)
+    /// More than one provider advertised the addressed Runtime instance.
+    case runtimeInstanceAmbiguous(UUID)
 
     /// No live provider advertised the addressed Timeline.
     case timelineUnavailable(UUID)
@@ -18,7 +18,7 @@ public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedErr
     /// More than one provider advertised the addressed Timeline.
     case timelineAmbiguous(UUID)
 
-    /// The resolved Ascendant does not advertise Timeline management.
+    /// The resolved Runtime instance does not provide Timeline management.
     case missingCapability(String)
 
     /// The response came from a different provider than the addressed one.
@@ -33,8 +33,8 @@ public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedErr
     /// A stable, machine-readable reason label.
     public var reasonCode: String {
         switch self {
-        case .ascendantUnavailable: "ascendantUnavailable"
-        case .ascendantAmbiguous: "ascendantAmbiguous"
+        case .runtimeInstanceUnavailable: "runtimeInstanceUnavailable"
+        case .runtimeInstanceAmbiguous: "runtimeInstanceAmbiguous"
         case .timelineUnavailable: "timelineUnavailable"
         case .timelineAmbiguous: "timelineAmbiguous"
         case .missingCapability: "missingCapability"
@@ -46,16 +46,16 @@ public enum GnosticTimelineClientError: Error, Sendable, Equatable, LocalizedErr
     /// A stable, human-readable description of the failure.
     public var errorDescription: String? {
         switch self {
-        case let .ascendantUnavailable(id):
-            "Ascendant \(id.uuidString.lowercased()) was not discovered."
-        case let .ascendantAmbiguous(id):
-            "Ascendant \(id.uuidString.lowercased()) is advertised by more than one provider."
+        case let .runtimeInstanceUnavailable(id):
+            "Runtime instance \(id.uuidString.lowercased()) was not discovered."
+        case let .runtimeInstanceAmbiguous(id):
+            "Runtime instance \(id.uuidString.lowercased()) is advertised by more than one provider."
         case let .timelineUnavailable(id):
             "Timeline \(id.uuidString.lowercased()) was not discovered."
         case let .timelineAmbiguous(id):
             "Timeline \(id.uuidString.lowercased()) is advertised by more than one provider."
         case let .missingCapability(capability):
-            "The selected Ascendant does not advertise capability \(capability)."
+            "The selected Runtime instance does not provide capability \(capability)."
         case .providerMismatch:
             "The response came from a provider other than the one selected from the catalog."
         case let .callFailed(reasonCode, statusCode, _):

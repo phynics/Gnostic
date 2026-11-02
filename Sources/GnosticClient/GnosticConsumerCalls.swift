@@ -148,62 +148,55 @@ struct GnosticCatalogLookup {
         return .provider(providerID)
     }
 
-    /// Returns the Ascendant a provider reports as operating a Timeline, or
-    /// `nil` unless exactly one is reported.
-    static func operatingAscendantID(
+    /// Returns the Runtime instance a provider reports as operating a Timeline,
+    /// or `nil` unless exactly one is reported.
+    static func runtimeInstanceID(
         ofTimeline timelineID: UUID,
         providerID: String,
         in entries: [NetworkCatalogEntry]
     ) -> UUID? {
-        let ascendantIDs = Set(entries.compactMap { entry -> UUID? in
+        let runtimeInstanceIDs = Set(entries.compactMap { entry -> UUID? in
             guard entry.objectType == GnosticObjectType.timeline,
                   entry.objectID == timelineID,
                   entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
             else { return nil }
-            return entry.attachedAscendantID
+            return entry.runtimeInstanceID
         })
-        return ascendantIDs.count == 1 ? ascendantIDs.first : nil
+        return runtimeInstanceIDs.count == 1 ? runtimeInstanceIDs.first : nil
     }
 
-    /// Reports whether a provider advertises an Ascendant with a capability,
-    /// optionally restricted to one Ascendant.
-    static func ascendantAdvertises(
+    /// Reports whether a provider advertises a Runtime instance that provides
+    /// a capability, optionally restricted to one instance.
+    ///
+    /// A Runtime instance advertises no capability list. It provides each name
+    /// in ``GnosticCapability/providedByRuntimeInstance`` by being advertised:
+    /// ACP v2 requires `session/prompt`, and the Node that hosts the instance
+    /// owns Timeline management and diagnostics.
+    static func runtimeInstanceProvides(
         _ capability: String,
-        ascendantID: UUID? = nil,
+        runtimeInstanceID: UUID? = nil,
         providerID: String,
         in entries: [NetworkCatalogEntry]
     ) -> Bool {
-        entries.contains { entry in
-            entry.objectType == GnosticObjectType.ascendant
-                && (ascendantID == nil || entry.objectID == ascendantID)
-                && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
-                && entry.advertisedCapabilities.contains(capability)
-        }
-    }
-
-    /// ADR 0021 Runtime instances implement ACP v2, whose required Session
-    /// methods include `session/prompt`. The Runtime advertisement is the
-    /// canonical owner when its legacy Ascendant projection is absent.
-    static func runtimeInstanceExists(id: UUID, providerID: String, in entries: [NetworkCatalogEntry]) -> Bool {
-        entries.contains { entry in
+        guard GnosticCapability.providedByRuntimeInstance.contains(capability) else { return false }
+        return entries.contains { entry in
             entry.objectType == GnosticObjectType.runtimeInstance
-                && entry.objectID == id
+                && (runtimeInstanceID == nil || entry.objectID == runtimeInstanceID)
                 && entry.providerID.caseInsensitiveCompare(providerID) == .orderedSame
         }
     }
 
-    /// Returns the distinct provider identities whose Ascendant advertisements
-    /// declare a capability. Matching is case-insensitive; the first
+    /// Returns the distinct provider identities that advertise a Runtime
+    /// instance providing a capability. Matching is case-insensitive; the first
     /// encountered spelling of each provider is returned.
     static func providers(
-        advertising capability: String,
+        providing capability: String,
         in entries: [NetworkCatalogEntry]
     ) -> [String] {
+        guard GnosticCapability.providedByRuntimeInstance.contains(capability) else { return [] }
         var providers: [String] = []
         var seen: Set<String> = []
-        for entry in entries
-            where entry.objectType == GnosticObjectType.ascendant
-                && entry.advertisedCapabilities.contains(capability) {
+        for entry in entries where entry.objectType == GnosticObjectType.runtimeInstance {
             let key = entry.providerID.lowercased()
             guard seen.insert(key).inserted else { continue }
             providers.append(entry.providerID)
@@ -213,19 +206,9 @@ struct GnosticCatalogLookup {
 }
 
 extension NetworkCatalogEntry {
-    /// The capability names the advertisement declares, or an empty list when
-    /// it declares none.
-    public var advertisedCapabilities: [String] {
-        guard case let .array(values) = knownProperties["capabilities"] else { return [] }
-        return values.compactMap { value in
-            guard case let .string(capability) = value else { return nil }
-            return capability
-        }
-    }
-
-    /// The Ascendant a Timeline advertisement names as its operator.
-    var attachedAscendantID: UUID? {
-        guard case let .string(raw) = knownProperties["attachedAscendantID"] else { return nil }
+    /// The Runtime instance a Timeline advertisement names as its operator.
+    var runtimeInstanceID: UUID? {
+        guard case let .string(raw) = knownProperties["runtimeInstanceID"] else { return nil }
         return UUID(uuidString: raw)
     }
 }

@@ -96,7 +96,7 @@ struct BackendLifecycleTests {
         do {
             _ = try await runtime.turn(.init(message: "first", timelineID: firstTimelineID, clientTurnID: "failed"))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .lifecycleUnusable(timelineID: firstTimelineID, clientTurnID: "failed", detail: "backend lifecycle failed"))
         }
         #expect(await runtime.backendHealth(for: firstID) == .failed)
@@ -130,7 +130,7 @@ struct BackendLifecycleTests {
         do {
             _ = try await runtime.turn(.init(message: "fail", timelineID: firstTimelineID, clientTurnID: "fail"))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .lifecycleUnusable(timelineID: firstTimelineID, clientTurnID: "fail", detail: "backend lifecycle failed"))
         }
         let first = Task { @MainActor in
@@ -165,13 +165,13 @@ struct BackendLifecycleTests {
         do {
             _ = try await runtime.turn(.init(message: "fail", timelineID: timelineID, clientTurnID: "fail"))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .lifecycleUnusable(timelineID: timelineID, clientTurnID: "fail", detail: "backend lifecycle failed"))
         }
         do {
             _ = try await runtime.turn(.init(message: "retry", timelineID: timelineID, clientTurnID: "retry"))
             Issue.record("The unavailable backend unexpectedly accepted a Turn.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .backendUnavailable(timelineID: timelineID, clientTurnID: "retry", detail: "Backend reconstruction failed: reconstruction failed"))
         }
         #expect(await probe.factoryCount == 2)
@@ -198,7 +198,7 @@ struct BackendLifecycleTests {
         do {
             _ = try await runtime.turn(.init(message: "ordinary", timelineID: timelineID, clientTurnID: "ordinary"))
             Issue.record("The ordinary failure unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .terminal(timelineID: timelineID, clientTurnID: "ordinary", code: "ordinaryFailure", detail: "ordinary failure", retryable: false))
         }
         #expect(await runtime.backendHealth(for: ascendantID) == .healthy)
@@ -264,11 +264,11 @@ struct BackendLifecycleTests {
         _ = provider.install(oldBackend, for: ascendantID, generation: 1)
         let registry = try NodeRegistry(
             plan: plan,
-            operatedTimelines: [AscendantBackendTimeline(
+            operatedTimelines: [RuntimeInstanceTimeline(
                 id: timelineID,
                 title: "Owner Timeline",
                 attachedWorkspaceIDs: [workspaceID],
-                ascendantID: ascendantID,
+                runtimeInstanceID: ascendantID,
                 isArchived: false,
                 isPrivate: false,
                 createdAt: Date(),
@@ -343,11 +343,11 @@ struct BackendLifecycleTests {
         _ = provider.install(backend, for: ascendantID, generation: 1)
         let registry = try NodeRegistry(
             plan: plan,
-            operatedTimelines: [AscendantBackendTimeline(
+            operatedTimelines: [RuntimeInstanceTimeline(
                 id: timelineID,
                 title: "Owner Timeline",
                 attachedWorkspaceIDs: [workspaceID],
-                ascendantID: ascendantID,
+                runtimeInstanceID: ascendantID,
                 isArchived: false,
                 isPrivate: false,
                 createdAt: Date(),
@@ -543,7 +543,7 @@ struct BackendLifecycleTests {
         do {
             _ = try await runtime.turn(.init(message: "fail", timelineID: timelineID, clientTurnID: "state-fail"))
             Issue.record("The lifecycle failure unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .lifecycleUnusable(timelineID: timelineID, clientTurnID: "state-fail", detail: "backend lifecycle failed"))
         }
 
@@ -995,12 +995,12 @@ struct BackendLifecycleTests {
         defer { Task { @MainActor in await runtime.shutdown() } }
 
         let node = await runtime.diagnosticsNodeSnapshot()
-        #expect(node.ascendents.contains { $0.id == ascendantID && !$0.quarantined })
-        #expect(node.timelines.contains { $0.id == timelineID && $0.operatingAscendantID == ascendantID })
+        #expect(node.runtimeInstances.contains { $0.id == ascendantID && !$0.quarantined })
+        #expect(node.timelines.contains { $0.id == timelineID && $0.runtimeInstanceID == ascendantID })
         #expect(node.turns.inFlight == 0)
 
         let ascendant = try await runtime.diagnosticsAscendantSnapshot(ascendantID)
-        #expect(ascendant.ascendant.id == ascendantID)
+        #expect(ascendant.runtimeInstance.id == ascendantID)
         #expect(ascendant.privateTimelineID == timelineID)
 
         let timeline = try await runtime.diagnosticsTimelineSnapshot(timelineID)
@@ -1214,11 +1214,11 @@ struct BackendLifecycleTests {
             let client = try session.diagnosticsClient(timeout: .seconds(2))
 
             let node = try await client.node()
-            #expect(node.ascendents.contains { $0.id == ascendantID })
+            #expect(node.runtimeInstances.contains { $0.id == ascendantID })
             #expect(node.timelines.contains { $0.id == timelineID })
 
-            let ascendant = try await client.ascendant(ascendantID)
-            #expect(ascendant.ascendant.id == ascendantID)
+            let ascendant = try await client.runtimeInstance(ascendantID)
+            #expect(ascendant.runtimeInstance.id == ascendantID)
 
             let timeline = try await client.timeline(timelineID)
             #expect(timeline.timeline.id == timelineID)
@@ -1707,8 +1707,8 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     nonisolated var capabilities: AscendantBackendOptionalSurfaces { .workspace }
     enum Outcome: Sendable, Equatable { case success, lifecycle, ordinary }
 
-    let identity: AscendantBackendIdentity
-    private var timelines: [AscendantBackendTimeline]
+    let identity: RuntimeInstanceIdentity
+    private var timelines: [RuntimeInstanceTimeline]
     private let probe: LifecycleBackendProbe
     private var outcomes: [Outcome]
     private let factoryNumber: Int
@@ -1733,10 +1733,10 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
             lastActiveAt: now,
             createdAt: now,
             updatedAt: now,
-            capabilities: .init(interoperability: [AscendantInteroperabilityCapability.textTurn.rawValue], backendKind: "lifecycle-fixture")
+            capabilities: .init(interoperability: [InteroperabilityCapability.textTurn.rawValue], backendKind: "lifecycle-fixture")
         )
         self.timelines = timelines.map {
-            .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), ascendantID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
+            .init(id: $0.id, title: $0.title, attachedWorkspaceIDs: $0.attachments.map(\.workspaceID), runtimeInstanceID: ascendant.id, isArchived: false, isPrivate: false, createdAt: now, updatedAt: now)
         }
         self.probe = probe
         self.outcomes = outcomes.isEmpty ? [outcome] : outcomes
@@ -1745,20 +1745,20 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
     }
 
     func validateConfiguration() throws {}
-    func operatedTimelines() async throws -> [AscendantBackendTimeline] {
+    func operatedTimelines() async throws -> [RuntimeInstanceTimeline] {
         if throwsFromOperatedTimelines { throw InjectedLifecycleFailure() }
         return timelines
     }
-    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    func createTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         await probe.recordCreatedTimeline(id)
         await probe.beginBlockedOperation("create")
         await probe.waitForBlockedOperationRelease("create")
         let now = Date()
-        let timeline = AscendantBackendTimeline(
+        let timeline = RuntimeInstanceTimeline(
             id: id,
             title: title,
             attachedWorkspaceIDs: [],
-            ascendantID: identity.id,
+            runtimeInstanceID: identity.id,
             isArchived: false,
             isPrivate: false,
             createdAt: now,
@@ -1768,7 +1768,7 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         return timeline
     }
     func removeTimeline(id: UUID) async { timelines.removeAll { $0.id == id } }
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline {
+    func renameTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline {
         await probe.recordRename()
         await probe.beginBlockedOperation("rename")
         await probe.waitForBlockedOperationRelease("rename")
@@ -1777,11 +1777,11 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         }
         guard let index = timelines.firstIndex(where: { $0.id == id }) else { throw NodeRuntimeError.missingTimeline(id) }
         let old = timelines[index]
-        let renamed = AscendantBackendTimeline(
+        let renamed = RuntimeInstanceTimeline(
             id: old.id,
             title: title,
             attachedWorkspaceIDs: old.attachedWorkspaceIDs,
-            ascendantID: old.ascendantID,
+            runtimeInstanceID: old.runtimeInstanceID,
             isArchived: old.isArchived,
             isPrivate: old.isPrivate,
             createdAt: old.createdAt,
@@ -1805,11 +1805,11 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
         let workspaceIDs = old.attachedWorkspaceIDs.contains(reference.id)
             ? old.attachedWorkspaceIDs
             : old.attachedWorkspaceIDs + [reference.id]
-        timelines[index] = AscendantBackendTimeline(
+        timelines[index] = RuntimeInstanceTimeline(
             id: old.id,
             title: old.title,
             attachedWorkspaceIDs: workspaceIDs,
-            ascendantID: old.ascendantID,
+            runtimeInstanceID: old.runtimeInstanceID,
             isArchived: old.isArchived,
             isPrivate: old.isPrivate,
             createdAt: old.createdAt,
@@ -1824,11 +1824,11 @@ private final class LifecycleFixtureBackend: AscendantBackend, AscendantBackendW
             throw NodeRuntimeError.missingTimeline(timelineID)
         }
         let old = timelines[index]
-        timelines[index] = AscendantBackendTimeline(
+        timelines[index] = RuntimeInstanceTimeline(
             id: old.id,
             title: old.title,
             attachedWorkspaceIDs: old.attachedWorkspaceIDs.filter { $0 != workspaceID },
-            ascendantID: old.ascendantID,
+            runtimeInstanceID: old.runtimeInstanceID,
             isArchived: old.isArchived,
             isPrivate: old.isPrivate,
             createdAt: old.createdAt,

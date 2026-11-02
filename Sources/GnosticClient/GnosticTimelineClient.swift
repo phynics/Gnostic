@@ -10,8 +10,8 @@ import GnosticProtocol
 /// The client shares the Axoloty transport owned by the
 /// ``GnosticConsumerSession`` that created it. It opens no second connection,
 /// hosts no Node, and advertises nothing. Each operation resolves the serving
-/// provider from the session catalog and requires the Ascendant to advertise
-/// ``GnosticCapability/timelineManagement``.
+/// provider from the session catalog and requires the operating Runtime instance
+/// to provide ``GnosticCapability/timelineManagement``.
 ///
 /// Timeline deletion is not exposed because no delete operation exists in the
 /// Gnostic wire contract.
@@ -41,18 +41,18 @@ public final class GnosticTimelineClient {
     ///
     /// - Parameters:
     ///   - title: The new Timeline title.
-    ///   - ascendantID: The Runtime identity that will operate the Timeline.
-    ///   - providerID: The expected provider of the Ascendant, or `nil` to
-    ///     resolve it from the session catalog.
+    ///   - runtimeInstanceID: The Runtime instance that will operate the Timeline.
+    ///   - providerID: The expected provider of the Runtime instance, or `nil`
+    ///     to resolve it from the session catalog.
     /// - Returns: The status returned by the serving Node.
-    /// - Throws: ``GnosticTimelineClientError`` when the Runtime cannot be
-    ///   resolved, the addressed provider does not own it, a legacy Ascendant
-    ///   lacks Timeline management, or the serve rejects the call.
-    public func create(title: String, ascendantID: UUID, providerID expectedProviderID: String? = nil) async throws -> TimelineStatus {
-        let providerID = try await resolvedAscendantProvider(for: ascendantID, expected: expectedProviderID)
+    /// - Throws: ``GnosticTimelineClientError`` when the Runtime instance
+    ///   cannot be resolved, the addressed provider does not own it, or the serve
+    ///   rejects the call.
+    public func create(title: String, runtimeInstanceID: UUID, providerID expectedProviderID: String? = nil) async throws -> TimelineStatus {
+        let providerID = try await resolvedRuntimeInstanceProvider(for: runtimeInstanceID, expected: expectedProviderID)
         return try await channel.call(
             TimelineManagementProvider.createOperation,
-            request: TimelineCreateRequest(title: title, ascendantID: ascendantID),
+            request: TimelineCreateRequest(title: title, runtimeInstanceID: runtimeInstanceID),
             context: "timeline.create request",
             providerID: providerID,
             timeout: timeout,
@@ -67,7 +67,7 @@ public final class GnosticTimelineClient {
     ///   - title: The replacement title.
     /// - Returns: The status returned by the serving Node.
     /// - Throws: ``GnosticTimelineClientError`` when the Timeline cannot be
-    ///   resolved, its Ascendant lacks Timeline management, or the serve
+    ///   resolved, its Runtime instance lacks Timeline management, or the serve
     ///   rejects the call.
     public func update(timelineID: UUID, title: String) async throws -> TimelineStatus {
         let providerID = try await resolvedTimelineProvider(for: timelineID, requiredCapability: GnosticCapability.timelineManagement)
@@ -112,31 +112,20 @@ public final class GnosticTimelineClient {
         )
     }
 
-    private func resolvedAscendantProvider(for ascendantID: UUID, expected: String?) async throws -> String {
+    private func resolvedRuntimeInstanceProvider(for runtimeInstanceID: UUID, expected: String?) async throws -> String {
         switch await resolver.resolve(
             .runtimeInstance,
-            id: ascendantID,
-            expectedProviderID: expected
-        ) {
-        case let .success(target): return target.providerID
-        case .failure(.unavailable): break
-        case .failure(.ambiguous): throw GnosticTimelineClientError.ascendantAmbiguous(ascendantID)
-        case .failure(.providerMismatch): throw GnosticTimelineClientError.providerMismatch
-        case .failure(.missingCapability): break
-        }
-        switch await resolver.resolve(
-            .ascendant,
-            id: ascendantID,
+            id: runtimeInstanceID,
             expectedProviderID: expected,
             requiredCapability: GnosticCapability.timelineManagement
         ) {
         case let .success(target): return target.providerID
-        case let .failure(failure): throw Self.error(for: failure, ascendant: ascendantID)
+        case let .failure(failure): throw Self.error(for: failure, runtimeInstance: runtimeInstanceID)
         }
     }
 
     /// Resolves the Timeline's provider and, when a capability is required,
-    /// requires its operating Ascendant to advertise it.
+    /// requires its operating Runtime instance to provide it.
     private func resolvedTimelineProvider(for timelineID: UUID, requiredCapability: String? = nil) async throws -> String {
         switch await resolver.resolve(.timeline, id: timelineID, requiredCapability: requiredCapability) {
         case let .success(target): return target.providerID
@@ -144,12 +133,12 @@ public final class GnosticTimelineClient {
         }
     }
 
-    /// The one mapping from catalog target failures to Ascendant-addressed
+    /// The one mapping from catalog target failures to Runtime-instance-addressed
     /// Timeline client errors.
-    static func error(for failure: CatalogTargetFailure, ascendant ascendantID: UUID) -> GnosticTimelineClientError {
+    static func error(for failure: CatalogTargetFailure, runtimeInstance runtimeInstanceID: UUID) -> GnosticTimelineClientError {
         switch failure {
-        case .unavailable: .ascendantUnavailable(ascendantID)
-        case .ambiguous: .ascendantAmbiguous(ascendantID)
+        case .unavailable: .runtimeInstanceUnavailable(runtimeInstanceID)
+        case .ambiguous: .runtimeInstanceAmbiguous(runtimeInstanceID)
         case .providerMismatch: .providerMismatch
         case let .missingCapability(capability): .missingCapability(capability)
         }

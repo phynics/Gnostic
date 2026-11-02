@@ -8,7 +8,7 @@ import Testing
 struct AscendantTurnUpdateVocabularyTests {
     @Test("the declared update vocabulary is exactly what producers emit")
     func declaredKindsMatchProducers() {
-        #expect(AscendantTurnUpdateKind.allCases.map(\.rawValue).sorted() == [
+        #expect(TurnUpdateKind.allCases.map(\.rawValue).sorted() == [
             "assistant_text",
             "assistant_text_snapshot",
             "cancellation",
@@ -24,29 +24,29 @@ struct AscendantTurnUpdateVocabularyTests {
     func cancelledIsNotAnUpdateKind() {
         // ACPDispatcher tested for this spelling defensively. No producer has
         // ever emitted it; the terminal cancellation kind is "cancellation".
-        #expect(AscendantTurnUpdateKind(rawValue: "cancelled") == nil)
+        #expect(TurnUpdateKind(rawValue: "cancelled") == nil)
     }
 
     @Test("terminal failure detection covers every failure kind a producer emits")
     func terminalFailureDetection() {
-        #expect(AscendantTurnUpdate(sequence: 1, kind: .error, terminal: true).isTerminalFailure)
-        #expect(AscendantTurnUpdate(sequence: 2, kind: .cancellation, terminal: true).isTerminalFailure)
-        #expect(!AscendantTurnUpdate(sequence: 3, kind: .completion, terminal: true).isTerminalFailure)
-        #expect(!AscendantTurnUpdate(sequence: 4, kind: .assistantText, text: "hi").isTerminalFailure)
+        #expect(TurnUpdate(sequence: 1, kind: .error, terminal: true).isTerminalFailure)
+        #expect(TurnUpdate(sequence: 2, kind: .cancellation, terminal: true).isTerminalFailure)
+        #expect(!TurnUpdate(sequence: 3, kind: .completion, terminal: true).isTerminalFailure)
+        #expect(!TurnUpdate(sequence: 4, kind: .assistantText, text: "hi").isTerminalFailure)
     }
 
     @Test("assistant text detection covers streamed and compacted text")
     func assistantTextDetection() {
-        #expect(AscendantTurnUpdate(sequence: 1, kind: .assistantText, text: "a").carriesAssistantText)
-        #expect(AscendantTurnUpdate(sequence: 2, kind: .assistantTextSnapshot, text: "b").carriesAssistantText)
-        #expect(!AscendantTurnUpdate(sequence: 3, kind: .toolCall).carriesAssistantText)
-        #expect(!AscendantTurnUpdate(sequence: 4, kind: .completion).carriesAssistantText)
+        #expect(TurnUpdate(sequence: 1, kind: .assistantText, text: "a").carriesAssistantText)
+        #expect(TurnUpdate(sequence: 2, kind: .assistantTextSnapshot, text: "b").carriesAssistantText)
+        #expect(!TurnUpdate(sequence: 3, kind: .toolCall).carriesAssistantText)
+        #expect(!TurnUpdate(sequence: 4, kind: .completion).carriesAssistantText)
     }
 
     @Test("an unknown wire kind decodes without becoming a known kind")
     func unknownKindStaysUnknown() throws {
         let wire = #"{"protocolMajor":3,"sequence":1,"kind":"future_kind","toolStates":[],"permissionStates":[],"terminal":false}"#
-        let decoded = try JSONDecoder().decode(AscendantTurnUpdate.self, from: Data(wire.utf8))
+        let decoded = try JSONDecoder().decode(TurnUpdate.self, from: Data(wire.utf8))
 
         #expect(decoded.kind == "future_kind")
         #expect(decoded.updateKind == nil)
@@ -56,7 +56,7 @@ struct AscendantTurnUpdateVocabularyTests {
 
     @Test("typed kinds encode to the existing wire spellings")
     func typedKindsPreserveWireSpelling() throws {
-        let update = AscendantTurnUpdate(sequence: 7, kind: .assistantTextSnapshot, text: "x")
+        let update = TurnUpdate(sequence: 7, kind: .assistantTextSnapshot, text: "x")
         let data = try JSONEncoder().encode(update)
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 
@@ -65,14 +65,14 @@ struct AscendantTurnUpdateVocabularyTests {
 
     @Test("tool and permission status vocabularies are declared")
     func statusVocabulariesAreDeclared() {
-        #expect(AscendantToolStatus.allCases.map(\.rawValue).sorted() == [
+        #expect(TurnToolStatus.allCases.map(\.rawValue).sorted() == [
             "completed", "failed", "in_progress", "pending",
         ])
-        #expect(AscendantPermissionStatus.allCases.map(\.rawValue).sorted() == [
+        #expect(TurnPermissionStatus.allCases.map(\.rawValue).sorted() == [
             "connection_lost", "denied", "pending", "selected", "unavailable",
         ])
-        #expect(AscendantToolState(toolCallID: "t", status: .inProgress).status == "in_progress")
-        #expect(AscendantPermissionState(
+        #expect(TurnToolState(toolCallID: "t", status: .inProgress).status == "in_progress")
+        #expect(TurnPermissionState(
             correlationID: "c", toolCallID: "t", title: "T", status: .selected
         ).status == "selected")
     }

@@ -272,7 +272,7 @@ public final class GnosticWorkspaceClient {
     }
 
     /// Resolves the Timeline's provider and, when a capability is required,
-    /// requires its operating Ascendant to advertise it.
+    /// requires its operating Runtime instance to provide it.
     private func resolvedTimelineProvider(
         _ explicitProviderID: String?,
         for timelineID: UUID,

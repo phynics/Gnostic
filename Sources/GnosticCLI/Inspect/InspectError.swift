@@ -25,7 +25,7 @@ public enum InspectError: Error, Sendable, LocalizedError {
         case let .brokerUnreachable(detail): "Could not reach the MQTT broker: \(detail)"
         case let .connectionFailed(detail): "Connection failed: \(detail)"
         case let .diagnosticsCapabilityUnavailable(capability):
-            "Live diagnostics are unavailable: no discovered Node advertises capability \(capability)."
+            "Live diagnostics are unavailable: no discovered Node advertises a Runtime instance that provides capability \(capability)."
         case let .diagnosticsUnavailable(detail): "Live diagnostics are unavailable: \(detail)"
         case let .diagnosticsAmbiguous(target): "Live diagnostics target '\(target)' is served by more than one provider."
         case let .ascendantUnavailable(id): "Ascendant \(id.uuidString.lowercased()) was not discovered."
@@ -59,8 +59,8 @@ extension InspectError {
         case let .missingCapability(capability): self = .diagnosticsCapabilityUnavailable(capability)
         case .nodeUnavailable: self = .diagnosticsUnavailable("no discovered Node serves live diagnostics")
         case .nodeAmbiguous: self = .diagnosticsAmbiguous("node")
-        case let .ascendantUnavailable(id): self = .ascendantUnavailable(id)
-        case let .ascendantAmbiguous(id): self = .diagnosticsAmbiguous(id.uuidString.lowercased())
+        case let .runtimeInstanceUnavailable(id): self = .ascendantUnavailable(id)
+        case let .runtimeInstanceAmbiguous(id): self = .diagnosticsAmbiguous(id.uuidString.lowercased())
         case let .timelineUnavailable(id): self = .timelineUnavailable(id)
         case let .timelineAmbiguous(id): self = .diagnosticsAmbiguous(id.uuidString.lowercased())
         case .providerMismatch: self = .diagnosticsUnavailable("the provider does not own the requested target")

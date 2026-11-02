@@ -340,7 +340,7 @@ final class ACPDispatcher: Sendable {
             publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
             publishState(sessionID: record.id, state: "running", stopReason: nil, turnID: turnID)
         }
-        let streamed: (result: AscendantTurnResult, lastSequence: Int, endedUnspecified: Bool)
+        let streamed: (result: TurnResult, lastSequence: Int, endedUnspecified: Bool)
         do {
             streamed = try await streamPrompt(
                 message: text,
@@ -376,7 +376,7 @@ final class ACPDispatcher: Sendable {
             publishUpdate(
                 sessionID: record.id,
                 turnID: turnID,
-                update: AscendantTurnUpdate(sequence: 1, kind: .assistantText, text: result.text),
+                update: TurnUpdate(sequence: 1, kind: .assistantText, text: result.text),
                 replayed: result.replayed
             )
         } else {
@@ -405,7 +405,7 @@ final class ACPDispatcher: Sendable {
         record: ACPSessionRecord,
         turnID: String,
         announce: () -> Void
-    ) async throws -> (result: AscendantTurnResult, lastSequence: Int, endedUnspecified: Bool) {
+    ) async throws -> (result: TurnResult, lastSequence: Int, endedUnspecified: Bool) {
         let providerID = try await boundProviderID(for: record)
         let channel = try await client.turnUpdates(for: turnID, timelineID: record.timelineID, providerID: providerID)
         let inbox = TurnUpdateInbox()
@@ -463,7 +463,7 @@ final class ACPDispatcher: Sendable {
 
         var deliveredTextBytes = 0
 
-        func deliver(_ update: AscendantTurnUpdate, skippingPermissions skipped: Set<String> = []) async throws {
+        func deliver(_ update: TurnUpdate, skippingPermissions skipped: Set<String> = []) async throws {
             announce()
             publishUpdate(
                 sessionID: record.id,
@@ -491,7 +491,7 @@ final class ACPDispatcher: Sendable {
         // position and tries again later, because moving past a gap would lose
         // that text for good. Everything dropped here stays in replay.
         func catchUp(turnEnded: Bool) async throws -> Bool {
-            var missed: [AscendantTurnUpdate] = []
+            var missed: [TurnUpdate] = []
             var after = lastSequence
             var replayFailed = false
             var pages = 0
@@ -557,10 +557,10 @@ final class ACPDispatcher: Sendable {
                     replayed = try await catchUp(turnEnded: true)
                 }
                 if !replayed {
-                    try await deliver(AscendantTurnUpdate(
+                    try await deliver(TurnUpdate(
                         sequence: lastSequence,
                         kind: .assistantText,
-                        text: AscendantTurnUpdate.truncationMarker
+                        text: TurnUpdate.truncationMarker
                     ))
                 }
                 return (result, lastSequence, endedUnspecified)
@@ -577,13 +577,13 @@ final class ACPDispatcher: Sendable {
     private static let catchUpPagesPerPass = 64
 
     /// Whether the Turn's terminal update records an idle without a stop reason.
-    private static func endedUnspecified(_ updates: [AscendantTurnUpdate]) -> Bool {
+    private static func endedUnspecified(_ updates: [TurnUpdate]) -> Bool {
         guard let terminal = updates.last(where: \.terminal) else { return false }
-        return terminal.updateKind == .completion && terminal.reasonCode == TimelineTurnTerminalOutcome.endedUnspecified.rawValue
+        return terminal.updateKind == .completion && terminal.reasonCode == TurnTerminalOutcome.endedUnspecified.rawValue
     }
 
     fileprivate enum PromptWaitOutcome: Sendable {
-        case completed(AscendantTurnResult)
+        case completed(TurnResult)
         case failed(PromptFailure)
         case cancelled
     }
@@ -612,7 +612,7 @@ final class ACPDispatcher: Sendable {
     }
 
     private func handlePermissionUpdate(
-        _ update: AscendantTurnUpdate,
+        _ update: TurnUpdate,
         sessionID: String,
         timelineID: UUID,
         turnID: String,
@@ -652,7 +652,7 @@ final class ACPDispatcher: Sendable {
                     continue
                 }
                 let providerID = try await currentRuntime().providerID
-                try client.respondToPermission(AscendantPermissionResponse(
+                try client.respondToPermission(TurnPermissionResponse(
                     correlationID: state.correlationID,
                     timelineID: timelineID,
                     clientTurnID: turnID,
@@ -671,13 +671,13 @@ final class ACPDispatcher: Sendable {
 
     /// Tells the Node that the client made no decision. It is not a denial.
     private func withholdPermission(
-        _ state: AscendantPermissionState,
+        _ state: TurnPermissionState,
         timelineID: UUID,
         turnID: String,
         reason: String
     ) async throws {
         let providerID = try await currentRuntime().providerID
-        try client.respondToPermission(AscendantPermissionResponse(
+        try client.respondToPermission(TurnPermissionResponse(
             correlationID: state.correlationID,
             timelineID: timelineID,
             clientTurnID: turnID,
@@ -728,7 +728,7 @@ final class ACPDispatcher: Sendable {
     private func publishUpdate(
         sessionID: String,
         turnID: String,
-        update: AscendantTurnUpdate,
+        update: TurnUpdate,
         replayed: Bool
     ) {
         for notification in ACPUpdateRenderer.updates(
@@ -898,13 +898,13 @@ final class ACPDispatcher: Sendable {
 }
 
 private actor TurnUpdateInbox {
-    private var updates: [AscendantTurnUpdate] = []
+    private var updates: [TurnUpdate] = []
 
-    func append(_ update: AscendantTurnUpdate) {
+    func append(_ update: TurnUpdate) {
         updates.append(update)
     }
 
-    func drain(afterSequence: Int) -> [AscendantTurnUpdate] {
+    func drain(afterSequence: Int) -> [TurnUpdate] {
         let ready = updates.filter { $0.sequence > afterSequence }.sorted { $0.sequence < $1.sequence }
         updates.removeAll { $0.sequence <= (ready.last?.sequence ?? afterSequence) }
         return ready

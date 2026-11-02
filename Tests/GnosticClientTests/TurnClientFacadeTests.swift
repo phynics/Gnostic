@@ -49,8 +49,8 @@ struct TurnClientFacadeTests {
         defer { updateBridge.cancel() }
 
         let scripted = [
-            AscendantTurnUpdate(sequence: 1, kind: .assistantText, text: "Hel"),
-            AscendantTurnUpdate(sequence: 2, kind: .assistantText, text: "lo"),
+            TurnUpdate(sequence: 1, kind: .assistantText, text: "Hel"),
+            TurnUpdate(sequence: 2, kind: .assistantText, text: "lo"),
         ]
 
         let turnRegistration = try await provider.manager.registerCallHandler(
@@ -58,7 +58,7 @@ struct TurnClientFacadeTests {
         ) { snapshot in
             guard let parameters = snapshot.parameters,
                   let request = try? JSONDecoder().decode(
-                      AscendantTurnRequest.self,
+                      TurnRequest.self,
                       from: Data(parameters.utf8)
                   ),
                   let requestTurnID = request.clientTurnID else {
@@ -92,13 +92,13 @@ struct TurnClientFacadeTests {
             _ = try? await store.append(
                 timelineID: request.timelineID,
                 clientTurnID: requestTurnID,
-                kind: AscendantTurnUpdateKind.completion.rawValue,
+                kind: TurnUpdateKind.completion.rawValue,
                 text: "Hello",
                 terminal: true
             )
             try? await store.finish(timelineID: request.timelineID, clientTurnID: requestTurnID)
             guard let result = try? GnosticWirePayload.encode(
-                AscendantTurnResult(clientTurnID: requestTurnID, text: "Hello"),
+                TurnResult(clientTurnID: requestTurnID, text: "Hello"),
                 context: "test turn result"
             ) else {
                 return .failure(code: 500, message: "Could not encode test turn result")
@@ -111,7 +111,7 @@ struct TurnClientFacadeTests {
             operation: AscendantTurnProvider.replayOperation
         ) { _ in
             guard let replay = try? GnosticWirePayload.encode(
-                AscendantTurnReplay(updates: scripted, compacted: false, terminal: true),
+                TurnReplay(updates: scripted, compacted: false, terminal: true),
                 context: "test replay result"
             ) else {
                 return .failure(code: 500, message: "Could not encode test replay result")
@@ -139,13 +139,13 @@ struct TurnClientFacadeTests {
 
             let collector = Task { @MainActor in
                 var kinds: [String] = []
-                var observed: AscendantPermissionState?
+                var observed: TurnPermissionState?
                 for await update in updates {
                     kinds.append(update.kind)
                     if let permission = update.permissionState, permission.permissionStatus == .pending {
                         observed = permission
                         try client.respond(
-                            to: AscendantPermissionResponse(
+                            to: TurnPermissionResponse(
                                 correlationID: permission.correlationID,
                                 timelineID: timelineID,
                                 clientTurnID: clientTurnID,
@@ -166,9 +166,9 @@ struct TurnClientFacadeTests {
 
             let result = try await runTask.value
             #expect(result.text == "Hello")
-            #expect(roundTrip.kinds.first == AscendantTurnUpdateKind.assistantText.rawValue)
-            #expect(roundTrip.kinds.contains(AscendantTurnUpdateKind.permissionState.rawValue))
-            #expect(roundTrip.kinds.last == AscendantTurnUpdateKind.completion.rawValue)
+            #expect(roundTrip.kinds.first == TurnUpdateKind.assistantText.rawValue)
+            #expect(roundTrip.kinds.contains(TurnUpdateKind.permissionState.rawValue))
+            #expect(roundTrip.kinds.last == TurnUpdateKind.completion.rawValue)
             #expect(roundTrip.permission?.title == "Run the tool")
             #expect(roundTrip.permission?.permissionStatus == .pending)
 
@@ -194,11 +194,11 @@ struct TurnClientFacadeTests {
         ) { snapshot in
             guard let parameters = snapshot.parameters,
                   let request = try? JSONDecoder().decode(
-                      AscendantTurnRequest.self,
+                      TurnRequest.self,
                       from: Data(parameters.utf8)
                   ),
                   let result = try? GnosticWirePayload.encode(
-                      AscendantTurnResult(clientTurnID: request.clientTurnID, text: "discovered"),
+                      TurnResult(clientTurnID: request.clientTurnID, text: "discovered"),
                       context: "test turn result"
                   ) else {
                 return .failure(code: 400, message: "Invalid test turn request")
@@ -230,11 +230,11 @@ struct TurnClientFacadeTests {
         ) { snapshot in
             guard let parameters = snapshot.parameters,
                   let request = try? JSONDecoder().decode(
-                      AscendantTurnRequest.self,
+                      TurnRequest.self,
                       from: Data(parameters.utf8)
                   ),
                   let result = try? GnosticWirePayload.encode(
-                      AscendantTurnResult(clientTurnID: request.clientTurnID, text: request.message),
+                      TurnResult(clientTurnID: request.clientTurnID, text: request.message),
                       context: "test turn result"
                   ) else {
                 return .failure(code: 400, message: "Invalid test turn request")
@@ -425,7 +425,7 @@ struct TurnClientFacadeTests {
     @Test("rejects an ascendant without the text-turn capability")
     func rejectsMissingCapability() async throws {
         let namespace = namespaced("capability")
-        let provider = try await startProvider(namespace: namespace, capabilities: [])
+        let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
         defer { provider.manager.stop() }
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
@@ -482,7 +482,7 @@ struct TurnClientFacadeTests {
 
     private struct CollectedRoundTrip: Sendable {
         let kinds: [String]
-        let permission: AscendantPermissionState?
+        let permission: TurnPermissionState?
     }
 
     /// Returns the task's value, or `nil` once `timeout` elapses, so a missing
@@ -532,26 +532,24 @@ struct TurnClientFacadeTests {
         name: String = "gnostic-turn-provider",
         ascendantID: UUID = UUID(),
         timelineID: UUID = UUID(),
-        capabilities: [String] = [GnosticCapability.textTurnInput]
+        advertisesRuntimeInstance: Bool = true
     ) async throws -> AdvertisedProvider {
         let manager = try makeProvider(namespace: namespace, name: name)
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
-            id: ascendantID,
-            name: "Turn Ascendant",
-            description: "Offline turn provider.",
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
-            lastActiveAt: now,
-            createdAt: now,
-            updatedAt: now,
-            capabilities: AscendantBackendCapabilities(interoperability: Set(capabilities))
-        )))
-        manager.publishAdvertise(GnosticTimelineObject(timeline: AscendantBackendTimeline(
+        if advertisesRuntimeInstance {
+            manager.publishAdvertise(GnosticRuntimeInstanceObject(
+                id: ascendantID,
+                name: "Turn Runtime",
+                kind: "acp",
+                nodeID: UUID(),
+                rawCapabilities: ["session": .object([:])]
+            ))
+        }
+        manager.publishAdvertise(GnosticTimelineObject(timeline: RuntimeInstanceTimeline(
             id: timelineID,
             title: "Turn Timeline",
             attachedWorkspaceIDs: [],
-            attachedAscendantID: ascendantID,
+            runtimeInstanceID: ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,

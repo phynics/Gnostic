@@ -11,7 +11,7 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let request = AscendantTurnRequest(
+        let request = TurnRequest(
             message: "hello",
             timelineID: timelineID,
             clientTurnID: "pi:session:entry-1"
@@ -42,7 +42,7 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let request = AscendantTurnRequest(message: "wait", timelineID: timelineID, clientTurnID: "cancel-me")
+        let request = TurnRequest(message: "wait", timelineID: timelineID, clientTurnID: "cancel-me")
         let turn = Task {
             try await coordinator.execute(request, ascendantID: UUID(), cancel: {
                 await probe.cancelRequested()
@@ -58,7 +58,7 @@ struct AscendantTurnCoordinatorTests {
         do {
             _ = try await turn.value
             Issue.record("The explicitly cancelled Turn unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             guard case .cancelled = error else {
                 Issue.record("Expected a cancelled Turn, received \(error).")
                 return
@@ -66,7 +66,7 @@ struct AscendantTurnCoordinatorTests {
         }
         #expect(await probe.cancellationRequests == 1)
         #expect(await coordinator.cancelTurn(timelineID: timelineID, clientTurnID: "cancel-me") == false)
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(request, ascendantID: UUID()) {
                 await probe.enter("unexpected replay operation")
                 return "wrong"
@@ -80,8 +80,8 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
-        let conflictRequest = AscendantTurnRequest(message: "different", timelineID: timelineID, clientTurnID: "turn-1")
+        let firstRequest = TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "turn-1")
+        let conflictRequest = TurnRequest(message: "different", timelineID: timelineID, clientTurnID: "turn-1")
 
         _ = try await coordinator.execute(firstRequest, ascendantID: UUID()) {
             await probe.enter("first")
@@ -89,7 +89,7 @@ struct AscendantTurnCoordinatorTests {
             return "answer"
         }
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(conflictRequest, ascendantID: UUID()) {
                 await probe.enter("conflict")
                 await probe.leave()
@@ -103,7 +103,7 @@ struct AscendantTurnCoordinatorTests {
     func lostCallerDoesNotRetryTheTurn() async throws {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
-        let request = AscendantTurnRequest(message: "once", timelineID: UUID(), clientTurnID: "turn-cancelled")
+        let request = TurnRequest(message: "once", timelineID: UUID(), clientTurnID: "turn-cancelled")
 
         let caller = Task {
             try await coordinator.execute(request, ascendantID: UUID()) {
@@ -132,29 +132,29 @@ struct AscendantTurnCoordinatorTests {
     func terminalFailuresAreCached() async throws {
         let coordinator = AscendantTurnCoordinator()
         let probe = TurnProbe()
-        let failedRequest = AscendantTurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-fails")
-        let cancelledRequest = AscendantTurnRequest(message: "cancels", timelineID: UUID(), clientTurnID: "turn-cancels")
+        let failedRequest = TurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-fails")
+        let cancelledRequest = TurnRequest(message: "cancels", timelineID: UUID(), clientTurnID: "turn-cancels")
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(failedRequest, ascendantID: UUID()) {
                 await probe.enter("failed")
                 throw TestTurnError.failed
             }
         }
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(failedRequest, ascendantID: UUID()) {
                 await probe.enter("failed-retry")
                 return "must not run"
             }
         }
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(cancelledRequest, ascendantID: UUID()) {
                 await probe.enter("cancelled")
                 throw CancellationError()
             }
         }
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(cancelledRequest, ascendantID: UUID()) {
                 await probe.enter("cancelled-retry")
                 return "must not run"
@@ -167,14 +167,14 @@ struct AscendantTurnCoordinatorTests {
     @Test("backend terminal metadata survives coordination")
     func backendTerminalMetadataIsPreserved() async throws {
         let coordinator = AscendantTurnCoordinator()
-        let request = AscendantTurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-terminal")
+        let request = TurnRequest(message: "fails", timelineID: UUID(), clientTurnID: "turn-terminal")
 
         do {
             _ = try await coordinator.execute(request, ascendantID: UUID()) {
                 throw AscendantBackendError.terminal(.init(code: "providerUnavailable", message: "provider is offline", retryable: true))
             }
             Issue.record("The terminal backend failure unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error.reasonCode == "providerUnavailable")
             #expect(error.retryable)
             #expect(error.localizedDescription == "provider is offline")
@@ -190,15 +190,15 @@ struct AscendantTurnCoordinatorTests {
         ]
         for (id, backendError, status, reason) in failures {
             let coordinator = AscendantTurnCoordinator()
-            let request = AscendantTurnRequest(message: id, timelineID: UUID(), clientTurnID: id)
+            let request = TurnRequest(message: id, timelineID: UUID(), clientTurnID: id)
             do {
                 _ = try await coordinator.execute(request, ascendantID: UUID()) { throw backendError }
                 Issue.record("The backend failure unexpectedly succeeded: \(id)")
-            } catch let error as AscendantTurnError {
+            } catch let error as TurnError {
                 #expect(error.statusCode == status)
                 #expect(error.reasonCode == reason)
                 #expect(error.statusCode == status)
-                await #expect(throws: AscendantTurnError.self) {
+                await #expect(throws: TurnError.self) {
                 _ = try await coordinator.execute(request, ascendantID: UUID()) { "must not rerun" }
                 }
             }
@@ -210,7 +210,7 @@ struct AscendantTurnCoordinatorTests {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1, identityCapacity: 2)
         let probe = TurnProbe()
         for index in 0..<2 {
-            let request = AscendantTurnRequest(
+            let request = TurnRequest(
                 message: "message-\(index)",
                 timelineID: UUID(),
                 clientTurnID: "admitted-\(index)"
@@ -221,7 +221,7 @@ struct AscendantTurnCoordinatorTests {
             }
         }
 
-        let rejected = AscendantTurnRequest(
+        let rejected = TurnRequest(
             message: "not admitted",
             timelineID: UUID(),
             clientTurnID: "rejected"
@@ -232,7 +232,7 @@ struct AscendantTurnCoordinatorTests {
                 return "must not run"
             }
             Issue.record("A new identity was admitted after the identity ledger reached capacity.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .capacityExceeded(timelineID: rejected.timelineID, clientTurnID: "rejected"))
         }
         #expect(await probe.starts == 2)
@@ -244,9 +244,9 @@ struct AscendantTurnCoordinatorTests {
         let completedCapacity = 2
         let coordinator = AscendantTurnCoordinator(completedCapacity: completedCapacity, identityCapacity: 2)
         let huge = String(repeating: "x", count: 100_000)
-        let request = AscendantTurnRequest(message: "failure", timelineID: UUID(), clientTurnID: "huge-error")
+        let request = TurnRequest(message: "failure", timelineID: UUID(), clientTurnID: "huge-error")
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(request, ascendantID: UUID()) {
                 throw AscendantBackendError.terminal(.init(code: huge, message: huge))
             }
@@ -261,9 +261,9 @@ struct AscendantTurnCoordinatorTests {
     func newerEvictedIdentitiesNeverRerun() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1, identityCapacity: 3)
         let probe = TurnProbe()
-        var requests: [AscendantTurnRequest] = []
+        var requests: [TurnRequest] = []
         for index in 0..<3 {
-            let request = AscendantTurnRequest(
+            let request = TurnRequest(
                 message: "message-\(index)",
                 timelineID: UUID(),
                 clientTurnID: "evicted-\(index)"
@@ -275,13 +275,13 @@ struct AscendantTurnCoordinatorTests {
             }
         }
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(requests[1], ascendantID: UUID()) {
                 await probe.enter("rerun")
                 return "must not run"
             }
         }
-        let conflict = AscendantTurnRequest(
+        let conflict = TurnRequest(
             message: "different",
             timelineID: requests[1].timelineID,
             clientTurnID: requests[1].clientTurnID
@@ -292,7 +292,7 @@ struct AscendantTurnCoordinatorTests {
                 return "must not run"
             }
             Issue.record("An evicted identity was accepted with different content.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .conflict(timelineID: conflict.timelineID, clientTurnID: conflict.clientTurnID!))
         }
         #expect(await probe.starts == 3)
@@ -302,8 +302,8 @@ struct AscendantTurnCoordinatorTests {
     func evictedResultsNeverRerun() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1)
         let probe = TurnProbe()
-        let first = AscendantTurnRequest(message: "first", timelineID: UUID(), clientTurnID: "turn-1")
-        let second = AscendantTurnRequest(message: "second", timelineID: UUID(), clientTurnID: "turn-2")
+        let first = TurnRequest(message: "first", timelineID: UUID(), clientTurnID: "turn-1")
+        let second = TurnRequest(message: "second", timelineID: UUID(), clientTurnID: "turn-2")
 
         _ = try await coordinator.execute(first, ascendantID: UUID()) {
             await probe.enter("first")
@@ -314,7 +314,7 @@ struct AscendantTurnCoordinatorTests {
             return "two"
         }
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(first, ascendantID: UUID()) {
                 await probe.enter("rerun")
                 return "must not run"
@@ -328,7 +328,7 @@ struct AscendantTurnCoordinatorTests {
     func completedStateIsGloballyBounded() async throws {
         let coordinator = AscendantTurnCoordinator(completedCapacity: 2, identityCapacity: 8)
         for index in 0..<8 {
-            let request = AscendantTurnRequest(message: "message-\(index)", timelineID: UUID(), clientTurnID: "turn-\(index)")
+            let request = TurnRequest(message: "message-\(index)", timelineID: UUID(), clientTurnID: "turn-\(index)")
             _ = try await coordinator.execute(request, ascendantID: UUID()) { "answer-\(index)" }
         }
 
@@ -342,7 +342,7 @@ struct AscendantTurnCoordinatorTests {
     func completedTimelineLanesAreCleanedUp() async throws {
         let coordinator = AscendantTurnCoordinator()
         for _ in 0..<24 {
-            let request = AscendantTurnRequest(message: "lane", timelineID: UUID())
+            let request = TurnRequest(message: "lane", timelineID: UUID())
             _ = try await coordinator.execute(request, ascendantID: UUID()) { "done" }
         }
 
@@ -355,8 +355,8 @@ struct AscendantTurnCoordinatorTests {
         let gate = TurnGate()
         let probe = TurnProbe()
         let timelineID = UUID()
-        let firstRequest = AscendantTurnRequest(message: "first", timelineID: timelineID, clientTurnID: "first")
-        let rejectedRequest = AscendantTurnRequest(message: "rejected", timelineID: timelineID, clientTurnID: "rejected")
+        let firstRequest = TurnRequest(message: "first", timelineID: timelineID, clientTurnID: "first")
+        let rejectedRequest = TurnRequest(message: "rejected", timelineID: timelineID, clientTurnID: "rejected")
 
         let first = Task {
             try await coordinator.execute(firstRequest, ascendantID: UUID()) {
@@ -367,7 +367,7 @@ struct AscendantTurnCoordinatorTests {
             }
         }
         await probe.waitForStarts(1)
-        await #expect(throws: AscendantTurnError.timelineBusy(timelineID: timelineID, clientTurnID: "rejected")) {
+        await #expect(throws: TurnError.timelineBusy(timelineID: timelineID, clientTurnID: "rejected")) {
             _ = try await coordinator.execute(rejectedRequest, ascendantID: UUID()) {
                 await probe.enter("rejected")
                 return "must-not-run"
@@ -387,7 +387,7 @@ struct AscendantTurnCoordinatorTests {
     func originalSuccessIsObservedOnce() async throws {
         let timelineID = UUID()
         let ascendantID = UUID()
-        let request = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-observed")
+        let request = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-observed")
         let replayCheck = ObservationReplayCheck(request: request)
         let observer = TerminalTurnObservationProbe { record in
             await replayCheck.check(record)
@@ -429,8 +429,8 @@ struct AscendantTurnCoordinatorTests {
 
     @Test("tombstone state is committed before the terminal observation")
     func tombstoneCommitPrecedesObservation() async throws {
-        let first = AscendantTurnRequest(message: "first", timelineID: UUID(), clientTurnID: "first")
-        let second = AscendantTurnRequest(message: "second", timelineID: UUID(), clientTurnID: "second")
+        let first = TurnRequest(message: "first", timelineID: UUID(), clientTurnID: "first")
+        let second = TurnRequest(message: "second", timelineID: UUID(), clientTurnID: "second")
         let check = ObservationTombstoneCheck(request: first)
         let observer = TerminalTurnObservationProbe { record in
             await check.check(record)
@@ -450,15 +450,15 @@ struct AscendantTurnCoordinatorTests {
         let observer = TerminalTurnObservationProbe()
         let coordinator = AscendantTurnCoordinator(observers: [observer])
         let ascendantID = UUID()
-        let failureRequest = AscendantTurnRequest(message: "failure", timelineID: UUID(), clientTurnID: "failure")
-        let cancellationRequest = AscendantTurnRequest(message: "cancel", timelineID: UUID(), clientTurnID: "cancel")
+        let failureRequest = TurnRequest(message: "failure", timelineID: UUID(), clientTurnID: "failure")
+        let cancellationRequest = TurnRequest(message: "cancel", timelineID: UUID(), clientTurnID: "cancel")
 
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(failureRequest, ascendantID: ascendantID) {
                 throw AscendantBackendError.terminal(.init(code: "providerUnavailable", message: "offline", retryable: true))
             }
         }
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(cancellationRequest, ascendantID: ascendantID) {
                 throw CancellationError()
             }
@@ -475,8 +475,8 @@ struct AscendantTurnCoordinatorTests {
         let observer = TerminalTurnObservationProbe()
         let coordinator = AscendantTurnCoordinator(completedCapacity: 1, identityCapacity: 2, observers: [observer])
         let timelineID = UUID()
-        let request = AscendantTurnRequest(message: "same", timelineID: timelineID, clientTurnID: "same")
-        let conflict = AscendantTurnRequest(message: "different", timelineID: timelineID, clientTurnID: "same")
+        let request = TurnRequest(message: "same", timelineID: timelineID, clientTurnID: "same")
+        let conflict = TurnRequest(message: "different", timelineID: timelineID, clientTurnID: "same")
         let gate = TurnGate()
         let probe = TurnProbe()
 
@@ -491,7 +491,7 @@ struct AscendantTurnCoordinatorTests {
         let duplicate = Task {
             try await coordinator.execute(request, ascendantID: UUID()) { "must-not-run" }
         }
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(conflict, ascendantID: UUID()) { "must-not-run" }
         }
         await gate.release()
@@ -499,25 +499,25 @@ struct AscendantTurnCoordinatorTests {
         _ = try await duplicate.value
         await observer.waitForRecords(1)
 
-        let second = AscendantTurnRequest(message: "second", timelineID: UUID(), clientTurnID: "second")
+        let second = TurnRequest(message: "second", timelineID: UUID(), clientTurnID: "second")
         _ = try await coordinator.execute(second, ascendantID: UUID()) { "second" }
         await observer.waitForRecords(2)
-        await #expect(throws: AscendantTurnError.self) {
+        await #expect(throws: TurnError.self) {
             _ = try await coordinator.execute(request, ascendantID: UUID()) { "must-not-rerun" }
         }
         let replay = try await coordinator.execute(second, ascendantID: UUID()) { "must-not-rerun" }
         #expect(replay.replayed)
 
-        let rejected = AscendantTurnRequest(message: "rejected", timelineID: UUID(), clientTurnID: "rejected")
+        let rejected = TurnRequest(message: "rejected", timelineID: UUID(), clientTurnID: "rejected")
         do {
             _ = try await coordinator.execute(rejected, ascendantID: UUID()) { "must-not-run" }
             Issue.record("The capacity rejection unexpectedly succeeded.")
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             #expect(error == .capacityExceeded(timelineID: rejected.timelineID, clientTurnID: "rejected"))
         }
         #expect(await observer.records.count == 2)
 
-        let incompatible = AscendantTurnRequest(
+        let incompatible = TurnRequest(
             message: "incompatible",
             timelineID: UUID(),
             clientTurnID: "incompatible",
@@ -535,7 +535,7 @@ struct AscendantTurnCoordinatorTests {
         let failing = TerminalTurnObservationProbe(label: "failing", order: order, fails: true)
         let succeeding = TerminalTurnObservationProbe(label: "succeeding", order: order)
         let coordinator = AscendantTurnCoordinator(observers: [failing, succeeding])
-        let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "observer-failure")
+        let request = TurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "observer-failure")
 
         let result = try await coordinator.execute(request, ascendantID: UUID()) { "answer" }
         await succeeding.waitForRecords(1)
@@ -553,7 +553,7 @@ struct AscendantTurnCoordinatorTests {
         let gate = TurnGate()
         let probe = TurnProbe()
         let ascendantID = UUID()
-        let request = AscendantTurnRequest(message: "applied", timelineID: UUID(), clientTurnID: "applied")
+        let request = TurnRequest(message: "applied", timelineID: UUID(), clientTurnID: "applied")
 
         let cancelObserved = CompletionFlag()
         let turn = Task {
@@ -644,7 +644,7 @@ struct AscendantTurnCoordinatorTests {
         // the fence, so this turn is admitted for observation.
         await coordinator.cancelAll(waitForCompletion: false)
 
-        await #expect(throws: AscendantTurnError.self) { _ = try await turn.value }
+        await #expect(throws: TurnError.self) { _ = try await turn.value }
         let records = await observer.records
         // #require keeps a regression failing cleanly instead of trapping on
         // an empty collection.
@@ -704,7 +704,7 @@ struct AscendantTurnCoordinatorTests {
             observers: [observer],
             observationDrainTimeout: .milliseconds(50)
         )
-        let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "stuck-observer")
+        let request = TurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "stuck-observer")
 
         _ = try await coordinator.execute(request, ascendantID: UUID()) { "answer" }
         await observer.waitForRecords(1)
@@ -719,7 +719,7 @@ struct AscendantTurnCoordinatorTests {
         let gate = TurnGate()
         let observer = TerminalTurnObservationProbe(gate: gate)
         let coordinator = AscendantTurnCoordinator(observers: [observer])
-        let request = AscendantTurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "shutdown")
+        let request = TurnRequest(message: "hello", timelineID: UUID(), clientTurnID: "shutdown")
 
         _ = try await coordinator.execute(request, ascendantID: UUID()) { "answer" }
         await observer.waitForRecords(1)
@@ -789,12 +789,12 @@ private actor TurnGate {
 
 private actor ObservationReplayCheck {
     private var coordinator: AscendantTurnCoordinator?
-    private let request: AscendantTurnRequest
+    private let request: TurnRequest
     private(set) var sawCommittedReplay = false
     private var didCheck = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    init(request: AscendantTurnRequest) {
+    init(request: TurnRequest) {
         self.request = request
     }
 
@@ -830,11 +830,11 @@ private actor ObservationReplayCheck {
 
 private actor ObservationTombstoneCheck {
     private var coordinator: AscendantTurnCoordinator?
-    private let request: AscendantTurnRequest
+    private let request: TurnRequest
     private(set) var sawCommittedTombstone = false
     private var waiter: CheckedContinuation<Void, Never>?
 
-    init(request: AscendantTurnRequest) {
+    init(request: TurnRequest) {
         self.request = request
     }
 
@@ -846,7 +846,7 @@ private actor ObservationTombstoneCheck {
         guard record.clientTurnID == "second", let coordinator else { return }
         do {
             _ = try await coordinator.execute(request, ascendantID: record.ascendantID) { "must-not-run" }
-        } catch let error as AscendantTurnError {
+        } catch let error as TurnError {
             sawCommittedTombstone = error == .replayUnavailable(
                 timelineID: request.timelineID,
                 clientTurnID: request.clientTurnID ?? ""

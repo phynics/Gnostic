@@ -51,6 +51,7 @@ let package = Package(
         .target(
             name: "GnosticCore",
             dependencies: [
+                "GnosticACPWire",
                 "GnosticProtocol",
                 .product(name: "Axoloty", package: "Axoloty"),
                 .product(name: "AxolotyMQTT", package: "Axoloty"),
@@ -84,6 +85,7 @@ let package = Package(
         .target(
             name: "GnosticACPFrontend",
             dependencies: [
+                "GnosticACPWire",
                 "GnosticClient",
                 "GnosticCore",
                 "GnosticProtocol",
@@ -92,6 +94,7 @@ let package = Package(
         .target(
             name: "GnosticACPAscendant",
             dependencies: [
+                "GnosticACPWire",
                 "GnosticCore",
                 "GnosticProtocol",
             ]
@@ -100,6 +103,7 @@ let package = Package(
             name: "GnosticACPAscendantTests",
             dependencies: [
                 "GnosticACPAscendant",
+                "GnosticACPWire",
                 "GnosticAscendantConformance",
                 "GnosticCore",
             ]
@@ -195,6 +199,7 @@ let package = Package(
         .testTarget(
             name: "GnosticCoreTests",
             dependencies: [
+                "GnosticACPWire",
                 "GnosticAscendantConformance",
                 "GnosticClient",
                 "GnosticCore",
@@ -315,6 +320,7 @@ let package = Package(
             name: "GnosticCLITests",
             dependencies: [
                 "GnosticACPFrontend",
+                "GnosticACPWire",
                 "GnosticCLI",
                 "GnosticACPAscendant",
                 "GnosticCore",

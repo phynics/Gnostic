@@ -10,8 +10,8 @@ import Testing
 @Suite("Ascendant turn update text bound")
 struct AscendantTurnUpdateTextBoundTests {
     /// All retained updates. One replay page holds what fits the wire bound.
-    private static func allUpdates(_ store: AscendantTurnUpdateStore, timelineID: UUID) async throws -> [AscendantTurnUpdate] {
-        var updates: [AscendantTurnUpdate] = []
+    private static func allUpdates(_ store: AscendantTurnUpdateStore, timelineID: UUID) async throws -> [TurnUpdate] {
+        var updates: [TurnUpdate] = []
         var after = 0
         while true {
             let page = try await store.replay(timelineID: timelineID, clientTurnID: "turn", afterSequence: after)
@@ -21,7 +21,7 @@ struct AscendantTurnUpdateTextBoundTests {
         }
     }
 
-    private static func assembled(_ updates: [AscendantTurnUpdate]) -> String {
+    private static func assembled(_ updates: [TurnUpdate]) -> String {
         updates.filter(\.carriesAssistantText).compactMap(\.text).joined()
     }
 
@@ -79,7 +79,7 @@ struct AscendantTurnUpdateTextBoundTests {
         let timelineID = UUID()
         _ = try await store.append(
             timelineID: timelineID, clientTurnID: "turn", kind: "tool_state",
-            toolState: AscendantToolState(
+            toolState: TurnToolState(
                 toolCallID: "call", status: "completed", content: String(repeating: "\u{65E5}", count: 200)
             )
         )
@@ -96,7 +96,7 @@ struct AscendantTurnUpdateTextBoundTests {
         let text = String(repeating: "a", count: 256)
         _ = try await store.append(
             timelineID: timelineID, clientTurnID: "turn", kind: "tool_state",
-            toolState: AscendantToolState(toolCallID: "call", status: "completed", content: text)
+            toolState: TurnToolState(toolCallID: "call", status: "completed", content: text)
         )
 
         let content = try await store.replay(timelineID: timelineID, clientTurnID: "turn").updates.first?.toolState?.content

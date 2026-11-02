@@ -19,11 +19,11 @@ public enum GnosticWirePayload {
     /// event envelope when an encoded value is embedded in a Call or Channel.
     public static let maximumEmbeddedValueBytes = 1_800
 
-    /// Shared bound for the text field in an Ascendant Turn result. The same
+    /// Shared bound for the text field in a Turn result. The same
     /// value is used while constructing and decoding results.
     public static let maximumTurnResultTextBytes = 1_400
 
-    /// The one canonical bound for an Ascendant Turn prompt. The client encoder
+    /// The one canonical bound for a Turn prompt. The client encoder
     /// and the serve decoder both apply it, so an accepted prompt is
     /// byte-identical on both sides. A larger prompt is rejected, never
     /// truncated. The bound leaves room inside ``maximumEmbeddedValueBytes``
@@ -103,7 +103,7 @@ public enum GnosticWirePayload {
     /// truncated, so a run and its replay always digest the same bytes.
     public static func canonicalTurnMessage(
         _ value: String,
-        context: String = "ascendant.turn message"
+        context: String = "turn message"
     ) throws -> String {
         guard value.utf8.count <= maximumTurnMessageBytes else {
             throw Error.tooLarge(

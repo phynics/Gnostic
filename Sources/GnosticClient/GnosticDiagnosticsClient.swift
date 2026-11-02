@@ -14,12 +14,16 @@ import GnosticProtocol
 ///
 /// ## Capability gating
 ///
-/// Diagnostics are additive. A Node advertises
-/// ``GnosticCapability/diagnostics`` on its Ascendant projections. When no
-/// discovered provider advertises the capability, every method fails with
-/// ``GnosticDiagnosticsClientError/missingCapability(_:)`` before any wire
-/// call. A session that talks to an older or non-diagnostic Node therefore
-/// degrades clearly instead of receiving an unknown-operation error.
+/// A provider offers ``GnosticCapability/diagnostics`` when it advertises at
+/// least one Runtime instance at the current protocol major. The rule reads the
+/// catalog, not a capability list: the Node that hosts a Runtime instance
+/// serves diagnostics for it. A Timeline is diagnosable when it names its
+/// operating Runtime instance and that instance is advertised by the Timeline's
+/// provider. When no discovered provider advertises a Runtime instance, every
+/// method fails with ``GnosticDiagnosticsClientError/missingCapability(_:)``
+/// before any wire call. A session that talks to a Node with no Runtime
+/// instance, or to a peer at another protocol major, therefore degrades
+/// clearly instead of receiving an unknown-operation error.
 ///
 /// ## Payload safety
 ///
@@ -78,34 +82,33 @@ public final class GnosticDiagnosticsClient {
         )
     }
 
-    /// Reads payload-free live diagnostics for one Ascendant.
+    /// Reads payload-free live diagnostics for one Runtime instance.
     ///
     /// - Parameters:
-    ///   - ascendantID: The discovered Ascendant identifier.
-    ///   - providerID: The expected provider that owns the Ascendant, or `nil`
-    ///     to resolve it from the session catalog.
-    /// - Returns: The payload-free Ascendant diagnostics snapshot.
-    /// - Throws: ``GnosticDiagnosticsClientError`` when the Ascendant cannot be
-    ///   resolved, its provider does not advertise
-    ///   ``GnosticCapability/diagnostics``, or the serve rejected the call.
-    public func ascendant(_ ascendantID: UUID, providerID: String? = nil) async throws -> AscendantDiagnostics {
+    ///   - runtimeInstanceID: The discovered Runtime instance identifier.
+    ///   - providerID: The expected provider that owns the Runtime instance, or
+    ///     `nil` to resolve it from the session catalog.
+    /// - Returns: The payload-free Runtime instance diagnostics snapshot.
+    /// - Throws: ``GnosticDiagnosticsClientError`` when the Runtime instance
+    ///   cannot be resolved, or the serve rejected the call.
+    public func runtimeInstance(_ runtimeInstanceID: UUID, providerID: String? = nil) async throws -> RuntimeInstanceDiagnostics {
         let target: CatalogTarget
         switch await resolver.resolve(
-            .ascendant,
-            id: ascendantID,
+            .runtimeInstance,
+            id: runtimeInstanceID,
             expectedProviderID: providerID,
             requiredCapability: GnosticCapability.diagnostics
         ) {
         case let .success(resolved): target = resolved
-        case let .failure(failure): throw Self.error(for: failure, ascendant: ascendantID)
+        case let .failure(failure): throw Self.error(for: failure, runtimeInstance: runtimeInstanceID)
         }
         return try await channel.call(
-            DiagnosticsProvider.ascendantOperation,
-            request: DiagnosticsTargetRequest(id: ascendantID),
-            context: "diagnostics.ascendant request",
+            DiagnosticsProvider.runtimeInstanceOperation,
+            request: DiagnosticsTargetRequest(id: runtimeInstanceID),
+            context: "diagnostics.runtimeInstance request",
             providerID: target.providerID,
             timeout: timeout,
-            returning: AscendantDiagnostics.self
+            returning: RuntimeInstanceDiagnostics.self
         )
     }
 
@@ -117,10 +120,10 @@ public final class GnosticDiagnosticsClient {
     ///     to resolve it from the session catalog.
     /// - Returns: The payload-free Timeline diagnostics snapshot.
     /// - Throws: ``GnosticDiagnosticsClientError`` when the Timeline cannot be
-    ///   resolved or names no operating Ascendant (`timelineUnavailable`), its
-    ///   operating Ascendant does not advertise
-    ///   ``GnosticCapability/diagnostics`` (`missingCapability`), or the serve
-    ///   rejected the call.
+    ///   resolved or names no operating Runtime instance
+    ///   (`timelineUnavailable`), its operating Runtime instance is not
+    ///   advertised by the Timeline's provider (`missingCapability`), or the
+    ///   serve rejected the call.
     public func timeline(_ timelineID: UUID, providerID: String? = nil) async throws -> TimelineDiagnostics {
         let target: CatalogTarget
         switch await resolver.resolve(
@@ -148,7 +151,7 @@ public final class GnosticDiagnosticsClient {
     /// object is addressed, so there is no ownership to mismatch.
     private func resolvedDiagnosticsProvider(_ explicitProviderID: String?) async throws -> String {
         switch await resolver.resolveProvider(
-            advertising: GnosticCapability.diagnostics,
+            providing: GnosticCapability.diagnostics,
             expectedProviderID: explicitProviderID
         ) {
         case let .success(target): return target.providerID
@@ -157,11 +160,11 @@ public final class GnosticDiagnosticsClient {
     }
 
     /// The one mapping from catalog target failures to diagnostics client errors
-    /// addressed by Ascendant.
-    static func error(for failure: CatalogTargetFailure, ascendant ascendantID: UUID) -> GnosticDiagnosticsClientError {
+    /// addressed by Runtime instance.
+    static func error(for failure: CatalogTargetFailure, runtimeInstance runtimeInstanceID: UUID) -> GnosticDiagnosticsClientError {
         switch failure {
-        case .unavailable: .ascendantUnavailable(ascendantID)
-        case .ambiguous: .ascendantAmbiguous(ascendantID)
+        case .unavailable: .runtimeInstanceUnavailable(runtimeInstanceID)
+        case .ambiguous: .runtimeInstanceAmbiguous(runtimeInstanceID)
         case .providerMismatch: .providerMismatch
         case let .missingCapability(capability): .missingCapability(capability)
         }

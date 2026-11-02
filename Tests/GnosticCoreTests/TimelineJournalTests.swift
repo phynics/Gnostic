@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
+import GnosticACPWire
 import Testing
 @testable import GnosticCore
 @testable import GnosticProtocol
@@ -40,7 +41,7 @@ struct TimelineJournalTests {
         let prompt: [ACPContentBlock] = [.text(ACPTextContent(text: "prompt"))]
         let acpVersionTag = "v2"
         let admissionDigest = try TurnAdmissionDigest.hex(prompt: prompt, acpVersionTag: acpVersionTag)
-        let update = TimelineTurnUpdate(
+        let update = TurnSessionUpdate(
             timelineID: timelineID,
             clientTurnID: turnID,
             sequence: 1,

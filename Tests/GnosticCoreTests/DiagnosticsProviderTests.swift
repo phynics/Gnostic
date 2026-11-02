@@ -15,8 +15,8 @@ struct DiagnosticsProviderTests {
     private func nodeSnapshot() -> NodeDiagnostics {
         NodeDiagnostics(
             nodeID: nodeID,
-            ascendents: [
-                DiagnosticsAscendantSummary(
+            runtimeInstances: [
+                DiagnosticsRuntimeInstanceSummary(
                     id: ascendantID,
                     name: "Ascendant",
                     health: .healthy,
@@ -24,7 +24,7 @@ struct DiagnosticsProviderTests {
                 ),
             ],
             timelines: [
-                DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+                DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             ],
             workspaces: [
                 DiagnosticsWorkspaceSummary(id: workspaceID, uri: "workspace://alpha", status: .available),
@@ -42,10 +42,10 @@ struct DiagnosticsProviderTests {
 
     private func provider(
         node: @escaping DiagnosticsProvider.NodeExecutor = { fatalError("unused") },
-        ascendant: @escaping DiagnosticsProvider.AscendantExecutor = { _ in fatalError("unused") },
+        runtimeInstance: @escaping DiagnosticsProvider.RuntimeInstanceExecutor = { _ in fatalError("unused") },
         timeline: @escaping DiagnosticsProvider.TimelineExecutor = { _ in fatalError("unused") }
     ) -> DiagnosticsProvider {
-        DiagnosticsProvider(node: node, ascendant: ascendant, timeline: timeline)
+        DiagnosticsProvider(node: node, runtimeInstance: runtimeInstance, timeline: timeline)
     }
 
     @Test("node diagnostics encode a payload-free snapshot")
@@ -70,8 +70,8 @@ struct DiagnosticsProviderTests {
 
     @Test("ascendant and timeline diagnostics resolve their target")
     func targetDiagnosticsResolveTarget() async throws {
-        let ascendant = AscendantDiagnostics(
-            ascendant: DiagnosticsAscendantSummary(
+        let ascendant = RuntimeInstanceDiagnostics(
+            runtimeInstance: DiagnosticsRuntimeInstanceSummary(
                 id: ascendantID,
                 name: "Ascendant",
                 health: .healthy,
@@ -86,11 +86,11 @@ struct DiagnosticsProviderTests {
             timelines: []
         )
         let timeline = TimelineDiagnostics(
-            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             workspaces: []
         )
         let handler = provider(
-            ascendant: { id in
+            runtimeInstance: { id in
                 #expect(id == ascendantID)
                 return ascendant
             },
@@ -101,14 +101,14 @@ struct DiagnosticsProviderTests {
         )
 
         let ascendantResult = try await handler.handle(
-            operation: DiagnosticsProvider.ascendantOperation,
+            operation: DiagnosticsProvider.runtimeInstanceOperation,
             parameters: encoded(DiagnosticsTargetRequest(id: ascendantID))
         )
         guard case let .success(ascendantPayload, _) = ascendantResult else {
             Issue.record("expected ascendant success, got \(ascendantResult)")
             return
         }
-        let decodedAscendant = try JSONDecoder().decode(AscendantDiagnostics.self, from: Data(ascendantPayload.utf8))
+        let decodedAscendant = try JSONDecoder().decode(RuntimeInstanceDiagnostics.self, from: Data(ascendantPayload.utf8))
         #expect(decodedAscendant == ascendant)
         // Capabilities are filtered to the stable/experimental vocabulary and sorted.
         #expect(decodedAscendant.capabilities == decodedAscendant.capabilities.sorted())
@@ -133,7 +133,7 @@ struct DiagnosticsProviderTests {
             message: "A prior Runtime Session was definitively lost. Gnostic did not reconstruct its context in a replacement Session."
         )
         let timeline = TimelineDiagnostics(
-            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", operatingAscendantID: ascendantID),
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Timeline", runtimeInstanceID: ascendantID),
             workspaces: [],
             sessionRecovery: recovery
         )
@@ -168,7 +168,7 @@ struct DiagnosticsProviderTests {
         // A valid protocol envelope with a missing target field fails request
         // decoding, which is the diagnostics-specific 400 path.
         let result = try await provider().handle(
-            operation: DiagnosticsProvider.ascendantOperation,
+            operation: DiagnosticsProvider.runtimeInstanceOperation,
             parameters: "{\"protocolMajor\":\(GnosticProtocol.currentMajor)}"
         )
         guard case let .failure(code, message, _) = result else {
@@ -182,9 +182,9 @@ struct DiagnosticsProviderTests {
     @Test("a runtime error maps to a structured 404")
     func runtimeErrorMapsToStructuredNotFound() async throws {
         let missing = UUID()
-        let result = try await provider(ascendant: { _ in throw NodeRuntimeError.unknownAscendant(missing) })
+        let result = try await provider(runtimeInstance: { _ in throw NodeRuntimeError.unknownAscendant(missing) })
             .handle(
-                operation: DiagnosticsProvider.ascendantOperation,
+                operation: DiagnosticsProvider.runtimeInstanceOperation,
                 parameters: encoded(DiagnosticsTargetRequest(id: missing))
             )
         guard case let .failure(code, message, _) = result else {

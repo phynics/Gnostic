@@ -2,10 +2,7 @@
 
 import AxolotyWire
 import Foundation
-
-extension GnosticObjectType {
-    public static let runtimeInstance = "me.atkn.gnostic.RuntimeInstance"
-}
+import GnosticACPWire
 
 /// Current process health for one discovered Runtime instance.
 public enum GnosticRuntimeInstanceHealth: String, Codable, Sendable, Equatable {

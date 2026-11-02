@@ -29,7 +29,7 @@ extension GnosticProtocol {
                 retryable: false
             )
         }
-        if let error = error as? AscendantTurnError {
+        if let error = error as? TurnError {
             return GnosticPublicFailure(
                 code: error.statusCode,
                 message: failureMessage(reasonCode: error.reasonCode, message: error.publicMessage, statusCode: error.statusCode, retryable: error.retryable),

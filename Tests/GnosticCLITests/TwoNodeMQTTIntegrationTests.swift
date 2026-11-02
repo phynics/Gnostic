@@ -120,7 +120,7 @@ struct TwoNodeMQTTIntegrationTests {
                 providerID: routerProvider
             )
             let observation = Task {
-                var received: [AscendantTurnUpdate] = []
+                var received: [TurnUpdate] = []
                 for await update in updates {
                     received.append(update)
                     if update.terminal { break }
@@ -128,7 +128,7 @@ struct TwoNodeMQTTIntegrationTests {
                 return received
             }
 
-            let result: AscendantTurnResult
+            let result: TurnResult
             do {
                 result = try await client.runRouted(
                     message: message,
@@ -147,7 +147,7 @@ struct TwoNodeMQTTIntegrationTests {
             let received = await observation.value
             #expect(result.text == "fixture reply: \(message)")
             #expect(received.map(\.text).compactMap { $0 }.joined() == "fixture reply: \(message)")
-            #expect(received.last?.kind == AscendantTurnUpdateKind.completion.rawValue)
+            #expect(received.last?.kind == TurnUpdateKind.completion.rawValue)
             #expect(received.last?.terminal == true)
 
             // A completed retry must retain the owner's event identity.
@@ -377,7 +377,7 @@ struct TwoNodeMQTTIntegrationTests {
             let ownerProvider = try #require(await providerID(for: owner.timelineID, session: session))
             let client = try session.turnClient(timeout: .seconds(3), promptTimeout: .seconds(25))
             let completion = RoutedCallCompletion()
-            let request = AscendantTurnRequest(
+            let request = TurnRequest(
                 message: "[fixture:wait]", timelineID: owner.timelineID, clientTurnID: "shutdown-turn"
             )
             let pending = Task { @MainActor in
@@ -1043,7 +1043,7 @@ struct TwoNodeMQTTIntegrationTests {
         message: String,
         trace: WorkspaceScenarioTrace,
         stagePrefix: String
-    ) async throws -> AscendantTurnResult {
+    ) async throws -> TurnResult {
         trace.record("\(stagePrefix).updates.subscribe", [
             "timelineProviderID": providerID,
             "clientTurnID": clientTurnID,
@@ -1070,7 +1070,7 @@ struct TwoNodeMQTTIntegrationTests {
                 ])
                 do {
                     try client.respond(
-                        to: AscendantPermissionResponse(
+                        to: TurnPermissionResponse(
                             correlationID: permission.correlationID,
                             timelineID: timelineID,
                             clientTurnID: clientTurnID,
@@ -1122,7 +1122,7 @@ struct TwoNodeMQTTIntegrationTests {
                 let clientTurnID = "turn-\(node.name)"
                 let updates = try await client.updates(for: clientTurnID, timelineID: node.timelineID)
                 let observation = Task {
-                    var received: [AscendantTurnUpdate] = []
+                    var received: [TurnUpdate] = []
                     for await update in updates {
                         received.append(update)
                         if update.terminal { break }
@@ -1144,7 +1144,7 @@ struct TwoNodeMQTTIntegrationTests {
 
                     #expect(result.text == "fixture reply: \(message)")
                     #expect(received.map(\.text).compactMap { $0 }.joined() == "fixture reply: \(message)")
-                    #expect(received.last?.kind == AscendantTurnUpdateKind.completion.rawValue)
+                    #expect(received.last?.kind == TurnUpdateKind.completion.rawValue)
                     #expect(received.last?.terminal == true)
                 } catch {
                     observation.cancel()
@@ -1503,7 +1503,7 @@ private final class WorkspaceScenarioTrace {
 
 @MainActor
 private final class PeerLossUpdateCollector {
-    var received: [AscendantTurnUpdate] = []
+    var received: [TurnUpdate] = []
 }
 
 /// Runs `operation` and reports its result, or `nil` when it has not settled
@@ -1512,8 +1512,8 @@ private final class PeerLossUpdateCollector {
 @MainActor
 private func rejectionWithin(
     _ timeout: Duration,
-    _ operation: @escaping @MainActor () async throws -> AscendantTurnResult
-) async -> Result<AscendantTurnResult, any Error>? {
+    _ operation: @escaping @MainActor () async throws -> TurnResult
+) async -> Result<TurnResult, any Error>? {
     let box = RejectionOutcomeBox()
     let task = Task { @MainActor in
         do { box.outcome = .success(try await operation()) } catch { box.outcome = .failure(error) }
@@ -1528,7 +1528,7 @@ private func rejectionWithin(
 
 @MainActor
 private final class RejectionOutcomeBox {
-    var outcome: Result<AscendantTurnResult, any Error>?
+    var outcome: Result<TurnResult, any Error>?
 }
 
 @MainActor

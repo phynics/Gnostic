@@ -11,10 +11,10 @@ struct TurnWireContractTests {
     @Test("Turn results round-trip text larger than the label budget")
     func resultRoundTripPreservesText() throws {
         let text = String(repeating: "x", count: 512)
-        let result = AscendantTurnResult(clientTurnID: "turn-1", text: text)
+        let result = TurnResult(clientTurnID: "turn-1", text: text)
 
         let data = try GnosticWirePayload.encode(result, context: "test result")
-        let decoded = try JSONDecoder().decode(AscendantTurnResult.self, from: data)
+        let decoded = try JSONDecoder().decode(TurnResult.self, from: data)
 
         #expect(decoded.text == text)
         #expect(decoded.clientTurnID == "turn-1")
@@ -23,10 +23,10 @@ struct TurnWireContractTests {
     @Test("Turn requests round-trip a prompt larger than the label budget")
     func requestRoundTripPreservesText() throws {
         let message = String(repeating: "p", count: 512)
-        let request = AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: "turn-long")
+        let request = TurnRequest(message: message, timelineID: timelineID, clientTurnID: "turn-long")
 
         let data = try GnosticWirePayload.encode(request, context: "test request")
-        let decoded = try JSONDecoder().decode(AscendantTurnRequest.self, from: data)
+        let decoded = try JSONDecoder().decode(TurnRequest.self, from: data)
 
         #expect(decoded.message == message)
         #expect(decoded.clientTurnID == "turn-long")
@@ -35,7 +35,7 @@ struct TurnWireContractTests {
     @Test("Turn encode and decode share one prompt bound and reject instead of truncating")
     func requestRejectsOversizePrompt() throws {
         let message = String(repeating: "p", count: GnosticWirePayload.maximumTurnMessageBytes + 1)
-        let request = AscendantTurnRequest(message: message, timelineID: timelineID, clientTurnID: "turn-long")
+        let request = TurnRequest(message: message, timelineID: timelineID, clientTurnID: "turn-long")
 
         do {
             _ = try GnosticWirePayload.encode(request, context: "test request")
@@ -45,7 +45,7 @@ struct TurnWireContractTests {
                 Issue.record("unexpected payload error: \(error)")
                 return
             }
-            #expect(context == "ascendant.turn message")
+            #expect(context == "turn message")
             #expect(actualBytes == message.utf8.count)
             #expect(maximumBytes == GnosticWirePayload.maximumTurnMessageBytes)
         }
@@ -56,7 +56,7 @@ struct TurnWireContractTests {
             "timelineID": timelineID.uuidString,
         ])
         do {
-            _ = try JSONDecoder().decode(AscendantTurnRequest.self, from: payload)
+            _ = try JSONDecoder().decode(TurnRequest.self, from: payload)
             Issue.record("an oversize prompt was accepted by the decoder")
         } catch let error as GnosticWirePayload.Error {
             guard case .tooLarge = error else {
@@ -71,7 +71,7 @@ struct TurnWireContractTests {
         // 1,400 quote characters stay inside the field bound but double during
         // JSON encoding, so the request exceeds the embedded envelope.
         let message = String(repeating: "\"", count: GnosticWirePayload.maximumTurnMessageBytes)
-        let request = AscendantTurnRequest(
+        let request = TurnRequest(
             message: message,
             timelineID: timelineID,
             clientTurnID: String(repeating: "c", count: 128)
@@ -110,7 +110,7 @@ struct TurnWireContractTests {
             return
         }
 
-        let replayRequest = AscendantTurnReplayRequest(
+        let replayRequest = TurnReplayRequest(
             timelineID: timelineID,
             clientTurnID: "long-1",
             message: message
@@ -123,7 +123,7 @@ struct TurnWireContractTests {
             Issue.record("the long-prompt replay failed")
             return
         }
-        let replay = try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(rawReplay.utf8))
+        let replay = try JSONDecoder().decode(TurnReplay.self, from: Data(rawReplay.utf8))
         #expect(!replay.conflict)
         #expect(replay.updates.last?.kind == "completion")
     }
@@ -153,10 +153,10 @@ struct TurnWireContractTests {
             Issue.record("Turn request unexpectedly failed")
             return
         }
-        let result = try JSONDecoder().decode(AscendantTurnResult.self, from: Data(rawResult.utf8))
+        let result = try JSONDecoder().decode(TurnResult.self, from: Data(rawResult.utf8))
         #expect(result.clientTurnID == "turn-1")
 
-        let replayRequest = AscendantTurnReplayRequest(
+        let replayRequest = TurnReplayRequest(
             timelineID: timelineID, clientTurnID: "turn-1", message: "hello"
         )
         let replayResponse = try await provider.handle(
@@ -167,7 +167,7 @@ struct TurnWireContractTests {
             Issue.record("Replay request unexpectedly failed")
             return
         }
-        let replay = try JSONDecoder().decode(AscendantTurnReplay.self, from: Data(rawReplay.utf8))
+        let replay = try JSONDecoder().decode(TurnReplay.self, from: Data(rawReplay.utf8))
         #expect(replay.terminal)
         #expect(replay.updates.last?.kind == "completion")
     }
@@ -176,7 +176,7 @@ struct TurnWireContractTests {
     func cancellationRequestIsScopedAndAcknowledged() async throws {
         let targetTimelineID = timelineID
         let provider = AscendantTurnProvider(
-            execute: { _ in AscendantTurnResult(text: "unused") },
+            execute: { _ in TurnResult(text: "unused") },
             cancel: { request in
                 #expect(request.timelineID == targetTimelineID)
                 #expect(request.clientTurnID == "turn-1")
@@ -196,7 +196,7 @@ struct TurnWireContractTests {
             Issue.record("A valid cancellation request unexpectedly failed.")
             return
         }
-        let result = try JSONDecoder().decode(AscendantTurnCancellationResult.self, from: Data(rawResult.utf8))
+        let result = try JSONDecoder().decode(TurnCancellationResult.self, from: Data(rawResult.utf8))
         #expect(result.cancelled)
     }
 
@@ -204,8 +204,8 @@ struct TurnWireContractTests {
     func canonicalIDsShareCoordinatorResult() async throws {
         let coordinator = AscendantTurnCoordinator()
         let counter = TurnExecutionCounter()
-        let first = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-1")
-        let duplicate = AscendantTurnRequest(message: "hello", timelineID: timelineID, clientTurnID: " turn-1 ")
+        let first = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: "turn-1")
+        let duplicate = TurnRequest(message: "hello", timelineID: timelineID, clientTurnID: " turn-1 ")
 
         _ = try await coordinator.execute(first, ascendantID: UUID()) {
             await counter.increment()
@@ -223,8 +223,8 @@ struct TurnWireContractTests {
 
     @Test("Replay requests preserve invalid IDs until the provider boundary")
     func replayRequestRejectsBlankIDAtProviderBoundary() async throws {
-        let provider = AscendantTurnProvider(execute: { _ in AscendantTurnResult(text: "unused") }, replayStore: AscendantTurnUpdateStore())
-        let request = AscendantTurnReplayRequest(timelineID: timelineID, clientTurnID: "   ")
+        let provider = AscendantTurnProvider(execute: { _ in TurnResult(text: "unused") }, replayStore: AscendantTurnUpdateStore())
+        let request = TurnReplayRequest(timelineID: timelineID, clientTurnID: "   ")
         let parameters = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
 
         let response = try await provider.handle(operation: AscendantTurnProvider.replayOperation, parameters: parameters)
@@ -239,7 +239,7 @@ struct TurnWireContractTests {
     @Test("Turn provider rejects blank and oversized client IDs")
     func invalidClientIDsAreRejected() async throws {
         let provider = AscendantTurnProvider { request in
-            AscendantTurnResult(clientTurnID: request.clientTurnID, text: request.message)
+            TurnResult(clientTurnID: request.clientTurnID, text: request.message)
         }
 
         for clientTurnID in ["   ", String(repeating: "x", count: GnosticWirePayload.maximumIdentifierBytes + 1)] {

@@ -8,21 +8,21 @@ import GnosticProtocol
 public struct TimelineCreateRequest: Codable, Sendable {
     public let protocolMajor: Int
     public let title: String
-    public let ascendantID: UUID?
+    public let runtimeInstanceID: UUID?
 
-    public init(title: String, ascendantID: UUID? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
+    public init(title: String, runtimeInstanceID: UUID? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {
         self.protocolMajor = protocolMajor
         self.title = title
-        self.ascendantID = ascendantID
+        self.runtimeInstanceID = runtimeInstanceID
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolMajor, title, ascendantID }
+    private enum CodingKeys: String, CodingKey { case protocolMajor, title, runtimeInstanceID }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         protocolMajor = try GnosticProtocol.decodeMajor(from: container, key: .protocolMajor)
         title = GnosticWirePayload.boundedLabel(try container.decode(String.self, forKey: .title))
-        ascendantID = try container.decodeIfPresent(UUID.self, forKey: .ascendantID)
+        runtimeInstanceID = try container.decodeIfPresent(UUID.self, forKey: .runtimeInstanceID)
     }
 }
 
@@ -137,7 +137,7 @@ public struct TimelineManagementProvider: Sendable {
                 return .failure(code: 400, reasonCode: "invalidTimelineCreatePayload", message: "Invalid timeline.create payload")
             }
             return try await run {
-                let status = try await create(request.title, request.ascendantID)
+                let status = try await create(request.title, request.runtimeInstanceID)
                 try GnosticProtocol.validate(status.protocolMajor)
                 return try .encoded(status, context: "timeline.create result")
             }

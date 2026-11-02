@@ -27,14 +27,13 @@ struct DiagnosticsClientFacadeTests {
         let provider = try await startProvider(
             namespace: namespace,
             ascendantID: ascendantID,
-            timelineID: timelineID,
-            capabilities: [GnosticCapability.diagnostics]
+            timelineID: timelineID
         )
         defer { provider.manager.stop() }
         let node = nodeSnapshot(ascendantID: ascendantID, timelineID: timelineID, workspaceID: workspaceID)
         let ascendant = ascendantSnapshot(ascendantID: ascendantID, timelineID: timelineID)
         let timeline = TimelineDiagnostics(
-            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Diagnostics Timeline", operatingAscendantID: ascendantID),
+            timeline: DiagnosticsTimelineSummary(id: timelineID, title: "Diagnostics Timeline", runtimeInstanceID: ascendantID),
             workspaces: [DiagnosticsWorkspaceSummary(id: workspaceID, uri: "workspace://alpha", status: .available)]
         )
         let registrations = try await registerDiagnostics(
@@ -52,7 +51,7 @@ struct DiagnosticsClientFacadeTests {
             let readNode = try await client.node()
             #expect(readNode == node)
 
-            let readAscendant = try await client.ascendant(ascendantID)
+            let readAscendant = try await client.runtimeInstance(ascendantID)
             #expect(readAscendant == ascendant)
 
             let readTimeline = try await client.timeline(timelineID)
@@ -63,7 +62,7 @@ struct DiagnosticsClientFacadeTests {
     @Test("degrades clearly when no provider advertises diagnostics")
     func degradesWhenCapabilityIsMissing() async throws {
         let namespace = namespaced("missing-capability")
-        let provider = try await startProvider(namespace: namespace, capabilities: [GnosticCapability.textTurnInput])
+        let provider = try await startProvider(namespace: namespace, advertisesRuntimeInstance: false)
         defer { provider.manager.stop() }
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
@@ -84,14 +83,12 @@ struct DiagnosticsClientFacadeTests {
         let namespace = namespaced("ambiguous")
         let first = try await startProvider(
             namespace: namespace,
-            name: "gnostic-diagnostics-provider-a",
-            capabilities: [GnosticCapability.diagnostics]
+            name: "gnostic-diagnostics-provider-a"
         )
         defer { first.manager.stop() }
         let second = try await startProvider(
             namespace: namespace,
-            name: "gnostic-diagnostics-provider-b",
-            capabilities: [GnosticCapability.diagnostics]
+            name: "gnostic-diagnostics-provider-b"
         )
         defer { second.manager.stop() }
 
@@ -114,10 +111,10 @@ struct DiagnosticsClientFacadeTests {
             let client = try session.diagnosticsClient(timeout: .milliseconds(300))
             let ascendantID = UUID()
             do {
-                _ = try await client.ascendant(ascendantID)
+                _ = try await client.runtimeInstance(ascendantID)
                 Issue.record("an unadvertised Ascendant was accepted")
             } catch let error as GnosticDiagnosticsClientError {
-                #expect(error == .ascendantUnavailable(ascendantID))
+                #expect(error == .runtimeInstanceUnavailable(ascendantID))
             }
         }
     }
@@ -125,14 +122,14 @@ struct DiagnosticsClientFacadeTests {
     @Test("rejects an explicit provider that does not own the Ascendant")
     func rejectsProviderMismatch() async throws {
         let namespace = namespaced("mismatch")
-        let provider = try await startProvider(namespace: namespace, capabilities: [GnosticCapability.diagnostics])
+        let provider = try await startProvider(namespace: namespace)
         defer { provider.manager.stop() }
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
             try await session.discover()
             let client = try session.diagnosticsClient(timeout: .seconds(1))
             do {
-                _ = try await client.ascendant(provider.ascendantID, providerID: UUID().uuidString)
+                _ = try await client.runtimeInstance(provider.ascendantID, providerID: UUID().uuidString)
                 Issue.record("a provider that does not own the Ascendant was accepted")
             } catch let error as GnosticDiagnosticsClientError {
                 #expect(error == .providerMismatch)
@@ -143,7 +140,7 @@ struct DiagnosticsClientFacadeTests {
     @Test("maps a serve protocol failure to a structured error")
     func mapsServeFailureToStructuredError() async throws {
         let namespace = namespaced("serve-failure")
-        let provider = try await startProvider(namespace: namespace, capabilities: [GnosticCapability.diagnostics])
+        let provider = try await startProvider(namespace: namespace)
         defer { provider.manager.stop() }
         let registration = try await provider.manager.registerCallHandler(
             operation: DiagnosticsProvider.nodeOperation
@@ -194,8 +191,8 @@ struct DiagnosticsClientFacadeTests {
         #expect(GnosticDiagnosticsClientError.missingCapability("capability").reasonCode == "missingCapability")
         #expect(GnosticDiagnosticsClientError.nodeUnavailable.reasonCode == "nodeUnavailable")
         #expect(GnosticDiagnosticsClientError.nodeAmbiguous.reasonCode == "nodeAmbiguous")
-        #expect(GnosticDiagnosticsClientError.ascendantUnavailable(id).reasonCode == "ascendantUnavailable")
-        #expect(GnosticDiagnosticsClientError.ascendantAmbiguous(id).reasonCode == "ascendantAmbiguous")
+        #expect(GnosticDiagnosticsClientError.runtimeInstanceUnavailable(id).reasonCode == "runtimeInstanceUnavailable")
+        #expect(GnosticDiagnosticsClientError.runtimeInstanceAmbiguous(id).reasonCode == "runtimeInstanceAmbiguous")
         #expect(GnosticDiagnosticsClientError.timelineUnavailable(id).reasonCode == "timelineUnavailable")
         #expect(GnosticDiagnosticsClientError.timelineAmbiguous(id).reasonCode == "timelineAmbiguous")
         #expect(GnosticDiagnosticsClientError.providerMismatch.reasonCode == "providerMismatch")
@@ -214,11 +211,11 @@ struct DiagnosticsClientFacadeTests {
     private func nodeSnapshot(ascendantID: UUID, timelineID: UUID, workspaceID: UUID) -> NodeDiagnostics {
         NodeDiagnostics(
             nodeID: UUID(),
-            ascendents: [
-                DiagnosticsAscendantSummary(id: ascendantID, name: "Diagnostics Ascendant", health: .healthy, quarantined: false),
+            runtimeInstances: [
+                DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Diagnostics Ascendant", health: .healthy, quarantined: false),
             ],
             timelines: [
-                DiagnosticsTimelineSummary(id: timelineID, title: "Diagnostics Timeline", operatingAscendantID: ascendantID),
+                DiagnosticsTimelineSummary(id: timelineID, title: "Diagnostics Timeline", runtimeInstanceID: ascendantID),
             ],
             workspaces: [
                 DiagnosticsWorkspaceSummary(id: workspaceID, uri: "workspace://alpha", status: .available),
@@ -234,9 +231,9 @@ struct DiagnosticsClientFacadeTests {
         )
     }
 
-    private func ascendantSnapshot(ascendantID: UUID, timelineID: UUID) -> AscendantDiagnostics {
-        AscendantDiagnostics(
-            ascendant: DiagnosticsAscendantSummary(id: ascendantID, name: "Diagnostics Ascendant", health: .healthy, quarantined: false),
+    private func ascendantSnapshot(ascendantID: UUID, timelineID: UUID) -> RuntimeInstanceDiagnostics {
+        RuntimeInstanceDiagnostics(
+            runtimeInstance: DiagnosticsRuntimeInstanceSummary(id: ascendantID, name: "Diagnostics Ascendant", health: .healthy, quarantined: false),
             description: "Offline diagnostics provider.",
             backendKind: "test",
             backendVersion: "1.0.0",
@@ -250,7 +247,7 @@ struct DiagnosticsClientFacadeTests {
     private func registerDiagnostics(
         on manager: CommunicationManager,
         node: NodeDiagnostics,
-        ascendant: AscendantDiagnostics,
+        ascendant: RuntimeInstanceDiagnostics,
         timeline: TimelineDiagnostics
     ) async throws -> [CallHandlerRegistration] {
         let nodeRegistration = try await manager.registerCallHandler(
@@ -259,7 +256,7 @@ struct DiagnosticsClientFacadeTests {
             try .success(result: String(decoding: GnosticWirePayload.encode(node, context: "test node diagnostics"), as: UTF8.self))
         }
         let ascendantRegistration = try await manager.registerCallHandler(
-            operation: DiagnosticsProvider.ascendantOperation
+            operation: DiagnosticsProvider.runtimeInstanceOperation
         ) { _ in
             try .success(result: String(decoding: GnosticWirePayload.encode(ascendant, context: "test ascendant diagnostics"), as: UTF8.self))
         }
@@ -298,26 +295,24 @@ struct DiagnosticsClientFacadeTests {
         name: String = "gnostic-diagnostics-provider",
         ascendantID: UUID = UUID(),
         timelineID: UUID = UUID(),
-        capabilities: [String] = [GnosticCapability.diagnostics]
+        advertisesRuntimeInstance: Bool = true
     ) async throws -> AdvertisedProvider {
         let manager = try makeProvider(namespace: namespace, name: name)
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
-            id: ascendantID,
-            name: "Diagnostics Ascendant",
-            description: "Offline diagnostics provider.",
-            privateTimelineID: timelineID,
-            primaryWorkspaceID: nil,
-            lastActiveAt: now,
-            createdAt: now,
-            updatedAt: now,
-            capabilities: AscendantBackendCapabilities(interoperability: Set(capabilities))
-        )))
-        manager.publishAdvertise(GnosticTimelineObject(timeline: AscendantBackendTimeline(
+        if advertisesRuntimeInstance {
+            manager.publishAdvertise(GnosticRuntimeInstanceObject(
+                id: ascendantID,
+                name: "Diagnostics Runtime",
+                kind: "acp",
+                nodeID: UUID(),
+                rawCapabilities: ["session": .object([:])]
+            ))
+        }
+        manager.publishAdvertise(GnosticTimelineObject(timeline: RuntimeInstanceTimeline(
             id: timelineID,
             title: "Diagnostics Timeline",
             attachedWorkspaceIDs: [],
-            attachedAscendantID: ascendantID,
+            runtimeInstanceID: ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,

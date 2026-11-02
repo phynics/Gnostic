@@ -396,7 +396,7 @@ public final class GnosticConsumerSession {
     ///
     /// The session keeps ownership of the connection. The returned client
     /// shares the session's subscription and catalog, so it reads payload-free
-    /// Node, Ascendant, and Timeline diagnostics without a second connection or
+    /// Node, Runtime instance, and Timeline diagnostics without a second connection or
     /// a hosted Node; neither the session nor the client advertises. Every call
     /// is gated on ``GnosticCapability/diagnostics`` advertisement so a Node
     /// without the capability degrades without a wire call.

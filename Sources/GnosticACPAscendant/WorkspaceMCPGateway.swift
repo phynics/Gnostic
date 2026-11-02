@@ -7,6 +7,7 @@ import GnosticProtocol
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+import GnosticACPWire
 #endif
 
 @MainActor

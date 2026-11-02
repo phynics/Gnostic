@@ -22,17 +22,17 @@ public struct AscendantBackendTurnRequest: Sendable, Equatable {
 
 /// The small update shape a backend can emit without knowing Axoloty or ACP.
 ///
-/// The kind is the declared ``AscendantTurnUpdateKind`` vocabulary, not a raw
+/// The kind is the declared ``TurnUpdateKind`` vocabulary, not a raw
 /// string, so a backend cannot emit an update the host does not understand.
 public struct AscendantBackendUpdate: Sendable, Equatable {
     /// The update kind.
-    public let kind: AscendantTurnUpdateKind
+    public let kind: TurnUpdateKind
     /// Assistant text, for text-bearing kinds.
     public let text: String?
     /// Tool call state, for tool-bearing kinds.
-    public let toolState: AscendantToolState?
+    public let toolState: TurnToolState?
     /// Permission state, for permission-bearing kinds.
-    public let permissionState: AscendantPermissionState?
+    public let permissionState: TurnPermissionState?
     /// Whether this update ends the Turn.
     public let terminal: Bool
     /// A stable, low-cardinality reason. A terminal failure names its failure
@@ -46,10 +46,10 @@ public struct AscendantBackendUpdate: Sendable, Equatable {
 
     /// Creates one backend update.
     public init(
-        kind: AscendantTurnUpdateKind,
+        kind: TurnUpdateKind,
         text: String? = nil,
-        toolState: AscendantToolState? = nil,
-        permissionState: AscendantPermissionState? = nil,
+        toolState: TurnToolState? = nil,
+        permissionState: TurnPermissionState? = nil,
         terminal: Bool = false,
         reasonCode: String? = nil,
         statusCode: Int? = nil,
@@ -75,8 +75,8 @@ extension AscendantBackendUpdate {
     /// Builds the terminal failure update for one error.
     ///
     /// - Parameter error: The error a backend Turn threw.
-    /// - Returns: A terminal update whose kind is ``AscendantTurnUpdateKind/cancellation``
-    ///   for a cancelled Turn and ``AscendantTurnUpdateKind/error`` otherwise.
+    /// - Returns: A terminal update whose kind is ``TurnUpdateKind/cancellation``
+    ///   for a cancelled Turn and ``TurnUpdateKind/error`` otherwise.
     public static func terminalFailure(for error: any Error) -> AscendantBackendUpdate {
         if let backendError = error as? AscendantBackendError {
             switch backendError {
@@ -737,7 +737,7 @@ public enum AscendantBackendConfigurationValidator {
 @MainActor
 public protocol AscendantBackend: AnyObject, Sendable {
     /// The Gnostic-owned identity this backend serves.
-    var identity: AscendantBackendIdentity { get }
+    var identity: RuntimeInstanceIdentity { get }
     /// The optional surfaces this backend implements. Declared once, here;
     /// ``requireCapability(_:as:)`` and ``optionalCapability(_:as:)`` read it.
     nonisolated var capabilities: AscendantBackendOptionalSurfaces { get }
@@ -749,7 +749,7 @@ public protocol AscendantBackend: AnyObject, Sendable {
     ///
     /// - Returns: The backend's Timeline projections.
     /// - Throws: When the backend cannot enumerate them.
-    func operatedTimelines() async throws -> [AscendantBackendTimeline]
+    func operatedTimelines() async throws -> [RuntimeInstanceTimeline]
     /// Creates one Timeline.
     ///
     /// - Parameters:
@@ -757,7 +757,7 @@ public protocol AscendantBackend: AnyObject, Sendable {
     ///   - title: The Timeline title.
     /// - Returns: The created projection.
     /// - Throws: When the backend cannot create it.
-    func createTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
+    func createTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline
     /// Removes one Timeline. Removing an unknown Timeline is not an error.
     func removeTimeline(id: UUID) async
     /// Renames one Timeline.
@@ -768,7 +768,7 @@ public protocol AscendantBackend: AnyObject, Sendable {
     /// - Returns: The updated projection.
     /// - Throws: ``AscendantBackendError/timelineNotFound(_:)`` when the
     ///   Timeline is not operated by this backend.
-    func renameTimeline(id: UUID, title: String) async throws -> AscendantBackendTimeline
+    func renameTimeline(id: UUID, title: String) async throws -> RuntimeInstanceTimeline
     /// Runs one Turn to completion.
     ///
     /// Incremental output must be delivered to `updates` as it is produced;

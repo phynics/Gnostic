@@ -27,12 +27,12 @@ public final class TurnService {
         self.remoteRouter = remoteRouter
     }
 
-    func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+    func turn(_ request: TurnRequest) async throws -> TurnResult {
         try GnosticProtocol.validate(request.protocolMajor)
-        let turnRequest: AscendantTurnRequest
+        let turnRequest: TurnRequest
         if let rawClientTurnID = request.clientTurnID {
             let clientTurnID = try GnosticWirePayload.canonicalClientTurnID(rawClientTurnID)
-            turnRequest = AscendantTurnRequest(
+            turnRequest = TurnRequest(
                 message: request.message,
                 timelineID: request.timelineID,
                 clientTurnID: clientTurnID,
@@ -77,10 +77,10 @@ public final class TurnService {
             let session: AscendantBackendSession
             do {
                 session = try await self.backendProvider.sessionForTurn(ascendantID)
-            } catch let error as AscendantTurnError {
+            } catch let error as TurnError {
                 throw error
             } catch {
-                throw AscendantTurnError.backendUnavailable(
+                throw TurnError.backendUnavailable(
                     timelineID: turnRequest.timelineID,
                     clientTurnID: turnRequest.clientTurnID ?? "",
                     detail: error.localizedDescription
@@ -130,7 +130,7 @@ public final class TurnService {
 
 private struct BackendTurnUpdateSink: AscendantBackendUpdateSink {
     let store: AscendantTurnUpdateStore
-    let request: AscendantTurnRequest
+    let request: TurnRequest
     let clientTurnID: AscendantTurnUpdateStore.ValidatedClientTurnID?
 
     func append(_ update: AscendantBackendUpdate) async throws {

@@ -480,7 +480,7 @@ public final class CommunicationManager {
         TimelineManagementProvider.listOperation,
         TimelineManagementProvider.updateOperation,
         DiagnosticsProvider.nodeOperation,
-        DiagnosticsProvider.ascendantOperation,
+        DiagnosticsProvider.runtimeInstanceOperation,
         DiagnosticsProvider.timelineOperation,
     ]
 

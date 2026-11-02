@@ -2,9 +2,10 @@
 
 import AxolotyWire
 import Foundation
+import GnosticACPWire
 
 /// Terminal state classification of a completed Timeline Turn.
-public enum TimelineTurnTerminalOutcome: String, Codable, Sendable, Equatable {
+public enum TurnTerminalOutcome: String, Codable, Sendable, Equatable {
     case completed
     case endedUnspecified
     case cancelled
@@ -12,7 +13,7 @@ public enum TimelineTurnTerminalOutcome: String, Codable, Sendable, Equatable {
     case insertionUnknown
     case unavailable
 
-    public static func from(stopReason: ACPStopReason?) -> TimelineTurnTerminalOutcome {
+    public static func from(stopReason: ACPStopReason?) -> TurnTerminalOutcome {
         guard let stopReason else { return .endedUnspecified }
         switch stopReason {
         case .endTurn, .maxTokens, .maxTurnRequests:
@@ -28,14 +29,14 @@ public enum TimelineTurnTerminalOutcome: String, Codable, Sendable, Equatable {
 }
 
 /// An incremental or terminal update streamed during a Timeline Turn.
-public struct TimelineTurnUpdate: Codable, Sendable, Equatable {
+public struct TurnSessionUpdate: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let timelineID: UUID
     public let clientTurnID: String
     public let sequence: Int
     public let update: ACPSessionUpdate
     public let terminal: Bool
-    public let terminalOutcome: TimelineTurnTerminalOutcome?
+    public let terminalOutcome: TurnTerminalOutcome?
 
     public init(
         timelineID: UUID,
@@ -43,7 +44,7 @@ public struct TimelineTurnUpdate: Codable, Sendable, Equatable {
         sequence: Int,
         update: ACPSessionUpdate,
         terminal: Bool = false,
-        terminalOutcome: TimelineTurnTerminalOutcome? = nil,
+        terminalOutcome: TurnTerminalOutcome? = nil,
         protocolMajor: Int = GnosticProtocol.currentMajor
     ) {
         self.protocolMajor = protocolMajor
@@ -67,6 +68,6 @@ public struct TimelineTurnUpdate: Codable, Sendable, Equatable {
         sequence = try container.decode(Int.self, forKey: .sequence)
         update = try container.decode(ACPSessionUpdate.self, forKey: .update)
         terminal = try container.decodeIfPresent(Bool.self, forKey: .terminal) ?? false
-        terminalOutcome = try container.decodeIfPresent(TimelineTurnTerminalOutcome.self, forKey: .terminalOutcome)
+        terminalOutcome = try container.decodeIfPresent(TurnTerminalOutcome.self, forKey: .terminalOutcome)
     }
 }

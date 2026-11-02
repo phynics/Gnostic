@@ -8,7 +8,7 @@ public enum TurnEventKind: Codable, Sendable, Equatable {
     /// A Turn began. The digest identifies the prompt without persisting it.
     case started(messageDigest: String?)
     /// One bounded update was emitted.
-    case update(AscendantTurnUpdate)
+    case update(TurnUpdate)
     /// The Turn's retention slot was released.
     case finished
     /// A bounded snapshot of one retained Turn, written by journal compaction.
@@ -49,7 +49,7 @@ public struct TurnJournalOutcome: Codable, Sendable, Equatable {
 public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
     public let messageDigest: String?
     public let nextSequence: Int
-    public let updates: [AscendantTurnUpdate]
+    public let updates: [TurnUpdate]
     public let compacted: Bool
     public let terminal: Bool
     public let finished: Bool
@@ -59,7 +59,7 @@ public struct TurnJournalCheckpoint: Codable, Sendable, Equatable {
     public init(
         messageDigest: String?,
         nextSequence: Int,
-        updates: [AscendantTurnUpdate],
+        updates: [TurnUpdate],
         compacted: Bool,
         terminal: Bool,
         finished: Bool,

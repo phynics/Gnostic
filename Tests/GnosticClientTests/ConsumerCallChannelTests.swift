@@ -62,25 +62,25 @@ struct ConsumerCallChannelTests {
         #expect(GnosticCatalogLookup.provider(of: GnosticObjectType.timeline, id: id, in: one, expected: "node-a") == .provider("Node-A"))
     }
 
-    @Test("capability checks match the operating Ascendant on the addressed provider")
-    func operatingAscendantCapability() {
+    @Test("capability checks match the operating Runtime instance on the addressed provider")
+    func operatingRuntimeInstanceCapability() {
         let timelineID = UUID()
-        let ascendantID = UUID()
+        let runtimeID = UUID()
         let entries = [
             entry(GnosticObjectType.timeline, id: timelineID, provider: "node-a", properties: [
-                "attachedAscendantID": .string(ascendantID.uuidString),
+                "runtimeInstanceID": .string(runtimeID.uuidString),
             ]),
-            entry(GnosticObjectType.ascendant, id: ascendantID, provider: "node-a", properties: [
-                "capabilities": .array([.string(GnosticCapability.textTurnInput)]),
-            ]),
+            entry(GnosticObjectType.runtimeInstance, id: runtimeID, provider: "node-a"),
         ]
 
-        let operating = GnosticCatalogLookup.operatingAscendantID(ofTimeline: timelineID, providerID: "NODE-A", in: entries)
-        #expect(operating == ascendantID)
-        #expect(GnosticCatalogLookup.ascendantAdvertises(GnosticCapability.textTurnInput, ascendantID: ascendantID, providerID: "node-a", in: entries))
-        #expect(!GnosticCatalogLookup.ascendantAdvertises(GnosticCapability.timelineManagement, providerID: "node-a", in: entries))
-        #expect(!GnosticCatalogLookup.ascendantAdvertises(GnosticCapability.textTurnInput, providerID: "node-b", in: entries))
-        #expect(GnosticCatalogLookup.operatingAscendantID(ofTimeline: timelineID, providerID: "node-b", in: entries) == nil)
+        let operating = GnosticCatalogLookup.runtimeInstanceID(ofTimeline: timelineID, providerID: "NODE-A", in: entries)
+        #expect(operating == runtimeID)
+        #expect(GnosticCatalogLookup.runtimeInstanceProvides(GnosticCapability.textTurnInput, runtimeInstanceID: runtimeID, providerID: "node-a", in: entries))
+        #expect(!GnosticCatalogLookup.runtimeInstanceProvides(GnosticCapability.workspaceAttachment, providerID: "node-a", in: entries))
+        #expect(!GnosticCatalogLookup.runtimeInstanceProvides(GnosticCapability.textTurnInput, providerID: "node-b", in: entries))
+        #expect(GnosticCatalogLookup.providers(providing: GnosticCapability.diagnostics, in: entries) == ["node-a"])
+        #expect(GnosticCatalogLookup.providers(providing: GnosticCapability.workspaceAttachment, in: entries).isEmpty)
+        #expect(GnosticCatalogLookup.runtimeInstanceID(ofTimeline: timelineID, providerID: "node-b", in: entries) == nil)
     }
 
     private func entry(

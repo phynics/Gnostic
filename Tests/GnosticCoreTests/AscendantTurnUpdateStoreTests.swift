@@ -81,8 +81,8 @@ struct AscendantTurnUpdateStoreTests {
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "recorded-success")
         #expect(replay.updates.map(\.kind) == [
-            AscendantTurnUpdateKind.assistantText.rawValue,
-            AscendantTurnUpdateKind.completion.rawValue
+            TurnUpdateKind.assistantText.rawValue,
+            TurnUpdateKind.completion.rawValue
         ])
         #expect(replay.updates.last?.terminal == true)
         #expect(replay.updates.last?.text == "done")
@@ -101,9 +101,9 @@ struct AscendantTurnUpdateStoreTests {
         )
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "recorded-cancel")
-        #expect(replay.updates.map(\.kind) == [AscendantTurnUpdateKind.cancellation.rawValue])
+        #expect(replay.updates.map(\.kind) == [TurnUpdateKind.cancellation.rawValue])
         #expect(replay.updates.last?.terminal == true)
-        #expect(replay.updates.last?.reasonCode == AscendantTurnError.cancelled(
+        #expect(replay.updates.last?.reasonCode == TurnError.cancelled(
             timelineID: timelineID,
             clientTurnID: "recorded-cancel"
         ).reasonCode)
@@ -118,13 +118,13 @@ struct AscendantTurnUpdateStoreTests {
         _ = try await store.append(
             timelineID: timelineID,
             clientTurnID: "streamed-terminal",
-            kind: AscendantTurnUpdateKind.assistantText.rawValue,
+            kind: TurnUpdateKind.assistantText.rawValue,
             text: "done"
         )
         _ = try await store.append(
             timelineID: timelineID,
             clientTurnID: "streamed-terminal",
-            kind: AscendantTurnUpdateKind.completion.rawValue,
+            kind: TurnUpdateKind.completion.rawValue,
             text: "done",
             terminal: true
         )
@@ -132,8 +132,8 @@ struct AscendantTurnUpdateStoreTests {
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "streamed-terminal")
         #expect(replay.updates.map(\.kind) == [
-            AscendantTurnUpdateKind.assistantText.rawValue,
-            AscendantTurnUpdateKind.completion.rawValue
+            TurnUpdateKind.assistantText.rawValue,
+            TurnUpdateKind.completion.rawValue
         ])
         #expect(replay.updates.filter(\.terminal).count == 1)
     }
@@ -147,19 +147,19 @@ struct AscendantTurnUpdateStoreTests {
             timelineID: timelineID,
             clientTurnID: "turn-tools",
             kind: "tool_state",
-            toolState: AscendantToolState(toolCallID: "call-1", title: "Read file", status: "in_progress")
+            toolState: TurnToolState(toolCallID: "call-1", title: "Read file", status: "in_progress")
         )
         _ = try await store.append(
             timelineID: timelineID,
             clientTurnID: "turn-tools",
             kind: "tool_state",
-            toolState: AscendantToolState(toolCallID: "call-1", title: "Read file", status: "completed")
+            toolState: TurnToolState(toolCallID: "call-1", title: "Read file", status: "completed")
         )
         _ = try await store.append(timelineID: timelineID, clientTurnID: "turn-tools", kind: "assistant_text", text: "done")
 
         let replay = try await store.replay(timelineID: timelineID, clientTurnID: "turn-tools")
         #expect(replay.updates.first?.toolStates == [
-            AscendantToolState(toolCallID: "call-1", title: "Read file", status: "completed")
+            TurnToolState(toolCallID: "call-1", title: "Read file", status: "completed")
         ])
         #expect(replay.updates.last?.text == "done")
     }

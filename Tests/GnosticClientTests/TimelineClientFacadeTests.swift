@@ -35,7 +35,7 @@ struct TimelineClientFacadeTests {
             try await session.discover()
             let client = try session.timelineClient(timeout: .seconds(2))
 
-            let created = try await client.create(title: "Research", ascendantID: fixture.ascendantID)
+            let created = try await client.create(title: "Research", runtimeInstanceID: fixture.ascendantID)
             #expect(created.timelineID == fixture.createdTimelineID)
             #expect(created.title == "Research")
             #expect(await fixture.recorder.createTitles == ["Research"])
@@ -60,26 +60,25 @@ struct TimelineClientFacadeTests {
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
             let client = try session.timelineClient(timeout: .seconds(2))
-            let created = try await client.create(title: "Auto", ascendantID: fixture.ascendantID)
+            let created = try await client.create(title: "Auto", runtimeInstanceID: fixture.ascendantID)
             #expect(created.title == "Auto")
             #expect(await fixture.recorder.createTitles == ["Auto"])
         }
     }
 
-    @Test("creates a Timeline for a canonical Runtime advertisement without an Ascendant projection")
+    @Test("creates a Timeline for an advertised Runtime instance")
     func createsTimelineForCanonicalRuntime() async throws {
         let namespace = namespaced("runtime-only")
         let fixture = try await TimelineClientFacadeBridge.makeFixture(
             namespace: namespace,
             host: host,
-            port: port,
-            runtimeOnly: true
+            port: port
         )
         defer { fixture.teardown() }
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
             let client = try session.timelineClient(timeout: .seconds(2))
-            let created = try await client.create(title: "Runtime Timeline", ascendantID: fixture.ascendantID)
+            let created = try await client.create(title: "Runtime Timeline", runtimeInstanceID: fixture.ascendantID)
             let renamed = try await client.update(timelineID: fixture.timelineID, title: "Runtime Timeline Renamed")
 
             #expect(created.timelineID == fixture.createdTimelineID)
@@ -128,7 +127,7 @@ struct TimelineClientFacadeTests {
             let client = try session.timelineClient(timeout: .seconds(2))
 
             await #expect(throws: GnosticTimelineClientError.providerMismatch) {
-                _ = try await client.create(title: "Elsewhere", ascendantID: fixture.ascendantID, providerID: "another-provider")
+                _ = try await client.create(title: "Elsewhere", runtimeInstanceID: fixture.ascendantID, providerID: "another-provider")
             }
             #expect(await fixture.recorder.createTitles.isEmpty)
         }
@@ -151,7 +150,7 @@ struct TimelineClientFacadeTests {
 
             await #expect(throws: GnosticTimelineClientError
                 .callFailed(reasonCode: "timelineConflict", statusCode: 409, retryable: false)) {
-                _ = try await client.create(title: "Conflict", ascendantID: fixture.ascendantID)
+                _ = try await client.create(title: "Conflict", runtimeInstanceID: fixture.ascendantID)
             }
         }
     }
@@ -195,7 +194,7 @@ struct TimelineClientFacadeTests {
 
             await #expect(throws: GnosticTimelineClientError
                 .callFailed(reasonCode: "callTimedOut", statusCode: 504, retryable: true)) {
-                _ = try await client.create(title: "Slow", ascendantID: fixture.ascendantID)
+                _ = try await client.create(title: "Slow", runtimeInstanceID: fixture.ascendantID)
             }
         }
     }
@@ -215,19 +214,19 @@ struct TimelineClientFacadeTests {
             let client = try session.timelineClient(timeout: .seconds(2))
 
             await #expect(throws: GnosticTimelineClientError.providerMismatch) {
-                _ = try await client.create(title: "Forged", ascendantID: fixture.ascendantID)
+                _ = try await client.create(title: "Forged", runtimeInstanceID: fixture.ascendantID)
             }
         }
     }
 
-    @Test("an Ascendant without timeline management is rejected")
+    @Test("a Timeline whose Runtime instance is not advertised is rejected")
     func missingCapabilityIsRejected() async throws {
         let namespace = namespaced("capability")
         let fixture = try await TimelineClientFacadeBridge.makeFixture(
             namespace: namespace,
             host: host,
             port: port,
-            options: .init(capabilities: [])
+            options: .init(advertisesRuntimeInstance: false)
         )
         defer { fixture.teardown() }
 
@@ -235,9 +234,8 @@ struct TimelineClientFacadeTests {
             try await session.discover()
             let client = try session.timelineClient(timeout: .seconds(2))
 
-            await #expect(throws: GnosticTimelineClientError
-                .missingCapability(GnosticCapability.timelineManagement)) {
-                _ = try await client.create(title: "Gated", ascendantID: fixture.ascendantID)
+            await #expect(throws: GnosticTimelineClientError.runtimeInstanceUnavailable(fixture.ascendantID)) {
+                _ = try await client.create(title: "Gated", runtimeInstanceID: fixture.ascendantID)
             }
             await #expect(throws: GnosticTimelineClientError
                 .missingCapability(GnosticCapability.timelineManagement)) {
@@ -253,8 +251,8 @@ struct TimelineClientFacadeTests {
 
         try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
             let client = try session.timelineClient(timeout: .milliseconds(300))
-            await #expect(throws: GnosticTimelineClientError.ascendantUnavailable(ascendantID)) {
-                _ = try await client.create(title: "Missing", ascendantID: ascendantID)
+            await #expect(throws: GnosticTimelineClientError.runtimeInstanceUnavailable(ascendantID)) {
+                _ = try await client.create(title: "Missing", runtimeInstanceID: ascendantID)
             }
         }
     }
@@ -286,8 +284,8 @@ struct TimelineClientFacadeTests {
             try await session.discover()
             let client = try session.timelineClient(timeout: .seconds(2))
 
-            await #expect(throws: GnosticTimelineClientError.ascendantAmbiguous(fixture.ascendantID)) {
-                _ = try await client.create(title: "Ambiguous", ascendantID: fixture.ascendantID)
+            await #expect(throws: GnosticTimelineClientError.runtimeInstanceAmbiguous(fixture.ascendantID)) {
+                _ = try await client.create(title: "Ambiguous", runtimeInstanceID: fixture.ascendantID)
             }
         }
     }
@@ -331,8 +329,8 @@ struct TimelineClientFacadeTests {
     @Test("reason codes are stable")
     func reasonCodesAreStable() {
         let id = UUID()
-        #expect(GnosticTimelineClientError.ascendantUnavailable(id).reasonCode == "ascendantUnavailable")
-        #expect(GnosticTimelineClientError.ascendantAmbiguous(id).reasonCode == "ascendantAmbiguous")
+        #expect(GnosticTimelineClientError.runtimeInstanceUnavailable(id).reasonCode == "runtimeInstanceUnavailable")
+        #expect(GnosticTimelineClientError.runtimeInstanceAmbiguous(id).reasonCode == "runtimeInstanceAmbiguous")
         #expect(GnosticTimelineClientError.timelineUnavailable(id).reasonCode == "timelineUnavailable")
         #expect(GnosticTimelineClientError.timelineAmbiguous(id).reasonCode == "timelineAmbiguous")
         #expect(GnosticTimelineClientError.providerMismatch.reasonCode == "providerMismatch")

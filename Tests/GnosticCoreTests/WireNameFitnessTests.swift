@@ -5,45 +5,40 @@ import Foundation
 import GnosticProtocol
 import Testing
 
-/// Architecture fitness for the names a Node puts on the wire (ADR 0021, D17).
+/// Architecture fitness for the names a Node puts on the wire (ADR 0021, D13, D17).
 ///
 /// The test reads the lists the Axoloty registration really uses
 /// (`CommunicationManager.registeredCallOperations`, its channel identifiers,
 /// and the catalog's object types), not a copy of them.
 @Suite("Wire name fitness")
 struct WireNameFitnessTests {
-    /// The live wire names that still say "ascendant". #675 renames each one to
-    /// its `Turn*` or Runtime-instance name and removes it from this list, so the
-    /// list only shrinks. A new name containing "ascendant" fails the test, and
-    /// so does an entry that production no longer registers.
-    private static let ascendantWireNameAllowList: Set<String> = [
-        "me.atkn.gnostic.ascendant.turn",
-        "me.atkn.gnostic.ascendant.turn.cancel",
-        "me.atkn.gnostic.ascendant.turn.replay",
-        "me.atkn.gnostic.ascendant.turn.update",
-        "me.atkn.gnostic.ascendant.permission.respond",
-        "me.atkn.gnostic.ascendant.permission.response",
-        "me.atkn.gnostic.diagnostics.ascendant",
-        "me.atkn.gnostic.Ascendant",
-    ]
-
     private var registeredWireNames: [String] {
         CommunicationManager.registeredCallOperations
             + CommunicationManager.registeredChannelIdentifiers
             + GnosticObjectType.supported
     }
 
-    @Test("the wire names that still say ascendant are exactly the allow-list that #675 shrinks")
-    func ascendantWireNamesMatchTheAllowList() {
-        let registered = Set(registeredWireNames.filter { $0.lowercased().contains("ascendant") })
-        #expect(
-            registered.subtracting(Self.ascendantWireNameAllowList).isEmpty,
-            "A new wire name says ascendant: \(registered.subtracting(Self.ascendantWireNameAllowList).sorted())"
-        )
-        #expect(
-            Self.ascendantWireNameAllowList.subtracting(registered).isEmpty,
-            "Remove from the allow-list, production no longer registers: \(Self.ascendantWireNameAllowList.subtracting(registered).sorted())"
-        )
+    @Test("no registered wire name says ascendant")
+    func noWireNameSaysAscendant() {
+        let registered = registeredWireNames.filter { $0.lowercased().contains("ascendant") }
+        #expect(registered.isEmpty, "A wire name says ascendant (D13, #675): \(registered.sorted())")
+    }
+
+    @Test("the live Turn, permission, and diagnostics operations use their Turn and Runtime instance names")
+    func turnAndRuntimeInstanceWireNames() {
+        let registered = Set(registeredWireNames)
+        for name in [
+            "me.atkn.gnostic.turn",
+            "me.atkn.gnostic.turn.cancel",
+            "me.atkn.gnostic.turn.replay",
+            "me.atkn.gnostic.turn.update",
+            "me.atkn.gnostic.permission.respond",
+            "me.atkn.gnostic.permission.response",
+            "me.atkn.gnostic.diagnostics.runtimeInstance",
+            "me.atkn.gnostic.RuntimeInstance",
+        ] {
+            #expect(registered.contains(name), "\(name) is not registered")
+        }
     }
 
     @Test("the deleted timeline Turn stack registers no wire name")

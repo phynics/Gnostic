@@ -171,8 +171,6 @@ public final class NodeRuntime {
 
         let wiring = NodeRuntimeHost.TransportWiring(
             nodeID: plan.nodeID,
-            ascendantIdentities: { [weak self] in self?.backendSupervisor.identities ?? [] },
-            ascendantHealth: { [weak self] id in self?.backendSupervisor.health(for: id) ?? .unknown },
             runtimeInstanceObjects: { [weak self] in self?.backendSupervisor.runtimeInstanceObjects ?? [] },
             workspaceReferences: { [weak self] in await self?.workspaceService.publicReferences() ?? [] },
             workspaceAuthorization: { [weak self] sourceID, timelineID, workspaceID in
@@ -213,7 +211,7 @@ public final class NodeRuntime {
 
     /// Returns the current health slot for an Ascendant's backend. Health is
     /// intentionally independent from the Gnostic-owned Timeline route.
-    public func backendHealth(for ascendantID: UUID) async -> AscendantBackendHealth {
+    public func backendHealth(for ascendantID: UUID) async -> GnosticRuntimeInstanceHealth {
         backendSupervisor.health(for: ascendantID)
     }
 
@@ -288,7 +286,7 @@ public final class NodeRuntime {
         let ascendents = backendSupervisor.identities
             .sorted { $0.id.uuidString < $1.id.uuidString }
             .map { identity in
-                DiagnosticsAscendantSummary(
+                DiagnosticsRuntimeInstanceSummary(
                     id: identity.id,
                     name: identity.name,
                     health: backendSupervisor.health(for: identity.id),
@@ -304,7 +302,7 @@ public final class NodeRuntime {
             timelines.append(DiagnosticsTimelineSummary(
                 id: record.id,
                 title: record.timeline.title,
-                operatingAscendantID: record.operatorID
+                runtimeInstanceID: record.operatorID
             ))
         }
 
@@ -327,7 +325,7 @@ public final class NodeRuntime {
         )
         return NodeDiagnostics(
             nodeID: plan.nodeID,
-            ascendents: Array(ascendents.prefix(GnosticWirePayload.maximumListItems)),
+            runtimeInstances: Array(ascendents.prefix(GnosticWirePayload.maximumListItems)),
             timelines: Array(timelines.prefix(GnosticWirePayload.maximumListItems)),
             workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems)),
             turns: turns,
@@ -336,24 +334,24 @@ public final class NodeRuntime {
     }
 
     /// Returns a payload-free live snapshot for one Ascendant.
-    func diagnosticsAscendantSnapshot(_ ascendantID: UUID) async throws -> AscendantDiagnostics {
+    func diagnosticsAscendantSnapshot(_ ascendantID: UUID) async throws -> RuntimeInstanceDiagnostics {
         guard let identity = backendSupervisor.identities.first(where: { $0.id == ascendantID }) else {
             throw NodeRuntimeError.unknownAscendant(ascendantID)
         }
         let privateTimelineID = identity.privateTimelineID
         let operated = await registry.listTimelines()
-            .filter { $0.id == privateTimelineID || $0.attachedAscendantID == ascendantID }
+            .filter { $0.id == privateTimelineID || $0.runtimeInstanceID == ascendantID }
             .sorted { $0.id.uuidString < $1.id.uuidString }
         var timelines: [DiagnosticsTimelineSummary] = []
         for timeline in operated {
             timelines.append(DiagnosticsTimelineSummary(
                 id: timeline.id,
                 title: timeline.title,
-                operatingAscendantID: await registry.operatorID(forTimeline: timeline.id)
+                runtimeInstanceID: await registry.operatorID(forTimeline: timeline.id)
             ))
         }
-        return AscendantDiagnostics(
-            ascendant: DiagnosticsAscendantSummary(
+        return RuntimeInstanceDiagnostics(
+            runtimeInstance: DiagnosticsRuntimeInstanceSummary(
                 id: identity.id,
                 name: identity.name,
                 health: backendSupervisor.health(for: identity.id),
@@ -422,7 +420,7 @@ public final class NodeRuntime {
             timeline: DiagnosticsTimelineSummary(
                 id: record.id,
                 title: record.timeline.title,
-                operatingAscendantID: record.operatorID
+                runtimeInstanceID: record.operatorID
             ),
             workspaces: Array(workspaces.prefix(GnosticWirePayload.maximumListItems)),
             sessionRecovery: sessionRecovery,
@@ -521,7 +519,7 @@ public final class NodeRuntime {
     /// Runs one Turn against the adapter selected by the
     /// addressed timeline. Unoperated timelines remain observable but cannot
     /// accidentally fall through to an arbitrary Ascendant.
-    public func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+    public func turn(_ request: TurnRequest) async throws -> TurnResult {
         try await turnService.turn(request)
     }
 
@@ -552,7 +550,7 @@ public final class NodeRuntime {
         try await workspaceService.detach(request)
     }
 
-    func cancelTurn(_ request: AscendantTurnCancellationRequest) async -> Bool {
+    func cancelTurn(_ request: TurnCancellationRequest) async -> Bool {
         await turnService.cancelTurn(timelineID: request.timelineID, clientTurnID: request.clientTurnID)
     }
 
@@ -564,7 +562,7 @@ public final class NodeRuntime {
         await diagnosticsNodeSnapshot()
     }
 
-    func diagnosticsAscendant(_ ascendantID: UUID) async throws -> AscendantDiagnostics {
+    func diagnosticsAscendant(_ ascendantID: UUID) async throws -> RuntimeInstanceDiagnostics {
         try await diagnosticsAscendantSnapshot(ascendantID)
     }
 

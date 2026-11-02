@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Atakan DULKER. Licensed under the MIT License.
 
 import Foundation
-import GnosticProtocol
 
 /// The raw Axoloty wire family observed by the consumer session's raw event
 /// stream.

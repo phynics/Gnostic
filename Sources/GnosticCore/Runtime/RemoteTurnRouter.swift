@@ -20,7 +20,7 @@ final class RemoteTurnRouter {
     private let timeout: Duration
     private let isRunning: @MainActor () -> Bool
     private var closed = false
-    private var turns: [UUID: Task<AscendantTurnResult, Error>] = [:]
+    private var turns: [UUID: Task<TurnResult, Error>] = [:]
     private var cancellations: [UUID: Task<Bool, Never>] = [:]
     private struct Key: Hashable {
         let timelineID: UUID
@@ -55,7 +55,7 @@ final class RemoteTurnRouter {
         self.isRunning = isRunning
     }
 
-    func turn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+    func turn(_ request: TurnRequest) async throws -> TurnResult {
         guard !closed, isRunning() else { throw NodeRuntimeError.notRunning }
         let id = UUID()
         let task = Task { @MainActor in try await self.performTurn(request) }
@@ -84,10 +84,10 @@ final class RemoteTurnRouter {
         for task in pendingCancellations { _ = await task.result }
     }
 
-    private func performTurn(_ request: AscendantTurnRequest) async throws -> AscendantTurnResult {
+    private func performTurn(_ request: TurnRequest) async throws -> TurnResult {
         try Task.checkCancellation()
         guard let clientTurnID = request.clientTurnID else {
-            throw AscendantTurnError.terminal(
+            throw TurnError.terminal(
                 timelineID: request.timelineID,
                 clientTurnID: "",
                 code: "identifiedTurnRequired",
@@ -130,8 +130,8 @@ final class RemoteTurnRouter {
                     owner: owner,
                     operation: AscendantTurnProvider.turnOperation,
                     request: request,
-                    context: "ascendant.turn request",
-                    returning: AscendantTurnResult.self
+                    context: "turn request",
+                    returning: TurnResult.self
                 )
             }
             relay.ownerResponded = true
@@ -145,7 +145,7 @@ final class RemoteTurnRouter {
             // In particular a conflicting retry cannot finish its shared relay.
             // A busy rejection admitted no Turn at all (ADR 0021), so the relay
             // publishes no terminal update for an identity that never ran.
-            let rejection = (mapped as? AscendantTurnError)?.reasonCode
+            let rejection = (mapped as? TurnError)?.reasonCode
             if rejection != "turnConflict", rejection != "timelineBusy" {
                 relay.failure = mapped
                 if let failure = error as? RemoteTurnRouteFailure, case .remote = failure {
@@ -171,12 +171,12 @@ final class RemoteTurnRouter {
                             return try await self.call(
                                 owner: owner,
                                 operation: AscendantTurnProvider.replayOperation,
-                                request: AscendantTurnReplayRequest(
+                                request: TurnReplayRequest(
                                     timelineID: key.timelineID, clientTurnID: key.clientTurnID,
                                     afterSequence: afterSequence
                                 ),
-                                context: "ascendant.turn.replay request",
-                                returning: AscendantTurnReplay.self
+                                context: "turn.replay request",
+                                returning: TurnReplay.self
                             )
                         }
                     } catch {
@@ -209,14 +209,14 @@ final class RemoteTurnRouter {
 
     private func performCancellation(timelineID: UUID, clientTurnID: String) async -> Bool {
         guard !Task.isCancelled, let owner = try? await resolveOwner(for: timelineID) else { return false }
-        let request = AscendantTurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID)
+        let request = TurnCancellationRequest(timelineID: timelineID, clientTurnID: clientTurnID)
         do {
             let result = try await call(
                 owner: owner,
                 operation: AscendantTurnProvider.cancelOperation,
                 request: request,
-                context: "ascendant.turn.cancel request",
-                returning: AscendantTurnCancellationResult.self
+                context: "turn.cancel request",
+                returning: TurnCancellationResult.self
             )
             return result.cancelled
         } catch {
@@ -283,7 +283,7 @@ final class RemoteTurnRouter {
     ) async throws -> Value {
         let evictions = await catalog.providerEvictionStream()
         guard await catalog.timelineOwnerID(id: timelineID)?.caseInsensitiveCompare(owner) == .orderedSame else {
-            throw AscendantTurnError.terminal(
+            throw TurnError.terminal(
                 timelineID: timelineID, clientTurnID: clientTurnID ?? "",
                 code: "providerOffline", detail: "The Timeline owner left before dispatch.",
                 retryable: true, statusCode: 503
@@ -313,7 +313,7 @@ final class RemoteTurnRouter {
             await eviction.value
             if Task.isCancelled { throw CancellationError() }
             if evicted.isMarked {
-                throw AscendantTurnError.terminal(
+                throw TurnError.terminal(
                     timelineID: timelineID,
                     clientTurnID: clientTurnID ?? "",
                     code: "providerOffline",
@@ -328,8 +328,8 @@ final class RemoteTurnRouter {
 
     private static func turnFailure(
         _ failure: RemoteTurnRouteFailure,
-        request: AscendantTurnRequest
-    ) -> AscendantTurnError {
+        request: TurnRequest
+    ) -> TurnError {
         let clientTurnID = request.clientTurnID ?? ""
         switch failure {
         case let .remote(remote):
@@ -484,7 +484,7 @@ private final class RemoteTurnObservation {
     }
 
     func finish(
-        recover: @MainActor (Int) async throws -> AscendantTurnReplay
+        recover: @MainActor (Int) async throws -> TurnReplay
     ) async throws {
         await waitForTerminal()
         var cursor = lastSequence
@@ -503,7 +503,7 @@ private final class RemoteTurnObservation {
                 break
             }
             guard let next = replay.nextSequence, next > cursor else {
-                throw AscendantTurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
+                throw TurnError.replayUnavailable(timelineID: timelineID, clientTurnID: clientTurnID)
             }
             cursor = next
         }
@@ -517,16 +517,16 @@ private final class RemoteTurnObservation {
         }
         await waitForTerminal()
         if !terminalSeen {
-            let reason = (error as? AscendantTurnError)?.reasonCode
+            let reason = (error as? TurnError)?.reasonCode
                 ?? (error as? NodeRuntimeError)?.reasonCode
                 ?? "remoteTurnFailed"
-            let status = (error as? AscendantTurnError)?.statusCode
+            let status = (error as? TurnError)?.statusCode
                 ?? (error as? NodeRuntimeError)?.statusCode
                 ?? 500
-            let retryable = (error as? AscendantTurnError)?.retryable ?? false
+            let retryable = (error as? TurnError)?.retryable ?? false
             publishTerminal(
                 sequence: lastSequence + 1,
-                kind: AscendantTurnUpdateKind.error.rawValue,
+                kind: TurnUpdateKind.error.rawValue,
                 text: "The remote Turn failed.",
                 reasonCode: reason,
                 statusCode: status,
@@ -553,7 +553,7 @@ private final class RemoteTurnObservation {
         statusCode: Int?,
         retryable: Bool?
     ) {
-        let update = AscendantTurnUpdate(
+        let update = TurnUpdate(
             sequence: sequence,
             kind: kind,
             text: text,

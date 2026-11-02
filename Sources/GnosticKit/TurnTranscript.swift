@@ -5,37 +5,37 @@ import GnosticCore
 
 /// A read-only projection of a Turn's backend-neutral updates.
 ///
-/// Every backend emits ``AscendantTurnUpdate`` values while a Turn runs. This
+/// Every backend emits ``TurnUpdate`` values while a Turn runs. This
 /// view folds those values into the parts a consumer usually wants: the
 /// assistant output, the latest state of each tool call, the permission states,
 /// and the terminal outcome. It works for any backend, and ACP and Letta supply
 /// it because they already emit the same updates.
 public struct TurnTranscript: Sendable, Equatable {
     /// The updates the view folded, in the order they arrived.
-    public let updates: [AscendantTurnUpdate]
+    public let updates: [TurnUpdate]
     /// The assistant output after live fragments and snapshots are folded.
     public let assistantText: String
     /// The latest state of each announced tool call, in first-announced order.
-    public let toolStates: [AscendantToolState]
+    public let toolStates: [TurnToolState]
     /// The latest permission states, in first-announced order.
-    public let permissionStates: [AscendantPermissionState]
+    public let permissionStates: [TurnPermissionState]
     /// The terminal update, when the Turn reached one.
-    public let terminalUpdate: AscendantTurnUpdate?
+    public let terminalUpdate: TurnUpdate?
     /// Whether the Turn reached a terminal update.
     public let isTerminal: Bool
     /// Whether the Turn failed by error or cancellation.
     public let failed: Bool
 
     /// Folds an ordered update list into a transcript view.
-    public init(updates: [AscendantTurnUpdate]) {
+    public init(updates: [TurnUpdate]) {
         self.updates = updates
 
         var assistant = ""
-        var tools: [AscendantToolState] = []
+        var tools: [TurnToolState] = []
         var toolIndexByID: [String: Int] = [:]
-        var permissions: [AscendantPermissionState] = []
+        var permissions: [TurnPermissionState] = []
         var permissionIndexByKey: [String: Int] = [:]
-        var terminal: AscendantTurnUpdate?
+        var terminal: TurnUpdate?
 
         for update in updates.sorted(by: { $0.sequence < $1.sequence }) {
             if let text = update.text, update.carriesAssistantText {

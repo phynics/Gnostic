@@ -21,7 +21,8 @@ enum TimelineClientFacadeBridge {
     }
 
     struct Options {
-        var capabilities: Set<String> = [GnosticCapability.timelineManagement]
+        /// Whether the Node advertises the Runtime instance that operates the Timeline.
+        var advertisesRuntimeInstance = true
         var create: Outcome = .accept
         var update: Outcome = .accept
     }
@@ -48,8 +49,7 @@ enum TimelineClientFacadeBridge {
         namespace: String,
         host: String,
         port: Int,
-        options: Options = Options(),
-        runtimeOnly: Bool = false
+        options: Options = Options()
     ) async throws -> Fixture {
         let manager = try makeManager(name: "gnostic-timeline-client-provider", namespace: namespace, host: host, port: port)
         let ascendantID = UUID()
@@ -60,8 +60,7 @@ enum TimelineClientFacadeBridge {
         advertiseTimeline(
             timelineID: timelineID,
             ascendantID: ascendantID,
-            capabilities: options.capabilities,
-            runtimeOnly: runtimeOnly,
+            advertisesRuntimeInstance: options.advertisesRuntimeInstance,
             on: manager
         )
 
@@ -117,13 +116,11 @@ enum TimelineClientFacadeBridge {
         advertiseTimeline(
             timelineID: timelineID,
             ascendantID: ascendantID,
-            capabilities: [GnosticCapability.timelineManagement],
             on: first
         )
         advertiseTimeline(
             timelineID: UUID(),
             ascendantID: ascendantID,
-            capabilities: [GnosticCapability.timelineManagement],
             on: second
         )
 
@@ -155,13 +152,11 @@ enum TimelineClientFacadeBridge {
         advertiseTimeline(
             timelineID: timelineID,
             ascendantID: ascendantID,
-            capabilities: [GnosticCapability.timelineManagement],
             on: first
         )
         advertiseTimeline(
             timelineID: timelineID,
             ascendantID: UUID(),
-            capabilities: [GnosticCapability.timelineManagement],
             on: second
         )
 
@@ -193,7 +188,6 @@ enum TimelineClientFacadeBridge {
         advertiseTimeline(
             timelineID: timelineID,
             ascendantID: ascendantID,
-            capabilities: [GnosticCapability.timelineManagement],
             on: first
         )
 
@@ -274,12 +268,11 @@ enum TimelineClientFacadeBridge {
     private static func advertiseTimeline(
         timelineID: UUID,
         ascendantID: UUID,
-        capabilities: Set<String>,
-        runtimeOnly: Bool = false,
+        advertisesRuntimeInstance: Bool = true,
         on manager: CommunicationManager
     ) {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        if runtimeOnly {
+        if advertisesRuntimeInstance {
             manager.publishAdvertise(GnosticRuntimeInstanceObject(
                 id: ascendantID,
                 name: "Timeline Runtime",
@@ -287,24 +280,12 @@ enum TimelineClientFacadeBridge {
                 nodeID: UUID(),
                 rawCapabilities: ["session": .object([:])]
             ))
-        } else {
-            manager.publishAdvertise(GnosticAscendantObject(identity: AscendantBackendIdentity(
-                id: ascendantID,
-                name: "Timeline Ascendant",
-                description: "Offline Timeline provider.",
-                privateTimelineID: timelineID,
-                primaryWorkspaceID: nil,
-                lastActiveAt: now,
-                createdAt: now,
-                updatedAt: now,
-                capabilities: AscendantBackendCapabilities(interoperability: capabilities)
-            )))
         }
-        manager.publishAdvertise(GnosticTimelineObject(timeline: AscendantBackendTimeline(
+        manager.publishAdvertise(GnosticTimelineObject(timeline: RuntimeInstanceTimeline(
             id: timelineID,
             title: "Timeline",
             attachedWorkspaceIDs: [],
-            attachedAscendantID: ascendantID,
+            runtimeInstanceID: ascendantID,
             isArchived: false,
             isPrivate: false,
             createdAt: now,
