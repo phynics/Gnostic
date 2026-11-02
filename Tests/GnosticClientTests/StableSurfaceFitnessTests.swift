@@ -295,6 +295,43 @@ struct StableSurfaceFitnessTests {
         #expect(enums.first { $0.name == "Tree" }?.cases == ["leaf", "node", "default"])
     }
 
+    @Test("a string literal in an inlinable body does not hide a later enum")
+    func enumScanReadsLiteralsInBodies() {
+        let bodies = [
+            #"@inlinable public func f() -> Swift::String { "\\" }"#,
+            #"@inlinable public func f() -> Swift::String { "\"{" }"#,
+            ##"@inlinable public func f() -> Swift::String { #"\"# }"##,
+            ##"@inlinable public func f() -> Swift::String { #""{"# }"##,
+            "@inlinable public func f() { /* { */ } // {",
+        ]
+        for body in bodies {
+            let enums = Self.publicEnums(in: ["public struct Carrier {", "  \(body)", "  public enum Probe {", "    case one", "  }", "}"])
+            #expect(enums.map(\.name) == ["Carrier.Probe"], "\(body)")
+        }
+        let multiline = Self.publicEnums(in: [
+            "public struct Carrier {", "  @inlinable public func f() -> Swift::String {", #"    """"#, "    public enum Fake {", "    case one", "    {",
+            #"    """"#, "  }", "  public enum Probe {", "    case one", "  }", "}",
+        ])
+        #expect(multiline.map(\.name) == ["Carrier.Probe"])
+    }
+
+    @Test("every component of an extension target is part of the enum's name, and names do not repeat parents")
+    func enumScanQualifiesNestedScopes() {
+        let enums = Self.publicEnums(in: [
+            "extension GnosticProtocol::Carrier.GnosticProtocol::Project {", "  public enum Kind {", "    case local", "  }", "}",
+            "public struct Project {", "  public struct Extra {", "    public enum Kind {", "      case local", "    }", "  }", "}",
+        ])
+        #expect(enums.map(\.name) == ["Carrier.Project.Kind", "Project.Extra.Kind"])
+    }
+
+    @Test("the enum policy check fails when the scan loses track of braces")
+    func enumPolicyCatchesUnbalancedBraces() throws {
+        var baselines = try Self.products.map { try Self.baselineLines(of: $0) }
+        baselines[0] += ["public struct Carrier {"]
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("braces do not balance") }, "\(problems)")
+    }
+
     private static func declaration() throws -> String {
         try String(
             contentsOf: root.appendingPathComponent("Documentation/Compatibility/0.5.0.md"),
@@ -331,51 +368,112 @@ struct StableSurfaceFitnessTests {
         var isError: Bool
     }
 
+    /// Finds the braces of baseline lines that are code. It skips strings, raw
+    /// strings, multi-line strings, and comments, including across lines.
+    private struct BaselineBraceLexer {
+        private var closer: [Character]?
+        private var hashes = 0
+        private var isMultiline = false
+
+        var isInsideLiteral: Bool { closer != nil }
+
+        mutating func braces(in line: String) -> [Character] {
+            let text = Array(line)
+            var found: [Character] = []
+            var index = 0
+            func starts(_ pattern: [Character], at position: Int) -> Bool {
+                position + pattern.count <= text.count && Array(text[position ..< position + pattern.count]) == pattern
+            }
+            while index < text.count {
+                if let closer {
+                    let escape = [Character("\\")] + Array(repeating: Character("#"), count: hashes)
+                    if closer != ["*", "/"], starts(escape, at: index) {
+                        index += escape.count + 1
+                    } else if starts(closer, at: index) {
+                        index += closer.count
+                        self.closer = nil
+                    } else {
+                        index += 1
+                    }
+                    continue
+                }
+                if starts(["/", "/"], at: index) { break }
+                if starts(["/", "*"], at: index) {
+                    closer = ["*", "/"]
+                    hashes = 0
+                    isMultiline = true
+                    index += 2
+                    continue
+                }
+                var quote = index
+                while quote < text.count, text[quote] == "#" { quote += 1 }
+                if quote < text.count, text[quote] == "\"" {
+                    hashes = quote - index
+                    let suffix = Array(repeating: Character("#"), count: hashes)
+                    isMultiline = starts(["\"", "\"", "\""], at: quote)
+                    closer = (isMultiline ? ["\"", "\"", "\""] : ["\""]) + suffix
+                    index = quote + (isMultiline ? 3 : 1)
+                    continue
+                }
+                if text[index] == "{" || text[index] == "}" { found.append(text[index]) }
+                index += 1
+            }
+            if !isMultiline { closer = nil }
+            return found
+        }
+    }
+
     /// Reads every public enum, with its cases, from baseline lines. Scope comes
     /// from braces, so a nested type or an extension target qualifies the name.
     /// A case counts only when its line is directly inside the enum.
     static func publicEnums(in lines: [String]) -> [BaselineEnum] {
+        scanEnums(in: lines).enums
+    }
+
+    /// The scan behind `publicEnums`. `isBalanced` is false when the braces do not
+    /// close exactly, which means the scan lost track of scope and its result can
+    /// hide an enum.
+    private static func scanEnums(in lines: [String]) -> (enums: [BaselineEnum], isBalanced: Bool) {
         var found: [BaselineEnum] = []
         var scopes: [BaselineScope] = []
         var pending: BaselineDeclaration?
+        var lexer = BaselineBraceLexer()
+        var isBalanced = true
         for line in lines {
             let text = droppingLeadingAttributes(line.trimmingCharacters(in: .whitespaces))
-            guard !text.isEmpty, !text.hasPrefix("//"), !text.hasPrefix("#") else { continue }
-            if let enumIndex = scopes.last?.enumIndex, let cases = caseClause(of: text) {
-                found[enumIndex].cases += caseNames(in: cases)
-                continue
+            guard !text.isEmpty else { continue }
+            if !lexer.isInsideLiteral {
+                guard !text.hasPrefix("//"), !text.hasPrefix("#") else { continue }
+                if let enumIndex = scopes.last?.enumIndex, let cases = caseClause(of: text) {
+                    found[enumIndex].cases += caseNames(in: cases)
+                    continue
+                }
+                if let declaration = declaration(in: text) { pending = declaration }
             }
-            if let declaration = declaration(in: text) { pending = declaration }
-            var inString = false
-            var previous: Character?
-            for character in text {
-                defer { previous = character }
-                if character == "\"", previous != "\\" { inString.toggle() }
-                guard !inString else { continue }
-                if character == "{" {
+            for brace in lexer.braces(in: text) {
+                if brace == "{" {
                     scopes.append(open(pending, within: scopes, found: &found))
                     pending = nil
-                } else if character == "}", !scopes.isEmpty {
-                    scopes.removeLast()
+                } else if scopes.popLast() == nil {
+                    isBalanced = false
                 }
             }
         }
-        return found
+        return (found, isBalanced && scopes.isEmpty && !lexer.isInsideLiteral)
     }
 
     /// The scope a `{` opens. A type inside a function body stays unnamed, because
-    /// no host can reach it.
+    /// no host can reach it. A scope already holds its full name.
     private static func open(
         _ declaration: BaselineDeclaration?,
         within scopes: [BaselineScope],
         found: inout [BaselineEnum]
     ) -> BaselineScope {
         guard let declaration else { return BaselineScope() }
-        let parents = scopes.map(\.name)
-        guard !parents.contains(where: { $0 == nil }) else { return BaselineScope() }
-        let name = declaration.isExtension
+        guard !scopes.contains(where: { $0.name == nil }) else { return BaselineScope() }
+        let name = declaration.isExtension || scopes.isEmpty
             ? declaration.name
-            : (parents.compactMap { $0 } + [declaration.name]).joined(separator: ".")
+            : "\(scopes[scopes.count - 1].name ?? "").\(declaration.name)"
         guard declaration.isPublicEnum else { return BaselineScope(name: name) }
         found.append(BaselineEnum(name: name, isError: declaration.isError))
         return BaselineScope(name: name, enumIndex: found.count - 1)
@@ -393,9 +491,12 @@ struct StableSurfaceFitnessTests {
               keywords.contains(words[keyword]), words.count > keyword + 1 else { return nil }
         let target = words[keyword + 1]
         guard !["func", "var", "let", "subscript", "init"].contains(target) else { return nil }
-        let unqualified = target.components(separatedBy: "::").last ?? target
-        let name = String(unqualified.prefix { $0 != ":" && $0 != "<" && $0 != "{" })
-            .replacingOccurrences(of: "`", with: "")
+        // Every component of a target can carry a module selector, as in
+        // `Module::Carrier.Module::Project`.
+        let name = target.prefix { $0 != "<" && $0 != "{" }.split(separator: ".").map { component in
+            (component.components(separatedBy: "::").last ?? String(component))
+                .trimmingCharacters(in: CharacterSet(charactersIn: ":`"))
+        }.joined(separator: ".")
         return BaselineDeclaration(
             name: name,
             isExtension: words[keyword] == "extension",
@@ -500,7 +601,11 @@ struct StableSurfaceFitnessTests {
             problems.append("GnosticJSONValue is exempt from the table, and the policy section no longer says why.")
         }
 
-        let enums = baselines.flatMap { publicEnums(in: $0) }
+        let scans = baselines.map { scanEnums(in: $0) }
+        if scans.contains(where: { !$0.isBalanced }) {
+            problems.append("A baseline's braces do not balance in the enum scan, so an enum could be hidden.")
+        }
+        let enums = scans.flatMap(\.enums)
         let enumNames = Set(enums.filter { !$0.cases.isEmpty }.map(\.name))
         for found in enums where !found.cases.isEmpty {
             if namedExemptions.contains(found.name) || errorNames.contains(found.name) { continue }
