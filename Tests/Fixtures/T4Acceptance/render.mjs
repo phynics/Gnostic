@@ -5,7 +5,7 @@
 //   node render.mjs --work <dir> --repo <repository root> [--runtime fixture|reference]
 //                   [--pk-runtime <path to gnostic-pk-runtime>] [--node <node executable>]
 //                   [--broker-host 127.0.0.1] [--broker-port 1883] [--namespace <name>]
-//                   [--free-pool-thread] [--print-env]
+//                   [--extra-timelines <n>] [--print-env]
 //
 // It writes, under <dir>:
 //   ids.json                      The generated UUIDs. A second run reuses them.
@@ -34,7 +34,7 @@ const { values } = parseArgs({
     "broker-host": { type: "string", default: "127.0.0.1" },
     "broker-port": { type: "string", default: "1883" },
     namespace: { type: "string" },
-    "free-pool-thread": { type: "boolean", default: false },
+    "extra-timelines": { type: "string", default: "0" },
     "print-env": { type: "boolean", default: false },
   },
 });
@@ -54,6 +54,9 @@ const ids = existsSync(idsPath)
       NODE_A_ID: randomUUID(), NODE_B_ID: randomUUID(), RUNTIME_ID: randomUUID(),
       TIMELINE_ID: randomUUID(), WORKSPACE_ID: randomUUID(),
     };
+const extraTimelines = Number(values["extra-timelines"]);
+if (!Number.isInteger(extraTimelines) || extraTimelines < 0) fail("--extra-timelines must be a non-negative integer.");
+ids.EXTRA_TIMELINE_IDS = Array.from({ length: extraTimelines }, (_, index) => ids.EXTRA_TIMELINE_IDS?.[index] ?? randomUUID());
 if (values.namespace) ids.namespace = values.namespace;
 await writeFile(idsPath, `${JSON.stringify(ids, null, 2)}\n`);
 
@@ -64,7 +67,7 @@ const dirs = {
 };
 for (const dir of Object.values(dirs)) await mkdir(dir, { recursive: true });
 
-// The Workspace content. large.txt is 6,000 bytes of numbered lines, well over 2 KiB.
+// The Workspace content. large.txt is 6,200 bytes of numbered lines, well over 2 KiB.
 await writeFile(join(dirs.workspaceRoot, "note.txt"), "T4 note: the remote Workspace answered.\n");
 const large = Array.from({ length: 200 }, (_, index) => `line ${String(index + 1).padStart(3, "0")} ${"x".repeat(21)}`);
 await writeFile(join(dirs.workspaceRoot, "large.txt"), `${large.join("\n")}\n`);
@@ -107,13 +110,11 @@ for (const [variant, extra] of Object.entries(variants)) {
   const manifest = fill(template, {
     BROKER_HOST: values["broker-host"], BROKER_PORT: Number(values["broker-port"]), NAMESPACE: ids.namespace, ...ids, ...runtime,
   });
+  // Extra manifest Timelines share the Runtime instance. They load at start, each with its own session.
+  ids.EXTRA_TIMELINE_IDS.forEach((id, index) => manifest.timelines.push({
+    id, kind: "timeline", title: `T4 extra Timeline ${index + 1}`, runtimeInstanceID: ids.RUNTIME_ID, flags: [], attachments: [],
+  }));
   const settings = manifest.runtimeInstances[0].backend.settings;
-  if (values["free-pool-thread"]) {
-    // Close the Runtime's stderr so that Gnostic's stderr reader ends at once. That frees
-    // one thread of the Swift concurrency pool on a machine with four or fewer cores.
-    settings.args = ["-c", 'exec 2>/dev/null; exec "$0" "$@"', settings.command, ...settings.args];
-    settings.command = "sh";
-  }
   // The manifest stores `args` and `env` as JSON text.
   settings.args = JSON.stringify(settings.args);
   settings.env = JSON.stringify(settings.env);

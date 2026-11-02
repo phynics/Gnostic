@@ -12,23 +12,27 @@ That page lists every option. The 0.5.0 contract that the drills check is in the
 
 ## What was proven where
 
-The commands and outputs below come from a release build of `main` at `b361b6b`
+The commands and outputs below come from a release build of `main` at `7e2947f`
 with the fixtures from this change applied. Linux outputs were captured on
-2026-11-01 in the development container (x86_64, 4 cores). Nobody has run this
-runbook on macOS or with a live model provider.
+2026-11-02 in the development container (x86_64, 4 cores, Podman 5.8.9, Swift
+6.4.0), with the commands in this runbook. Nobody has run this runbook on macOS or
+with a live model provider.
 
 | Part | Linux, dev container | macOS | Live provider |
 | --- | --- | --- | --- |
-| Release build of `gnostic`, `gnostic-pk-runtime`, `gnostic-workspace-attach` | Run | Not run | Not applicable |
-| Broker, two Nodes, Workspace attach | Run | Not run | Not applicable |
-| Drill 1 with the fixture Runtime | Run | Not run | Not applicable |
-| Drill 1 with the reference Runtime (scripted model) | Run | Not run | Not run |
-| Drills 2 to 5 | Run | Not run | Not applicable |
+| Release build of `gnostic`, `gnostic-pk-runtime`, `gnostic-workspace-attach` | Run | Not run on current code | Not applicable |
+| Broker, two Nodes, Workspace attach | Run | Not run on current code | Not applicable |
+| Drill 1 with the fixture Runtime | Run | Not run on current code | Not applicable |
+| Drill 1 with the reference Runtime (scripted model) | Run | Not run on current code | Not run |
+| Drills 2 to 5 | Run | Not run on current code | Not applicable |
 
-All Linux outputs were captured with `--free-pool-thread`. The proof runs also
-produced four findings, listed in
-[Findings from the proof runs](#findings-from-the-proof-runs). Read finding 1
-before you start: on a machine with 4 or fewer cores, a Node can stall.
+Every macOS command and every macOS output in this runbook is untested. An
+earlier version of this runbook also had no macOS run. Treat the macOS steps as a
+draft until someone runs them.
+
+The proof runs on the earlier version of the code produced four findings. The
+runs on `7e2947f` reproduced one of them. See
+[Findings from the proof runs](#findings-from-the-proof-runs).
 
 ## Before you start
 
@@ -37,45 +41,56 @@ already provides.
 
 | Tool | Linux | macOS |
 | --- | --- | --- |
-| Swift 6.4.0 toolchain | In the container image `swift:6.4.0-noble` | Install Swift 6.4.0 from swift.org. `Package.swift` declares `swift-tools-version: 6.4` and macOS 26. Not run. |
-| Container runtime | `podman` or `docker`, for `make shell` | Not needed |
-| Node.js 22 | In the container (22.18.0) | `brew install node@22`. Not run. |
-| Mosquitto broker and `mosquitto_pub` | In the container | `brew install mosquitto`. Not run. |
+| Swift 6.4.0 toolchain | In the container image `swift:6.4.0-noble` | Install Swift 6.4.0 from swift.org. `Package.swift` declares `swift-tools-version: 6.4` and macOS 26. Not run on current code. |
+| Container runtime | `podman` or `docker`, for `container-shell.sh` | Not needed |
+| Node.js 22 | In the container (22.18.0) | `brew install node@22`. Not run on current code. |
+| Mosquitto broker and `mosquitto_pub` | In the container | `brew install mosquitto`. Not run on current code. |
 | Git | From your distribution | Xcode command line tools |
 
-Run `swift --version` and confirm that it prints `Swift version 6.4.0`.
+Run `swift --version` and confirm that it prints `Swift version 6.4`. In the
+container it prints `Swift version 6.4 (swift-6.4-RELEASE)`.
 
 ## Build the release binaries
 
 You need three executables: `gnostic`, `gnostic-pk-runtime`, and
-`gnostic-workspace-attach`. A release build from a cold cache took about 30
-minutes on a loaded 4-core machine.
+`gnostic-workspace-attach`. A release build took about 10 minutes on an idle
+4-core machine with a warm package cache. Expect about 30 minutes from a cold
+cache on a loaded machine.
 
-On Linux, build inside the container. The container stops after
-`CONTAINER_TIMEOUT` seconds, 3600 by default, so build in one session and run the
-drills in another.
+On Linux, build inside the container. `make shell` does not give you a shell:
+the container runner starts the container without stdin, so `bash` exits at once.
+[`container-shell.sh`](../../Tests/Fixtures/T4Acceptance/container-shell.sh) starts
+the same image with the same mounts and the same host user, and it keeps the
+terminal. Run it from the repository root. Without arguments it opens a shell.
+With arguments it runs one command and exits. It stops the container after
+`CONTAINER_TIMEOUT` seconds, 7200 by default. It does not take the build lock that
+the Make targets take, so do not run it while another command builds in the same
+worktree.
 
-1. Resolve the dependencies and open the container:
+1. Resolve the dependencies:
 
    ```sh
    make resolve
-   make shell
    ```
 
-2. In the container shell, build the three products:
+2. Build the three products in the container. The first run builds every
+   dependency:
 
    ```sh
-   FLAGS="--cache-path /workspace/.swiftpm-cache --disable-automatic-resolution --build-system native -c release"
-   swift build $FLAGS --product gnostic
-   swift build $FLAGS --product gnostic-pk-runtime
-   swift build $FLAGS --product gnostic-workspace-attach
-   swift build $FLAGS --show-bin-path
+   Tests/Fixtures/T4Acceptance/container-shell.sh bash -c '
+       FLAGS="--cache-path /workspace/.swiftpm-cache --disable-automatic-resolution --build-system native -c release"
+       swift build $FLAGS --product gnostic &&
+       swift build $FLAGS --product gnostic-pk-runtime &&
+       swift build $FLAGS --product gnostic-workspace-attach &&
+       swift build $FLAGS --show-bin-path'
    ```
 
    The last command prints the directory that holds the binaries. Keep it. On
-   Linux x86_64 it is `/workspace/.build/x86_64-unknown-linux-gnu/release`.
+   Linux x86_64 it is `/workspace/.build/x86_64-unknown-linux-gnu/release`. SwiftPM
+   prints a deprecation warning for `--build-system native`. The repository pins it
+   on purpose.
 
-On macOS (not run), build natively from the repository root:
+On macOS (not run on current code), build natively from the repository root:
 
 ```sh
 swift build -c release --product gnostic
@@ -87,8 +102,11 @@ swift build -c release --show-bin-path
 ## Prepare the shell
 
 Run the rest of this runbook in one shell. On Linux, open a new container shell
-with `CONTAINER_TIMEOUT=7200 make shell`. Every Node and the broker run in the
-background of that shell, and the helpers write their logs under `$T4_WORK/logs`.
+with `Tests/Fixtures/T4Acceptance/container-shell.sh`. Every Node and the broker
+run in the background of that shell, and the helpers write their logs under
+`$T4_WORK/logs`. The container is removed when you leave the shell, so copy any
+output you want to keep out of `$T4_WORK` first. The container has no `git`
+metadata for a worktree, so run `git rev-parse HEAD` on the host.
 
 1. Set the paths. `REPO` is the repository root and `T4_BIN` is the directory
    that `swift build --show-bin-path` printed. On macOS it is
@@ -122,9 +140,9 @@ background of that shell, and the helpers write their logs under `$T4_WORK/logs`
    npm ci --prefix "$T4_FIXTURES"
    ```
 
-4. Render the manifests and load the helpers. If the machine has 4 or fewer
-   cores, add `--free-pool-thread` to the first command (see finding 1). If
-   another process already listens on port 1883, add `--broker-port 1884`:
+4. Render the manifests and load the helpers. If another process already listens
+   on port 1883 (a macOS host, for example; the Linux container has its own
+   network), add `--broker-port 1884`:
 
    ```sh
    eval "$(node "$T4_FIXTURES/render.mjs" --work "$T4_WORK" --repo "$REPO" --print-env)"
@@ -209,14 +227,10 @@ t4_node_start a "$T4_WORK/node-a.json" "$T4_WORK/state-a"
 Expected output:
 
 ```text
-broker online at 127.0.0.1:1883 (pid 38)
-node b online (pid 45)
-node a online (pid 60)
+broker online at 127.0.0.1:1883 (pid 69)
+node b online (pid 74)
+node a online (pid 89)
 ```
-
-`t4_node_start` waits for the line `advertised objects` in the Node's log. It does
-not wait for `gnostic serve online`, because `gnostic serve` buffers that line
-when its output goes to a file.
 
 Confirm that both Nodes are visible on the broker:
 
@@ -224,13 +238,20 @@ Confirm that both Nodes are visible on the broker:
 "$T4_BIN/gnostic" inspect list --config "$T4_WORK/node-a.json"
 ```
 
-Expected output, one object per line, in any order:
+Expected output, one object per line, in any order. Run it a second time if a
+line is missing, because discovery takes a moment:
 
 ```text
+me.atkn.gnostic.RuntimeInstance  <runtime-id>  <node-a-provider>  gnostic-deterministic-acp-fixture
 me.atkn.gnostic.Workspace  <workspace-id>  <node-b-provider>  <T4_WORK>/workspace-root  available uri=<T4_WORK>/workspace-root tools=[list_directory,read_file]
 me.atkn.gnostic.Timeline  <timeline-id>  <node-a-provider>  T4 default Timeline
-me.atkn.gnostic.RuntimeInstance  <runtime-id>  <node-a-provider>  gnostic-deterministic-acp-fixture
 ```
+
+`t4_node_start` waits for the log line `advertised objects`, which `gnostic serve`
+writes after it connects to the broker. That line is the reliable sign that a Node
+is up. `gnostic serve` writes its `gnostic serve online` line to standard output
+without flushing, so with output in a file the line appears only when the Node
+exits (finding 4).
 
 ## Attach the Workspace to a Timeline
 
@@ -243,14 +264,16 @@ mechanisms exist, and only one fits this journey.
   the Workspace in the Timeline's `attachedWorkspaceIDs`, and the Workspace
   resolves lazily. This works only for a Timeline that is listed in the
   manifest. `gnostic acp` does not use such a Timeline. Each `session/new`
-  creates a new Timeline that no manifest lists. The proof run showed that Node A
-  advertises the attachment. It did not exercise a tool call through it.
+  creates a new Timeline that no manifest lists. An earlier proof run showed that Node A
+  advertises the attachment. It did not exercise a tool call through it, and
+  the runs on `7e2947f` did not exercise this path either.
 - **A client call.** The `workspace.attach` operation attaches a discovered
   Workspace to any Timeline, including one that `session/new` just created. No
   `gnostic` command makes this call, so this change adds the executable
   `gnostic-workspace-attach`. It is a short consumer of the public
   `GnosticClient` API (85 lines) that makes the same call as the two-Node
-  integration test.
+  integration test. It compiles unchanged against the `GnosticClient` API of
+  `7e2947f`.
 
 `client.mjs --on-session "$T4_ATTACH_CMD"` runs the attach right after
 `session/new`. The client exports the new Timeline ID as
@@ -276,8 +299,8 @@ that Node A keeps the authoritative Timeline journal.
 
    ```sh
    t4_client --on-session "$T4_ATTACH_CMD" \
-   	--prompt 'read the remote file [fixture:workspace-tool]' \
-   	--client-turn-id journey-1 --state-file "$T4_WORK/session.json"
+       --prompt 'read the remote file [fixture:workspace-tool]' \
+       --client-turn-id journey-1 --state-file "$T4_WORK/session.json"
    ```
 
    Expected output:
@@ -299,7 +322,7 @@ that Node A keeps the authoritative Timeline journal.
    update state_update: state=idle stopReason=end_turn
    session/prompt 1: accepted messageId=acp:user:journey-1
    session/close: ok
-   summary: permissionRequests=1 failed=false elapsedSeconds=8
+   summary: permissionRequests=1 failed=false elapsedSeconds=7
    ```
 
    The text `T4 note: the remote Workspace answered.` is the content of `note.txt`
@@ -316,7 +339,7 @@ that Node A keeps the authoritative Timeline journal.
    Expected output:
 
    ```text
-   -rw------- 1 <user> <group> 6255 <date> <T4_WORK>/state-a/timeline-journals/<node-a-id>/timeline-<timeline-id>-v1.jsonl
+   -rw------- 1 <user> <group> 7178 <date> <T4_WORK>/state-a/timeline-journals/<node-a-id>/timeline-<timeline-id>-v1.jsonl
      1 seq=1 replayEpochStarted
      2 seq=2 timelineCreated
      3 seq=3 sessionTransition live
@@ -338,6 +361,10 @@ that Node A keeps the authoritative Timeline journal.
    the scope `network`. `turnCompleted` has the outcome `completed`. The
    file size and timestamps differ on your machine.
 
+   An `acpUpdate` record stores the Runtime's `session/update` frame as the exact
+   JSON text that the Runtime sent, in a string field. `t4_journal_summary` parses
+   that text to print the update kind. Open the file to see it.
+
 3. Check that Node B holds no journal:
 
    ```sh
@@ -346,6 +373,36 @@ that Node A keeps the authoritative Timeline journal.
 
    Expected output: nothing. The Timeline lives on Node A, and Node B only
    serves the Workspace.
+
+4. Check that Node A stays responsive with more live sessions than the machine has
+   cores. Each session holds its own Timeline, its own Workspace gateway, and its
+   own Runtime process. An earlier build stalled here on a machine with 4 or fewer
+   cores: the first Turn never reached the Runtime, and `workspace.attach` timed
+   out (finding 1, now resolved). Open six more sessions, attach the Workspace to
+   each, and read the file through each:
+
+   ```sh
+   for count in 1 2 3 4 5 6; do
+       t4_client --on-session "$T4_ATTACH_CMD" --prompt "read the remote file [fixture:workspace-tool]" \
+           --state-file "$T4_WORK/many-$count.json" --no-close | grep -E "FAILED|TIMED OUT|summary|T4 note" | cut -c1-120
+   done
+   "$T4_BIN/gnostic" inspect list --config "$T4_WORK/node-a.json" | grep -c 'me.atkn.gnostic.Timeline'
+   ```
+
+   Expected output, repeated six times and then the Timeline count:
+
+   ```text
+   update agent_message_chunk: "reply: read the remote file [fixture:workspace-tool] | T4 note: the remote Workspace answer
+   summary: permissionRequests=1 failed=false elapsedSeconds=7
+   ...
+   8
+   ```
+
+   The count is the default Timeline, the one from step 1, and six new ones. On the
+   4-core proof machine, all six Turns passed with seven live sessions, which is
+   more than the two that stalled the earlier build. The proof machine ran the
+   `fixture` Runtime for these sessions. The reference Runtime run at the end of
+   this runbook repeats the check with 9 manifest Timelines and 6 live sessions.
 
 ## Drill 2: Answer, refuse, and ignore a permission request
 
@@ -376,35 +433,57 @@ done
 Expected output for `approve`:
 
 ```text
-[+  6s] permission request 1: "Inspect fixture input" options=allow_once,reject_once
-[+  6s] permission request 1: answered allow_once
-[+  6s] update state_update: state=idle stopReason=end_turn
+=== approve
+[+  5s] initialize: protocolVersion=2
+[+  5s] session/new: sessionId=<session-id> timeline=<timeline-id>
+[+  5s] session/prompt 1: "permission drill"
+[+  5s] update user_message: "permission drill"
+[+  5s] update state_update: state=running
+[+  5s] permission request 1: "Inspect fixture input" options=allow_once,reject_once
+[+  5s] permission request 1: answered allow_once
+[+  5s] update agent_message_chunk: "fixture "
+[+  5s] update agent_message_chunk: "reply: permission drill"
+[+  5s] update tool_call_update: Inspect fixture input status=pending
+[+  5s] update tool_call_update: Inspect fixture input status=completed
+[+  5s] update state_update: state=idle stopReason=end_turn
+[+  5s] session/prompt 1: accepted messageId=<message-id>
+[+  5s] session/close: ok
+[+  5s] summary: permissionRequests=1 failed=false elapsedSeconds=5
 Runtime received: {"optionId":"allow-once","outcome":"selected"}
   7 seq=7 permissionDecision approved
  13 seq=13 turnCompleted completed
 ```
 
-Expected output for `deny`:
+Expected output for `deny`. The lines that match `approve` are left out:
 
 ```text
-[+  6s] permission request 1: "Inspect fixture input" options=allow_once,reject_once
-[+  6s] permission request 1: answered reject_once
-[+  6s] update state_update: state=idle stopReason=end_turn
+=== deny
+...
+[+  5s] permission request 1: "Inspect fixture input" options=allow_once,reject_once
+[+  5s] permission request 1: answered reject_once
+...
+[+  5s] update state_update: state=idle stopReason=end_turn
+...
+[+  5s] summary: permissionRequests=1 failed=false elapsedSeconds=5
 Runtime received: {"optionId":"reject-once","outcome":"selected"}
   7 seq=7 permissionDecision denied
  13 seq=13 turnCompleted completed
 ```
 
 Expected output for `unanswered`. The client never answers. After 120 seconds
-Node A stops waiting:
+Node A stops waiting. The lines that match `approve` are left out:
 
 ```text
-[+  6s] permission request 1: "Inspect fixture input" options=allow_once,reject_once
-[+  6s] permission request 1: not answering (waiting from t=6s)
-[+126s] update agent_message_chunk: "fixture "
-[+126s] update agent_message_chunk: "reply: permission drill"
-[+126s] update state_update: state=idle stopReason=end_turn
-[+126s] summary: permissionRequests=1 failed=false elapsedSeconds=126
+=== unanswered
+...
+[+  5s] permission request 1: "Inspect fixture input" options=allow_once,reject_once
+[+  5s] permission request 1: not answering (waiting from t=5s)
+[+125s] update agent_message_chunk: "fixture "
+[+125s] update agent_message_chunk: "reply: permission drill"
+...
+[+125s] update state_update: state=idle stopReason=end_turn
+...
+[+125s] summary: permissionRequests=1 failed=false elapsedSeconds=125
 Runtime received: {"outcome":"cancelled"}
   7 seq=7 permissionDecision unavailable
  13 seq=13 turnCompleted completed
@@ -450,8 +529,11 @@ update user_message: "second turn after the restart"
 update state_update: state=running
 update agent_message_chunk: "fixture "
 update agent_message_chunk: "reply: second turn after the restart"
+update tool_call_update: Inspect fixture input status=pending
+update tool_call_update: Inspect fixture input status=completed
 update state_update: state=idle stopReason=end_turn
 session/prompt 1: accepted messageId=acp:user:restart-2
+summary: permissionRequests=0 failed=false elapsedSeconds=5
 ```
 
 The session ID and the Timeline ID are the same as in the first client. Expected
@@ -485,7 +567,13 @@ cut -c1-90 "$T4_WORK/fixture/resumes.log"
 ```
 
 Expected output: two `started` lines, because Node A started the Runtime twice,
-and one `session/resume` request for the same Runtime session.
+and one `session/resume` request for the same Runtime session:
+
+```text
+started
+started
+{"sessionId":"fixture-session-12","cwd":"/tmp/gnostic-scratch-182a7c19-269c-427e-bf01-11be
+```
 
 Retry the first Turn by its ID. Node A returns the recorded Turn and does not send
 a second prompt:
@@ -496,8 +584,11 @@ t4_client --resume "$T4_WORK/session.json" --prompt 'first turn before the resta
 cat "$T4_WORK/fixture/prompts.log"
 ```
 
-Expected output of `prompts.log`: two lines, one per prompt the Runtime ever
-received (`restart-1` and `restart-2`). The retry added none.
+Expected output of the client: the recorded Turn, replayed. It starts with
+`update user_message`, has no `running` update, ends with
+`update state_update: state=idle stopReason=end_turn`, and reports
+`failed=false`. Expected output of `prompts.log`: two lines, one per prompt the
+Runtime ever received (`restart-1` and `restart-2`). The retry added none.
 
 Now repeat the recovery after an abrupt loss. Kill Node A, restart it, and resume:
 
@@ -510,9 +601,11 @@ t4_journal_summary "$TIMELINE" | tail -12
 grep -ciE "quarantin|corrupt|torn" "$T4_WORK/logs/a.log"
 ```
 
-Expected output: another `replayEpochStarted`, `sessionTransition ambiguous`,
-`sessionTransition live`, and `turnCompleted completed` at the end of the journal.
-The `grep` prints `0`. The kill came between Turns, so the journal had no torn
+Expected output: the client reports `failed=false`. The journal ends with another
+`replayEpochStarted` (`seq=25`), `turnAdmitted`, `sessionTransition ambiguous`,
+`sessionTransition live`, the updates, and `turnCompleted completed` (`seq=36`).
+The `grep` prints `0` and exits with status 1, as `grep -c` does when nothing
+matches. Your shell may also print a `Killed` line for the Node A job. The kill came between Turns, so the journal had no torn
 tail. A torn tail is truncated on open, and a corrupt committed prefix would
 quarantine the Timeline as read-only. Either would appear in the Node A log.
 
@@ -529,7 +622,7 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    t4_node_start b "$T4_WORK/node-b.json" "$T4_WORK/state-b"
    t4_node_start a "$T4_WORK/node-a.json" "$T4_WORK/state-a"
    t4_client --on-session "$T4_ATTACH_CMD" --prompt 'warm up' \
-   	--state-file "$T4_WORK/session.json" --no-close | tail -3
+       --state-file "$T4_WORK/session.json" --no-close | tail -3
    TIMELINE=$(t4_session_timeline "$T4_WORK/session.json")
    ```
 
@@ -541,8 +634,8 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    ```sh
    BEFORE=$(wc -l < "$T4_WORK/fixture/prompts.log" | tr -d ' ')
    t4_client --resume "$T4_WORK/session.json" --prompt 'long turn [fixture:wait]' \
-   	--client-turn-id kill-1 --timeout-ms 400000 --elapsed --no-close \
-   	> "$T4_WORK/kill-client.log" 2>&1 &
+       --client-turn-id kill-1 --timeout-ms 400000 --elapsed --no-close \
+       > "$T4_WORK/kill-client.log" 2>&1 &
    CLIENT=$!
    until [ "$(wc -l < "$T4_WORK/fixture/prompts.log" | tr -d ' ')" -gt "$BEFORE" ]; do sleep 0.2; done
    t4_node_kill a
@@ -572,21 +665,19 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    [+  5s] initialize: protocolVersion=2
    [+  5s] session/resume: sessionId=<session-id> timeline=<timeline-id>
    [+  5s] session/prompt 1: "long turn [fixture:wait]" clientTurnID=kill-1
-   [+305s] update user_message: "long turn [fixture:wait]"
-   [+305s] update state_update: state=running
-   [+305s] update state_update: state=idle stopReason=error
-   [+310s] session/prompt 1: FAILED code=-32001 message="The serve rejected the operation: callTimedOut (status 504)."
-   [+310s] summary: permissionRequests=0 failed=true elapsedSeconds=310
+   [+  5s] update user_message: "long turn [fixture:wait]"
+   [+  5s] update state_update: state=running
+   [+  5s] update state_update: state=idle stopReason=error
+   [+  5s] session/prompt 1: FAILED code=-32001 message="Provider <node-a-provider> went offline." data={"gnosticCode":"providerOffline"}
+   [+  5s] summary: permissionRequests=0 failed=true elapsedSeconds=5
    ```
 
-   The times vary by a few seconds. The client receives nothing for five minutes.
-   In this run the kill landed before Node A relayed any update, so the client
-   learned of the Turn and its failure at the same moment. If the kill lands
-   after the `running` update, the client prints that update at once and then
-   waits the same time. The terminal failure arrives at the 300-second prompt
-   timeout of `gnostic acp` and carries a generic `callTimedOut` with status 504.
-   It does not tell you that the Node vanished, although discovery knew five
-   seconds after the kill. See finding 2.
+   The client learns of the loss within a second of the kill and not at a prompt
+   timeout. The failure names the lost Node: `providerOffline`, with the provider
+   ID of Node A. The Turn ends with `stopReason=error`. If the kill lands before
+   Node A relays the first update, the client may print the failure without the
+   `running` update. The five seconds before the first line are the start of
+   `gnostic acp`, not a wait.
 
 4. Restart Node A and retry the same Turn ID. Gnostic must not send the prompt
    again:
@@ -594,7 +685,7 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    ```sh
    t4_node_start a "$T4_WORK/node-a.json" "$T4_WORK/state-a"
    t4_client --resume "$T4_WORK/session.json" --prompt 'long turn [fixture:wait]' \
-   	--client-turn-id kill-1 --timeout-ms 30000 --no-close
+       --client-turn-id kill-1 --timeout-ms 30000 --no-close
    cat "$T4_WORK/fixture/prompts.log"
    ```
 
@@ -606,6 +697,7 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    update state_update: state=running
    update state_update: state=idle stopReason=error
    session/prompt 1: FAILED code=-32001 message="The Runtime did not confirm whether it inserted the prompt, and Gnostic does not send it again." data={"gnosticCode":"insertionUnknown"}
+   summary: permissionRequests=0 failed=true elapsedSeconds=10
    ```
 
    `prompts.log` has two lines, the same as before the retry: the warm-up prompt
@@ -615,7 +707,7 @@ Turn, and that Gnostic never runs an admitted Turn twice.
 
    ```sh
    t4_client --resume "$T4_WORK/session.json" --prompt 'after the failure' \
-   	--client-turn-id after-1 --timeout-ms 30000 --no-close | tail -3
+       --client-turn-id after-1 --timeout-ms 30000 --no-close | tail -3
    ```
 
    Expected output ends with `update state_update: state=idle stopReason=end_turn`.
@@ -627,7 +719,7 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    t4_node_kill b
    sleep 5
    t4_client --resume "$T4_WORK/session.json" --prompt 'read it [fixture:workspace-tool]' \
-   	--client-turn-id ws-after-b-1 --timeout-ms 60000 --no-close
+       --client-turn-id ws-after-b-1 --timeout-ms 60000 --no-close
    ```
 
    Expected output ends with:
@@ -643,11 +735,19 @@ Turn, and that Gnostic never runs an admitted Turn twice.
    tool list instead. The Turn ends in a clean failure and Node A stays up.
 
 The drill passes when four things hold. The killed Turn ends in a terminal
-failure for the client. The retry of the same Turn ID returns `insertionUnknown`.
-`prompts.log` gains no line for the retry. The Timeline accepts a new Turn after
-the restart. T4 also asks for a clear distinction between a vanished Node,
-transport uncertainty, and a final Turn failure. The first failure does not make
-that distinction today, so record finding 2 as open when you report the drill.
+failure for the client, and the client learns of it when the Node disappears. The
+retry of the same Turn ID returns `insertionUnknown`. `prompts.log` gains no line
+for the retry. The Timeline accepts a new Turn after the restart.
+
+T4 also asks for a clear distinction between a vanished Node, transport
+uncertainty, and a final Turn failure. The three outcomes above carry three
+different codes: `providerOffline` for the vanished Node, `insertionUnknown` for
+the Turn that Gnostic will not send again because it cannot tell whether the
+Runtime inserted it, and a plain `acpAgentFailure` when the Node is up and the
+Runtime failed. The proof run did not produce a distinct code for lost transport
+with a live Node, because it has no way to cut the broker connection of a live
+Node. Finding 2, which found a 300-second wait and a generic `callTimedOut`, did
+not reproduce.
 
 ## Drill 5: Send large content
 
@@ -663,40 +763,51 @@ rm -f "$T4_WORK/fixture/starts.log" "$T4_WORK/fixture/resumes.log" "$T4_WORK/fix
 t4_node_start b "$T4_WORK/node-b.json" "$T4_WORK/state-b"
 t4_node_start a "$T4_WORK/node-a.large.json" "$T4_WORK/state-a"
 PADDING=$(node -e 'process.stdout.write("p".repeat(1300))')
-t4_client --on-session "$T4_ATTACH_CMD" --prompt "[fixture:workspace-tool] $PADDING" \
+t4_client --on-session "$T4_ATTACH_CMD" --prompt "[fixture:workspace-tool] $PADDING" --text-totals \
 	--print-max 60 --state-file "$T4_WORK/session.json" --no-close
 ```
 
-Expected output:
+`--text-totals` adds a line with the number of bytes of reply text that the client
+received. Expected output. The first update is the prompt echo. The reply arrives in
+several chunks, and the last chunk ends with the marker that the Workspace wrote:
 
 ```text
 session/prompt 1: "[fixture:workspace-tool] ppppppppppppppppppppppppppppppppppp…(1325 chars)"
 update user_message: "[fixture:workspace-tool] ppppppppppppppppppppppppppppppppppp…(1325 chars)"
+update state_update: state=running
 permission request 1: "Run Workspace tool Read file" options=allow_once,reject_once
 permission request 1: answered allow_once
+update agent_message_chunk: "fixture "
 update agent_message_chunk: "reply: [fixture:workspace-tool] pppppppppppppppppppppppppppp…(800 chars)"
+update agent_message_chunk: "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp…(808 chars)"
+update agent_message_chunk: "xxxxxxxxxxxxx\\nline 010 xxxxxxxxxxxxxxxxxxxxx\\nline 011 xxxx…(826 chars)"
+update agent_message_chunk: "xxxxx\\n[truncated: showing the first 1070 of 6200 bytes]"
+update tool_call_update: Inspect fixture input status=pending
+update tool_call_update: Inspect fixture input status=completed
 update state_update: state=idle stopReason=end_turn
+session/prompt 1: accepted messageId=<message-id>
+session/prompt 1: agent text 2463 bytes in 5 chunks
+summary: permissionRequests=1 failed=false elapsedSeconds=7
 ```
 
-Now compare the live update with the journal:
+The chunk count and sizes can differ by a few bytes, because the split follows the
+byte limit of the wire. Compare the live text with the journal:
 
 ```sh
-TIMELINE=$(t4_session_timeline "$T4_WORK/session.json")
-node -e '
-	for (const line of require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n")) {
-		const record = JSON.parse(line.slice(line.indexOf("{")));
-		const update = record.payload.acpUpdate?.update?.update ?? record.payload.acpUpdate?.update;
-		const text = update?.content?.text;
-		if (update?.sessionUpdate === "agent_message_chunk" && text) console.log("journal: agent_message_chunk", Buffer.byteLength(text), "bytes, ends:", JSON.stringify(text.slice(-60)));
-	}' "$(t4_journal "$TIMELINE")"
+t4_journal_text "$(t4_session_timeline "$T4_WORK/session.json")"
 ```
 
 Expected output:
 
 ```text
-journal: agent_message_chunk 8 bytes, ends: "fixture "
-journal: agent_message_chunk 2455 bytes, ends: "35 xxxxxxx\n[truncated: showing the first 1070 of 6200 bytes]"
+journal seq=9 agent_message_chunk 8 bytes
+journal seq=10 agent_message_chunk 2455 bytes
+journal: agent text 2463 bytes in 2 chunks
 ```
+
+The live client received all 2,463 bytes, in five chunks, and the journal holds the
+same 2,463 bytes in two records. A Runtime message longer than the wire limit is
+split on the live path and kept whole in the journal. Nothing is cut.
 
 Then send a prompt over the 1,400-byte limit:
 
@@ -732,15 +843,15 @@ What the drill shows:
 | --- | --- | --- |
 | A prompt | 1,400 bytes | Gnostic rejects a larger prompt with `promptTooLarge` (-32602) before it admits or sends the Turn. It does not truncate. |
 | A Workspace tool result | 1,200 bytes | The `filesystem` Workspace cuts its output and ends it with `[truncated: showing the first 1070 of 6200 bytes]`. The model sees the marker. |
-| A Runtime update | 800 bytes of text per live update | Node A journals the whole update (2,455 bytes here). The live stream to the client cuts the text to 800 bytes and adds no marker. See finding 3. |
+| A Runtime update | About 800 bytes of text per live update | Node A journals the whole update (2,455 bytes here). The live stream splits the text into several updates of about 800 bytes each, and the client receives all of it. See finding 3. |
 
 The Timeline journal is not subject to the wire limits, because Node A writes it
 to disk on the owning Node.
 
 The drill passes when a larger prompt is rejected by name and never reaches the
-Runtime, a long tool result ends in a `[truncated: ...]` marker, and the journal
-holds the whole Runtime update. Record finding 3 as open when you report the
-drill: the live update loses text without a marker.
+Runtime, a long tool result ends in a `[truncated: ...]` marker, and the client
+receives as many bytes of the Runtime update as the journal holds. Finding 3, which
+found that the live update lost text without a marker, did not reproduce.
 
 ## Repeat Drill 1 with the reference Runtime
 
@@ -749,12 +860,14 @@ supervises over ACP v2 on stdio. Its scripted model needs no provider. Do this
 after Drill 5, because it renders a new work directory.
 
 1. Stop the processes from the earlier drills and render a work directory for the
-   reference Runtime:
+   reference Runtime. `--extra-timelines 8` adds eight Timelines to the manifest of
+   Node A, so that Node A loads nine Timelines at start. That is more than twice the
+   core count of the proof machine:
 
    ```sh
    t4_node_stop a; t4_node_stop b; t4_broker_stop
    export T4_WORK=$(mktemp -d)
-   eval "$(node "$T4_FIXTURES/render.mjs" --work "$T4_WORK" --repo "$REPO" --runtime reference --pk-runtime "$T4_BIN/gnostic-pk-runtime" --print-env)"
+   eval "$(node "$T4_FIXTURES/render.mjs" --work "$T4_WORK" --repo "$REPO" --runtime reference --pk-runtime "$T4_BIN/gnostic-pk-runtime" --extra-timelines 8 --print-env)"
    . "$T4_FIXTURES/t4.sh"
    t4_broker_start
    t4_node_start b "$T4_WORK/node-b.json" "$T4_WORK/state-b"
@@ -766,7 +879,7 @@ after Drill 5, because it renders a new work directory.
 
    ```sh
    t4_client --on-session "$T4_ATTACH_CMD" --prompt 'hello reference' \
-   	--prompt 'call the gateway [fixture:gateway-tool]' --print-max 300
+       --prompt 'call the gateway [fixture:gateway-tool]' --print-max 300
    ```
 
    Expected output, abridged:
@@ -776,16 +889,34 @@ after Drill 5, because it renders a new work directory.
    update state_update: state=idle stopReason=end_turn
    permission request 1: "Run Workspace tool Read file" options=allow_once,reject_once
    permission request 1: answered allow_once
-   update agent_message_chunk: "scripted response after Gnostic gateway tool: Error: Failed to execute the tool: Only the 'path' argument is accepted.\\nHow to fix: ..."
+   update agent_message_chunk: "scripted response after Gnostic gateway tool: Error: Failed to execute the tool: Only the 'path' argument is accepted.\\nHow to fix: Read the error message above, adjust your arguments accordingly, and retry; if it keeps failing, try a different tool or approach."
    update state_update: state=idle stopReason=end_turn
-   summary: permissionRequests=1 failed=false
+   summary: permissionRequests=1 failed=false elapsedSeconds=7
    ```
 
    The scripted model always calls the tool with `{"query":"fixture"}`. The
    `filesystem` Workspace validates its arguments and rejects that call as a
    failed tool result. The result proves the path: the reference Runtime, the
    gateway on Node A, the permission request to the client, and the `read_file`
-   tool on Node B. Only a real model can read `note.txt` here.
+   tool on Node B. Only a real model can read `note.txt` here. The Node A log
+   then holds `error com.positronickit.tool-router` lines for the rejected call.
+   That is the expected failed tool result and not a Node fault.
+
+3. Check that the Node stays responsive with many Timelines. Open five more
+   sessions on the reference Runtime and count the Timelines:
+
+   ```sh
+   for count in 1 2 3 4 5; do
+       t4_client --on-session "$T4_ATTACH_CMD" --prompt 'call the gateway [fixture:gateway-tool]' --no-close \
+           | grep -E "FAILED|TIMED OUT|summary"
+   done
+   "$T4_BIN/gnostic" inspect list --config "$T4_WORK/node-a.json" | grep -c Timeline
+   ```
+
+   Expected output: five lines `summary: permissionRequests=1 failed=false
+   elapsedSeconds=7`, then `15`. That is nine Timelines from the manifest, the
+   session from step 2, and the five new ones. On the 4-core proof machine, Node
+   A came online in about one second with nine Timelines and completed every Turn.
 
 To run the reference Runtime with a live provider (not run), remove the scripted
 mode and add the provider key as a secret. `set-secret` reads the key from
@@ -813,7 +944,8 @@ Paste these into #552 under T4:
 
 - `git rev-parse HEAD` and `"$T4_BIN/gnostic" --version`.
 - The operating system, `uname -m`, and the core count.
-- Whether you used `--free-pool-thread`.
+- Whether Node A stayed responsive with more live sessions than cores (Drill 1
+  step 4).
 - The output of each drill, and which findings you reproduced.
 - Axoloty and MQTT versions from `Package.resolved`, and the MQTT `coaty/3`
   profile the Nodes used.
@@ -822,48 +954,49 @@ Paste these into #552 under T4:
 
 ## Findings from the proof runs
 
-Four findings came out of writing this runbook. Finding 1 adds a flag to the
-commands, and the others change what you should expect. The Linux proof ran
-against the commit named at the top. None of the findings has an issue yet.
+Four findings came out of the first proof runs of this runbook. The Linux runs on
+`7e2947f` re-checked each one. The table gives the state on that commit. No macOS
+run exists, so every finding is open for macOS until someone runs it there.
 
-1. **A Node stalls when its blocked threads fill the Swift concurrency pool
-   (Critical on a machine with 4 or fewer cores).**
-   On a 4-core host:
-   - A manifest with two Timelines does not come online within 20 seconds.
-   - The first Turn on a Timeline that `session/new` created never reaches the
-     Runtime. A capture of the Runtime's stdin shows `initialize`, one
-     `session/new`, and `session/list`, and then nothing.
-   - `workspace.attach` to any Timeline, made while a `session/new` Timeline
-     exists, fails with `callTimedOut` (504), and Node A then disappears from
-     discovery.
-   - The same flows pass when the Runtime does not advertise MCP support, when
-     the stderr of the Runtime is closed (`--free-pool-thread`), and when a
-     single Timeline exists.
-   - The release and the debug build behave the same.
+| Finding | Earlier proof run | Linux, `7e2947f` |
+| --- | --- | --- |
+| 1. A Node stalls when blocked threads fill the Swift concurrency pool | Critical on 4 cores | Not reproduced |
+| 2. A Node killed during a Turn fails the client only at the prompt timeout | Important | Not reproduced |
+| 3. The live stream cuts a Runtime message to 800 bytes without a marker | Important | Not reproduced |
+| 4. `gnostic serve` does not flush `gnostic serve online` to a file | Minor | Reproduced |
 
-   The likely cause: the Runtime child pins two pool threads (a blocking read of
-   its stdout in `ACPProcessStdioTransport.swift` and a blocking read of its
-   stderr in `ACPAscendantBackend.swift`), and each Workspace MCP gateway pins one
-   more in a blocking `accept()` (`WorkspaceMCPGateway.swift`). With four cores,
-   two gateways use the whole pool. The proof run did not confirm this with a
-   stack trace, because `ptrace` is blocked in the container. If the cause holds,
-   each extra Timeline with a session costs one more thread, so a Node would
-   stall at about `cores - 2` Timelines on any machine. `--free-pool-thread` wraps the Runtime
-   in `sh -c 'exec 2>/dev/null; exec "$0" "$@"'`, which ends the stderr reader at
-   once and frees one thread. It hides the symptom on four cores and is not a fix.
+1. **A Node stalls when blocked threads fill the Swift concurrency pool
+   (resolved by #695 and #711).** The earlier runs stalled on a 4-core host: a
+   manifest with two Timelines did not come online, the first Turn on a
+   `session/new` Timeline never reached the Runtime, and `workspace.attach` timed
+   out with 504. The runs on `7e2947f` used no workaround on a 4-core machine.
+   Node A loaded nine manifest Timelines in about one second. Seven live sessions
+   with Workspace gateways, more than the two that stalled the earlier build, each
+   attached the Workspace and completed a Turn, with the fixture Runtime and with
+   the reference Runtime. The proof did not run the earlier commit again for
+   comparison. The stall itself comes from the first proof run and from the regression test
+   that #695 added. The workaround flag in the fixtures is removed.
 
-2. **A Node killed during a Turn fails the client only at the prompt timeout
-   (Important).** The client waits about 300 seconds and gets a generic
-   `callTimedOut` (504). Discovery drops the Node within five seconds. #552 T4
-   asks for a clear distinction between Node disappearance, transport
-   uncertainty, and a Turn failure. After a restart the retry does return the
-   structured `insertionUnknown`, and the prompt is never re-sent.
+2. **A Node killed during a Turn failed the client only at the prompt timeout
+   (resolved).** The earlier client waited about 300 seconds and got a generic
+   `callTimedOut` (504). On `7e2947f` the client got `providerOffline` (-32001)
+   within a second of the kill, with the `stopReason=error` update. After a
+   restart, the retry of the same Turn ID returns `insertionUnknown` and the
+   prompt is not sent again. Not exercised: a live Node that loses only its broker
+   connection, which would show Gnostic's handling of transport uncertainty
+   without a vanished Node.
 
-3. **The live update stream cuts a Runtime message to 800 bytes without a marker
-   (Important).** `AscendantTurnUpdateStore.bounded` limits the text of each
-   update. The journal keeps the full text, so the loss is in what the live client sees.
+3. **The live update stream cut a Runtime message to 800 bytes without a marker
+   (resolved by #706).** On `7e2947f` the live client received all 2,463 bytes of
+   a reply, in five updates, and the journal held the same 2,463 bytes.
 
 4. **`gnostic serve` does not flush its `gnostic serve online` line when its
-   output is a file (Minor).** `Scripts/runner-smoke.sh` works around it with
-   `stdbuf`, which macOS lacks. `t4.sh` waits for the `advertised objects` log
-   line instead.
+   output is a file (Minor, open).** The line appears in the log only when the
+   Node exits. `Scripts/runner-smoke.sh` works around it with `stdbuf`, which
+   macOS lacks. `t4.sh` waits for the `advertised objects` log line instead.
+
+5. **`make shell` does not open a shell (Minor, repository tooling).**
+   `.devcontainer/run-container.sh` starts the container in a background job
+   without stdin or a terminal, so `bash` exits at once. The README repeats the
+   command in its flaky-test recipe. This runbook uses `container-shell.sh`
+   instead. The fix is to give the container a terminal when stdin is one.

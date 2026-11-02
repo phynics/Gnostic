@@ -10,7 +10,8 @@ symbol except `gnostic-workspace-attach`.
 | `render.mjs` | Writes the Node manifests, the Workspace files, and stable UUIDs into a work directory. |
 | `manifests/node-a.template.json` | Node A: one Runtime instance and its default Timeline. |
 | `manifests/node-b.template.json` | Node B: one `filesystem` Workspace. |
-| `t4.sh` | Shell functions that start and stop the broker and the Nodes, run the client, and print a Timeline journal. |
+| `container-shell.sh` | Opens an interactive shell in the pinned development container, or runs one command in it. `make shell` cannot. |
+| `t4.sh` | Shell functions that start and stop the broker and the Nodes, run the client, and print a Timeline journal (`t4_journal_summary`, `t4_journal_text`). |
 | `client.mjs` | An ACP v2 client that spawns `gnostic acp` and answers permission requests. |
 | `package.json`, `package-lock.json` | Pin `@agentclientprotocol/sdk` `2.0.0`, the same version as the `ACPAgent` fixture. |
 
@@ -29,7 +30,7 @@ The reference Runtime is the `gnostic-pk-runtime` product. The attach tool is th
 | `--node <command>` | `node` | The command that runs `agent.mjs`. |
 | `--broker-host`, `--broker-port` | `127.0.0.1`, `1883` | The broker address. |
 | `--namespace <name>` | random `t4-xxxxxxxx` | The MQTT namespace, so a stale Node on a shared broker cannot interfere. |
-| `--free-pool-thread` | off | Launch the Runtime through `sh -c 'exec 2>/dev/null; exec "$0" "$@"'`. This ends Gnostic's stderr reader at once and frees one Swift concurrency thread, which works around finding 1 in the runbook on a machine with 4 or fewer cores. |
+| `--extra-timelines <n>` | `0` | Add `n` Timelines to the Node A manifests. They share the Runtime instance, and they let you check that a Node with many Timelines stays responsive. |
 | `--print-env` | off | Print `export` lines for the shell instead of a summary. |
 
 With `--runtime fixture`, `render.mjs` writes these Node A manifests. They differ
@@ -41,7 +42,7 @@ only in the Runtime's environment:
 | `node-a.permission-approve.json` | The Runtime sends `session/request_permission` and requires the `allow-once` option back. |
 | `node-a.permission-deny.json` | The same request. The Runtime requires `reject-once`. |
 | `node-a.permission-unanswered.json` | The same request. The Runtime requires the `cancelled` outcome. |
-| `node-a.large.json` | The Workspace tool reads `large.txt`, which is 6,000 bytes. |
+| `node-a.large.json` | The Workspace tool reads `large.txt`, which is 6,200 bytes. |
 
 The Runtime writes these files under `<work>/fixture/`:
 
@@ -73,6 +74,7 @@ after `--` is spawned, and the client speaks ACP v2 on its stdio.
 | `--print-max <n>` | 160 | The most characters printed for one text. |
 | `--hold-open-ms <n>` | 0 | Wait this long after the last Turn before closing the session. |
 | `--no-close` | off | Leave the session open on exit. |
+| `--text-totals` | off | After each Turn, print how many bytes of `agent_message_chunk` text arrived. |
 | `--elapsed` | off | Start each line with the seconds since the client started. |
 
 The exit status is 0 when every Turn ended with an `idle` update, 1 when a

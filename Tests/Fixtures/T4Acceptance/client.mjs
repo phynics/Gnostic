@@ -26,6 +26,7 @@
 //   --print-max <n>          Print at most n characters of each text. Default: 160.
 //   --hold-open-ms <n>       After the last Turn, wait before closing the session.
 //   --no-close               Leave the session open on exit.
+//   --text-totals            After each Turn, print how many bytes of agent_message_chunk text arrived.
 //   --elapsed                Start each line with the seconds since the client started.
 //
 // Exit status: 0 when every prompt ended with an idle update, 1 when a prompt
@@ -61,6 +62,7 @@ try {
       "print-max": { type: "string", default: "160" },
       "hold-open-ms": { type: "string", default: "0" },
       "no-close": { type: "boolean", default: false },
+      "text-totals": { type: "boolean", default: false },
       elapsed: { type: "boolean", default: false },
     },
   }).values;
@@ -169,6 +171,11 @@ try {
           }), `the session/prompt response did not arrive within ${timeoutMs} ms`);
           console.log(`session/prompt ${index + 1}: accepted messageId=${answer.messageId}`);
           await waitForIdle(start);
+          if (options["text-totals"]) {
+            const chunks = updates.slice(start).map(({ update }) => update).filter((update) => update?.sessionUpdate === "agent_message_chunk");
+            const bytes = chunks.reduce((total, update) => total + Buffer.byteLength(textOf(update.content)), 0);
+            console.log(`session/prompt ${index + 1}: agent text ${bytes} bytes in ${chunks.length} chunks`);
+          }
           if (index === 0 && options["after-first-turn"]) runHook("after-first-turn", options["after-first-turn"]);
         } catch (error) {
           failed = true;
