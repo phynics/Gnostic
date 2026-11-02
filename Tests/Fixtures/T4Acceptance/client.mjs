@@ -26,6 +26,8 @@
 //   --print-max <n>          Print at most n characters of each text. Default: 160.
 //   --hold-open-ms <n>       After the last Turn, wait before closing the session.
 //   --no-close               Leave the session open on exit.
+//   --answer-delay-ms <n>    Wait this long before answering a permission request. The request
+//                            is printed at once, so a drill can act while the Turn waits.
 //   --text-totals            After each Turn, print how many bytes of agent_message_chunk text arrived.
 //   --elapsed                Start each line with the seconds since the client started.
 //
@@ -62,6 +64,7 @@ try {
       "print-max": { type: "string", default: "160" },
       "hold-open-ms": { type: "string", default: "0" },
       "no-close": { type: "boolean", default: false },
+      "answer-delay-ms": { type: "string", default: "0" },
       "text-totals": { type: "boolean", default: false },
       elapsed: { type: "boolean", default: false },
     },
@@ -113,6 +116,8 @@ try {
         console.log(`permission request ${permissionRequests}: answered cancelled`);
         return { outcome: { outcome: "cancelled" } };
       }
+      const delay = Number(options["answer-delay-ms"]);
+      if (delay > 0) await sleep(delay);
       const wanted = options.permission === "approve" ? "allow_once" : "reject_once";
       const option = params.options.find(({ kind }) => kind === wanted);
       assert(option, `the permission request offers no ${wanted} option`);

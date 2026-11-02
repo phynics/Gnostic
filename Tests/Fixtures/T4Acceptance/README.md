@@ -10,7 +10,9 @@ symbol except `gnostic-workspace-attach`.
 | `render.mjs` | Writes the Node manifests, the Workspace files, and stable UUIDs into a work directory. |
 | `manifests/node-a.template.json` | Node A: one Runtime instance and its default Timeline. |
 | `manifests/node-b.template.json` | Node B: one `filesystem` Workspace. |
-| `container-shell.sh` | Opens an interactive shell in the pinned development container, or runs one command in it. `make shell` cannot. |
+| `container-shell.sh` | Opens an interactive shell in the pinned development container, or runs one command in it. `make shell` cannot. A command holds the build directory lock and may write it. A shell holds no lock and mounts the build directory read-only. |
+| `journal.mjs` | Reads a Timeline journal. It parses the preserved frame text of an `acpUpdate`, strips a byte order mark, and reports a frame it cannot read instead of stopping. `t4.sh` calls it. |
+| `selftest.sh` | Checks the lock behavior of `container-shell.sh` with a fake runtime, and `journal.mjs` with journal-shaped records. Needs `sh`, `flock` and `node`; no container. |
 | `t4.sh` | Shell functions that start and stop the broker and the Nodes, run the client, and print a Timeline journal (`t4_journal_summary`, `t4_journal_text`). |
 | `client.mjs` | An ACP v2 client that spawns `gnostic acp` and answers permission requests. |
 | `package.json`, `package-lock.json` | Pin `@agentclientprotocol/sdk` `2.0.0`, the same version as the `ACPAgent` fixture. |
@@ -52,6 +54,7 @@ The Runtime writes these files under `<work>/fixture/`:
 | `starts.log` | One line per Runtime process start. |
 | `resumes.log` | One line per `session/resume` the Runtime received. |
 | `permission.log` | The outcome the Runtime received for its permission request. |
+| `mcp.log` | One JSON line per Workspace gateway request the Runtime made, with its outcome: `success`, `json-rpc-error`, `no-response`, `http-error` or `invalid-response`. |
 | `wire.log` | The order of prompts and cancels the Runtime saw. |
 | `sessions.json` | The Runtime's own session store. |
 
@@ -74,6 +77,7 @@ after `--` is spawned, and the client speaks ACP v2 on its stdio.
 | `--print-max <n>` | 160 | The most characters printed for one text. |
 | `--hold-open-ms <n>` | 0 | Wait this long after the last Turn before closing the session. |
 | `--no-close` | off | Leave the session open on exit. |
+| `--answer-delay-ms <n>` | 0 | Wait before answering a permission request. The request is printed at once, so a drill can act while the Turn waits. |
 | `--text-totals` | off | After each Turn, print how many bytes of `agent_message_chunk` text arrived. |
 | `--elapsed` | off | Start each line with the seconds since the client started. |
 

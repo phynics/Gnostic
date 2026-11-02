@@ -25,6 +25,11 @@ with a live model provider.
 | Drill 1 with the fixture Runtime | Run | Not run on current code | Not applicable |
 | Drill 1 with the reference Runtime (scripted model) | Run | Not run on current code | Not run |
 | Drills 2 to 5 | Run | Not run on current code | Not applicable |
+| Drill 4 with a Workspace call in flight, and with only the broker stopped | Run | Not run on current code | Not applicable |
+
+Drill 4 does not meet #552 T4 item 4: the client and the journal cannot tell the
+three loss cases apart, and the Nodes do not rejoin a restarted broker. Findings 6
+to 8 record this. Read them before you sign off.
 
 Every macOS command and every macOS output in this runbook is untested. An
 earlier version of this runbook also had no macOS run. Treat the macOS steps as a
@@ -63,9 +68,18 @@ the container runner starts the container without stdin, so `bash` exits at once
 the same image with the same mounts and the same host user, and it keeps the
 terminal. Run it from the repository root. Without arguments it opens a shell.
 With arguments it runs one command and exits. It stops the container after
-`CONTAINER_TIMEOUT` seconds, 7200 by default. It does not take the build lock that
-the Make targets take, so do not run it while another command builds in the same
-worktree.
+`CONTAINER_TIMEOUT` seconds, 7200 by default.
+
+The script takes the build directory lock only when you give it a command, as the
+Make targets do. The command waits up to `BUILD_LOCK_TIMEOUT` seconds, 1800 by
+default, so a `make clean` or `make build` in the same worktree cannot remove
+artifacts during the build, and the build cannot start during theirs. A shell
+takes no lock: it stays open for hours, and a lock would block every Make target
+in the worktree for as long. The shell mounts the build directory read-only,
+because the drills only run the built binaries. While a shell is open, do not run
+`make clean` or a build for the same worktree and configuration.
+[`selftest.sh`](../../Tests/Fixtures/T4Acceptance/selftest.sh) checks the locking
+with a fake runtime.
 
 1. Resolve the dependencies:
 
@@ -104,8 +118,9 @@ swift build -c release --show-bin-path
 Run the rest of this runbook in one shell. On Linux, open a new container shell
 with `Tests/Fixtures/T4Acceptance/container-shell.sh`. Every Node and the broker
 run in the background of that shell, and the helpers write their logs under
-`$T4_WORK/logs`. The container is removed when you leave the shell, so copy any
-output you want to keep out of `$T4_WORK` first. The container has no `git`
+`$T4_WORK/logs`. The shell mounts the release build directory read-only, so you
+cannot rebuild in it. The container is removed when you leave the shell, so copy
+any output you want to keep out of `$T4_WORK` first. The container has no `git`
 metadata for a worktree, so run `git rev-parse HEAD` on the host.
 
 1. Set the paths. `REPO` is the repository root and `T4_BIN` is the directory
@@ -601,6 +616,9 @@ t4_journal_summary "$TIMELINE" | tail -12
 grep -ciE "quarantin|corrupt|torn" "$T4_WORK/logs/a.log"
 ```
 
+A restarted Node A does not give a resumed session its Workspace tools again, so
+this drill sends no Workspace Turn after the restart (finding 6).
+
 Expected output: the client reports `failed=false`. The journal ends with another
 `replayEpochStarted` (`seq=25`), `turnAdmitted`, `sessionTransition ambiguous`,
 `sessionTransition live`, the updates, and `turnCompleted completed` (`seq=36`).
@@ -643,8 +661,11 @@ Turn, and that Gnostic never runs an admitted Turn twice.
 
    `t4_node_kill a` sends `SIGKILL` to the `gnostic serve` process. The same
    command works on macOS and Linux, and the process gets no chance to shut down.
-   To kill from another terminal, run `pkill -KILL -f "gnostic serve --config
-   .*node-a.json"`. The Runtime child of Node A also ends when its stdio closes.
+   To kill from another terminal, signal the process ID that `t4_node_start` saved
+   for this work directory: `kill -KILL "$(cat "$T4_WORK/pids/a")"`. Do not match
+   the command line with `pkill -f`: it also kills Node A of any other acceptance
+   work directory on the machine. The Runtime child of Node A also ends when its
+   stdio closes.
 
 3. Look at the broker's view five seconds later, then wait for the client:
 
@@ -712,42 +733,196 @@ Turn, and that Gnostic never runs an admitted Turn twice.
 
    Expected output ends with `update state_update: state=idle stopReason=end_turn`.
 
-5. Kill the Workspace Node. With Node A running, kill Node B, wait five seconds,
-   and send a Workspace Turn:
+5. Kill the Workspace Node while a Workspace tool call is in flight.
+
+   Step 4 restarted Node A while Node B kept running. A restarted Node A does not
+   restore the Workspace tools of a resumed session (finding 6), so attach the
+   Workspace again first and check that a Workspace Turn works:
 
    ```sh
-   t4_node_kill b
-   sleep 5
+   T4_SESSION_TIMELINE_ID=$(t4_session_timeline "$T4_WORK/session.json") sh -c "$T4_ATTACH_CMD"
    t4_client --resume "$T4_WORK/session.json" --prompt 'read it [fixture:workspace-tool]' \
-       --client-turn-id ws-after-b-1 --timeout-ms 60000 --no-close
+       --client-turn-id ws-check-1 --timeout-ms 60000 --no-close | tail -1
    ```
 
-   Expected output ends with:
+   Expected output: `attached workspace ...` and then `summary: permissionRequests=1
+   failed=false elapsedSeconds=6`.
+
+   A call to a healthy Node B finishes in milliseconds, so freeze Node B to hold
+   the call open. The client waits six seconds before it answers its permission
+   request (`--answer-delay-ms`), and `kill -STOP` stops Node B during that wait.
+   After the approval, Node A forwards the call to a Node that cannot answer, so the
+   call is in flight and stays there until something ends it. Kill Node B two
+   seconds after the approval:
+
+   ```sh
+   rm -f "$T4_WORK/fixture/mcp.log"
+   t4_client --resume "$T4_WORK/session.json" --prompt 'read it [fixture:workspace-tool]' --client-turn-id ws-kill-1 \
+       --permission approve --answer-delay-ms 6000 --timeout-ms 120000 --elapsed --no-close > "$T4_WORK/ws-client.log" 2>&1 &
+   CLIENT=$!
+   until grep -qE "permission request 1:|FAILED" "$T4_WORK/ws-client.log"; do sleep 0.2; done
+   kill -STOP "$(cat "$T4_WORK/pids/b")"
+   until grep -q "answered" "$T4_WORK/ws-client.log"; do sleep 0.2; done
+   sleep 2
+   t4_node_kill b
+   wait $CLIENT; echo "client exit: $?"
+   cat "$T4_WORK/ws-client.log"
+   echo "--- the Runtime's gateway requests:"; cat "$T4_WORK/fixture/mcp.log"
+   t4_journal_summary "$(t4_session_timeline "$T4_WORK/session.json")" | tail -3
+   ```
+
+   Expected output:
 
    ```text
-   update state_update: state=running
-   update state_update: state=idle stopReason=error
-   session/prompt 1: FAILED code=-32001 message="The serve rejected the operation: acpAgentFailure (status 500)."
+   client exit: 1
+   [+  5s] initialize: protocolVersion=2
+   [+  5s] session/resume: sessionId=<session-id> timeline=<timeline-id>
+   [+  5s] session/prompt 1: "read it [fixture:workspace-tool]" clientTurnID=ws-kill-1
+   [+  5s] update user_message: "read it [fixture:workspace-tool]"
+   [+  5s] update state_update: state=running
+   [+  5s] permission request 1: "Run Workspace tool Read file" options=allow_once,reject_once
+   [+ 11s] permission request 1: answered allow_once
+   [+ 16s] update state_update: state=idle stopReason=error
+   [+ 21s] session/prompt 1: FAILED code=-32001 message="The serve rejected the operation: acpAgentFailure (status 500)."
+   [+ 21s] summary: permissionRequests=1 failed=true elapsedSeconds=21
+   --- the Runtime's gateway requests:
+   {"method":"initialize","outcome":"success","httpStatus":200}
+   {"method":"tools/list","outcome":"success","httpStatus":200,"toolCount":2}
+   {"method":"tools/call","outcome":"json-rpc-error","httpStatus":200,"errorCode":-32003,"errorCategory":"unclassified"}
+     188 seq=188 turnAdmitted
+     189 seq=189 permissionDecision approved
+     190 seq=190 turnCompleted failed
    ```
 
-   Node A no longer advertises the Workspace tools, so the fixture Runtime
-   fails its own check that two tools exist. A real Runtime would see an empty
-   tool list instead. The Turn ends in a clean failure and Node A stays up.
+   What each side saw. The Runtime's call hung for about 5 seconds after the
+   approval, with no sign that Node B had gone. Then the Runtime received the
+   JSON-RPC error -32003 as a normal tool failure (`mcp.log`, category
+   `unclassified`). The fixture Runtime throws on any tool failure, so the Turn
+   failed. The client got `state_update: idle stopReason=error` at that moment, and
+   the final failure five seconds later as a generic `acpAgentFailure` (500). The
+   journal holds `turnAdmitted`, the approval and `turnCompleted failed`, and
+   nothing else for the Turn: no code, no reason, and no mention of the Workspace.
+   Discovery no longer listed Node B's Workspace when the client finished, but
+   nothing links that to the Turn. The same result appears when Node B stays
+   frozen and is not killed. The step shows a clean terminal failure and no
+   re-execution, but the client and the journal cannot tell a lost Workspace Node
+   from a Runtime failure (finding 7). A real Runtime may handle the failed tool
+   call and finish the Turn. With the fixture the Turn always fails.
 
-The drill passes when four things hold. The killed Turn ends in a terminal
-failure for the client, and the client learns of it when the Node disappears. The
-retry of the same Turn ID returns `insertionUnknown`. `prompts.log` gains no line
-for the retry. The Timeline accepts a new Turn after the restart.
+6. Stop only the broker while a Turn is routed, with both Nodes up. Node B was
+   killed in step 5, so start it first. The `[fixture:wait]` Turn stays open on the
+   Runtime for 20 seconds. Stop the broker as soon as the Runtime has the prompt,
+   and start it again ten seconds later:
 
-T4 also asks for a clear distinction between a vanished Node, transport
-uncertainty, and a final Turn failure. The three outcomes above carry three
-different codes: `providerOffline` for the vanished Node, `insertionUnknown` for
-the Turn that Gnostic will not send again because it cannot tell whether the
-Runtime inserted it, and a plain `acpAgentFailure` when the Node is up and the
-Runtime failed. The proof run did not produce a distinct code for lost transport
-with a live Node, because it has no way to cut the broker connection of a live
-Node. Finding 2, which found a 300-second wait and a generic `callTimedOut`, did
-not reproduce.
+   ```sh
+   t4_node_start b "$T4_WORK/node-b.json" "$T4_WORK/state-b"
+   sleep 3
+   BEFORE=$(wc -l < "$T4_WORK/fixture/prompts.log" | tr -d ' ')
+   t4_client --resume "$T4_WORK/session.json" --prompt 'broker turn [fixture:wait]' \
+       --client-turn-id broker-1 --timeout-ms 150000 --elapsed --no-close > "$T4_WORK/broker-client.log" 2>&1 &
+   CLIENT=$!
+   until [ "$(wc -l < "$T4_WORK/fixture/prompts.log" | tr -d ' ')" -gt "$BEFORE" ]; do sleep 0.2; done
+   t4_broker_stop
+   sleep 10
+   t4_broker_start
+   wait $CLIENT; echo "client exit: $?"
+   cat "$T4_WORK/broker-client.log"
+   echo "prompts.log lines before and after: $BEFORE / $(wc -l < "$T4_WORK/fixture/prompts.log" | tr -d ' ')"
+   ```
+
+   Expected output:
+
+   ```text
+   broker stopped
+   broker online at 127.0.0.1:1883 (pid <pid>)
+   client exit: 1
+   [+  5s] initialize: protocolVersion=2
+   [+  5s] session/resume: sessionId=<session-id> timeline=<timeline-id>
+   [+  5s] session/prompt 1: "broker turn [fixture:wait]" clientTurnID=broker-1
+   [+  5s] update user_message: "broker turn [fixture:wait]"
+   [+  5s] update state_update: state=running
+   [+  5s] update state_update: state=idle stopReason=error
+   [+  5s] session/prompt 1: FAILED code=-32001 message="Provider <node-a-provider> went offline." data={"gnosticCode":"providerOffline"}
+   [+  5s] summary: permissionRequests=0 failed=true elapsedSeconds=5
+   prompts.log lines before and after: <n> / <n+1>
+   ```
+
+   The client reports the same `providerOffline` failure as for a killed Node A,
+   although Node A never stopped (the client's view is the one it has: its own
+   connection to the broker ended). It gets no sign that the Turn may still run.
+   Wait 25 seconds, then look at the Timeline and at discovery:
+
+   ```sh
+   sleep 25
+   t4_journal_summary "$(t4_session_timeline "$T4_WORK/session.json")" | tail -5
+   "$T4_BIN/gnostic" inspect list --config "$T4_WORK/node-a.json"
+   pgrep -fa "gnostic serve" | wc -l
+   ```
+
+   Expected output:
+
+   ```text
+   191 seq=191 turnAdmitted
+   192 seq=192 acpUpdate user_message
+   193 seq=193 acpUpdate state_update
+   194 seq=194 acpUpdate state_update
+   195 seq=195 turnCompleted completed
+   (no advertised objects)
+   2
+   ```
+
+   Node A ran the Turn to `completed` and journaled it, although the client was told
+   it failed. Both Nodes are still running, and neither has rejoined the restarted
+   broker: discovery lists nothing and the logs hold no line about the broker. The
+   Nodes did not rejoin in the three and a half minutes the proof run watched, and a
+   two-second broker outage had the same result (finding 8). A retry of `broker-1`
+   now fails with `Runtime instance ... was not discovered`. Restart both Nodes and
+   retry:
+
+   ```sh
+   t4_node_stop a; t4_node_stop b
+   t4_node_start b "$T4_WORK/node-b.json" "$T4_WORK/state-b"
+   t4_node_start a "$T4_WORK/node-a.json" "$T4_WORK/state-a"
+   t4_client --resume "$T4_WORK/session.json" --prompt 'broker turn [fixture:wait]' --client-turn-id broker-1 --timeout-ms 60000 --no-close
+   echo "prompts.log lines: $(wc -l < "$T4_WORK/fixture/prompts.log" | tr -d ' ')"
+   ```
+
+   Expected output ends with the recorded Turn and `failed=false`:
+
+   ```text
+   session/prompt 1: "broker turn [fixture:wait]" clientTurnID=broker-1
+   update user_message: "broker turn [fixture:wait]"
+   update state_update: state=idle stopReason=end_turn
+   session/prompt 1: accepted messageId=acp:user:broker-1
+   summary: permissionRequests=0 failed=false elapsedSeconds=5
+   prompts.log lines: <n+1>
+   ```
+
+   The retry returns the outcome that Node A recorded, `completed`, and `prompts.log`
+   gains no line. Gnostic never sent the prompt a second time.
+
+The mechanics of the drill pass. A Turn that loses Node A fails at once for the
+client. The retry of the same Turn ID returns `insertionUnknown` for a Turn the
+Runtime may not have inserted, and the recorded outcome for a Turn that completed.
+`prompts.log` gains no line for any retry. The Timeline accepts a new Turn after
+each restart.
+
+The criterion of #552 T4 item 4 is not met. It asks for a clear distinction between
+the disappearance of a remote Node, transport uncertainty, and a final Gnostic Turn
+failure. What the client and the journal show today:
+
+| What happened | What the client sees | What the journal holds |
+| --- | --- | --- |
+| Node A killed mid-Turn | `providerOffline` (-32001) at once | Not inspected in the proof run. The retry returns `insertionUnknown` |
+| Broker stopped, both Nodes up, Turn completes | The same `providerOffline` (-32001), with `stopReason=error` | `turnCompleted completed` |
+| Workspace Node killed mid-call | `acpAgentFailure` (500) after about 10 seconds | `turnCompleted failed`, no reason |
+| Runtime fails by itself | `acpAgentFailure` (500) | `turnCompleted failed`, no reason |
+
+The first two rows have the same client-side result for different causes, and the
+second shows a failure for a Turn that completed. The third and fourth rows are the
+same for the client and for the journal. Findings 6, 7, and 8 record these gaps.
+Finding 2, which found a 300-second wait and a generic `callTimedOut`, did not
+reproduce for the Node A kill.
 
 ## Drill 5: Send large content
 
@@ -955,8 +1130,9 @@ Paste these into #552 under T4:
 ## Findings from the proof runs
 
 Four findings came out of the first proof runs of this runbook. The Linux runs on
-`7e2947f` re-checked each one. The table gives the state on that commit. No macOS
-run exists, so every finding is open for macOS until someone runs it there.
+`7e2947f` re-checked each one and found four more. The table gives the state on
+that commit. No macOS run exists, so every finding is open for macOS until someone
+runs it there.
 
 | Finding | Earlier proof run | Linux, `7e2947f` |
 | --- | --- | --- |
@@ -964,6 +1140,10 @@ run exists, so every finding is open for macOS until someone runs it there.
 | 2. A Node killed during a Turn fails the client only at the prompt timeout | Important | Not reproduced |
 | 3. The live stream cuts a Runtime message to 800 bytes without a marker | Important | Not reproduced |
 | 4. `gnostic serve` does not flush `gnostic serve online` to a file | Minor | Reproduced |
+| 5. `make shell` does not open a shell | | Reproduced (repository tooling) |
+| 6. A restarted Node A loses the Workspace tools of a resumed session | | New, Important |
+| 7. The client and the journal cannot tell a lost Workspace Node from a Runtime failure | | New, Important |
+| 8. Nodes never rejoin a restarted broker, and the client cannot tell broker loss from Node loss | | New, Critical for operation |
 
 1. **A Node stalls when blocked threads fill the Swift concurrency pool
    (resolved by #695 and #711).** The earlier runs stalled on a 4-core host: a
@@ -974,17 +1154,16 @@ run exists, so every finding is open for macOS until someone runs it there.
    with Workspace gateways, more than the two that stalled the earlier build, each
    attached the Workspace and completed a Turn, with the fixture Runtime and with
    the reference Runtime. The proof did not run the earlier commit again for
-   comparison. The stall itself comes from the first proof run and from the regression test
-   that #695 added. The workaround flag in the fixtures is removed.
+   comparison. The stall itself comes from the first proof run and from the
+   regression test that #695 added. The workaround flag in the fixtures is removed.
 
 2. **A Node killed during a Turn failed the client only at the prompt timeout
-   (resolved).** The earlier client waited about 300 seconds and got a generic
-   `callTimedOut` (504). On `7e2947f` the client got `providerOffline` (-32001)
-   within a second of the kill, with the `stopReason=error` update. After a
-   restart, the retry of the same Turn ID returns `insertionUnknown` and the
-   prompt is not sent again. Not exercised: a live Node that loses only its broker
-   connection, which would show Gnostic's handling of transport uncertainty
-   without a vanished Node.
+   (resolved for the Node A kill).** The earlier client waited about 300 seconds
+   and got a generic `callTimedOut` (504). On `7e2947f` the client got
+   `providerOffline` (-32001) within a second of the kill, with the
+   `stopReason=error` update. After a restart, the retry of the same Turn ID
+   returns `insertionUnknown` and the prompt is not sent again. The other loss
+   cases are findings 7 and 8.
 
 3. **The live update stream cut a Runtime message to 800 bytes without a marker
    (resolved by #706).** On `7e2947f` the live client received all 2,463 bytes of
@@ -996,7 +1175,39 @@ run exists, so every finding is open for macOS until someone runs it there.
    macOS lacks. `t4.sh` waits for the `advertised objects` log line instead.
 
 5. **`make shell` does not open a shell (Minor, repository tooling).**
-   `.devcontainer/run-container.sh` starts the container in a background job
-   without stdin or a terminal, so `bash` exits at once. The README repeats the
-   command in its flaky-test recipe. This runbook uses `container-shell.sh`
-   instead. The fix is to give the container a terminal when stdin is one.
+   `.devcontainer/lock.sh` and `.devcontainer/run-container.sh` each run their
+   command in a background job. A background job of a non-interactive shell has no
+   stdin and no terminal, so `bash` exits at once. The README repeats the command
+   in its flaky-test recipe. This runbook uses `container-shell.sh` instead. The
+   fix is to keep stdin and add `-it` when stdin is a terminal, in both scripts.
+
+6. **A restarted Node A loses the Workspace tools of a resumed session
+   (Important, product).** Reproduction: with both Nodes running and a session
+   that has the Workspace attached, stop and start Node A (Node B keeps running),
+   then resume the session and send `read it [fixture:workspace-tool]`. The
+   fixture Runtime sees zero tools and fails the Turn with `acpAgentFailure` (500).
+   With the reference Runtime, the model gets `The requested tool 'call_tool' could
+   not be found` and no permission request appears. The journal still holds
+   `workspaceAttached network`, and `inspect list` still shows the Workspace. The
+   Workspace stays unusable for that session until you attach it again with
+   `gnostic-workspace-attach`, or restart Node B. Waiting did not help (tested up to
+   20 seconds). It persists across further Turns once re-attached.
+
+7. **The client and the journal cannot tell a lost Workspace Node from a Runtime
+   failure (Important, product).** Step 5 of Drill 4: a Workspace call in flight at
+   the kill ends after about 5 seconds with the JSON-RPC error -32003 for the
+   Runtime, and the Turn fails with `acpAgentFailure` (500). The journal holds
+   `turnCompleted failed` with no reason. Nothing in the Turn names the Workspace.
+
+8. **Nodes never rejoin a restarted broker, and the client cannot tell a broker loss
+   from a Node loss (Critical for operation, product).** Reproduction: start the
+   broker and both Nodes, run `t4_broker_stop; sleep 2; t4_broker_start`, then
+   `gnostic inspect list`. It prints `(no advertised objects)`, forever (watched for
+   three and a half minutes), although both `gnostic serve` processes are still
+   running and write no log line. Only a restart of both Nodes recovers. A Turn that
+   is running when the broker stops completes on Node A and is journaled
+   `completed`, while the client has already been told `providerOffline` and
+   `stopReason=error`. The failure code is the one for a killed Node, so the client
+   cannot tell the two apart, and it does not learn that the Turn may still
+   finish. The retry by Turn ID, after the Nodes restart, returns the recorded
+   `completed` outcome, and the Runtime gets no second prompt.

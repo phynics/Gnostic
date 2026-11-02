@@ -84,6 +84,7 @@ const fixtureEnv = (extra = {}) => ({
   GNOSTIC_ACP_FIXTURE_RESUME_REQUEST_FILE: fixtureFile("resumes.log"),
   GNOSTIC_ACP_FIXTURE_WIRE_LOG_FILE: fixtureFile("wire.log"),
   GNOSTIC_ACP_FIXTURE_PERMISSION_RESULT_FILE: fixtureFile("permission.log"),
+  GNOSTIC_ACP_FIXTURE_MCP_DIAGNOSTICS_FILE: fixtureFile("mcp.log"),
   ...extra,
 });
 

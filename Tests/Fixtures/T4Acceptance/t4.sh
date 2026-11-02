@@ -104,42 +104,14 @@ t4_session_timeline() {
 	node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).timelineId)' "$1"
 }
 
-# t4_journal_summary <timeline-id>: print one line per journal record, in order.
+# t4_journal_summary <timeline-id>: print one line per journal record, in order. A record
+# it cannot read is reported as unsupported and does not stop the listing.
 t4_journal_summary() {
-	node -e '
-		const lines = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
-		for (const [index, line] of lines.entries()) {
-			const record = JSON.parse(line.slice(line.indexOf("{")));
-			const kind = Object.keys(record.payload)[0];
-			const body = record.payload[kind];
-			// An acpUpdate stores the frame text exactly as the Runtime sent it (#730).
-			const stored = body.update?.update;
-			const frame = typeof stored === "string" ? JSON.parse(stored) : stored;
-			const update = frame?.params?.update ?? frame;
-			const detail = kind === "acpUpdate" ? (update?.sessionUpdate ?? "")
-				: kind === "sessionTransition" ? body.state
-				: kind === "turnCompleted" ? body.outcome
-				: kind === "permissionDecision" ? body.decision
-				: kind === "workspaceAttached" ? body.scope
-				: "";
-			console.log([String(index + 1).padStart(3), "seq=" + record.sequence, kind, detail].filter(Boolean).join(" "));
-		}' "$(t4_journal "$1")"
+	node "$T4_FIXTURES/journal.mjs" summary "$(t4_journal "$1")"
 }
 
 # t4_journal_text <timeline-id>: print the bytes of agent_message_chunk text that the
 # journal holds, per record and in total.
 t4_journal_text() {
-	node -e '
-		let total = 0, count = 0;
-		for (const line of require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n")) {
-			const record = JSON.parse(line.slice(line.indexOf("{")));
-			const stored = record.payload.acpUpdate?.update?.update;
-			const frame = typeof stored === "string" ? JSON.parse(stored) : stored;
-			const update = frame?.params?.update ?? frame;
-			if (update?.sessionUpdate !== "agent_message_chunk") continue;
-			const block = Array.isArray(update.content) ? update.content[0] : update.content;
-			total += Buffer.byteLength(block.text); count += 1;
-			console.log("journal seq=" + record.sequence, "agent_message_chunk", Buffer.byteLength(block.text), "bytes");
-		}
-		console.log("journal: agent text", total, "bytes in", count, "chunks");' "$(t4_journal "$1")"
+	node "$T4_FIXTURES/journal.mjs" text "$(t4_journal "$1")"
 }
