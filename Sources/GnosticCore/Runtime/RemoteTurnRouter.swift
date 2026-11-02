@@ -524,8 +524,11 @@ private final class RemoteTurnObservation {
                 ?? (error as? NodeRuntimeError)?.statusCode
                 ?? 500
             let retryable = (error as? TurnError)?.retryable ?? false
+            // The owner's terminal update was not seen, so this is a lost
+            // observation. Sequence 0 is never a real update: a client can't save
+            // it as a replay cursor, and it reports this as an error.
             publishTerminal(
-                sequence: lastSequence + 1,
+                sequence: TurnUpdate.observationLostSequence,
                 kind: TurnUpdateKind.error.rawValue,
                 text: "The remote Turn failed.",
                 reasonCode: reason,

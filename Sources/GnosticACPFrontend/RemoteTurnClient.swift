@@ -215,12 +215,13 @@ public final class RemoteTurnClient: Sendable {
     }
 
     /// Streams the live updates for one identified Turn until its terminal
-    /// update.
+    /// update. The stream throws when observation is lost, which does not mean
+    /// the Turn ended (see ``GnosticTurnClient/updates(for:timelineID:providerID:)``).
     public func turnUpdates(
         for clientTurnID: String,
         timelineID: UUID,
         providerID: String
-    ) async throws -> AsyncStream<TurnUpdate> {
+    ) async throws -> AsyncThrowingStream<TurnUpdate, any Error> {
         try await connectedTurns().updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
     }
 

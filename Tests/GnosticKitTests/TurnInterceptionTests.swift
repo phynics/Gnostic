@@ -201,6 +201,20 @@ struct TurnInterceptionTests {
         #expect(transcript.terminalUpdate?.updateKind == .completion)
     }
 
+    @Test("transcript of updates without a terminal update is not terminal")
+    func transcriptWithoutTerminalIsNotTerminal() {
+        // A lost observation leaves the updates that arrived and nothing more.
+        let transcript = TurnTranscript(updates: [
+            TurnUpdate(sequence: 1, kind: .assistantText, text: "partial"),
+            TurnUpdate(sequence: 2, kind: .assistantText, text: " text"),
+        ])
+
+        #expect(transcript.assistantText == "partial text")
+        #expect(transcript.isTerminal == false)
+        #expect(transcript.failed == false)
+        #expect(transcript.terminalUpdate == nil)
+    }
+
     @Test("transcript reports a failed terminal outcome")
     func transcriptReportsFailure() {
         let transcript = TurnTranscript(updates: [

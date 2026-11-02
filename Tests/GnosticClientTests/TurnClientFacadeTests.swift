@@ -140,7 +140,7 @@ struct TurnClientFacadeTests {
             let collector = Task { @MainActor in
                 var kinds: [String] = []
                 var observed: TurnPermissionState?
-                for await update in updates {
+                for try await update in updates {
                     kinds.append(update.kind)
                     if let permission = update.permissionState, permission.permissionStatus == .pending {
                         observed = permission
@@ -180,6 +180,128 @@ struct TurnClientFacadeTests {
             )
             #expect(replay.updates.count == scripted.count)
             #expect(replay.terminal)
+        }
+    }
+
+    @Test("an evicted owner never advances the replay cursor past a real update")
+    func evictionDoesNotAdvanceReplayCursor() async throws {
+        let namespace = namespaced("eviction-cursor")
+        let timelineID = UUID()
+        let ascendantID = UUID()
+        let clientTurnID = "evict-1"
+
+        // Axoloty delivers an identity deadvertisement only to a consumer that
+        // observed the advertisement, so the session is live before the owner
+        // advertises.
+        try await withSession(broker: .init(host: host, port: port, namespace: namespace)) { session in
+            let owner = try await startProvider(
+                namespace: namespace,
+                name: "gnostic-turn-owner",
+                ascendantID: ascendantID,
+                timelineID: timelineID
+            )
+            defer { owner.manager.stop() }
+            try await session.discover()
+
+            let store = AscendantTurnUpdateStore()
+            let bridge = TurnClientFacadeServeBridge.forwardUpdates(from: store, to: owner.manager)
+            defer { bridge.cancel() }
+
+            let client = try session.turnClient(timeout: .seconds(2), promptTimeout: .seconds(3))
+            let updates = try await client.updates(
+                for: clientTurnID,
+                timelineID: timelineID,
+                providerID: owner.providerID
+            )
+            let observed = ObservedUpdates()
+            let collector = Task { @MainActor in
+                do {
+                    for try await update in updates { observed.received.append(update) }
+                } catch {
+                    observed.observationError = error
+                }
+                observed.streamEnded = true
+            }
+            defer { collector.cancel() }
+
+            for text in ["one", "two"] {
+                _ = try? await store.append(
+                    timelineID: timelineID,
+                    clientTurnID: clientTurnID,
+                    kind: TurnUpdateKind.assistantText.rawValue,
+                    text: text,
+                    terminal: false
+                )
+            }
+            let live = ContinuousClock().now + .seconds(5)
+            while observed.received.count < 2, ContinuousClock().now < live {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(observed.received.map(\.sequence) == [1, 2])
+
+            // The owner leaves; the catalog evicts it and the stream ends.
+            owner.manager.stop()
+            let streamDeadline = ContinuousClock().now + .seconds(10)
+            while !observed.streamEnded, ContinuousClock().now < streamDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            // Losing the owner is a lost observation, not a Turn end: the stream
+            // throws and yields no update with a fabricated sequence.
+            #expect(observed.streamEnded)
+            #expect(observed.received.allSatisfy { !$0.terminal })
+            #expect(
+                observed.observationError as? GnosticTurnClientError
+                    == .callFailed(reasonCode: "providerOffline", statusCode: 503, retryable: true)
+            )
+            let cursor = observed.received.map(\.sequence).max() ?? 0
+            #expect(cursor == 2)
+
+            // The Turn went on: update 3 is real and a successor serves it.
+            let scripted = [
+                TurnUpdate(sequence: 1, kind: .assistantText, text: "one"),
+                TurnUpdate(sequence: 2, kind: .assistantText, text: "two"),
+                TurnUpdate(sequence: 3, kind: .completion, text: "onetwo", terminal: true),
+            ]
+            let successor = try await startProvider(
+                namespace: namespace,
+                name: "gnostic-turn-successor",
+                ascendantID: ascendantID,
+                timelineID: timelineID
+            )
+            defer { successor.manager.stop() }
+            let replayRegistration = try await successor.manager.registerCallHandler(
+                operation: AscendantTurnProvider.replayOperation
+            ) { snapshot in
+                guard let parameters = snapshot.parameters,
+                      let request = try? JSONDecoder().decode(
+                          TurnReplayRequest.self,
+                          from: Data(parameters.utf8)
+                      ),
+                      let replay = try? GnosticWirePayload.encode(
+                          TurnReplay(
+                              updates: scripted.filter { $0.sequence > request.afterSequence },
+                              compacted: false,
+                              terminal: true
+                          ),
+                          context: "test replay result"
+                      ) else {
+                    return .failure(code: 400, message: "Invalid test replay request")
+                }
+                return .success(result: String(decoding: replay, as: UTF8.self))
+            }
+            defer { replayRegistration.cancel() }
+            try await session.discover()
+
+            let replay = try await client.replay(
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                afterSequence: cursor,
+                providerID: successor.providerID
+            )
+            #expect(
+                replay.updates.map(\.sequence) == [3],
+                "replay from the saved cursor \(cursor) skipped a real update"
+            )
         }
     }
 
@@ -478,6 +600,13 @@ struct TurnClientFacadeTests {
         let providerID: String
         let ascendantID: UUID
         let timelineID: UUID
+    }
+
+    @MainActor
+    private final class ObservedUpdates {
+        var received: [TurnUpdate] = []
+        var observationError: (any Error)?
+        var streamEnded = false
     }
 
     private struct CollectedRoundTrip: Sendable {

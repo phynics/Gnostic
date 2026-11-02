@@ -89,7 +89,8 @@ struct StableSurfaceFitnessTests {
     func noMutableReferenceOrUncheckedSendableInBaselines() throws {
         var declared: Set<String> = []
         for product in Self.products {
-            for line in try Self.baselineLines(of: product) {
+            let lines = try Self.baselineLines(of: product)
+            for line in lines {
                 let words = line.split(separator: " ").map(String.init)
                 #expect(!words.contains("open"), "An open declaration is public in \(product) (D29): \(line)")
                 #expect(!line.contains("@unchecked"), "An unchecked Sendable type is public in \(product) (D29): \(line)")
@@ -104,6 +105,16 @@ struct StableSurfaceFitnessTests {
                     "\(name) is a public reference type in \(product) without a listed exception (D29): \(line)"
                 )
                 #expect(words.contains("final"), "\(name) is a public class that is not final (D29): \(line)")
+                // The reason on the list is true only while actor isolation holds
+                // the class and the compiler checks its Sendable conformance.
+                #expect(
+                    words.contains("@_Concurrency::MainActor"),
+                    "\(name) is listed as a `@MainActor final` handle but is not `@MainActor` in \(product) (D29): \(line)"
+                )
+                #expect(
+                    lines.contains { $0.trimmingCharacters(in: .whitespaces) == "extension \(product)::\(name) : Swift::Sendable {}" },
+                    "\(name) has no checked `Sendable` conformance in \(product) (D29)."
+                )
             }
         }
         for name in Self.deliberateReferenceTypes.keys {

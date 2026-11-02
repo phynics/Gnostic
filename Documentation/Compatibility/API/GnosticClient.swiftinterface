@@ -107,7 +107,7 @@ public enum GnosticTimelineClientError : Swift::Error, Swift::Sendable, Swift::E
   @_Concurrency::MainActor final public func cancelRouted(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, routerID: Swift::String) async throws -> Swift::Bool
   @_Concurrency::MainActor final public func cancel(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, providerID: Swift::String? = nil) async throws -> Swift::Bool
   @_Concurrency::MainActor final public func replay(timelineID: FoundationEssentials::UUID, clientTurnID: Swift::String, message: Swift::String? = nil, afterSequence: Swift::Int = 0, providerID: Swift::String? = nil) async throws -> GnosticProtocol::TurnReplay
-  @_Concurrency::MainActor final public func updates(for clientTurnID: Swift::String, timelineID: FoundationEssentials::UUID, providerID: Swift::String? = nil) async throws -> _Concurrency::AsyncStream<GnosticProtocol::TurnUpdate>
+  @_Concurrency::MainActor final public func updates(for clientTurnID: Swift::String, timelineID: FoundationEssentials::UUID, providerID: Swift::String? = nil) async throws -> _Concurrency::AsyncThrowingStream<GnosticProtocol::TurnUpdate, any Swift::Error>
   @_Concurrency::MainActor final public func respond(to permission: GnosticProtocol::TurnPermissionResponse, providerID: Swift::String) throws
   deinit
 }

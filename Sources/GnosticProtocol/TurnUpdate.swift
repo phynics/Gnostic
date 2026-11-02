@@ -181,6 +181,10 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
     /// Ends text that retention or a size bound cut.
     package static let truncationMarker = "…[truncated]"
 
+    /// The sequence of a router's report that it lost a Turn's owner. Real
+    /// updates start at 1, so this can never be saved as a replay cursor.
+    package static let observationLostSequence = 0
+
     /// Whether ``text`` holds assistant output, whether streamed live or
     /// accumulated by retention compaction.
     public var carriesAssistantText: Bool {
@@ -220,12 +224,30 @@ public struct TurnUpdate: Codable, Sendable, Equatable {
     }
 }
 
+/// One page of the retained updates for an identified Turn.
+///
+/// A replay returns the updates whose sequence is greater than the requested
+/// `afterSequence`, in order, up to the wire payload bound. A consumer drains
+/// the pages before it concludes anything. See `Documentation/Compatibility/0.5.0.md`,
+/// "Observe a Turn and reconnect".
 public struct TurnReplay: Codable, Sendable, Equatable {
     public let protocolMajor: Int
+    /// The updates of this page, in sequence order.
     public let updates: [TurnUpdate]
+    /// Whether retention folded updates that the caller's cursor had not passed.
+    /// The first update can then be an ``TurnUpdateKind/assistantTextSnapshot``
+    /// that holds the older text.
     public let compacted: Bool
+    /// Whether the Turn has reached its terminal update. It can be `true` while
+    /// more pages remain, so drain every page even when it is `true`.
     public let terminal: Bool
+    /// Whether the supplied message differs from the one recorded under this
+    /// client Turn ID. A conflicting replay has no updates and is `terminal`,
+    /// which says nothing about the caller's own Turn.
     public let conflict: Bool
+    /// `nil` on the last page. When another page remains, the **last sequence
+    /// this page returned**, not the next event number. Pass it unchanged as
+    /// `afterSequence` in the next replay. Adding one skips an update.
     public let nextSequence: Int?
 
     public init(updates: [TurnUpdate], compacted: Bool, terminal: Bool, conflict: Bool = false, nextSequence: Int? = nil, protocolMajor: Int = GnosticProtocol.currentMajor) {

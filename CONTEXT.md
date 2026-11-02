@@ -249,17 +249,50 @@ plus the ACP version tag (ADR 0018).
 ## Turn payload
 
 A Turn payload is ACP content carried verbatim inside the envelope: prompt
-content blocks in the request, and session update objects in the stream.
-Gnostic interprets only the fields its envelope duties need, and forwards
-unknown update kinds unchanged. Content above a Node's advertised threshold
-travels as a resource link (ADR 0018).
+content blocks in the request, and session update objects in the Timeline
+journal. Gnostic interprets only the fields its envelope duties need, and
+journals unknown update kinds unchanged. Content above a Node's advertised
+threshold travels as a resource link (ADR 0018).
+
+## Turn update
+
+A Turn update is the consumer projection of a Turn's ACP session updates. It is
+a Gnostic-defined, bounded value (`TurnUpdate` in `GnosticProtocol`) that the
+stable client returns from live observation and from replay by `clientTurnID`.
+It is not the verbatim ACP payload; the journal holds that. A Node derives it
+from the session updates it receives and keeps it only for replay.
+
+- It carries the update kinds named by `TurnUpdateKind`: assistant text (in
+  pieces of at most 800 bytes, or one compacted snapshot), tool call and tool
+  state, permission state, and the terminal `completion`, `cancellation` or
+  `error`. Other session updates, such as thought chunks, plans, usage, `_meta`
+  and unknown kinds, are in the journal but not in a Turn update.
+- Its `sequence` orders the updates of one Turn. A consumer's replay cursor is
+  the highest sequence it has processed. Only a Node assigns a sequence.
+- `gnostic acp` renders each Turn update back into ACP `session/update`
+  notifications (agent message chunks and tool call updates, with the sequence
+  in `_meta`). An ACP client of `gnostic acp` therefore sees a rendered subset,
+  not the Runtime's verbatim updates.
+
+`Documentation/Compatibility/0.5.0.md` defines the reconnect procedure.
 
 ## Capability
 
-Gnostic defines no capability names of its own (ADR 0020). A Runtime
-instance's capabilities are its Runtime's ACP `initialize` capabilities,
-advertised verbatim as discovery data. The ACP adapter reads them where the
-protocol requires it (ADR 0021).
+A Runtime instance's capabilities are its Runtime's ACP `initialize`
+capabilities, advertised verbatim as discovery data. The ACP adapter reads them
+where the protocol requires it (ADR 0021).
+
+ADR 0020 section 8 retires the Gnostic capability set, but the code has not
+removed it. `GnosticCapability` and `InteroperabilityCapability` remain public in
+`GnosticProtocol`, and the stable client gates calls with them. A Runtime
+instance advertises no capability list. It provides the names in
+`GnosticCapability.providedByRuntimeInstance` (`textTurnInput`,
+`timelineManagement`, `diagnostics`) by being advertised, and a client call
+fails with `missingCapability` when no advertised instance provides the name.
+These names are client-side gating vocabulary, not ACP capabilities, and a
+Runtime never declares them. `Documentation/Compatibility/0.5.0.md` defines the
+gating. Whether to remove the names or keep them as supported vocabulary is an
+owner decision (open question on #718).
 
 ## protocol major
 
@@ -363,12 +396,12 @@ code or its tests are obsolete. Remove them only through the owning issue.
 | Ascendant Backend, Agent session | ACP Runtime, Session record | ADR 0018, ADR 0020, ADR 0021. |
 | Ascendant private Timeline, Ascendant default Timeline | A Timeline created by the client | Runtime instances do not own Timelines (ADR 0018, ADR 0021). |
 | `operatingAscendantID` | Current operator (the Runtime instance of the open span) | Timelines are sequences of spans (ADR 0018). |
-| `TurnUpdateKind` (eight kinds and status vocabularies), `turn.text` capability | Turn payloads (ACP session updates) in the Turn envelope | Gnostic no longer re-encodes ACP (ADR 0018, #629). |
+| `TurnUpdateKind` as the Timeline's record of a Turn, `turn.text` as an advertised capability | The journal's verbatim ACP session updates, for the record | Gnostic no longer re-encodes ACP in the journal or advertises a capability list (ADR 0018, #629). `TurnUpdate` and `TurnUpdateKind` stay as the consumer projection (see Turn update). |
 | Bounded legacy Agent terminology | Runtime and Timeline definitions | Gnostic owns no "Agent" term (ADR 0020). |
 | Atlas, Image, Image invocation (as Gnostic primitives) | Harness vocabulary | Inner-module terms, not Gnostic primitives (ADR 0018). |
 | `session/load`, "loaded" span | `session/resume` with `replayFrom`, "resumed" span | ACP v2 is the protocol baseline (ADR 0019). |
 | Agent (Gnostic-owned), Agent definition | Timeline and Runtime instance | A harness carries its own identity and instructions (ADR 0020, ADR 0021). |
 | Native Runtime, special-Node Runtime | ACP Runtime process | Every Runtime uses ACP v2 over stdio; no separate in-process Runtime kind exists (ADR 0021). |
 | Gnostic harness agent | Standalone reference Runtime | The reference Runtime is a separate ACP process, not a Gnostic Agent or special Node (ADR 0021). |
-| Gnostic interoperability capability (`InteroperabilityCapability`, `GnosticCapability`), backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | Gnostic defines no capability names (ADR 0020). Removed with #629. |
+| Gnostic interoperability capability as an advertised list, backend optional capability | The Runtime instance's ACP `initialize` capabilities, as discovery data | The Node advertises no capability list (ADR 0020). `InteroperabilityCapability` and `GnosticCapability` are still public client-side gating names; see Capability. Removal is an open owner decision. |
 | `ACPProfile`, `gnostic acp profiles` | Runtime instances and their Timelines | ADR 0020, O7. |
