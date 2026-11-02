@@ -1,0 +1,8 @@
+{
+  "name": "gnostic-t4-acceptance-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.0.0"
+  }
+}

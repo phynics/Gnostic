@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "broker": { "host": "@@BROKER_HOST@@", "port": "@@BROKER_PORT@@", "namespace": "@@NAMESPACE@@" },
+  "node": { "id": "@@NODE_B_ID@@", "kind": "node", "approvalMode": "auto", "logLevel": "info" },
+  "runtimeInstances": [],
+  "timelines": [],
+  "workspaces": [
+    {
+      "id": "@@WORKSPACE_ID@@",
+      "kind": "filesystem",
+      "name": "T4 files",
+      "uri": "@@WORKSPACE_ROOT@@"
+    }
+  ]
+}
