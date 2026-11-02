@@ -77,7 +77,10 @@ public struct ReceivedACPUpdate: Codable, Sendable, Equatable {
 
     /// Decodes the frame's `params.update` strictly, as the Runtime transport always has.
     private static func projection(of frame: String) -> ACPSessionUpdate? {
-        try? JSONDecoder().decode(Envelope.self, from: Data(frame.utf8)).params?.update
+        // The frame text keeps a leading byte order mark. The decoder does not need it.
+        var bytes = Data(frame.utf8)
+        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes = Data(bytes.dropFirst(3)) }
+        return try? JSONDecoder().decode(Envelope.self, from: bytes).params?.update
     }
 
     private struct Envelope: Decodable {

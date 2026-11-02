@@ -1071,6 +1071,15 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
         sessionStates[timelineID] = state
     }
 
+    /// Logs that a frame without a typed update named a Session this backend does not know.
+    /// The message names no Runtime content, because the Session ID and the frame are the Runtime's.
+    private nonisolated static func warnUnroutableFrame() {
+        ServeLogging.warn(
+            "Ignored a session/update without a typed update that names an unknown Session.",
+            component: "acp.backend"
+        )
+    }
+
     private func recordRawSessionUpdate(sessionID: String, update: ReceivedACPUpdate) async throws -> Bool {
         guard timelineJournalRecorder != nil else { return true }
         if bindingTimelineIDsBySessionID[sessionID] != nil ||
@@ -1089,7 +1098,13 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
     private func recordBoundSessionUpdate(sessionID: String, update: ReceivedACPUpdate) async throws {
         guard let timelineJournalRecorder else { return }
         guard let timelineID = timelineIDsBySessionID[sessionID] else {
-            throw TimelineJournalError.invalidPayload("ACP update references an unknown or duplicate Session ID")
+            // A frame without a typed update never drove the connection. Dropping it keeps one
+            // malformed frame from disabling every Session of this Runtime.
+            guard update.update == nil else {
+                throw TimelineJournalError.invalidPayload("ACP update references an unknown or duplicate Session ID")
+            }
+            Self.warnUnroutableFrame()
+            return
         }
         if let activeTurn = activeTurns[timelineID], activeTurn.sessionID == sessionID {
             let terminalOutcome: TurnTerminalOutcome?
@@ -1217,7 +1232,14 @@ public final class ACPAscendantBackend: AscendantBackend, AscendantBackendTurnCa
             }
         }
         if pendingSessionCreations == 1 && !pendingSessionUpdates.isEmpty {
-            throw TimelineJournalError.invalidPayload("ACP update references an unknown Session ID")
+            // No later Session creation can claim what is left. A typed update for an unknown
+            // Session is an error, as it always was. A frame without a typed update is dropped.
+            let hasTypedUpdate = pendingSessionUpdates.values.contains { $0.contains { $0.update != nil } }
+            guard !hasTypedUpdate else {
+                throw TimelineJournalError.invalidPayload("ACP update references an unknown Session ID")
+            }
+            for _ in pendingSessionUpdates.values.joined() { Self.warnUnroutableFrame() }
+            pendingSessionUpdates.removeAll()
         }
         return response.sessionId
     }

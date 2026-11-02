@@ -237,7 +237,26 @@ struct ACPAscendantBackendTests {
         stateHome: URL,
         rawFramesFile: URL? = nil
     ) async throws -> (fileURL: URL, timelineID: UUID) {
-        let timelineID = UUID()
+        let journals = try await journalsAfterFixtureTurns(
+            timelineCount: 1,
+            turns: [(timeline: 0, message: message)],
+            stateHome: stateHome,
+            rawFramesFile: rawFramesFile
+        )
+        return journals[0]
+    }
+
+    /// Runs fixture Turns, in order, on a fresh journaled Node whose Timelines share one Runtime
+    /// process, and returns each Timeline's journal file. A Turn that throws fails the test.
+    @MainActor
+    private func journalsAfterFixtureTurns(
+        timelineCount: Int,
+        turns: [(timeline: Int, message: String)],
+        stateHome: URL,
+        rawFramesFile: URL? = nil,
+        adjacentRawFrame: String? = nil
+    ) async throws -> [(fileURL: URL, timelineID: UUID)] {
+        let timelineIDs = (0..<timelineCount).map { _ in UUID() }
         let runtimeID = UUID()
         let nodeID = UUID()
         let manifest = NodeManifest(
@@ -246,13 +265,15 @@ struct ACPAscendantBackendTests {
             ascendants: [.init(
                 id: runtimeID,
                 name: "As-received fixture",
-                defaultTimelineID: timelineID,
+                defaultTimelineID: timelineIDs[0],
                 backend: .init(
                     kind: ACPAscendantBackend.kind,
-                    settings: try fixtureSettings(stateHome: stateHome, rawFramesFile: rawFramesFile)
+                    settings: try fixtureSettings(stateHome: stateHome, rawFramesFile: rawFramesFile, adjacentRawFrame: adjacentRawFrame)
                 )
             )],
-            timelines: [.init(id: timelineID, title: "As received", operatingAscendantID: runtimeID)]
+            timelines: timelineIDs.enumerated().map { index, id in
+                .init(id: id, title: "As received \(index)", operatingAscendantID: runtimeID)
+            }
         )
         var adapters = NodeRuntimeAdapters.default
         adapters.ascendants.registerBackend(
@@ -274,10 +295,16 @@ struct ACPAscendantBackendTests {
         )
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
-        _ = try await runtime.turn(.init(message: message, timelineID: timelineID, clientTurnID: "as-received"))
+        for (index, turn) in turns.enumerated() {
+            _ = try await runtime.turn(.init(
+                message: turn.message,
+                timelineID: timelineIDs[turn.timeline],
+                clientTurnID: "as-received-\(index)"
+            ))
+        }
         await runtime.shutdown()
         let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
-        return (TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory), timelineID)
+        return timelineIDs.map { (TimelineJournalStore.fileURL(for: $0, in: nodeJournalDirectory), $0) }
     }
 
     /// Every record payload of the journal as JSON, read from the bytes on disk.
@@ -376,13 +403,14 @@ struct ACPAscendantBackendTests {
     func receivedFramesAreJournaledVerbatim() async throws {
         let stateHome = try makeTemporaryStateHome()
         defer { stateHome.cleanup() }
-        let nesting = 507
+        // The transport decodes no frame nested deeper than 128 levels. This one is exactly at the
+        // bound: the frame object, `params`, `update`, and 125 arrays.
+        let nesting = 125
         let envelope = { (update: String) in
             #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"__SESSION__","update":\#(update)}}"#
         }
         let frames: [(name: String, line: String)] = [
-            // Foundation cannot encode this depth, so a re-encoded value would fail the append.
-            ("507 nested arrays in an extra field", envelope(
+            ("nested arrays at the nesting bound", envelope(
                 #"{"sessionUpdate":"state_update","state":"running","deep":"#
                     + String(repeating: "[", count: nesting) + String(repeating: "]", count: nesting) + "}"
             )),
@@ -399,7 +427,7 @@ struct ACPAscendantBackendTests {
             #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"","update":{"sessionUpdate":"vendor_orphan","marker":"empty-session"}}}"#,
         ]
         let rawFramesFile = stateHome.url.appendingPathComponent("raw-frames.txt")
-        try (frames.map(\.line) + orphans).joined(separator: "\n").write(to: rawFramesFile, atomically: true, encoding: .utf8)
+        try Data((frames.map(\.line) + orphans).joined(separator: "\n").utf8).write(to: rawFramesFile)
 
         // The orphans and the unusable frames must not fail the transport or the Turn.
         let (fileURL, timelineID) = try await journalAfterFixtureTurn(
@@ -428,6 +456,127 @@ struct ACPAscendantBackendTests {
         #expect(!journalText.contains("empty-session"), "a frame with an empty sessionId was journaled")
         let reopened = try TimelineJournal(fileURL: fileURL, timelineID: timelineID)
         #expect(await reopened.status() == .writable)
+    }
+
+    /// A `session/update` frame whose `update` nests arrays `depth` levels deep, with a marker to find in a journal.
+    private static func deepFrame(depth: Int, marker: String) -> String {
+        #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"__SESSION__","update":{"sessionUpdate":"state_update","state":"running","marker":"\#(marker)","deep":"#
+            + String(repeating: "[", count: depth) + String(repeating: "]", count: depth) + "}}}"
+    }
+
+    @Test("a frame nested past the bound is diagnosed and not journaled, and the transport and the Turn carry on")
+    @MainActor
+    func framesNestedPastTheBoundAreNotJournaled() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let marker = #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"__SESSION__","update":{"sessionUpdate":"vendor_after","marker":"after-deep-frames"}}}"#
+        let lines = [
+            Self.deepFrame(depth: 507, marker: "too-deep-507"),
+            Self.deepFrame(depth: 100_000, marker: "too-deep-100000"),
+            marker,
+        ]
+        let rawFramesFile = stateHome.url.appendingPathComponent("raw-frames.txt")
+        try Data(lines.joined(separator: "\n").utf8).write(to: rawFramesFile)
+
+        let (fileURL, timelineID) = try await journalAfterFixtureTurn(
+            message: "[fixture:raw-frames]",
+            stateHome: stateHome.url,
+            rawFramesFile: rawFramesFile
+        )
+
+        let journalText = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(!journalText.contains("too-deep-507"), "a frame nested 507 levels deep was journaled")
+        #expect(!journalText.contains("too-deep-100000"), "a frame nested 100,000 levels deep was journaled")
+        #expect(journalText.contains("after-deep-frames"), "the frame after the deep ones was not journaled")
+        let reopened = try TimelineJournal(fileURL: fileURL, timelineID: timelineID)
+        #expect(await reopened.status() == .writable)
+    }
+
+    @Test("a frame that has no typed update and names an unknown Session leaves the connection and other Sessions working")
+    @MainActor
+    func untypedFrameForUnknownSessionKeepsTheConnection() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let lines = [
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"unknown-session","update":"bad"}}"#,
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"unknown-session","update":{"marker":"unknown-no-kind"}}}"#,
+        ]
+        let rawFramesFile = stateHome.url.appendingPathComponent("raw-frames.txt")
+        try Data(lines.joined(separator: "\n").utf8).write(to: rawFramesFile)
+
+        // Timeline 1 has a live Session before the frames arrive, and must keep working after them.
+        let journals = try await journalsAfterFixtureTurns(
+            timelineCount: 2,
+            turns: [(1, "first"), (0, "[fixture:raw-frames]"), (1, "second"), (0, "third")],
+            stateHome: stateHome.url,
+            rawFramesFile: rawFramesFile
+        )
+        for journal in journals {
+            let text = try String(contentsOf: journal.fileURL, encoding: .utf8)
+            #expect(!text.contains("unknown-session") && !text.contains("unknown-no-kind"), "a frame for an unknown Session was journaled")
+        }
+        let completions = try payloadsOnDisk(journals[1].fileURL).filter { $0["turnCompleted"] != nil }
+        #expect(completions.count == 2, "Timeline 1 completed \(completions.count) of its 2 Turns.")
+    }
+
+    @Test("a frame that has no typed update and names an unknown Session while a Session is being created is dropped")
+    @MainActor
+    func untypedFrameForUnknownSessionDuringCreationIsDropped() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let journals = try await journalsAfterFixtureTurns(
+            timelineCount: 2,
+            turns: [(0, "first"), (1, "second"), (0, "third")],
+            stateHome: stateHome.url,
+            adjacentRawFrame: #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"unknown-session","update":"bad"}}"#
+        )
+        for journal in journals {
+            let text = try String(contentsOf: journal.fileURL, encoding: .utf8)
+            #expect(!text.contains("unknown-session"), "a frame for an unknown Session was journaled")
+        }
+        let completions = try payloadsOnDisk(journals[0].fileURL).filter { $0["turnCompleted"] != nil }
+        #expect(completions.count == 2)
+    }
+
+    @Test("the journal keeps the bytes of a received frame: a leading byte order mark, a trailing carriage return, non-ASCII text")
+    @MainActor
+    func receivedFramesKeepTheirBytes() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        func frame(_ text: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"__SESSION__","update":{"sessionUpdate":"vendor_text","text":"\#(text)"}}}"#
+        }
+        let lines = [
+            "\u{FEFF}" + frame("bom") + "\r",
+            frame("carriage return") + "\r",
+            frame("precomposed \u{E9} \u{65E5}\u{672C} \u{1F600}"),
+            frame("decomposed e\u{301} \u{65E5}\u{672C} \u{1F600}"),
+        ]
+        let rawFramesFile = stateHome.url.appendingPathComponent("raw-frames.txt")
+        try Data(lines.joined(separator: "\n").utf8).write(to: rawFramesFile)
+
+        let (fileURL, timelineID) = try await journalAfterFixtureTurn(
+            message: "[fixture:raw-frames]",
+            stateHome: stateHome.url,
+            rawFramesFile: rawFramesFile
+        )
+
+        let reopened = try TimelineJournal(fileURL: fileURL, timelineID: timelineID)
+        var sessionID: String?
+        var stored: [[UInt8]] = []
+        for record in try await reopened.replay() {
+            switch record.payload {
+            case let .sessionTransition(id, _, _, _, _): sessionID = sessionID ?? id
+            case let .acpUpdate(_, update): stored.append(Array((update.receivedUpdate.frame ?? "").utf8))
+            case let .rawACPUpdate(_, _, update): stored.append(Array((update.frame ?? "").utf8))
+            default: break
+            }
+        }
+        let session = try #require(sessionID)
+        for line in lines {
+            let expected = Array(line.replacingOccurrences(of: "__SESSION__", with: session).utf8)
+            #expect(stored.contains(expected), "The journal lost bytes of: \(Array(expected.prefix(8)))…")
+        }
     }
 
     @Test("runtime Timeline genesis is journaled before its ACP Session")
@@ -3025,7 +3174,8 @@ struct ACPAscendantBackendTests {
         promptRequestFile: URL? = nil,
         initializeProtocolVersion: Int? = nil,
         initializeExtraCapabilities: String? = nil,
-        rawFramesFile: URL? = nil
+        rawFramesFile: URL? = nil,
+        adjacentRawFrame: String? = nil
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -3092,6 +3242,9 @@ struct ACPAscendantBackendTests {
         }
         if let rawFramesFile {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_RAW_FRAMES_FILE"] = rawFramesFile.path
+        }
+        if let adjacentRawFrame {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_ADJACENT_RAW_FRAME"] = adjacentRawFrame
         }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [

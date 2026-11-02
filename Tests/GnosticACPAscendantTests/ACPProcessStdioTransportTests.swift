@@ -132,6 +132,84 @@ struct ACPProcessStdioTransportTests {
         #expect(failures.count == 1, "Only the Runtime's exit fails the transport.")
     }
 
+    @Test("a message nested past the bound is diagnosed and skipped, and one at the bound is handed over whole")
+    @MainActor
+    func deepMessagesAreBoundedBeforeDecoding() async throws {
+        let pipes = RuntimePipes()
+        let recorder = Recorder()
+        let failures = Counter()
+        let transport = ACPProcessStdioTransport(
+            input: pipes.stdout.fileHandleForReading,
+            output: pipes.stdin.fileHandleForWriting,
+            onSessionUpdate: { recorder.record($0, $1) },
+            onFailure: { failures.increment() },
+            onDiagnostic: { recorder.diagnose($0) }
+        )
+        try await transport.start()
+        var iterator = transport.messages.makeAsyncIterator()
+
+        func frame(depth: Int) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"running","deep":"#
+                + String(repeating: "[", count: depth) + String(repeating: "]", count: depth) + "}}}"
+        }
+        // The envelope, `params`, and `update` take three levels.
+        let bound = JSONNesting.maximumDecodedDepth
+        let atBound = frame(depth: bound - 3)
+        let pastBound = frame(depth: bound - 2)
+        // A response nests too, and is bounded like any other message.
+        let deepResponse = #"{"jsonrpc":"2.0","id":1,"result":"#
+            + String(repeating: "[", count: 507) + String(repeating: "]", count: 507) + "}"
+        let last = #"{"jsonrpc":"2.0","method":"last"}"#
+        try pipes.runtimeWrites([pastBound, frame(depth: 507), frame(depth: 100_000), deepResponse, atBound, last]
+            .joined(separator: "\n") + "\n")
+
+        #expect(Self.method(of: await iterator.next()) == "session/update")
+        #expect(Self.method(of: await iterator.next()) == "last")
+        try pipes.stdout.fileHandleForWriting.close()
+        #expect(await iterator.next() == nil)
+        await transport.close()
+
+        let seen = recorder.snapshot
+        #expect(seen.updates.map(\.received.frame) == [atBound])
+        #expect(seen.updates.first?.received.update == .stateUpdate(.running(meta: nil)))
+        #expect(seen.diagnostics.count == 4, "Each message past the bound is diagnosed once.")
+        #expect(!seen.diagnostics.contains { $0.contains("state_update") || $0.contains("s1") }, "A diagnostic must not carry Runtime content.")
+        #expect(failures.count == 1, "Only the Runtime's exit fails the transport.")
+    }
+
+    @Test("a frame keeps a leading byte order mark and a trailing carriage return, and invalid UTF-8 is not repaired")
+    @MainActor
+    func frameTextKeepsItsBytes() async throws {
+        let body = #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"running","text":"\#u{E9}\#u{1F600}"}}}"#
+        let expected = ["\u{FEFF}" + body + "\r", body + "\r", body]
+
+        let pipes = RuntimePipes()
+        let recorder = Recorder()
+        let failures = Counter()
+        let transport = ACPProcessStdioTransport(
+            input: pipes.stdout.fileHandleForReading,
+            output: pipes.stdin.fileHandleForWriting,
+            onSessionUpdate: { recorder.record($0, $1) },
+            onFailure: { failures.increment() },
+            onDiagnostic: { recorder.diagnose($0) }
+        )
+        try await transport.start()
+        var iterator = transport.messages.makeAsyncIterator()
+        try pipes.runtimeWrites(expected.joined(separator: "\n") + "\n")
+        for _ in 0..<3 { #expect(Self.method(of: await iterator.next()) == "session/update") }
+
+        let seen = recorder.snapshot
+        #expect(seen.updates.map { Array($0.received.frame?.utf8 ?? "".utf8) } == expected.map { Array($0.utf8) })
+        #expect(seen.updates.allSatisfy { $0.received.update == .stateUpdate(.running(meta: nil)) })
+
+        // Invalid UTF-8 ends the transport, as it did before. It is not turned into U+FFFD.
+        try pipes.stdout.fileHandleForWriting.write(contentsOf: Data([0xFF, 0xFE, 0x0A]))
+        #expect(await iterator.next() == nil)
+        await transport.close()
+        #expect(failures.count == 1)
+        #expect(recorder.snapshot.updates.count == 3)
+    }
+
     @Test("a Runtime that exits ends the reader and reports one failure")
     @MainActor
     func runtimeExitEndsTheReader() async throws {

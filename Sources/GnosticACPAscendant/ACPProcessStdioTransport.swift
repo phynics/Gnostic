@@ -57,8 +57,15 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                             self?.fail()
                             return
                         }
-                        guard let data = line.data(using: .utf8) else { continue }
-                        guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: data) else { continue }
+                        // The text is a Runtime's. Bound its nesting before anything recursive decodes it.
+                        let bytes = Data(line.utf8)
+                        guard !JSONNesting.exceedsMaximumDecodedDepth(bytes) else {
+                            onDiagnostic("Ignored a message nested deeper than \(JSONNesting.maximumDecodedDepth) levels.")
+                            continue
+                        }
+                        // A byte order mark stays in the frame text, but the decoder does not need it.
+                        let decodable = bytes.starts(with: [0xEF, 0xBB, 0xBF]) ? Data(bytes.dropFirst(3)) : bytes
+                        guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: decodable) else { continue }
                         if case .notification(let notification) = message,
                            notification.method == ACPv2Protocol.ClientMethod.sessionUpdate {
                             // The journal keeps the text of the line. A frame with a usable
@@ -163,12 +170,21 @@ private extension FileHandle {
         var data = Data()
         while true {
             guard let byte = try read(upToCount: 1), !byte.isEmpty else {
-                return data.isEmpty ? nil : String(data: data, encoding: .utf8)
+                return data.isEmpty ? nil : Self.text(of: data)
             }
             if byte[0] == 0x0A {
-                return String(data: data, encoding: .utf8)
+                return Self.text(of: data)
             }
             data.append(byte)
         }
+    }
+
+    /// The UTF-8 text of `data`, or `nil` when `data` is not valid UTF-8.
+    ///
+    /// `String(data:encoding:)` drops a leading byte order mark, so it only decides
+    /// validity. The returned text keeps every byte, and invalid input is never repaired.
+    private static func text(of data: Data) -> String? {
+        guard String(data: data, encoding: .utf8) != nil else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 }

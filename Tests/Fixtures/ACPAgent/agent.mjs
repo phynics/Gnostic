@@ -708,18 +708,28 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     return { messageId: userMessageId };
   });
 
-const fixtureOutput = process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE
+// `GNOSTIC_ACP_FIXTURE_ADJACENT_RAW_FRAME` is written as it is, before every `session/new`
+// response, so Gnostic reads it while the Session creation is pending.
+const fixtureOutput = process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE || process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_RAW_FRAME
   ? new Writable({
       write(chunk, encoding, callback) {
         const message = JSON.parse(chunk.toString().trim());
         if (message.result?.sessionId) {
-          const update = {
-            jsonrpc: "2.0", method: "session/update",
-            params: { sessionId: message.result.sessionId, update: { sessionUpdate: "fixture_session_opened", _meta: { adjacent: true } } },
-          };
-          const notification = Buffer.from(JSON.stringify(update) + "\n");
-          const frames = process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE === "before"
-            ? [notification, Buffer.from(chunk)] : [Buffer.from(chunk), notification];
+          const frames = [];
+          if (process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_RAW_FRAME) {
+            frames.push(Buffer.from(`${process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_RAW_FRAME}\n`));
+          }
+          if (process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE) {
+            const update = {
+              jsonrpc: "2.0", method: "session/update",
+              params: { sessionId: message.result.sessionId, update: { sessionUpdate: "fixture_session_opened", _meta: { adjacent: true } } },
+            };
+            const notification = Buffer.from(JSON.stringify(update) + "\n");
+            frames.push(...(process.env.GNOSTIC_ACP_FIXTURE_ADJACENT_SESSION_UPDATE === "before"
+              ? [notification, Buffer.from(chunk)] : [Buffer.from(chunk), notification]));
+          } else {
+            frames.push(Buffer.from(chunk));
+          }
           process.stdout.write(Buffer.concat(frames), callback);
         } else {
           process.stdout.write(chunk, callback);

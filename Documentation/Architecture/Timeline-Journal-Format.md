@@ -70,26 +70,40 @@ Timeline when they disagree. A Turn completion stores the Turn's outcome:
 `completed`, `endedUnspecified`, `cancelled`, `failed`, `insertionUnknown`, or
 `unavailable`. An ACP update stores the received `session/update` frame as a
 JSON string in its `update` field. The string is the exact text of the line the
-Runtime wrote, without its newline. Gnostic does not decode and encode it
-again, so the string keeps `_meta`, unknown update kinds, fields that Gnostic's
-typed form of a known kind does not model, number text such as `1.0` or
-`18446744073709551617`, duplicate keys, key order, and spacing. It also keeps any
-nesting depth, because a string has none.
+Runtime wrote, without its newline, as UTF-8 bytes. That includes a leading byte
+order mark and a trailing carriage return when the Runtime wrote them. Gnostic
+does not decode and encode the text again, so it keeps `_meta`, unknown update
+kinds, fields that Gnostic's typed form of a known kind does not model, number
+text such as `1.0` or `18446744073709551617`, duplicate keys, key order, and
+spacing. Text that is not valid UTF-8 is not a line: the transport ends, as it
+always has, and nothing is repaired or journaled.
 
-The transport journals every `session/update` notification that has a
-`sessionId` string that is not empty. That includes a frame whose `update` is
-not an object, has no `sessionUpdate`, or does not fit the fixed type of its
-kind. Gnostic's own consumers skip such an update, and the Turn does not fail.
-The journal's `sessionID` field repeats the frame's `sessionId`. A reader gets
-the typed form by decoding `params.update` of the stored text. It must not
-treat the typed form as the record of the update.
+The transport journals a `session/update` notification when its `sessionId` is a
+string that is not empty, and its text is nested at most 128 levels deep. A
+frame is journaled when its `update` is not an object, has no `sessionUpdate`,
+or does not fit the fixed type of its kind. Gnostic's own consumers skip such an
+update, and the Turn does not fail. The journal's `sessionID` field repeats the
+frame's `sessionId`. A reader gets the typed form by decoding `params.update` of
+the stored text. It must not treat the typed form as the record of the update.
 
-Two kinds of line are not updates and are not journaled. A `session/update`
-notification with no usable `sessionId` cannot belong to a Timeline. The
-transport logs a warning, which names no Runtime content, and carries on. A line
-that is not valid JSON-RPC is not a message. The transport drops it without a
-log entry, as it always has. A JSON-RPC message that is nested too deeply to
-decode is such a line too.
+These lines are not journaled, and none of them fails the transport or a Turn:
+
+- A `session/update` notification with no usable `sessionId` cannot belong to a
+  Timeline. The transport logs a warning, which names no Runtime content.
+- A message nested more than 128 levels deep. The transport measures the
+  nesting of every line it reads, outside JSON strings, before it decodes the
+  line. It logs a warning, which names no Runtime content, and skips the line.
+  A response that is this deep is skipped too, so its request waits for its own
+  timeout. The bound keeps a Runtime from overflowing a thread's stack with one
+  frame.
+- A `session/update` notification that has no typed update and names a Session
+  that Gnostic does not know, which includes one that arrives while a Session is
+  being created for another Timeline. The backend logs a warning, which names no
+  Runtime content. A frame that has a typed update and names an unknown Session
+  is still an error that ends the connection.
+- A line that is not valid JSON-RPC is not a message. The transport drops it
+  without a log entry, as it always has. That includes a frame too malformed to
+  decode.
 
 A reader also accepts the earlier shape of the `update` field, a JSON object
 that holds the update. It reads that object as a typed update with no frame.
