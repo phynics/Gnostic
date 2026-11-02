@@ -3,6 +3,7 @@
 import Foundation
 @testable import GnosticACPAscendant
 import GnosticACPWire
+import GnosticCore
 import Testing
 
 /// Exercises the stdio transport against real pipes, as a Runtime process would use it.
@@ -67,6 +68,68 @@ struct ACPProcessStdioTransportTests {
         #expect(Self.method(of: await iterator.next()) == "last")
         #expect(await iterator.next() == nil)
         await transport.close()
+    }
+
+    private final class Recorder: @unchecked Sendable { // SAFETY: Both arrays are only read or written while holding the lock.
+        private let lock = NSLock()
+        private var updates: [(sessionID: String, received: ReceivedACPUpdate)] = []
+        private var diagnostics: [String] = []
+
+        func record(_ sessionID: String, _ received: ReceivedACPUpdate) {
+            lock.lock(); defer { lock.unlock() }
+            updates.append((sessionID, received))
+        }
+
+        func diagnose(_ message: String) {
+            lock.lock(); defer { lock.unlock() }
+            diagnostics.append(message)
+        }
+
+        var snapshot: (updates: [(sessionID: String, received: ReceivedACPUpdate)], diagnostics: [String]) {
+            lock.lock(); defer { lock.unlock() }
+            return (updates, diagnostics)
+        }
+    }
+
+    @Test("a session/update with a sessionId is handed over as its line, and one without is diagnosed and skipped")
+    @MainActor
+    func sessionUpdateFramesAreHandedOverAsText() async throws {
+        let pipes = RuntimePipes()
+        let recorder = Recorder()
+        let failures = Counter()
+        let transport = ACPProcessStdioTransport(
+            input: pipes.stdout.fileHandleForReading,
+            output: pipes.stdin.fileHandleForWriting,
+            onSessionUpdate: { recorder.record($0, $1) },
+            onFailure: { failures.increment() },
+            onDiagnostic: { recorder.diagnose($0) }
+        )
+        try await transport.start()
+        var iterator = transport.messages.makeAsyncIterator()
+
+        let fits = #"{ "jsonrpc":"2.0", "method":"session/update", "params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"running","big":18446744073709551617}} }"#
+        let misfit = #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":"not-an-object"}}"#
+        let noSession = #"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"vendor_orphan"}}}"#
+        let emptySession = #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"","update":{"sessionUpdate":"vendor_orphan"}}}"#
+        let notJSONRPC = "not json at all"
+        let last = #"{"jsonrpc":"2.0","method":"last"}"#
+        try pipes.runtimeWrites([fits, misfit, noSession, emptySession, notJSONRPC, last].joined(separator: "\n") + "\n")
+
+        // The transport stays usable: every JSON-RPC message still arrives.
+        for _ in 0..<4 { #expect(Self.method(of: await iterator.next()) == "session/update") }
+        #expect(Self.method(of: await iterator.next()) == "last")
+        try pipes.stdout.fileHandleForWriting.close()
+        #expect(await iterator.next() == nil)
+        await transport.close()
+
+        let seen = recorder.snapshot
+        #expect(seen.updates.map(\.sessionID) == ["s1", "s1"])
+        #expect(seen.updates.map(\.received.frame) == [fits, misfit])
+        #expect(seen.updates[0].received.update == .stateUpdate(.running(meta: nil)))
+        #expect(seen.updates[1].received.update == nil)
+        #expect(seen.diagnostics.count == 2, "Each frame without a usable sessionId is diagnosed once.")
+        #expect(!seen.diagnostics.contains { $0.contains("vendor_orphan") }, "A diagnostic must not carry Runtime content.")
+        #expect(failures.count == 1, "Only the Runtime's exit fails the transport.")
     }
 
     @Test("a Runtime that exits ends the reader and reports one failure")

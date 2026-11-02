@@ -29,27 +29,38 @@ struct TimelineJournalTests {
         #expect(record.payload == .replayEpochStarted(previousEpoch: nil, afterSequence: 0))
     }
 
-    @Test("a received ACP update keeps what its typed form cannot, through restart, in both ACP payload kinds")
-    func receivedUpdatesSurviveRestart() async throws {
+    private static func frame(_ update: String, sessionID: String = "s") -> String {
+        #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"\#(sessionID)","update":\#(update)}}"#
+    }
+
+    @Test("a received frame is stored as its text and read back unchanged after a restart, in both ACP payload kinds")
+    func receivedFramesSurviveRestart() async throws {
         let timelineID = UUID()
         let url = makeURL()
         let journal = try TimelineJournal(fileURL: url, timelineID: timelineID)
-        let received: [ACPValue] = [
-            .object(["sessionUpdate": .string("state_update"), "state": .string("running"), "vendorProgress": .int(3)]),
-            .object([
-                "sessionUpdate": .string("agent_message_chunk"),
-                "messageId": .string("m"),
-                "content": .object(["type": .string("text"), "text": .string("hi"), "annotation": .bool(true)]),
-                "vendorTrace": .array([.string("a")]),
-            ]),
-            // A known kind that does not fit its type.
-            .object(["sessionUpdate": .string("state_update"), "state": .int(5), "vendorMisfit": .bool(true)]),
+        let frames = [
+            // Extra field, number text, duplicate keys, key order and spacing that a decoded value would change.
+            Self.frame(#"{ "sessionUpdate":"state_update", "state":"running", "big":18446744073709551617, "one":1.0, "negzero":-0.0, "dup":1, "dup":2, "z":1, "a":2 }"#),
+            // Deeper than Foundation can encode.
+            Self.frame(
+                #"{"sessionUpdate":"state_update","state":"running","deep":"#
+                    + String(repeating: "[", count: 507) + String(repeating: "]", count: 507) + "}"
+            ),
+            // A known kind that does not fit its type, a non-object update, and no update kind.
+            Self.frame(#"{"sessionUpdate":"state_update","state":5,"vendorMisfit":true}"#),
+            Self.frame(#""not-an-object""#),
+            Self.frame(#"{"state":"running"}"#),
+            // Escapes and non-ASCII text.
+            Self.frame(#"{"sessionUpdate":"vendor_text","text":"line\nbreak \u00e9 \ud83d\ude00 é 😀"}"#),
         ]
-        let updates = try received.map { try #require(ReceivedACPUpdate(received: $0)) }
+        let updates = frames.map { ReceivedACPUpdate(frame: $0) }
+        #expect(updates.map(\.frame) == frames)
         #expect(updates[0].update == .stateUpdate(.running(meta: nil)))
-        #expect(updates[2].update == .other(sessionUpdate: "state_update", fields: [
-            "state": .int(5), "vendorMisfit": .bool(true),
-        ]))
+        #expect(updates[1].update == .stateUpdate(.running(meta: nil)))
+        #expect(updates[2].update == nil)
+        #expect(updates[3].update == nil)
+        #expect(updates[4].update == nil)
+        #expect(updates[5].update?.updateKind == "vendor_text")
         for (index, update) in updates.enumerated() {
             try await journal.append(.acpUpdate(sessionID: "s", update: TurnSessionUpdate(
                 timelineID: timelineID, clientTurnID: "turn", sequence: index + 1, receivedUpdate: update
@@ -67,20 +78,56 @@ struct TimelineJournalTests {
             default: break
             }
         }
-        #expect(replayed.map(\.receivedValue) == received.flatMap { [$0, $0] })
         #expect(replayed == updates.flatMap { [$0, $0] })
+        #expect(replayed.map(\.frame) == frames.flatMap { [$0, $0] })
     }
 
-    @Test("an update whose typed form is faithful stores no override")
-    func faithfulUpdateHasNoOverride() throws {
-        let value = ACPValue.object([
-            "sessionUpdate": .string("state_update"), "state": .string("running"), "_meta": .object(["k": .string("v")]),
-        ])
-        let update = try #require(ReceivedACPUpdate(received: value))
-        #expect(update.receivedOverride == nil)
-        #expect(update.receivedValue == value)
-        #expect(update == ReceivedACPUpdate(.stateUpdate(.running(meta: ["k": .string("v")]))))
-        #expect(ReceivedACPUpdate(received: .object(["state": .string("running")])) == nil)
+    @Test("the journal sets no size limit on an ACP update, whether it is stored as a frame or as a typed value")
+    func largeUpdatesAreJournaledWhole() async throws {
+        let text = String(repeating: "x\u{E9}\u{1F600}", count: 1_500_000)
+        let framed = ReceivedACPUpdate(frame: Self.frame(#"{"sessionUpdate":"vendor_big","text":"\#(text)"}"#))
+        let typed = ReceivedACPUpdate(.other(sessionUpdate: "vendor_big", fields: ["text": .string(text)]))
+        let timelineID = UUID()
+        let url = makeURL()
+        let journal = try TimelineJournal(fileURL: url, timelineID: timelineID)
+        for update in [framed, typed] {
+            try await journal.append(.rawACPUpdate(sessionID: "s", clientTurnID: nil, update: update))
+        }
+        let reopened = try TimelineJournal(fileURL: url, timelineID: timelineID)
+        try #require(await reopened.status() == .writable)
+        let stored = try await reopened.replay().compactMap { record -> ReceivedACPUpdate? in
+            if case let .rawACPUpdate(_, _, update) = record.payload { return update }
+            return nil
+        }
+        #expect(stored == [framed, typed])
+        #expect(framed.frame?.utf8.count ?? 0 > 10_000_000)
+    }
+
+    @Test("the journal shape of an ACP update is a string for a received frame and an object for a typed value")
+    func updateShapeInTheJournal() throws {
+        let text = Self.frame(#"{"sessionUpdate":"state_update","state":"running","extra":1.0}"#)
+        let stored = try JSONEncoder().encode(ReceivedACPUpdate(frame: text))
+        #expect(try JSONDecoder().decode(String.self, from: stored) == text)
+
+        // A string reads as a frame. An object, which earlier journals store, reads as a typed value.
+        let framed = try JSONDecoder().decode(ReceivedACPUpdate.self, from: stored)
+        #expect(framed.frame == text)
+        #expect(framed.update == .stateUpdate(.running(meta: nil)))
+        let typed = try JSONDecoder().decode(
+            ReceivedACPUpdate.self,
+            from: Data(#"{"sessionUpdate":"vendor_idle","_meta":{"k":"v"}}"#.utf8)
+        )
+        #expect(typed.frame == nil)
+        #expect(typed == ReceivedACPUpdate(.other(sessionUpdate: "vendor_idle", fields: ["_meta": .object(["k": .string("v")])])))
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(ReceivedACPUpdate.self, from: Data("7".utf8))
+        }
+
+        let record = #"{"formatVersion":1,"timelineID":"00000000-0000-4000-8000-000000000001","replayEpoch":"00000000-0000-4000-8000-000000000002","sequence":2,"timestamp":0,"payload":{"rawACPUpdate":{"sessionID":"s","update":"{\"jsonrpc\":\"2.0\"}"}}}"#
+        let decoded = try JSONDecoder().decode(TimelineJournalRecord.self, from: Data(record.utf8))
+        #expect(decoded.payload == .rawACPUpdate(
+            sessionID: "s", clientTurnID: nil, update: ReceivedACPUpdate(frame: #"{"jsonrpc":"2.0"}"#)
+        ))
     }
 
     @Test("records ordered host and raw ACP events across replay epochs")

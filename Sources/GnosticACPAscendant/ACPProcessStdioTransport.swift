@@ -5,34 +5,6 @@ import GnosticACPWire
 import GnosticCore
 import GnosticProtocol
 
-/// One `session/update` notification as the Runtime sent it.
-///
-/// `received` is what the Timeline journal stores. `typed` is the update in its
-/// fixed ACP type, and it is `nil` when the notification does not fit that type.
-/// Only a typed update drives Turn projection, so a misfit is journaled and
-/// otherwise ignored.
-struct ACPReceivedSessionUpdate: Sendable {
-    let sessionID: String
-    let received: ReceivedACPUpdate
-    let typed: ACPSessionUpdate?
-
-    /// Returns `nil` when the notification has no session ID or no update kind.
-    init?(params: ACPValue) {
-        guard case let .object(fields) = params,
-              case let .string(sessionID)? = fields["sessionId"],
-              let updateValue = fields["update"],
-              let received = ReceivedACPUpdate(received: updateValue) else { return nil }
-        self.sessionID = sessionID
-        self.received = received
-        if let data = try? JSONEncoder().encode(params),
-           let notification = try? JSONDecoder().decode(ACPSessionNotification.self, from: data) {
-            typed = notification.update
-        } else {
-            typed = nil
-        }
-    }
-}
-
 /// Nonblocking ACP transport for a child process's stdin and stdout pipes.
 final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAFETY: Transport state is lock-guarded, and teardown closes the single-reader/single-writer FileHandles before awaiting both tasks.
     let messages: AsyncStream<ACPJSONRPCMessage>
@@ -42,8 +14,9 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     private let sendContinuation: AsyncStream<ACPJSONRPCMessage>.Continuation
     private let input: FileHandle
     private let output: FileHandle
-    private let onSessionUpdate: @Sendable (String, ACPReceivedSessionUpdate) async throws -> Void
+    private let onSessionUpdate: @Sendable (String, ReceivedACPUpdate) async throws -> Void
     private let onFailure: @Sendable () -> Void
+    private let onDiagnostic: @Sendable (String) -> Void
     private let lock = NSLock()
     private var started = false
     private var closed = false
@@ -54,13 +27,15 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
     init(
         input: FileHandle,
         output: FileHandle,
-        onSessionUpdate: @escaping @Sendable (String, ACPReceivedSessionUpdate) async throws -> Void,
-        onFailure: @escaping @Sendable () -> Void
+        onSessionUpdate: @escaping @Sendable (String, ReceivedACPUpdate) async throws -> Void,
+        onFailure: @escaping @Sendable () -> Void,
+        onDiagnostic: @escaping @Sendable (String) -> Void = { ServeLogging.warn($0, component: "acp.transport") }
     ) {
         self.input = input
         self.output = output
         self.onSessionUpdate = onSessionUpdate
         self.onFailure = onFailure
+        self.onDiagnostic = onDiagnostic
         (messages, messageContinuation) = AsyncStream.makeStream()
         (sendStream, sendContinuation) = AsyncStream.makeStream()
     }
@@ -72,7 +47,7 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
             BrokenPipeSignal.disable(onWriteEnd: output.fileDescriptor)
             let readerTask = Task.detached(
                 executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.stdout")
-            ) { [weak self, input, messageContinuation, onSessionUpdate] in
+            ) { [weak self, input, messageContinuation, onSessionUpdate, onDiagnostic] in
                 defer {
                     messageContinuation.finish()
                 }
@@ -85,10 +60,14 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
                         guard let data = line.data(using: .utf8) else { continue }
                         guard let message = try? JSONDecoder().decode(ACPJSONRPCMessage.self, from: data) else { continue }
                         if case .notification(let notification) = message,
-                           notification.method == ACPv2Protocol.ClientMethod.sessionUpdate,
-                           let params = notification.params,
-                           let received = ACPReceivedSessionUpdate(params: params) {
-                            try await onSessionUpdate(received.sessionID, received)
+                           notification.method == ACPv2Protocol.ClientMethod.sessionUpdate {
+                            // The journal keeps the text of the line. A frame with a usable
+                            // sessionId is journaled even when its update does not decode.
+                            if let sessionID = Self.sessionID(in: notification.params) {
+                                try await onSessionUpdate(sessionID, ReceivedACPUpdate(frame: line))
+                            } else {
+                                onDiagnostic("Ignored a session/update without a usable sessionId; it cannot belong to a Timeline.")
+                            }
                         }
                         messageContinuation.yield(message)
                     }
@@ -115,6 +94,14 @@ final class ACPProcessStdioTransport: ACPTransport, @unchecked Sendable { // SAF
             return true
         }
         guard didStart else { throw ACPTransportError.transportClosed }
+    }
+
+    /// The notification's `sessionId`, when it is a non-empty string.
+    private static func sessionID(in params: ACPValue?) -> String? {
+        guard case let .object(fields)? = params,
+              case let .string(sessionID)? = fields["sessionId"],
+              !sessionID.isEmpty else { return nil }
+        return sessionID
     }
 
     func send(_ message: ACPJSONRPCMessage) async throws {

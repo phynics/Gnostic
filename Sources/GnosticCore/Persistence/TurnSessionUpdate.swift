@@ -8,8 +8,8 @@ import GnosticProtocol
 ///
 /// This type lives in `GnosticCore`, outside the stable products, because the
 /// journaled `update` is an ACP wire value. The encoding is the journal format.
-/// `update` is stored exactly as the Runtime sent it, so a known kind keeps
-/// fields its typed form does not model (`ReceivedACPUpdate`).
+/// `update` is the text of the frame the Runtime sent (`ReceivedACPUpdate`), so
+/// the journal keeps what the Runtime sent and not a re-encoded value.
 public struct TurnSessionUpdate: Codable, Sendable, Equatable {
     public let protocolMajor: Int
     public let timelineID: UUID
@@ -19,8 +19,8 @@ public struct TurnSessionUpdate: Codable, Sendable, Equatable {
     public let terminal: Bool
     public let terminalOutcome: TurnTerminalOutcome?
 
-    /// The typed projection of the update.
-    public var update: ACPSessionUpdate { receivedUpdate.update }
+    /// The typed projection of the update, or `nil` when the received update has none.
+    public var update: ACPSessionUpdate? { receivedUpdate.update }
 
     public init(
         timelineID: UUID,

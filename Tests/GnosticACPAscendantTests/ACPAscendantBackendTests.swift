@@ -216,12 +216,12 @@ struct ACPAscendantBackendTests {
         })
         let rawUpdate = try #require(records.first { record in
             if case let .acpUpdate(_, update) = record.payload {
-                return update.clientTurnID == "raw-acp" && update.update.updateKind == "vendor_future_update"
+                return update.clientTurnID == "raw-acp" && update.update?.updateKind == "vendor_future_update"
             }
             return false
         })
         guard case let .acpUpdate(_, turnUpdate) = rawUpdate.payload,
-              case let .other(kind, fields) = turnUpdate.update else {
+              case let .other(kind, fields)? = turnUpdate.update else {
             Issue.record("Expected the unknown ACP update to remain a raw extensible update")
             return
         }
@@ -230,11 +230,13 @@ struct ACPAscendantBackendTests {
         #expect(fields["extension"] == .object(["phase": .string("fixture")]))
     }
 
-    @Test("known ACP update kinds reach the Timeline journal exactly as received, and survive a restart")
+    /// Runs one fixture Turn on a fresh journaled Node and returns its Timeline journal file.
     @MainActor
-    func knownKindsAreJournaledAsReceived() async throws {
-        let stateHome = try makeTemporaryStateHome()
-        defer { stateHome.cleanup() }
+    private func journalAfterFixtureTurn(
+        message: String,
+        stateHome: URL,
+        rawFramesFile: URL? = nil
+    ) async throws -> (fileURL: URL, timelineID: UUID) {
         let timelineID = UUID()
         let runtimeID = UUID()
         let nodeID = UUID()
@@ -245,7 +247,10 @@ struct ACPAscendantBackendTests {
                 id: runtimeID,
                 name: "As-received fixture",
                 defaultTimelineID: timelineID,
-                backend: .init(kind: ACPAscendantBackend.kind, settings: try fixtureSettings(stateHome: stateHome.url))
+                backend: .init(
+                    kind: ACPAscendantBackend.kind,
+                    settings: try fixtureSettings(stateHome: stateHome, rawFramesFile: rawFramesFile)
+                )
             )],
             timelines: [.init(id: timelineID, title: "As received", operatingAscendantID: runtimeID)]
         )
@@ -261,7 +266,7 @@ struct ACPAscendantBackendTests {
                 timelines: timelines
             )
         }
-        let journalDirectory = stateHome.url.appendingPathComponent("timeline-journals", isDirectory: true)
+        let journalDirectory = stateHome.appendingPathComponent("timeline-journals", isDirectory: true)
         let runtime = try await NodeRuntime(
             plan: manifest.compileLaunchPlan(),
             adapters: adapters,
@@ -269,17 +274,58 @@ struct ACPAscendantBackendTests {
         )
         try await runtime.start()
         defer { Task { @MainActor in await runtime.shutdown() } }
-
-        // The misfit update must not fail the Turn.
-        _ = try await runtime.turn(.init(
-            message: "[fixture:as-received] [fixture:unknown-update]",
-            timelineID: timelineID,
-            clientTurnID: "as-received"
-        ))
+        _ = try await runtime.turn(.init(message: message, timelineID: timelineID, clientTurnID: "as-received"))
         await runtime.shutdown()
-
         let nodeJournalDirectory = journalDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
-        let fileURL = TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory)
+        return (TimelineJournalStore.fileURL(for: timelineID, in: nodeJournalDirectory), timelineID)
+    }
+
+    /// Every record payload of the journal as JSON, read from the bytes on disk.
+    private func payloadsOnDisk(_ fileURL: URL) throws -> [[String: Any]] {
+        try String(contentsOf: fileURL, encoding: .utf8).split(separator: "\n").map { frame in
+            let json = frame.split(separator: " ", maxSplits: 2)[2]
+            let record = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            return try #require(record["payload"] as? [String: Any])
+        }
+    }
+
+    /// Every record payload of a reopened journal, re-encoded as JSON.
+    private func payloadsAfterRestart(_ fileURL: URL, timelineID: UUID) async throws -> [[String: Any]] {
+        let reopened = try TimelineJournal(fileURL: fileURL, timelineID: timelineID)
+        return try await reopened.replay().map { record in
+            let data = try JSONEncoder().encode(record.payload)
+            return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+    }
+
+    /// The stored `update` value of each ACP update payload: a string holding the received frame.
+    private func storedUpdates(_ payloads: [[String: Any]]) -> [Any] {
+        payloads.compactMap { payload in
+            if let turn = (payload["acpUpdate"] as? [String: Any])?["update"] as? [String: Any] {
+                return turn["update"]
+            }
+            return (payload["rawACPUpdate"] as? [String: Any])?["update"]
+        }
+    }
+
+    /// The `params.update` object of a stored received frame.
+    private func updateObject(ofStored stored: Any) -> [String: Any]? {
+        guard let frame = stored as? String,
+              let message = try? JSONSerialization.jsonObject(with: Data(frame.utf8)) as? [String: Any],
+              let params = message["params"] as? [String: Any] else { return nil }
+        return params["update"] as? [String: Any]
+    }
+
+    @Test("known ACP update kinds reach the Timeline journal exactly as received, and survive a restart")
+    @MainActor
+    func knownKindsAreJournaledAsReceived() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        // The misfit update must not fail the Turn.
+        let (fileURL, timelineID) = try await journalAfterFixtureTurn(
+            message: "[fixture:as-received] [fixture:unknown-update]",
+            stateHome: stateHome.url
+        )
 
         let expectedState: [String: Any] = [
             "sessionUpdate": "state_update", "state": "running", "vendorProgress": ["percent": 40],
@@ -303,20 +349,12 @@ struct ACPAscendantBackendTests {
             "_meta": ["trace_id": "fixture-raw-meta"],
         ]
 
-        /// The ACP update JSON of every journaled update, in sequence order.
-        func journaledUpdates(_ payloads: [[String: Any]]) -> [[String: Any]] {
-            payloads.compactMap { payload in
-                let turn = (payload["acpUpdate"] as? [String: Any])?["update"] as? [String: Any]
-                return (turn?["update"] as? [String: Any])
-                    ?? ((payload["rawACPUpdate"] as? [String: Any])?["update"] as? [String: Any])
-            }
-        }
         /// Sorted-key JSON text, so two values compare by what they serialize to.
         func canonical(_ object: [String: Any]) throws -> String {
             String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
         }
-        func check(_ updates: [[String: Any]], _ label: String) throws {
-            let journaled = try updates.map(canonical)
+        func check(_ payloads: [[String: Any]], _ label: String) throws {
+            let journaled = try storedUpdates(payloads).compactMap(updateObject(ofStored:)).map(canonical)
             for (name, expected) in [
                 ("state_update with an extra field", expectedState),
                 ("agent_message_chunk with extra fields", expectedChunk),
@@ -324,29 +362,72 @@ struct ACPAscendantBackendTests {
                 ("unknown kind with _meta", expectedUnknown),
             ] {
                 #expect(
-                    journaled.contains(try canonical(expected)),
+                    try journaled.contains(canonical(expected)),
                     "\(label): \(name) was not journaled exactly as received"
                 )
             }
         }
+        try check(try payloadsOnDisk(fileURL), "on disk")
+        try check(try await payloadsAfterRestart(fileURL, timelineID: timelineID), "after restart")
+    }
 
-        // The bytes on disk.
-        let frames = try String(contentsOf: fileURL, encoding: .utf8).split(separator: "\n")
-        let diskPayloads = try frames.map { frame -> [String: Any] in
-            let json = frame.split(separator: " ", maxSplits: 2)[2]
-            let record = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
-            return try #require(record["payload"] as? [String: Any])
+    @Test("the journal stores each received frame byte for byte, even when it cannot be re-encoded or typed")
+    @MainActor
+    func receivedFramesAreJournaledVerbatim() async throws {
+        let stateHome = try makeTemporaryStateHome()
+        defer { stateHome.cleanup() }
+        let nesting = 507
+        let envelope = { (update: String) in
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"__SESSION__","update":\#(update)}}"#
         }
-        try check(journaledUpdates(diskPayloads), "on disk")
+        let frames: [(name: String, line: String)] = [
+            // Foundation cannot encode this depth, so a re-encoded value would fail the append.
+            ("507 nested arrays in an extra field", envelope(
+                #"{"sessionUpdate":"state_update","state":"running","deep":"#
+                    + String(repeating: "[", count: nesting) + String(repeating: "]", count: nesting) + "}"
+            )),
+            ("number text, duplicate keys, key order, spacing", envelope(
+                #"{ "sessionUpdate":"state_update", "state":"running", "big":18446744073709551617, "#
+                    + #""one":1.0, "negzero":-0.0, "dup":1, "dup":2, "z":1, "a":2 }"#
+            )),
+            ("an update that is not an object", envelope(#""not-an-object""#)),
+            ("an update without sessionUpdate", envelope(#"{"state":"running","marker":"missing-kind"}"#)),
+        ]
+        // Without a usable sessionId the frame cannot belong to a Timeline.
+        let orphans = [
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"vendor_orphan","marker":"no-session"}}}"#,
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"","update":{"sessionUpdate":"vendor_orphan","marker":"empty-session"}}}"#,
+        ]
+        let rawFramesFile = stateHome.url.appendingPathComponent("raw-frames.txt")
+        try (frames.map(\.line) + orphans).joined(separator: "\n").write(to: rawFramesFile, atomically: true, encoding: .utf8)
 
-        // A restarted journal replays the same values.
+        // The orphans and the unusable frames must not fail the transport or the Turn.
+        let (fileURL, timelineID) = try await journalAfterFixtureTurn(
+            message: "[fixture:raw-frames]",
+            stateHome: stateHome.url,
+            rawFramesFile: rawFramesFile
+        )
+
+        func check(_ payloads: [[String: Any]], _ label: String) throws {
+            let sessionIDs = payloads.compactMap {
+                ($0["sessionTransition"] as? [String: Any])?["sessionID"] as? String
+            }
+            let sessionID = try #require(sessionIDs.first)
+            let stored = storedUpdates(payloads).compactMap { $0 as? String }
+            for (name, line) in frames {
+                #expect(
+                    stored.contains(line.replacingOccurrences(of: "__SESSION__", with: sessionID)),
+                    "\(label): \(name) was not journaled as the received text"
+                )
+            }
+        }
+        try check(try payloadsOnDisk(fileURL), "on disk")
+        try check(try await payloadsAfterRestart(fileURL, timelineID: timelineID), "after restart")
+        let journalText = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(!journalText.contains("no-session"), "a frame without a sessionId was journaled")
+        #expect(!journalText.contains("empty-session"), "a frame with an empty sessionId was journaled")
         let reopened = try TimelineJournal(fileURL: fileURL, timelineID: timelineID)
-        let replayed = try await reopened.replay().map { record -> [String: Any] in
-            let encoder = JSONEncoder()
-            let data = try encoder.encode(record.payload)
-            return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        }
-        try check(journaledUpdates(replayed), "after restart")
+        #expect(await reopened.status() == .writable)
     }
 
     @Test("runtime Timeline genesis is journaled before its ACP Session")
@@ -1213,7 +1294,7 @@ struct ACPAscendantBackendTests {
         let transition = try #require(records.firstIndex { if case .sessionTransition = $0.payload { return true }; return false })
         let update = try #require(records.firstIndex {
             if case let .rawACPUpdate(_, _, update) = $0.payload,
-               case .other(sessionUpdate: "fixture_session_opened", fields: _) = update.update { return true }
+               case .other(sessionUpdate: "fixture_session_opened", fields: _)? = update.update { return true }
             return false
         })
         #expect(transition < update)
@@ -2943,7 +3024,8 @@ struct ACPAscendantBackendTests {
         wireLogFile: URL? = nil,
         promptRequestFile: URL? = nil,
         initializeProtocolVersion: Int? = nil,
-        initializeExtraCapabilities: String? = nil
+        initializeExtraCapabilities: String? = nil,
+        rawFramesFile: URL? = nil
     ) throws -> [String: ManifestJSONValue] {
         let fixturePath = ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"]
             ?? URL(fileURLWithPath: #filePath)
@@ -3007,6 +3089,9 @@ struct ACPAscendantBackendTests {
         }
         if let promptRequestFile {
             fixtureEnvironment["GNOSTIC_ACP_FIXTURE_PROMPT_REQUEST_FILE"] = promptRequestFile.path
+        }
+        if let rawFramesFile {
+            fixtureEnvironment["GNOSTIC_ACP_FIXTURE_RAW_FRAMES_FILE"] = rawFramesFile.path
         }
         let encodedEnvironment = try JSONEncoder().encode(fixtureEnvironment)
         return [
@@ -3575,7 +3660,7 @@ struct ACPAscendantBackendTests {
             let records = try await store.journal(for: timelineID).replay()
             let durable = records.contains { record in
                 if case let .acpUpdate(_, journaled) = record.payload,
-                   case let .agentMessageChunk(chunk) = journaled.update,
+                   case let .agentMessageChunk(chunk)? = journaled.update,
                    case let .text(content) = chunk.content {
                     return content.text == text
                 }

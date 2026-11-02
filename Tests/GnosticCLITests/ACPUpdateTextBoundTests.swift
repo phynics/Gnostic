@@ -103,9 +103,9 @@ struct ACPUpdateTextBoundTests {
             for record in try await store.journal(for: timelineID).replay() {
                 guard case let .acpUpdate(_, journaled) = record.payload else { continue }
                 switch journaled.update {
-                case let .agentMessageChunk(chunk):
+                case let .agentMessageChunk(chunk)?:
                     if case let .text(content) = chunk.content { text += content.text }
-                case let .agentMessage(message):
+                case let .agentMessage(message)?:
                     text = (message.content ?? []).reduce(into: "") { result, block in
                         if case let .text(content) = block { result += content.text }
                     }

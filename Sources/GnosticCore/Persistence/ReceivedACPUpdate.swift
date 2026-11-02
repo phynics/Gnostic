@@ -3,81 +3,91 @@
 import Foundation
 import GnosticACPWire
 
-/// An ACP `session/update` value as the Runtime sent it.
+/// An ACP `session/update` notification as the Runtime sent it.
 ///
 /// ADR 0021 requires the Timeline journal to store ACP updates exactly as
-/// received. A known update kind decodes into a fixed-field type that drops
-/// unmodeled fields, and a known kind whose payload does not fit its type does
-/// not decode at all. This value keeps the typed projection for Gnostic's own
-/// consumers and the received JSON for the journal.
+/// received. A decoded value cannot do that. A known kind decodes into a type
+/// that drops unmodeled fields, and even a generic JSON value changes number
+/// text, collapses duplicate keys, loses key order, and cannot always be
+/// encoded again. This value therefore keeps the text of the received frame,
+/// which is one line of JSON-RPC, and projects the typed update from it.
 ///
-/// The encoding is the received JSON object, so the journal layout is unchanged.
+/// The journal stores the frame as a JSON string, which has no nesting depth
+/// and is not re-encoded. An update that the earlier journal shape stored as a
+/// JSON object also reads as this type, with no frame.
+///
 /// This type lives in `GnosticCore`, outside the stable products, because it
 /// carries an ACP wire value.
 public struct ReceivedACPUpdate: Codable, Sendable, Equatable {
-    /// The typed projection. A known kind whose payload does not fit its type
-    /// projects as `.other(sessionUpdate:fields:)`, which typed consumers skip.
-    public let update: ACPSessionUpdate
-
-    /// The received JSON object when `update` cannot reproduce it, else `nil`.
-    ///
-    /// Keeping this `nil` for a faithful projection gives one canonical value
-    /// for one journal payload.
-    public let receivedOverride: ACPValue?
-
-    /// The JSON object that the journal stores for this update.
-    public var receivedValue: ACPValue {
-        receivedOverride ?? Self.encoded(update) ?? .null
+    private enum Storage: Sendable, Equatable {
+        /// The received frame text and its typed projection.
+        case frame(String, update: ACPSessionUpdate?)
+        /// An update stored in the earlier typed shape.
+        case typed(ACPSessionUpdate)
     }
 
-    /// Wraps an update that has no information beyond its typed form.
-    public init(_ update: ACPSessionUpdate) {
-        self.update = update
-        self.receivedOverride = Optional<ACPValue>.none
+    private let storage: Storage
+
+    /// The exact text of the received `session/update` line, without its newline.
+    ///
+    /// It is `nil` for an update that the earlier journal shape stored as a typed object.
+    public var frame: String? {
+        guard case let .frame(text, _) = storage else { return nil }
+        return text
     }
 
-    /// Wraps the received JSON object.
+    /// The typed projection, which drives Gnostic's own consumers.
     ///
-    /// Returns `nil` when `received` is not an object with a string
-    /// `sessionUpdate`, because there is no update kind to project.
-    public init?(received: ACPValue) {
-        guard case let .object(fields) = received,
-              case let .string(kind)? = fields["sessionUpdate"] else { return nil }
-        let typed = Self.strictlyDecoded(received)
-            ?? .other(sessionUpdate: kind, fields: fields.filter { $0.key != "sessionUpdate" })
-        self.update = typed
-        // `ACPValue` is `ExpressibleByNilLiteral`, so a bare `nil` here would be `.null`.
-        if Self.encoded(typed) == received {
-            self.receivedOverride = Optional<ACPValue>.none
-        } else {
-            self.receivedOverride = received
+    /// It is `nil` when the frame does not fit the fixed ACP type of its update
+    /// kind, or when `update` is not an object with a `sessionUpdate`. Consumers skip such an
+    /// update. The frame is then the only record of it.
+    public var update: ACPSessionUpdate? {
+        switch storage {
+        case let .frame(_, update): update
+        case let .typed(update): update
         }
+    }
+
+    /// Wraps an update that exists only in its typed form.
+    public init(_ update: ACPSessionUpdate) {
+        storage = .typed(update)
+    }
+
+    /// Wraps the exact text of a received `session/update` line.
+    public init(frame: String) {
+        storage = .frame(frame, update: Self.projection(of: frame))
     }
 
     public init(from decoder: Decoder) throws {
-        let received = try decoder.singleValueContainer().decode(ACPValue.self)
-        guard let value = Self(received: received) else {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "An ACP update needs a string sessionUpdate"
-            ))
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            self.init(frame: text)
+        } else {
+            self.init(try container.decode(ACPSessionUpdate.self))
         }
-        self = value
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        try container.encode(receivedValue)
+        switch storage {
+        case let .frame(text, _): try container.encode(text)
+        case let .typed(update): try container.encode(update)
+        }
     }
 
-    /// The typed form, only when the received JSON fits its fixed type.
-    public static func strictlyDecoded(_ received: ACPValue) -> ACPSessionUpdate? {
-        guard let data = try? JSONEncoder().encode(received) else { return nil }
-        return try? JSONDecoder().decode(ACPSessionUpdate.self, from: data)
+    /// Decodes the frame's `params.update` strictly, as the Runtime transport always has.
+    private static func projection(of frame: String) -> ACPSessionUpdate? {
+        try? JSONDecoder().decode(Envelope.self, from: Data(frame.utf8)).params?.update
     }
 
-    private static func encoded(_ update: ACPSessionUpdate) -> ACPValue? {
-        guard let data = try? JSONEncoder().encode(update) else { return nil }
-        return try? JSONDecoder().decode(ACPValue.self, from: data)
+    private struct Envelope: Decodable {
+        let params: ACPSessionNotification?
+
+        private enum CodingKeys: String, CodingKey { case params }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            params = try? container.decode(ACPSessionNotification.self, forKey: .params)
+        }
     }
 }

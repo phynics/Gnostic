@@ -20,6 +20,15 @@ public struct ServeLogging: Sendable {
     public static func makeLogger(label: String = subsystem) -> Logger {
         Logger(label: label)
     }
+
+    /// Records a warning for a component that does not hold a logger.
+    ///
+    /// - Parameters:
+    ///   - message: The warning text. It must not contain Runtime content.
+    ///   - component: A suffix for the subsystem label.
+    public static func warn(_ message: String, component: String) {
+        makeLogger(label: "\(subsystem).\(component)").warning("\(message)")
+    }
 }
 
 /// A trace-enriched record emitted by the serve process.

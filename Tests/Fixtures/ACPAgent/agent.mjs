@@ -345,6 +345,17 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
         },
       });
     }
+    // Writes each line of GNOSTIC_ACP_FIXTURE_RAW_FRAMES_FILE to stdout as it is, after
+    // replacing `__SESSION__` with this Session's ID. The SDK would validate and reformat
+    // these frames, so the file is the only record of the bytes Gnostic receives.
+    if (promptText.includes("[fixture:raw-frames]")) {
+      const rawFrames = (await readFile(process.env.GNOSTIC_ACP_FIXTURE_RAW_FRAMES_FILE, "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0);
+      for (const line of rawFrames) {
+        process.stdout.write(`${line.replaceAll("__SESSION__", params.sessionId)}\n`);
+      }
+    }
     // Known kinds with fields beyond the fixed ACP types, and one whose payload does
     // not fit its type (`messageId` is a number). Gnostic must journal each exactly as sent.
     if (promptText.includes("[fixture:as-received]")) {

@@ -6,9 +6,10 @@ import GnosticProtocol
 
 /// One Gnostic-owned or ACP event in a Timeline's authoritative journal.
 ///
-/// ACP updates are retained exactly as received, including fields the typed
-/// form does not model, `_meta`, and update kinds this version of Gnostic does
-/// not recognize. A Turn admission
+/// ACP updates are retained as the text of the frame the Runtime sent, so the
+/// journal keeps fields the typed form does not model, `_meta`, update kinds
+/// this version of Gnostic does not recognize, and updates that do not fit
+/// their type. A Turn admission
 /// retains the prompt blocks and their canonical digest.
 public enum TimelineJournalPayload: Codable, Sendable, Equatable {
     case timelineCreated(
