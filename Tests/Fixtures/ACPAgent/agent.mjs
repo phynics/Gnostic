@@ -524,7 +524,22 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
     }
 
     const messageId = "fixture-message-1";
-    if (prompt.includes("[fixture:agent-message]")) {
+    const longMessage = /\[fixture:long-(chunk|agent-message)(?::(\d+))?\]/.exec(prompt);
+    if (longMessage) {
+      // One Runtime message over the live update bound. The text is 798 ASCII bytes, so a 4-byte
+      // scalar straddles the 800-byte mark, then repeated 4-, 2- and 3-byte scalars up to the
+      // requested size (2455 bytes by default). `long-chunk` sends it as one `agent_message_chunk`;
+      // `long-agent-message` sends it as one whole-message `agent_message` upsert.
+      let text = "a".repeat(798);
+      while (Buffer.byteLength(text) < Number(longMessage[2] ?? 2455)) text += "\u{1F600}\u00E9\u65E5";
+      text += "|end";
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: longMessage[1] === "chunk"
+          ? { sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text } }
+          : { sessionUpdate: "agent_message", messageId, content: [{ type: "text", text }] },
+      });
+    } else if (prompt.includes("[fixture:agent-message]")) {
       // A whole-message upsert replaces the accumulated text of its message.
       await client.notify(acp.methods.client.session.update, {
         sessionId: params.sessionId,

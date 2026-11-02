@@ -291,14 +291,30 @@ final class ACPDispatcher: Sendable {
             if existing.conflict {
                 throw JSONRPCMethodError.invalidParams("clientTurnID was already used with different content")
             }
-            if let error = existing.updates.last(where: \.isTerminalFailure) {
+            // Text longer than one update spans pages, and the terminal update
+            // comes last. A later page that fails ends this retry with that
+            // error, because a partial replay must not report `end_turn`.
+            var updates = existing.updates
+            var nextSequence = existing.nextSequence
+            while let after = nextSequence {
+                let page = try await client.replay(
+                    timelineID: record.timelineID,
+                    clientTurnID: turnID,
+                    message: text,
+                    afterSequence: after,
+                    providerID: try await boundProviderID(for: record)
+                )
+                updates += page.updates
+                nextSequence = page.updates.isEmpty ? nil : page.nextSequence
+            }
+            if let error = updates.last(where: \.isTerminalFailure) {
                 // A retry of a Turn whose insertion is unknown gets that state
                 // back, structured, and never a second prompt.
                 if error.reasonCode == "insertionUnknown" { throw RemoteTurnClientError.insertionUnknown }
                 throw JSONRPCMethodError.invalidState(error.text ?? "ACP turn did not complete")
             }
             publishUserMessage(sessionID: record.id, messageID: messageID, text: text, turnID: turnID)
-            for update in existing.updates {
+            for update in updates {
                 publishUpdate(
                     sessionID: record.id,
                     turnID: turnID,
@@ -309,7 +325,7 @@ final class ACPDispatcher: Sendable {
             publishState(
                 sessionID: record.id,
                 state: "idle",
-                stopReason: Self.endedUnspecified(existing.updates) ? nil : "end_turn",
+                stopReason: Self.endedUnspecified(updates) ? nil : "end_turn",
                 turnID: turnID
             )
             return .dictionary(["messageId": .string(messageID)])
@@ -445,36 +461,120 @@ final class ACPDispatcher: Sendable {
         var lastSequence = 0
         var endedUnspecified = false
 
+        var deliveredTextBytes = 0
+
+        func deliver(_ update: AscendantTurnUpdate, skippingPermissions skipped: Set<String> = []) async throws {
+            announce()
+            publishUpdate(
+                sessionID: record.id,
+                turnID: turnID,
+                update: update,
+                replayed: false
+            )
+            if update.carriesAssistantText { deliveredTextBytes += update.text?.utf8.count ?? 0 }
+            try await handlePermissionUpdate(
+                update,
+                sessionID: record.id,
+                timelineID: record.timelineID,
+                turnID: turnID,
+                skipping: skipped
+            )
+            lastSequence = max(lastSequence, update.sequence)
+            endedUnspecified = endedUnspecified || Self.endedUnspecified([update])
+        }
+
+        // Live events are best effort: a burst can overflow a buffer, and a
+        // Turn can complete with updates still in transit. Replay is the
+        // authoritative record, so it fills what the live path missed.
+        //
+        // Returns false when replay failed. A running Turn then keeps its
+        // position and tries again later, because moving past a gap would lose
+        // that text for good. Everything dropped here stays in replay.
+        func catchUp(turnEnded: Bool) async throws -> Bool {
+            var missed: [AscendantTurnUpdate] = []
+            var after = lastSequence
+            var replayFailed = false
+            var pages = 0
+            while true {
+                guard let page = try? await client.replay(
+                    timelineID: record.timelineID,
+                    clientTurnID: turnID,
+                    afterSequence: after,
+                    providerID: providerID
+                ) else {
+                    replayFailed = true
+                    break
+                }
+                guard let last = page.updates.last, last.sequence > after else { break }
+                missed += page.updates.filter { $0.sequence > after }
+                after = last.sequence
+                pages += 1
+                // A running Turn can add pages as fast as they are read, so one
+                // pass is bounded and the prompt loop still sees completion. Only
+                // replay can say the Turn is terminal: a failed call does not, as
+                // the Node's Turn can outlive it.
+                guard page.nextSequence != nil, page.terminal || pages < Self.catchUpPagesPerPass else { break }
+            }
+            // A partial replay can't show whether a pending request was resolved
+            // on the page that failed, so a running Turn delivers none of it.
+            if replayFailed && !turnEnded { return false }
+            let skipped = ACPReplayCatchUp.permissionsToSkip(in: missed, turnEnded: turnEnded)
+            for update in missed where update.sequence > lastSequence {
+                let adjusted = ACPReplayCatchUp.removingDeliveredText(
+                    from: update,
+                    deliveredTextBytes: deliveredTextBytes
+                )
+                if let adjusted {
+                    try await deliver(adjusted, skippingPermissions: skipped)
+                } else {
+                    lastSequence = max(lastSequence, update.sequence)
+                }
+            }
+            return !replayFailed
+        }
+
         while true {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(40))
 
-            for update in await inbox.drain(afterSequence: lastSequence) {
-                announce()
-                publishUpdate(
-                    sessionID: record.id,
-                    turnID: turnID,
-                    update: update,
-                    replayed: false
-                )
-                try await handlePermissionUpdate(
-                    update,
-                    sessionID: record.id,
-                    timelineID: record.timelineID,
-                    turnID: turnID
-                )
-                lastSequence = max(lastSequence, update.sequence)
-                endedUnspecified = endedUnspecified || Self.endedUnspecified([update])
+            drained: for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
+                if update.sequence > lastSequence + 1, try await !catchUp(turnEnded: false) { break drained }
+                if update.sequence == lastSequence + 1 {
+                    try await deliver(update)
+                } else if update.sequence > lastSequence {
+                    // A bounded pass stopped short of this update. Replay still holds it.
+                    break drained
+                }
             }
 
             switch await completion.value() {
-            case .completed(let result): return (result, lastSequence, endedUnspecified)
-            case .failed(let failure): throw failure.thrown
+            case .completed(let result):
+                // The owner may have stopped answering for only a moment, so a
+                // failure is retried before the client is told text may be missing.
+                var replayed = try await catchUp(turnEnded: true)
+                for _ in 0..<2 where !replayed {
+                    try await Task.sleep(for: .milliseconds(500))
+                    replayed = try await catchUp(turnEnded: true)
+                }
+                if !replayed {
+                    try await deliver(AscendantTurnUpdate(
+                        sequence: lastSequence,
+                        kind: .assistantText,
+                        text: AscendantTurnUpdate.truncationMarker
+                    ))
+                }
+                return (result, lastSequence, endedUnspecified)
+            case .failed(let failure):
+                _ = try await catchUp(turnEnded: true)
+                throw failure.thrown
             case .cancelled: throw CancellationError()
             case nil: break
             }
         }
     }
+
+    /// Replay pages one catch-up pass reads while a Turn is still running.
+    private static let catchUpPagesPerPass = 64
 
     /// Whether the Turn's terminal update records an idle without a stop reason.
     private static func endedUnspecified(_ updates: [AscendantTurnUpdate]) -> Bool {
@@ -515,10 +615,11 @@ final class ACPDispatcher: Sendable {
         _ update: AscendantTurnUpdate,
         sessionID: String,
         timelineID: UUID,
-        turnID: String
+        turnID: String,
+        skipping skipped: Set<String> = []
     ) async throws {
         let states = [update.permissionState].compactMap { $0 } + update.permissionStates
-        for state in states where state.status == "pending" {
+        for state in states where state.status == "pending" && !skipped.contains(state.correlationID) {
             guard requestedPermissionIDs.insert(state.correlationID).inserted else { continue }
             defer { requestedPermissionIDs.remove(state.correlationID) }
             let permissionToken = UUID()
