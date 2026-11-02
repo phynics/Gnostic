@@ -71,7 +71,7 @@ struct RuntimeObservationIntegrationTests {
             "transport-advertisements",
         ]
         let allowedLabels: Set<String> = [
-            "observe-runtime-instance", "observe-timeline", "observe-workspace", "observe-deadvertise",
+            "observe-runtime-instance", "observe-timeline", "observe-workspace", "observe-deadvertise", "observe-transport-state",
             "turn-observation", "workspace-handler", "workspace-query-responder", "turn",
             "turn-replay", "turn-cancel", "permission-handler", "permission-observation", "timeline-status",
             "timeline-management", "workspace-operations", "diagnostics", "discover-responder", "advertisement-teardown",
@@ -82,11 +82,15 @@ struct RuntimeObservationIntegrationTests {
         #expect(Set(snapshots.flatMap(\.liveEffects).map(\.originScope)).isSubset(of: allowedScopes))
         #expect(Set(snapshots.flatMap(\.liveEffects).map(\.label)).isSubset(of: allowedLabels))
         #expect(snapshots.flatMap(\.liveEffects).allSatisfy { $0.label.utf8.count <= 64 })
+        let subscription = try #require(snapshots.first { $0.name == "gnostic-subscription" })
+        #expect(subscription.liveEffects.contains { $0.label == "observe-transport-state" && $0.originScope == "gnostic-subscription" })
         let host = try #require(snapshots.first { $0.name == "node-runtime-host" })
         #expect(Set(host.liveEffects.map(\.label)).isSuperset(of: ["subscription", "transport"]))
 
         await runtime.shutdown()
         #expect((await runtime.observationSnapshot()).state == .disposed)
+        let stopped = await runtime.allEffectSnapshots()
+        #expect(stopped.flatMap(\.liveEffects).allSatisfy { $0.label != "observe-transport-state" })
     }
 
     private func makeManifest(namespace: String, ascendantID: UUID, timelineID: UUID) -> NodeManifest {

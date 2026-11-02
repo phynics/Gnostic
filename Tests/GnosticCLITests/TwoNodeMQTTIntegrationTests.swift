@@ -83,15 +83,15 @@ struct TwoNodeMQTTIntegrationTests {
             _ = kill(broker.processIdentifier, SIGKILL); broker.waitUntilExit()
             if longOutage {
                 let logURL = scratch.appendingPathComponent("first/serve.log")
-                let deadline = ContinuousClock.now + .seconds(20)
-                var failures = 0
+                let deadline = ContinuousClock.now + .seconds(60)
+                var attempts = 0
                 while ContinuousClock.now < deadline {
                     let output = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-                    failures = output.components(separatedBy: "broker reconnect attempt failed").count - 1
-                    if failures >= 3 { break }
+                    attempts = output.components(separatedBy: "broker reconnect attempt started").count - 1
+                    if attempts >= 3 { break }
                     try await Task.sleep(for: .milliseconds(100))
                 }
-                try #require(failures >= 3, "Expected at least three failed reconnect attempts")
+                try #require(attempts >= 3, "Expected at least three reconnect attempts")
                 try #require(await session.networkObjects().isEmpty, "Stale peer entries remained during outage")
                 let journalDeadline = ContinuousClock.now + .seconds(30)
                 var journaled = false

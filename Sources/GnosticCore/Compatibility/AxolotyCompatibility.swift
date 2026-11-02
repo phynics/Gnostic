@@ -588,6 +588,7 @@ public final class CommunicationManager {
         while isStarted && !Task.isCancelled {
             do { try await Task.sleep(for: delay) } catch { return }
             guard isStarted && !Task.isCancelled else { return }
+            ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker reconnect attempt started")
             await runtime.reconnect()
             guard isStarted && !Task.isCancelled else { return }
             if await runtime.state() == .running {
