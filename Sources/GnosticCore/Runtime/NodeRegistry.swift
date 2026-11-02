@@ -237,10 +237,23 @@ public actor NodeRegistry {
         for workspace in plan.workspaces {
             workspaces[workspace.id] = .init(id: workspace.id, uri: workspace.uri, status: .available, toolIDs: [])
         }
-        for attachment in plan.timelines.flatMap(\.attachments) where attachment.scope == .network {
+        // Seed one unresolved record for each network attachment the Node now
+        // holds: manifest attachments, and attachments rebuilt from the journal
+        // for Timelines a Runtime created or a client attached after launch.
+        // Resolution fetches their tool pages once the owning Node is
+        // discoverable. A detached Workspace has no intent and gets no record.
+        let seededAttachments = attachmentIntents
+            .sorted { $0.key.uuidString < $1.key.uuidString }
+            .flatMap(\.value)
+            .filter { $0.scope == .network }
+        for attachment in seededAttachments {
             guard let uri = attachment.uri else { continue }
-            if let existing = workspaces[attachment.workspaceID], existing.uri != uri {
-                throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
+            if let existing = workspaces[attachment.workspaceID] {
+                guard existing.uri == uri else { throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID) }
+                // A second attachment of the same Workspace adds nothing. A
+                // configured Workspace that a network attachment also names
+                // stays unresolved until discovery confirms it, as before.
+                if existing.status != .available { continue }
             }
             workspaces[attachment.workspaceID] = .init(id: attachment.workspaceID, uri: uri, status: .unavailable, toolIDs: [])
         }

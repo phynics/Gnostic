@@ -119,6 +119,13 @@ final class WorkspaceMCPGateway {
             return error(request.id, code: ACPv2Protocol.ErrorCode.invalidParams, "tools/call arguments must be an object.")
         }
         guard let tool = await availableTools().first(where: { $0.gatewayName == name }) else {
+            if let pending = pendingWorkspaceID(forToolName: name) {
+                return error(
+                    request.id,
+                    code: -32003,
+                    "Workspace \(pending.uuidString) is attached but unavailable: its Node is offline, revoked, or not discoverable yet. Retry when the Workspace is available."
+                )
+            }
             return error(request.id, code: -32003, "Workspace tool is not attached or is unavailable.")
         }
         guard timelineRegistry.attachedWorkspaceIDs(for: timelineID).contains(tool.workspaceID) else {
@@ -198,6 +205,14 @@ final class WorkspaceMCPGateway {
             }
         }
         return tools.sorted { $0.gatewayName < $1.gatewayName }
+    }
+
+    /// Names the attached Workspace a tool name belongs to, so a call to a
+    /// Workspace whose tools are not resolved yet fails with the cause.
+    private func pendingWorkspaceID(forToolName name: String) -> UUID? {
+        timelineRegistry.attachedWorkspaceIDs(for: timelineID).first {
+            name.hasPrefix(Self.gatewayToolName(workspaceID: $0, toolID: ""))
+        }
     }
 
     private static func gatewayToolName(workspaceID: UUID, toolID: String) -> String {

@@ -187,6 +187,81 @@ struct NodeRegistryTests {
         #expect(await registry.attachmentIntent(for: runtime.id).isEmpty)
     }
 
+    @Test("a restart seeds an unresolved Workspace record for each journal-recovered network attachment")
+    func recoveredNetworkAttachmentSeedsUnresolvedWorkspace() async throws {
+        let fixture = try Fixture()
+        let journal = try await RecoveredJournal(fixture: fixture)
+        let dynamicID = UUID()
+        let second = try await journal.createTimeline(title: "Second")
+        let first = try await journal.createTimeline(title: "First")
+        try await journal.attach(.network(dynamicID, uri: "workspace://dynamic"), to: first)
+        // A second Timeline attaching the same Workspace adds no second record.
+        try await journal.attach(.network(dynamicID, uri: "workspace://dynamic"), to: second)
+
+        let restarted = try await journal.restart()
+        let record = try #require(await restarted.workspace(id: dynamicID))
+        #expect(record.uri == "workspace://dynamic")
+        #expect(record.isAvailable == false)
+        #expect(record.toolIDs.isEmpty)
+        #expect(await restarted.unresolvedWorkspaceIDs().filter { $0 == dynamicID }.count == 1)
+        #expect(await restarted.snapshot().workspaceIDs.filter { $0 == dynamicID }.count == 1)
+        #expect(Set(await restarted.attachmentTargets(for: dynamicID).map(\.timelineID)) == [first, second])
+    }
+
+    @Test("a recovered attachment agrees with the manifest attachment of the same Workspace")
+    func recoveredAttachmentDoesNotConflictWithManifestAttachment() async throws {
+        let fixture = try Fixture()
+        let journal = try await RecoveredJournal(fixture: fixture)
+        let timelineID = try await journal.createTimeline(title: "Recovered")
+        try await journal.attach(.network(fixture.networkWorkspaceID, uri: "workspace://expected"), to: timelineID)
+
+        let restarted = try await journal.restart()
+        let record = try #require(await restarted.workspace(id: fixture.networkWorkspaceID))
+        #expect(record.uri == "workspace://expected")
+        #expect(await restarted.unresolvedWorkspaceIDs().filter { $0 == fixture.networkWorkspaceID }.count == 1)
+        #expect(await restarted.attachmentTargets(for: fixture.networkWorkspaceID).count == 2)
+    }
+
+    @Test("a recovered attachment with another URI than a configured Workspace fails startup")
+    func recoveredAttachmentURIConflictIsRejected() async throws {
+        let fixture = try Fixture()
+        let journal = try await RecoveredJournal(fixture: fixture)
+        let timelineID = try await journal.createTimeline(title: "Conflict")
+        try await journal.attach(.network(fixture.networkWorkspaceID, uri: "workspace://other"), to: timelineID)
+
+        await #expect(throws: NodeRuntimeError.invalidWorkspaceURI(fixture.networkWorkspaceID)) {
+            _ = try await journal.restart()
+        }
+    }
+
+    @Test("a detached Workspace is not seeded after restart")
+    func detachedWorkspaceIsNotRecovered() async throws {
+        let fixture = try Fixture()
+        let journal = try await RecoveredJournal(fixture: fixture)
+        let dynamicID = UUID()
+        let timelineID = try await journal.createTimeline(title: "Detached")
+        try await journal.attach(.network(dynamicID, uri: "workspace://dynamic"), to: timelineID)
+        try await journal.detach(dynamicID, from: timelineID)
+
+        let restarted = try await journal.restart()
+        #expect(await restarted.workspace(id: dynamicID) == nil)
+        #expect(await restarted.unresolvedWorkspaceIDs().contains(dynamicID) == false)
+        #expect(await restarted.attachmentTargets(for: dynamicID).isEmpty)
+    }
+
+    @Test("a recovered local attachment seeds no network Workspace record")
+    func recoveredLocalAttachmentIsNotSeeded() async throws {
+        let fixture = try Fixture()
+        let journal = try await RecoveredJournal(fixture: fixture)
+        let localID = UUID()
+        let timelineID = try await journal.createTimeline(title: "Local")
+        try await journal.attach(.local(localID), to: timelineID)
+
+        let restarted = try await journal.restart()
+        #expect(await restarted.attachmentIntent(for: timelineID) == [.local(localID)])
+        #expect(await restarted.workspace(id: localID) == nil)
+    }
+
     @Test("a failed required projection restores the accepted Timeline record")
     func projectionFailureCompensatesRegistryMutation() async throws {
         struct ProjectionFailure: Error {}
@@ -260,6 +335,54 @@ struct NodeRegistryTests {
         }
         #expect(await registry.timeline(id: fixture.operated.id)?.timeline.title == "Operated")
         #expect(await registry.listTimelines().count == 2)
+    }
+
+    /// A Node journal on disk that the test restarts a registry from, the way
+    /// `gnostic serve` rebuilds its registry from the journal.
+    private struct RecoveredJournal {
+        let fixture: Fixture
+        let directory: URL
+        let registry: NodeRegistry
+        let lease = UUID()
+
+        init(fixture: Fixture) async throws {
+            self.fixture = fixture
+            directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("node-registry-recovered-workspace-tests", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            registry = try NodeRegistry(
+                plan: fixture.plan,
+                operatedTimelines: [fixture.operated],
+                timelineJournals: TimelineJournalStore(directoryURL: directory)
+            )
+            await registry.activateBackendLease(lease, for: fixture.ascendantID)
+        }
+
+        func createTimeline(title: String) async throws -> UUID {
+            try await registry.registerRuntimeTimeline(
+                fixture.runtimeTimeline(title: title),
+                ascendantID: fixture.ascendantID,
+                backendLease: lease
+            ).id
+        }
+
+        func attach(_ attachment: NodeManifest.WorkspaceAttachment, to timelineID: UUID) async throws {
+            try await registry.upsertAttachmentIntent(attachment, for: timelineID)
+        }
+
+        func detach(_ workspaceID: UUID, from timelineID: UUID) async throws {
+            try await registry.removeAttachmentIntent(workspaceID: workspaceID, from: timelineID)
+        }
+
+        func restart() async throws -> NodeRegistry {
+            let reader = TimelineJournalStore(directoryURL: directory)
+            return try NodeRegistry(
+                plan: fixture.plan,
+                operatedTimelines: [fixture.operated],
+                timelineJournals: reader,
+                timelineJournalProjections: try await reader.timelineProjections()
+            )
+        }
     }
 
     private struct Fixture: Sendable {

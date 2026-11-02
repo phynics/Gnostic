@@ -574,6 +574,31 @@ struct WorkspaceMCPGatewayConformanceTests {
         #expect(fixture.service.invocations.isEmpty)
     }
 
+    @Test("a Workspace whose tools resolve after the Session started becomes listed and callable")
+    @MainActor
+    func toolsResolvedAfterSessionStart() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.gateway.stop() }
+        let toolName = fixture.toolName
+        // The attachment survived a restart; its tool pages have not arrived.
+        fixture.service.workspaceReference = fixture.reference(status: .unavailable, tools: [])
+
+        #expect(try await fixture.listedTools().isEmpty)
+        let early = try await fixture.call()
+        #expect(early.message?.error?.code == -32003)
+        #expect(early.message?.error?.message.contains(fixture.workspaceID.uuidString) == true)
+        #expect(early.message?.error?.message.contains("attached but unavailable") == true)
+        #expect(fixture.service.invocations.isEmpty)
+
+        // Resolution completes while the same gateway, and so the same Session, is live.
+        fixture.service.workspaceReference = fixture.reference(tools: [Self.searchTool()])
+
+        #expect(try await fixture.listedTools()[toolName] != nil)
+        let late = try await fixture.call()
+        #expect(late.message?.error == nil)
+        #expect(fixture.service.invocations.count == 1)
+    }
+
     @Test("a permission requirement added after tools/list applies to the next call")
     @MainActor
     func permissionAddedAfterListing() async throws {
