@@ -62,6 +62,17 @@ struct ACPReplayCatchUpTests {
         #expect(result?.text == "CD" + AscendantTurnUpdate.truncationMarker)
     }
 
+    @Test("after a gap a snapshot yields the marker, never text cut inside a scalar")
+    func snapshotAfterAGapYieldsTheMarker() {
+        // The client holds "a" and "a", and missed "é": two bytes would end inside "é".
+        let result = ACPReplayCatchUp.removingDeliveredText(
+            from: snapshot("aéa"),
+            deliveredTextBytes: 2,
+            deliveredTextIsContiguous: false
+        )
+        #expect(result?.text == AscendantTurnUpdate.truncationMarker)
+    }
+
     @Test("a snapshot keeps its tool states when it adds no text")
     func snapshotKeepsToolStates() {
         let update = AscendantTurnUpdate(

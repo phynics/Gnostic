@@ -485,30 +485,54 @@ final class ACPDispatcher: Sendable {
 
         // Live events are best effort: a burst can overflow a buffer, and a
         // Turn can complete with updates still in transit. Replay is the
-        // authoritative record, so it fills what the live path missed. A
-        // failed replay leaves the gap, because the owner may be gone.
-        func catchUp(turnEnded: Bool) async throws {
+        // authoritative record, so it fills what the live path missed.
+        //
+        // Returns false when replay failed, because the owner may be gone.
+        // What is missing then can't be recovered, so the client is told.
+        var deliveredTextIsContiguous = true
+
+        func markPossibleLoss() async throws {
+            deliveredTextIsContiguous = false
+            try await deliver(AscendantTurnUpdate(
+                sequence: lastSequence,
+                kind: .assistantText,
+                text: AscendantTurnUpdate.truncationMarker
+            ))
+        }
+
+        func catchUp(turnEnded: Bool) async throws -> Bool {
             var missed: [AscendantTurnUpdate] = []
             var after = lastSequence
-            while let page = try? await client.replay(
-                timelineID: record.timelineID,
-                clientTurnID: turnID,
-                afterSequence: after,
-                providerID: providerID
-            ), let last = page.updates.last, last.sequence > after {
+            var replayFailed = false
+            while true {
+                guard let page = try? await client.replay(
+                    timelineID: record.timelineID,
+                    clientTurnID: turnID,
+                    afterSequence: after,
+                    providerID: providerID
+                ) else {
+                    replayFailed = true
+                    break
+                }
+                guard let last = page.updates.last, last.sequence > after else { break }
                 missed += page.updates.filter { $0.sequence > after }
                 after = last.sequence
                 guard page.nextSequence != nil else { break }
             }
             let skipped = ACPReplayCatchUp.permissionsToSkip(in: missed, turnEnded: turnEnded)
             for update in missed where update.sequence > lastSequence {
-                let adjusted = ACPReplayCatchUp.removingDeliveredText(from: update, deliveredTextBytes: deliveredTextBytes)
+                let adjusted = ACPReplayCatchUp.removingDeliveredText(
+                    from: update,
+                    deliveredTextBytes: deliveredTextBytes,
+                    deliveredTextIsContiguous: deliveredTextIsContiguous
+                )
                 if let adjusted {
                     try await deliver(adjusted, skippingPermissions: skipped)
                 } else {
                     lastSequence = max(lastSequence, update.sequence)
                 }
             }
+            return !replayFailed
         }
 
         while true {
@@ -516,16 +540,18 @@ final class ACPDispatcher: Sendable {
             try await Task.sleep(for: .milliseconds(40))
 
             for update in await inbox.drain(afterSequence: lastSequence) where update.sequence > lastSequence {
-                if update.sequence > lastSequence + 1 { try await catchUp(turnEnded: false) }
-                if update.sequence > lastSequence { try await deliver(update) }
+                if update.sequence > lastSequence + 1 { _ = try await catchUp(turnEnded: false) }
+                guard update.sequence > lastSequence else { continue }
+                if update.sequence > lastSequence + 1 { try await markPossibleLoss() }
+                try await deliver(update)
             }
 
             switch await completion.value() {
             case .completed(let result):
-                try await catchUp(turnEnded: true)
+                if try await !catchUp(turnEnded: true) { try await markPossibleLoss() }
                 return (result, lastSequence, endedUnspecified)
             case .failed(let failure):
-                try await catchUp(turnEnded: true)
+                _ = try await catchUp(turnEnded: true)
                 throw failure.thrown
             case .cancelled: throw CancellationError()
             case nil: break
