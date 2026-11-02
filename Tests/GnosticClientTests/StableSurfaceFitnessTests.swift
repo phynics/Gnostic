@@ -251,6 +251,50 @@ struct StableSurfaceFitnessTests {
         #expect(problems.contains { $0.contains("GnosticBrandNewError") && $0.contains("not classified") }, "\(problems)")
     }
 
+    @Test("the enum policy check sees indirect and backtick-escaped cases")
+    func enumPolicyCatchesUnusualCaseSyntax() throws {
+        let baselines = try Self.products.map { try Self.baselineLines(of: $0) }.map { lines in
+            lines.flatMap { line -> [String] in
+                line.hasPrefix("public enum NetworkCatalogChange")
+                    ? [line, "  indirect case recursive(GnosticProtocol::NetworkCatalogChange)", "  case `default`"]
+                    : [line]
+            }
+        }
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("NetworkCatalogChange") && $0.contains("recursive") }, "\(problems)")
+        #expect(problems.contains { $0.contains("NetworkCatalogChange") && $0.contains("default") }, "\(problems)")
+    }
+
+    @Test("the enum policy check does not let a nested enum borrow another enum's row")
+    func enumPolicyCatchesANestedEnumWithABorrowedName() throws {
+        let baselines = try Self.products.map { try Self.baselineLines(of: $0) }.map { lines in
+            lines.flatMap { line -> [String] in
+                line.hasPrefix("public struct Project :") ? [
+                    line, "  public struct Extra {", "    public enum Kind {",
+                    "      case local", "      case scratch", "    }", "  }",
+                ] : [line]
+            }
+        }
+        let problems = Self.enumPolicyProblems(baselines: baselines, declaration: try Self.declaration())
+        #expect(problems.contains { $0.contains("Project.Extra.Kind") && $0.contains("not classified") }, "\(problems)")
+    }
+
+    @Test("the enum scan names an enum by its full nominal or extension scope")
+    func enumScanTracksFullScope() {
+        let enums = Self.publicEnums(in: [
+            "public struct Unrelated {", "  public func body() -> Swift::Int {", "    switch self {", "    case .a: return 1",
+            "    }", "  }", "}",
+            "extension GnosticProtocol::Carrier.Inner : Swift::Sendable {", "  public enum Mode {", "    case on",
+            "    public var name: Swift::String {", "      switch self {", "      case .on: return \"{\"", "      }", "    }",
+            "  }", "}",
+            "@frozen indirect public enum Tree {", "  case leaf", "  indirect case node(left: Tree, right: Tree), `default`", "}",
+            "public struct Generic<T>", "  where T : Swift::Sendable", "{", "  public enum Nested {", "    case one", "  }", "}",
+        ])
+        #expect(enums.map(\.name) == ["Carrier.Inner.Mode", "Tree", "Generic.Nested"])
+        #expect(enums.first { $0.name == "Carrier.Inner.Mode" }?.cases == ["on"])
+        #expect(enums.first { $0.name == "Tree" }?.cases == ["leaf", "node", "default"])
+    }
+
     private static func declaration() throws -> String {
         try String(
             contentsOf: root.appendingPathComponent("Documentation/Compatibility/0.5.0.md"),
@@ -258,12 +302,12 @@ struct StableSurfaceFitnessTests {
         )
     }
 
-    /// A public enum read from a baseline. A nested enum is named `Parent.Child`,
-    /// as the policy table writes it. A namespace has no cases.
+    /// A public enum read from a baseline. A nested enum has its full scope in
+    /// its name, such as `Project.Kind`, as the policy table writes it. A namespace
+    /// has no cases.
     struct BaselineEnum {
         var name: String
         var isError: Bool
-        var indent: Int
         var cases: [String] = []
     }
 
@@ -272,38 +316,125 @@ struct StableSurfaceFitnessTests {
     /// says so, and `enumPolicyProblems` fails if that sentence goes away.
     private static let namedExemptions: Set<String> = ["GnosticJSONValue"]
 
-    /// Reads every public enum, with its cases, from baseline lines. The compiler
-    /// writes one declaration per line and indents members by two spaces.
-    static func publicEnums(in lines: [String]) -> [BaselineEnum] {
-        var finished: [BaselineEnum] = []
-        var open: [BaselineEnum] = []
-        var topLevel = ""
-        for line in lines {
-            let indent = line.prefix { $0 == " " }.count
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-            while let last = open.last, last.indent >= indent { finished.append(open.removeLast()) }
-            let words = trimmed.split(separator: " ").map(String.init)
-            if let last = open.last, indent == last.indent + 2, trimmed.hasPrefix("case ") {
-                open[open.count - 1].cases += caseNames(in: String(trimmed.dropFirst("case ".count)))
-                continue
-            }
-            if indent == 0, let keyword = words.firstIndex(where: { ["struct", "class", "actor", "enum"].contains($0) }),
-               words.count > keyword + 1 {
-                topLevel = words[keyword + 1].trimmingCharacters(in: CharacterSet(charactersIn: ":<"))
-            }
-            guard let keyword = words.firstIndex(of: "enum"), keyword > 0, words[keyword - 1] == "public",
-                  words.count > keyword + 1 else { continue }
-            let name = words[keyword + 1].trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-            let qualified = indent == 0 ? name : "\(open.last?.name ?? topLevel).\(name)"
-            open.append(BaselineEnum(name: qualified, isError: trimmed.contains("Swift::Error"), indent: indent))
-        }
-        while let last = open.popLast() { finished.append(last) }
-        return finished
+    /// A brace scope in a baseline. A type or extension scope has a full name;
+    /// a function or accessor body has none. An enum scope knows its entry.
+    private struct BaselineScope {
+        var name: String?
+        var enumIndex: Int?
     }
 
-    /// The case names of one `case` line: `a`, `a(Type)`, `a(x: X, y: Y)`, or `a, b`.
-    /// Only a comma outside parentheses separates two cases.
+    /// A type or extension declaration read from one baseline line.
+    private struct BaselineDeclaration {
+        var name: String
+        var isExtension: Bool
+        var isPublicEnum: Bool
+        var isError: Bool
+    }
+
+    /// Reads every public enum, with its cases, from baseline lines. Scope comes
+    /// from braces, so a nested type or an extension target qualifies the name.
+    /// A case counts only when its line is directly inside the enum.
+    static func publicEnums(in lines: [String]) -> [BaselineEnum] {
+        var found: [BaselineEnum] = []
+        var scopes: [BaselineScope] = []
+        var pending: BaselineDeclaration?
+        for line in lines {
+            let text = droppingLeadingAttributes(line.trimmingCharacters(in: .whitespaces))
+            guard !text.isEmpty, !text.hasPrefix("//"), !text.hasPrefix("#") else { continue }
+            if let enumIndex = scopes.last?.enumIndex, let cases = caseClause(of: text) {
+                found[enumIndex].cases += caseNames(in: cases)
+                continue
+            }
+            if let declaration = declaration(in: text) { pending = declaration }
+            var inString = false
+            var previous: Character?
+            for character in text {
+                defer { previous = character }
+                if character == "\"", previous != "\\" { inString.toggle() }
+                guard !inString else { continue }
+                if character == "{" {
+                    scopes.append(open(pending, within: scopes, found: &found))
+                    pending = nil
+                } else if character == "}", !scopes.isEmpty {
+                    scopes.removeLast()
+                }
+            }
+        }
+        return found
+    }
+
+    /// The scope a `{` opens. A type inside a function body stays unnamed, because
+    /// no host can reach it.
+    private static func open(
+        _ declaration: BaselineDeclaration?,
+        within scopes: [BaselineScope],
+        found: inout [BaselineEnum]
+    ) -> BaselineScope {
+        guard let declaration else { return BaselineScope() }
+        let parents = scopes.map(\.name)
+        guard !parents.contains(where: { $0 == nil }) else { return BaselineScope() }
+        let name = declaration.isExtension
+            ? declaration.name
+            : (parents.compactMap { $0 } + [declaration.name]).joined(separator: ".")
+        guard declaration.isPublicEnum else { return BaselineScope(name: name) }
+        found.append(BaselineEnum(name: name, isError: declaration.isError))
+        return BaselineScope(name: name, enumIndex: found.count - 1)
+    }
+
+    /// Reads a type or extension declaration. Modifiers can stand in any order
+    /// before the keyword, as in `indirect public enum`.
+    private static func declaration(in text: String) -> BaselineDeclaration? {
+        let words = text.split(separator: " ").map(String.init)
+        let modifiers: Set<String> = [
+            "public", "open", "package", "internal", "final", "indirect", "nonisolated", "distributed",
+        ]
+        let keywords: Set<String> = ["struct", "class", "actor", "enum", "protocol", "extension"]
+        guard let keyword = words.firstIndex(where: { !modifiers.contains($0) && !$0.hasPrefix("@") }),
+              keywords.contains(words[keyword]), words.count > keyword + 1 else { return nil }
+        let target = words[keyword + 1]
+        guard !["func", "var", "let", "subscript", "init"].contains(target) else { return nil }
+        let unqualified = target.components(separatedBy: "::").last ?? target
+        let name = String(unqualified.prefix { $0 != ":" && $0 != "<" && $0 != "{" })
+            .replacingOccurrences(of: "`", with: "")
+        return BaselineDeclaration(
+            name: name,
+            isExtension: words[keyword] == "extension",
+            isPublicEnum: words[keyword] == "enum" && words[..<keyword].contains("public"),
+            isError: text.contains("Swift::Error") || text.contains("Swift.Error")
+        )
+    }
+
+    /// Removes attributes in front of a declaration, such as `@frozen` or
+    /// `@available(macOS 10.15, *)`.
+    private static func droppingLeadingAttributes(_ text: String) -> String {
+        var rest = Substring(text)
+        while rest.hasPrefix("@") {
+            let word = rest.prefix { $0 != " " && $0 != "(" }
+            rest = rest.dropFirst(word.count)
+            if rest.hasPrefix("(") {
+                var depth = 0
+                while let character = rest.first {
+                    if character == "(" { depth += 1 }
+                    if character == ")" { depth -= 1 }
+                    rest = rest.dropFirst()
+                    if depth == 0 { break }
+                }
+            }
+            rest = rest.drop { $0 == " " }
+        }
+        return String(rest)
+    }
+
+    /// What follows `case` or `indirect case`, or nil for any other line.
+    private static func caseClause(of text: String) -> String? {
+        for prefix in ["case ", "indirect case "] where text.hasPrefix(prefix) {
+            return String(text.dropFirst(prefix.count))
+        }
+        return nil
+    }
+
+    /// The case names of one `case` line: `a`, `a(Type)`, `a(x: X, y: Y)`, `a, b`,
+    /// or `` `default` ``. Only a comma outside parentheses separates two cases.
     private static func caseNames(in declaration: String) -> [String] {
         var pieces: [String] = [""]
         var depth = 0
@@ -317,7 +448,9 @@ struct StableSurfaceFitnessTests {
             }
         }
         return pieces.compactMap { piece in
-            let name = piece.trimmingCharacters(in: .whitespaces).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+            let name = piece.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "`", with: "")
+                .prefix { $0.isLetter || $0.isNumber || $0 == "_" }
             return name.isEmpty ? nil : String(name)
         }
     }
