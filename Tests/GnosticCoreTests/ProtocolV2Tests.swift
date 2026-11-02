@@ -274,6 +274,53 @@ struct ProtocolV2Tests {
         #expect(await catalog.workspaceAttachmentStatus(id: workspaceID) == .unavailable)
     }
 
+    @Test("a source can't remove a Workspace tool that another provider supplied by query")
+    func strangerCannotRemoveAQueriedWorkspaceTool() async throws {
+        let workspaceID = UUID()
+        let providerID = "provider-\(UUID().uuidString.lowercased())"
+        let definitions = (0..<16).map { index in
+            GnosticWorkspaceToolDefinition(
+                id: "tool-\(index)",
+                name: "Tool \(index)",
+                description: String(repeating: "paged tool metadata ", count: 8),
+                parametersSchema: ["type": .string("object")],
+                requiresPermission: false
+            )
+        }
+        let object = GnosticWorkspaceObject(workspace: GnosticWorkspaceReference(
+            id: workspaceID, uri: "workspace://paged-tools", tools: definitions
+        ))
+        let catalog = NetworkCatalog()
+        await catalog.ingest(AdvertiseEventSnapshot(sourceId: providerID, object: CoatyObjectSnapshot(
+            objectId: object.objectId.string,
+            coreType: .coatyObject,
+            objectType: GnosticObjectType.workspace,
+            name: object.name,
+            payload: String(decoding: try JSONEncoder().encode(object), as: UTF8.self)
+        )))
+        let generation = try #require(await catalog.workspaceToolCatalogGenerations(id: workspaceID)[providerID])
+        let lastTool = try #require(definitions.last)
+        let page = try workspaceToolResponse(
+            workspaceID: workspaceID, providerID: providerID, definition: lastTool, page: definitions.count - 1
+        )
+        #expect(await catalog.ingestWorkspaceToolQueryResponse(
+            page, workspaceID: workspaceID, providerID: providerID, generation: generation
+        ))
+        let toolObjectID = try #require(page.object?.objectId)
+
+        await catalog.ingest(DeadvertiseEventSnapshot(
+            sourceId: "stranger-\(UUID().uuidString.lowercased())",
+            objectIds: [toolObjectID]
+        ))
+
+        let descriptor = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(descriptor.tools.contains { $0.id == lastTool.id })
+
+        await catalog.ingest(DeadvertiseEventSnapshot(sourceId: providerID, objectIds: [toolObjectID]))
+        let afterOwner = try #require(await catalog.workspaceDescriptor(id: workspaceID, providerID: providerID))
+        #expect(!afterOwner.tools.contains { $0.id == lastTool.id })
+    }
+
     @Test("a partial Workspace tool query stays incomplete until the owner sends its terminal page")
     func workspaceToolCatalogRequiresTerminalPage() async throws {
         let workspaceID = UUID()
