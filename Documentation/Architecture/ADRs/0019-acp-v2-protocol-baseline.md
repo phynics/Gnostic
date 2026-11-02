@@ -6,6 +6,12 @@
 > single-active-Turn admission and busy rejection. §3's updates are durably
 > journaled. Session ambiguity follows ADR 0021 §6.
 >
+> **Amended by owner decision D19 on #551 (2026-11-02, issue #675):**
+> `GnosticProtocol` no longer re-exports the ACP declarations of §8. It
+> publishes no `ACP*` typealias, because ACP v2 is a preview outside the 0.5.x
+> promise and `GnosticProtocol` is a stable product. Every consumer imports
+> `GnosticACPWire` directly, as the standalone Runtime already did.
+>
 > **Amended (2026-10-21):** an unanswered permission request is answered with
 > the v2 `cancelled` outcome instead of JSON-RPC error `-32800` (T3, §4). The
 > pinned ACP v2 SDK rejects the agent's request promise when the client answers
@@ -236,11 +242,11 @@ switches.
 
 One ACP v2 wire model, owned by Gnostic and checked against the ACP JSON schema
 at the recorded revision (#572), replaces `aptove/swift-sdk`. It lives in the
-Foundation-only `GnosticACPWire` target. `GnosticProtocol` re-exports its ACP
-declarations for host consumers. The standalone PositronicKit Runtime imports
+Foundation-only `GnosticACPWire` target. The standalone PositronicKit Runtime imports
 `GnosticACPWire` directly so its dependency closure does not include Axoloty.
-The `gnostic acp` frontend and the `acp-client` backend continue to use the
-re-export through `GnosticProtocol`.
+The `gnostic acp` frontend and the `acp-client` backend import it directly as
+well. `GnosticProtocol` re-exported the declarations until D19 (see the
+amendment above) and does not now.
 
 The model preserves unknown enum values that have a fallback, and `_`
 extensions. Removing the SDK is a dependency change with its own resolution

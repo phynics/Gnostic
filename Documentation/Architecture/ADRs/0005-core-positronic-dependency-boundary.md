@@ -7,9 +7,19 @@
 **Amended by [ADR 0021](0021-gnostic-v0-5-architecture-reconciliation.md) (2026-10-20).** No host or test target may depend on PositronicKit. The only permitted dependency is the standalone PositronicKit 7 reference Runtime executable. The harness-target exception and transitional allow-list no longer apply.
 
 **Amended by owner direction on #609 (2026-10-22).** The standalone Runtime
-uses the Gnostic-owned `GnosticACPWire` target. `GnosticProtocol` re-exports
-the ACP v2 declarations for its existing consumers. The Runtime does not depend
+uses the Gnostic-owned `GnosticACPWire` target. The Runtime does not depend
 on `GnosticProtocol`, because that target also links Axoloty.
+
+**Amended by owner decision D19 on #551 (2026-11-02, issue #675).**
+`GnosticProtocol` no longer re-exports the ACP v2 declarations. The 87 public
+typealiases are removed, because ACP v2 is a preview outside the 0.5.x
+stability promise and a stable product must not publish its names. A consumer
+that names an ACP wire type imports `GnosticACPWire` directly. The sections
+below that describe the re-export record the decision as it stood on #609.
+The type names the first Core inventory lists (`AscendantBackendHealth`,
+`GnosticAscendantObject`, `AscendantTurnError`, and the others) were renamed or
+removed by #675; see
+[the 0.5.0 compatibility declaration](../../Compatibility/0.5.0.md#stable-surface-names).
 
 Superseded for the Core dependency boundary by the GNO-PLAT-P7 Positronic
 backend extraction below. The historical investigation and the ACP
@@ -240,7 +250,8 @@ Runtime process does not use the Axoloty discovery or routing fabric.
 
 The ACP v2 declarations live in `GnosticACPWire`, a Gnostic-owned target with
 no Axoloty or PositronicKit dependency. `GnosticProtocol` depends on that target
-and publishes type aliases for its existing ACP names. The standalone Runtime
+and, until D19, published type aliases for its existing ACP names. It publishes
+none now. The standalone Runtime
 depends on `GnosticACPWire` directly. Its dependency closure does not include
 `GnosticProtocol`, Axoloty, `AxolotyWire`, or `AxolotyMQTT`.
 
@@ -253,16 +264,17 @@ ACP model. A second copy could drift from the wire model used by Gnostic.
 ### Dependency impact
 
 `Package.swift` adds the `GnosticACPWire` library product and target. The target
-uses only Foundation. `GnosticProtocol` adds a dependency on it and re-exports
-the existing ACP type names. The standalone Runtime imports it directly. No
+uses only Foundation. `GnosticProtocol` adds a dependency on it. The standalone
+Runtime imports it directly, and since D19 every other consumer does too. No
 third-party dependency or host target gains PositronicKit access.
 
 ### Fitness check
 
 `PositronicKitFirewallTests.standaloneRuntimeClosureIsIsolated` checks that the
 Runtime depends on `GnosticACPWire` and does not reach `GnosticProtocol`,
-Axoloty, `AxolotyWire`, or `AxolotyMQTT`. Existing consumers build against the
-ACP names re-exported by `GnosticProtocol`. `make verify` runs both checks.
+Axoloty, `AxolotyWire`, or `AxolotyMQTT`. `StableSurfaceFitnessTests.protocolPublishesNoACPAlias`
+checks that `GnosticProtocol` publishes no `ACP*` typealias (D19). `make verify`
+runs both checks.
 
 ### Reconsideration condition
 

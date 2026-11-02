@@ -1,0 +1,71 @@
+{
+  "$comment": "Rename and move map for #675. Read by stable-surface-675.mjs. Whole-word, case-sensitive matches only, so AscendantTurnUpdateStore is not touched by the AscendantTurnUpdate rule.",
+  "roots": ["Sources", "Tests"],
+  "types": {
+    "AscendantInteroperabilityCapability": "InteroperabilityCapability",
+    "AscendantBackendHealth": "GnosticRuntimeInstanceHealth",
+    "AscendantBackendCapabilities": "RuntimeInstanceCapabilities",
+    "AscendantBackendIdentity": "RuntimeInstanceIdentity",
+    "AscendantBackendTimeline": "RuntimeInstanceTimeline",
+    "AscendantTurnError": "TurnError",
+    "TimelineTurnTerminalOutcome": "TurnTerminalOutcome",
+    "TimelineTurnUpdate": "TurnSessionUpdate",
+    "AscendantTurnRequest": "TurnRequest",
+    "AscendantTurnResult": "TurnResult",
+    "AscendantTurnCancellationRequest": "TurnCancellationRequest",
+    "AscendantTurnCancellationResult": "TurnCancellationResult",
+    "AscendantTurnReplayRequest": "TurnReplayRequest",
+    "AscendantTurnReplay": "TurnReplay",
+    "AscendantTurnUpdateKind": "TurnUpdateKind",
+    "AscendantTurnUpdate": "TurnUpdate",
+    "AscendantToolStatus": "TurnToolStatus",
+    "AscendantToolState": "TurnToolState",
+    "AscendantPermissionStatus": "TurnPermissionStatus",
+    "AscendantPermissionState": "TurnPermissionState",
+    "AscendantPermissionResponse": "TurnPermissionResponse",
+    "AscendantDiagnostics": "RuntimeInstanceDiagnostics",
+    "DiagnosticsAscendantSummary": "DiagnosticsRuntimeInstanceSummary"
+  },
+  "moves": [
+    {
+      "from": "Sources/GnosticCore/Runtime/AscendantTurnUpdate.swift",
+      "to": "Sources/GnosticProtocol/TurnUpdate.swift",
+      "whole": true
+    },
+    {
+      "from": "Sources/GnosticCore/Providers/AscendantTurnProvider.swift",
+      "to": "Sources/GnosticProtocol/TurnWire.swift",
+      "symbols": ["AscendantTurnRequest", "AscendantTurnResult", "AscendantTurnReplayRequest", "AscendantTurnCancellationRequest", "AscendantTurnCancellationResult"]
+    },
+    {
+      "from": "Sources/GnosticCore/Providers/AscendantPermissionProvider.swift",
+      "to": "Sources/GnosticProtocol/TurnPermissionResponse.swift",
+      "symbols": ["AscendantPermissionResponse"]
+    },
+    {
+      "from": "Sources/GnosticCore/Providers/TimelineStatusProvider.swift",
+      "to": "Sources/GnosticProtocol/TimelineStatus.swift",
+      "symbols": ["TimelineStatusRequest", "TimelineStatus"]
+    },
+    {
+      "from": "Sources/GnosticCore/Providers/DiagnosticsProvider.swift",
+      "to": "Sources/GnosticProtocol/Diagnostics.swift",
+      "symbols": [
+        "DiagnosticsNodeRequest", "DiagnosticsTargetRequest", "DiagnosticsAscendantSummary", "DiagnosticsTimelineSummary",
+        "DiagnosticsWorkspaceSummary", "DiagnosticsTimelineSessionState", "DiagnosticsTimelineSessionRecovery",
+        "DiagnosticsTimelineJournalState", "DiagnosticsTimelineJournal", "DiagnosticsTurnCounters",
+        "DiagnosticsObserverDrain", "NodeDiagnostics", "AscendantDiagnostics", "TimelineDiagnostics"
+      ]
+    },
+    {
+      "from": "Sources/GnosticCore/Services/GnosticRawWireEvent.swift",
+      "to": "Sources/GnosticProtocol/GnosticRawWireEvent.swift",
+      "whole": true
+    },
+    {
+      "from": "Sources/GnosticCore/Services/NetworkCatalog.swift",
+      "to": "Sources/GnosticProtocol/NetworkCatalogChange.swift",
+      "symbols": ["NetworkCatalogChange"]
+    }
+  ]
+}
