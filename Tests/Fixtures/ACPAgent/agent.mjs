@@ -213,6 +213,9 @@ const app = acp.agent({ name: "gnostic-deterministic-acp-fixture" })
           if (category) return category;
         }
         if (typeof error?.message === "string") {
+          if (/^Workspace [0-9A-F-]{36} is attached but unavailable: /.test(error.message)) {
+            return "gateway-tool-unavailable";
+          }
           return gatewayFailureCategories.get(error.message) ?? "unclassified";
         }
         return "unclassified";

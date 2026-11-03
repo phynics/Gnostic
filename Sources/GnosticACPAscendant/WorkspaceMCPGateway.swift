@@ -25,6 +25,7 @@ final class WorkspaceMCPGateway {
     private let timelineJournalRecorder: TimelineJournalRecorder?
     private let permissionService: any AscendantBackendPermissionService
     private let activeTurn: @MainActor (UUID) -> (clientTurnID: String, sessionID: String)?
+    private let connectionTimeout: TimeInterval
     private var server: WorkspaceMCPHTTPServer?
 
     init(
@@ -33,8 +34,10 @@ final class WorkspaceMCPGateway {
         workspaceService: any AscendantBackendWorkspaceService,
         permissionService: any AscendantBackendPermissionService,
         timelineJournalRecorder: TimelineJournalRecorder? = nil,
+        connectionTimeout: TimeInterval = 10,
         activeTurn: @escaping @MainActor (UUID) -> (clientTurnID: String, sessionID: String)?
     ) {
+        self.connectionTimeout = connectionTimeout
         self.timelineID = timelineID
         self.timelineRegistry = timelineRegistry
         self.workspaceService = workspaceService
@@ -46,7 +49,7 @@ final class WorkspaceMCPGateway {
     func start() throws -> ACPMcpServer {
         if let server { return server.configuration }
         let token = "\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
-        let server = try WorkspaceMCPHTTPServer(token: token) { [weak self] request in
+        let server = try WorkspaceMCPHTTPServer(token: token, connectionTimeout: connectionTimeout) { [weak self] request in
             guard let self else { return nil }
             return await self.handle(request)
         }
@@ -119,6 +122,13 @@ final class WorkspaceMCPGateway {
             return error(request.id, code: ACPv2Protocol.ErrorCode.invalidParams, "tools/call arguments must be an object.")
         }
         guard let tool = await availableTools().first(where: { $0.gatewayName == name }) else {
+            if let pending = pendingWorkspaceID(forToolName: name) {
+                return error(
+                    request.id,
+                    code: -32003,
+                    "Workspace \(pending.uuidString) is attached but unavailable: its Node is offline, revoked, or not discoverable yet. Retry when the Workspace is available."
+                )
+            }
             return error(request.id, code: -32003, "Workspace tool is not attached or is unavailable.")
         }
         guard timelineRegistry.attachedWorkspaceIDs(for: timelineID).contains(tool.workspaceID) else {
@@ -200,6 +210,14 @@ final class WorkspaceMCPGateway {
         return tools.sorted { $0.gatewayName < $1.gatewayName }
     }
 
+    /// Names the attached Workspace a tool name belongs to, so a call to a
+    /// Workspace whose tools are not resolved yet fails with the cause.
+    private func pendingWorkspaceID(forToolName name: String) -> UUID? {
+        timelineRegistry.attachedWorkspaceIDs(for: timelineID).first {
+            name.hasPrefix(Self.gatewayToolName(workspaceID: $0, toolID: ""))
+        }
+    }
+
     private static func gatewayToolName(workspaceID: UUID, toolID: String) -> String {
         "workspace_\(workspaceID.uuidString.lowercased().replacingOccurrences(of: "-", with: ""))__\(toolID)"
     }
@@ -257,6 +275,7 @@ final class WorkspaceMCPGateway {
 private final class WorkspaceMCPHTTPServer {
     nonisolated private static let maximumRequestBytes = 1_048_576
     private let token: String
+    private let connectionTimeout: TimeInterval
     private let handler: @MainActor @Sendable (ACPJSONRPCRequest) async -> ACPJSONRPCResponse?
     private var socketFD: Int32 = -1
     private var acceptTask: Task<Void, Never>?
@@ -264,9 +283,11 @@ private final class WorkspaceMCPHTTPServer {
 
     init(
         token: String,
+        connectionTimeout: TimeInterval,
         handler: @escaping @MainActor @Sendable (ACPJSONRPCRequest) async -> ACPJSONRPCResponse?
     ) throws {
         self.token = token
+        self.connectionTimeout = connectionTimeout
         self.handler = handler
         try bind()
     }
@@ -286,6 +307,7 @@ private final class WorkspaceMCPHTTPServer {
             meta: nil
         )
         let fd = socketFD
+        let timeout = connectionTimeout
         acceptTask = Task.detached(
             executorPreference: BlockingIOTaskExecutor(label: "me.atkn.gnostic.acp.workspace-mcp")
         ) { [weak self] in
@@ -293,6 +315,9 @@ private final class WorkspaceMCPHTTPServer {
                 let client = accept(fd, nil, nil)
                 guard client >= 0 else { break }
                 guard let self else { Self.close(client); break }
+                // The loop serves one connection at a time. A client that connects and
+                // sends nothing would otherwise hold every later request behind it.
+                Self.setTimeout(timeout, on: client)
                 let payload = Self.readRequest(client)
                 let reply: HTTPReply
                 if let payload {
@@ -414,6 +439,16 @@ private final class WorkspaceMCPHTTPServer {
         let status: Int
         let body: Data
         var headers: [String: String] = [:]
+    }
+
+    /// Bounds each blocking read and write on `fd`, so a stalled client is dropped.
+    nonisolated private static func setTimeout(_ seconds: TimeInterval, on fd: Int32) {
+        // `tv_sec` and `tv_usec` have different integer types on Linux and Darwin.
+        var interval = timeval()
+        interval.tv_sec = numericCast(Int(seconds))
+        interval.tv_usec = numericCast(Int((seconds - seconds.rounded(.down)) * 1_000_000))
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &interval, socklen_t(MemoryLayout<timeval>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &interval, socklen_t(MemoryLayout<timeval>.size))
     }
 
     nonisolated private static func readRequest(_ fd: Int32) -> HTTPRequest? {

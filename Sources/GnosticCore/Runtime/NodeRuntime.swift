@@ -3,6 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
+import Logging
 
 /// Materializes a validated node manifest into one transport connection,
 /// per-Ascendant runtime adapters, and complete canonical advertisements.
@@ -86,7 +87,8 @@ public final class NodeRuntime {
         turnLogURL: URL? = nil,
         turnLogMaxBytes: Int = AscendantTurnUpdateStore.defaultMaxJournalBytes,
         timelineStoreDirectory: URL? = nil,
-        timelineJournalDirectory: URL? = nil
+        timelineJournalDirectory: URL? = nil,
+        workspaceLogger: Logger = ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).workspace")
     ) async throws {
         try NodeAssembly.validate(plan, adapters: adapters)
         self.plan = plan
@@ -138,7 +140,8 @@ public final class NodeRuntime {
                 projectionRelay: projectionRelay,
                 retirementSupervisor: retirementSupervisor,
                 runtimeTimelineDirectory: timelineStoreDirectory,
-                timelineJournals: timelineJournals
+                timelineJournals: timelineJournals,
+                logger: workspaceLogger
             )
             registry = products.registry
             backendSupervisor = products.supervisor

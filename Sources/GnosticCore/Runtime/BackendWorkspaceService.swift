@@ -109,6 +109,9 @@ final class GnosticWorkspaceBackendService: WorkspaceReferenceUpdating, Ascendan
     private var references: [UUID: BackendWorkspaceReference]
     private let catalog: NetworkCatalog
     private let networkWorkspaceInvoker: (any NetworkWorkspaceInvoking)?
+    /// Reports a recovered attachment whose URI conflicts with the Node's Workspace record.
+    /// The Node sets it once its registry exists.
+    var attachmentConflict: (@MainActor @Sendable (UUID, UUID) async -> NodeRegistry.WorkspaceAttachmentConflict?)?
 
     init(
         localWorkspaces: [UUID: any LocalWorkspace],
@@ -163,6 +166,12 @@ final class GnosticWorkspaceBackendService: WorkspaceReferenceUpdating, Ascendan
     }
 
     func invoke(_ invocation: BackendWorkspaceInvocation) async throws -> BackendWorkspaceResult {
+        if let timelineID = invocation.timelineID,
+           let conflict = await attachmentConflict?(timelineID, invocation.workspaceID) {
+            throw AscendantBackendError.invalidConfiguration(
+                "Workspace \(conflict.workspaceID.uuidString) is attached but unavailable: its recovered URI conflicts with the Node's record. Detach it or correct the URI."
+            )
+        }
         guard let reference = await reference(id: invocation.workspaceID), reference.status == .available else {
             throw AscendantBackendError.invalidConfiguration("Workspace \(invocation.workspaceID.uuidString) is unavailable.")
         }

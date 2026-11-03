@@ -5,6 +5,7 @@ import Foundation
 import GnosticClient
 import GnosticProtocol
 import GnosticWorkspaceTestSupport
+import Logging
 import Testing
 
 @Suite("Ascendant backend lifecycle")
@@ -1070,6 +1071,131 @@ struct BackendLifecycleTests {
         #expect(timeline.sessionRecovery?.message == "The journal records the Session as last confirmed live. Its current Runtime connection has not been verified.")
     }
 
+    @Test("a Node starts with a recovered attachment whose URI conflicts with its configured Workspace")
+    @MainActor
+    func nodeStartsWithConflictingRecoveredAttachment() async throws {
+        let ascendantID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000375")!
+        let timelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000376")!
+        let recoveredTimelineID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000377")!
+        let nodeID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000378")!
+        let workspaceID = UUID(uuidString: "A21D0000-0000-4000-8000-000000000379")!
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conflicting-recovered-attachment-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let journals = TimelineJournalStore(
+            directoryURL: stateDirectory.appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        )
+        // A Runtime-created Timeline attached the Workspace under a URI the
+        // manifest has since changed. The stored URI carries credentials.
+        try await journals.ensureTimelineCreated(
+            timelineID: recoveredTimelineID,
+            title: "Recovered",
+            runtimeInstanceID: ascendantID,
+            attachments: [.network(workspaceID, uri: "workspace://user:s3cr3t@previous.example/repo?token=hunter2")]
+        )
+        let capturedServices = ServicesCapture()
+        var adapters = NodeRuntimeAdapters.default
+        adapters.ascendants.registerBackend(kind: "lifecycle-fixture") { ascendant, _, services, timelines in
+            capturedServices.services = services
+            return LifecycleFixtureBackend(ascendant: ascendant, timelines: timelines, probe: LifecycleBackendProbe(), outcome: .success)
+        }
+        let manifest = NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "conflicting-recovered-attachment"),
+            node: .init(id: nodeID),
+            ascendants: [.init(id: ascendantID, name: "First", defaultTimelineID: timelineID, kind: "lifecycle-fixture")],
+            timelines: [.init(
+                id: timelineID,
+                title: "Configured",
+                operatingAscendantID: ascendantID,
+                attachments: [.network(workspaceID, uri: "workspace://current")]
+            )]
+        )
+        let logHandler = RecordingLogHandler()
+        let runtime = try await NodeRuntime(
+            plan: manifest.compileLaunchPlan(),
+            adapters: adapters,
+            retirementPolicy: .live,
+            timelineJournalDirectory: stateDirectory,
+            workspaceLogger: Logger(label: "test.workspace") { _ in logHandler }
+        )
+        try await runtime.start()
+        defer { Task { @MainActor in await runtime.shutdown() } }
+
+        let snapshot = await runtime.snapshot()
+        #expect(snapshot.timelineIDs.contains(recoveredTimelineID))
+        #expect(snapshot.workspaceIDs.filter { $0 == workspaceID }.count == 1)
+        let diagnostics = try await runtime.diagnosticsTimelineSnapshot(timelineID)
+        #expect(diagnostics.workspaces.map(\.uri) == ["workspace://current"])
+
+        // The emitted log record names the conflict and carries no credential.
+        let warnings = logHandler.records.filter { $0.level == .warning }
+        let record = try #require(warnings.first)
+        #expect(warnings.count == 1)
+        for expected in [workspaceID.uuidString, recoveredTimelineID.uuidString, "workspace://previous.example/repo", "workspace://current"] {
+            #expect(record.message.contains(expected))
+        }
+        for secret in ["s3cr3t", "hunter2", "user:"] { #expect(!record.message.contains(secret)) }
+
+        // The real assembly wired the conflict into Workspace invocation: the
+        // conflicted Timeline is refused by name, and the configured one is not.
+        let workspaceService = try #require(capturedServices.services?.workspace)
+        do {
+            _ = try await workspaceService.invoke(BackendWorkspaceInvocation(
+                timelineID: recoveredTimelineID, permissionApproved: true, workspaceID: workspaceID, toolID: "search", arguments: [:]
+            ))
+            Issue.record("The conflicted attachment invoked the Workspace.")
+        } catch {
+            #expect(error.localizedDescription.contains(workspaceID.uuidString))
+            #expect(error.localizedDescription.contains("attached but unavailable"))
+        }
+        do {
+            _ = try await workspaceService.invoke(BackendWorkspaceInvocation(
+                timelineID: timelineID, permissionApproved: true, workspaceID: workspaceID, toolID: "search", arguments: [:]
+            ))
+        } catch {
+            #expect(!error.localizedDescription.contains("attached but unavailable"))
+        }
+    }
+
+    @Test("a call through a conflicted recovered attachment fails with the Workspace named")
+    @MainActor
+    func conflictedAttachmentRejectsInvocation() async throws {
+        let workspaceID = UUID()
+        let timelineID = UUID()
+        let service = GnosticWorkspaceBackendService(
+            localWorkspaces: [:],
+            references: [workspaceID: BackendWorkspaceReference(
+                id: workspaceID,
+                uri: "workspace://current",
+                status: .available,
+                tools: [BackendWorkspaceTool(
+                    id: "search", name: "Search", description: "Search",
+                    parametersSchema: .dictionary(["type": .string("object")]), requiresPermission: false
+                )],
+                location: .attached
+            )],
+            catalog: NetworkCatalog(),
+            networkWorkspaceInvoker: nil
+        )
+        let conflict = NodeRegistry.WorkspaceAttachmentConflict(
+            timelineID: timelineID, workspaceID: workspaceID,
+            attachedURI: "workspace://previous", recordedURI: "workspace://current", recordedBy: .configuration
+        )
+        service.attachmentConflict = { conflictTimeline, conflictWorkspace in
+            conflictTimeline == timelineID && conflictWorkspace == workspaceID ? conflict : nil
+        }
+
+        do {
+            _ = try await service.invoke(BackendWorkspaceInvocation(
+                timelineID: timelineID, permissionApproved: true, workspaceID: workspaceID, toolID: "search", arguments: [:]
+            ))
+            Issue.record("The conflicted attachment invoked the Workspace.")
+        } catch {
+            #expect(error.localizedDescription.contains(workspaceID.uuidString))
+            #expect(error.localizedDescription.contains("attached but unavailable"))
+        }
+    }
+
     @Test("diagnostics report a quarantined Timeline journal as read-only without a path or frame")
     @MainActor
     func diagnosticsReportQuarantinedJournal() async throws {
@@ -1973,4 +2099,10 @@ private actor WorkspaceResolutionGate {
         releaseWaiter?.resume()
         releaseWaiter = nil
     }
+}
+
+/// Keeps the services a test backend factory received from the real assembly.
+@MainActor
+private final class ServicesCapture {
+    var services: AscendantBackendServices?
 }

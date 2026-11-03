@@ -830,6 +830,227 @@ struct TwoNodeMQTTIntegrationTests {
         completed = true
     }
 
+    /// How the Workspace Node stands when Node A comes back with the session's journal.
+    enum RecoveryScenario: CustomStringConvertible, Sendable {
+        case workspaceNodeStaysUp
+        case workspaceNodeReturnsLater
+        case ownerRevokedWhileNodeADown
+
+        var description: String {
+            switch self {
+            case .workspaceNodeStaysUp: "Workspace Node stays up"
+            case .workspaceNodeReturnsLater: "Workspace Node returns later"
+            case .ownerRevokedWhileNodeADown: "owner revoked the Workspace while Node A was down"
+            }
+        }
+    }
+
+    // #739: attachment intent survived a restart, but the resumed Session had no
+    // Workspace tools until the Workspace was attached again.
+    @Test("a resumed session keeps its attached Workspace tools after Node A restarts", arguments: [
+        RecoveryScenario.workspaceNodeStaysUp,
+        .workspaceNodeReturnsLater,
+        .ownerRevokedWhileNodeADown,
+    ])
+    @MainActor
+    func resumedSessionKeepsAttachedWorkspaceTools(scenario: RecoveryScenario) async throws {
+        let serveBinary = try #require(ProcessInfo.processInfo.environment["GNOSTIC_SERVE_BINARY"])
+        let agentFixture = try #require(ProcessInfo.processInfo.environment["GNOSTIC_ACP_AGENT_FIXTURE"])
+        let namespace = "recovered-workspace-\(UUID().uuidString.lowercased())"
+        let workspaceID = UUID()
+        let workspaceURI = "workspace://recovered-workspace-\(workspaceID.uuidString.lowercased())"
+        let timelineID = UUID()
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gnostic-recovered-workspace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        var workspaceNode: WorkspaceNodeProcess? = try await launchWorkspaceNode(
+            namespace: namespace, scratch: scratch, workspaceID: workspaceID, workspaceURI: workspaceURI,
+            serveBinary: serveBinary, agentFixture: agentFixture
+        )
+        var owner: NodeProcess?
+        var session: GnosticConsumerSession?
+        func stopAll() async {
+            await session?.stop()
+            await owner?.shutdown()
+            await workspaceNode?.process.shutdown()
+        }
+        do {
+            owner = try await launchNode(
+                name: "runtime-owner", namespace: namespace, serveBinary: serveBinary,
+                agentFixture: agentFixture, scratch: scratch, timelineID: timelineID
+            )
+            let consumer = try GnosticConsumerSession(
+                broker: .init(host: "127.0.0.1", port: 1883, namespace: namespace),
+                connectTimeout: .seconds(3),
+                discoverTimeout: .seconds(3)
+            )
+            session = consumer
+            try await consumer.start()
+            var providerID = try await timelineProviderID(timelineID, in: consumer)
+            let client = try consumer.turnClient(timeout: .seconds(3), promptTimeout: .seconds(8))
+            try await consumer.workspaceClient(timeout: .seconds(5)).attach(
+                workspaceID: workspaceID, to: timelineID, approved: true, providerID: providerID
+            )
+
+            // Before the restart the attached tool works.
+            let baseline = await attemptWorkspaceToolTurn(
+                client: client, timelineID: timelineID, providerID: providerID, clientTurnID: "recovered-baseline"
+            )
+            #expect(try baseline.get().contains("remote workspace result: fixture"))
+            #expect(try workspaceNode?.invocationCount() == 1)
+
+            // Node A restarts. Its journal keeps the attachment; Node B may stay up,
+            // be gone, or have revoked the Workspace in the meantime.
+            await owner?.shutdown()
+            owner = nil
+            switch scenario {
+            case .workspaceNodeStaysUp: break
+            case .workspaceNodeReturnsLater:
+                await workspaceNode?.process.shutdown()
+                workspaceNode = nil
+            case .ownerRevokedWhileNodeADown: try workspaceNode?.revoke()
+            }
+            owner = try await launchNode(
+                name: "runtime-owner", namespace: namespace, serveBinary: serveBinary,
+                agentFixture: agentFixture, scratch: scratch, timelineID: timelineID, restarting: true
+            )
+            providerID = try await timelineProviderID(timelineID, in: consumer)
+
+            switch scenario {
+            case .workspaceNodeStaysUp:
+                // No second attach: the resumed Session reaches the tool once
+                // Node A has resolved the recovered Workspace.
+                let attempts = try await pollForWorkspaceToolResult(
+                    client: client, timelineID: timelineID, providerID: providerID, label: "up"
+                )
+                print("Recovered Workspace tool answered on attempt \(attempts) (\(scenario)).")
+                #expect(try workspaceNode?.invocationCount() == 2)
+
+            case .workspaceNodeReturnsLater:
+                // Node A resumed the Session before Node B was discoverable. The
+                // Runtime sees no tool, and the Turn fails instead of hanging.
+                let early = await attemptWorkspaceToolTurn(
+                    client: client, timelineID: timelineID, providerID: providerID, clientTurnID: "recovered-early"
+                )
+                #expect(throws: (any Error).self) { try early.get() }
+                workspaceNode = try await launchWorkspaceNode(
+                    namespace: namespace, scratch: scratch, workspaceID: workspaceID, workspaceURI: workspaceURI,
+                    serveBinary: serveBinary, agentFixture: agentFixture, restarting: true
+                )
+                // The same live Session, with no new attach, reaches the tool once it resolves.
+                let attempts = try await pollForWorkspaceToolResult(
+                    client: client, timelineID: timelineID, providerID: providerID, label: "late"
+                )
+                print("Recovered Workspace tool answered on attempt \(attempts) (\(scenario)).")
+                #expect(try workspaceNode?.invocationCount() == 2)
+
+            case .ownerRevokedWhileNodeADown:
+                // A revoked Workspace stays unavailable after recovery. Node B
+                // latches a revocation in its registry, so it does not return.
+                let clock = ContinuousClock()
+                let until = clock.now + .seconds(8)
+                var attempt = 0
+                while clock.now < until {
+                    attempt += 1
+                    let outcome = await attemptWorkspaceToolTurn(
+                        client: client, timelineID: timelineID, providerID: providerID,
+                        clientTurnID: "recovered-revoked-\(attempt)"
+                    )
+                    #expect(throws: (any Error).self) { try outcome.get() }
+                }
+                #expect(try workspaceNode?.invocationCount() == 1)
+            }
+        } catch {
+            await stopAll()
+            throw error
+        }
+        await stopAll()
+    }
+
+    /// Waits, within a bound, until discovery shows Node A's Timeline, and returns its provider.
+    @MainActor
+    private func timelineProviderID(_ timelineID: UUID, in session: GnosticConsumerSession) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(30)
+        while clock.now < deadline {
+            try await session.discover(timeout: .milliseconds(500))
+            if let providerID = await session.networkObjects().first(where: {
+                $0.objectType == GnosticObjectType.timeline && $0.objectID == timelineID
+            })?.providerID { return providerID }
+        }
+        throw TwoNodeIntegrationError.nodeFailedToStart("timeline \(timelineID.uuidString.lowercased())")
+    }
+
+    /// Runs one Turn that calls the attached Workspace tool and approves its permission request.
+    @MainActor
+    private func attemptWorkspaceToolTurn(
+        client: GnosticTurnClient,
+        timelineID: UUID,
+        providerID: String,
+        clientTurnID: String
+    ) async -> Result<String, any Error> {
+        do {
+            let updates = try await client.updates(for: clientTurnID, timelineID: timelineID, providerID: providerID)
+            let responder = Task { @MainActor in
+                do {
+                    for try await update in updates {
+                        guard let permission = update.permissionState, permission.status == "pending" else { continue }
+                        try client.respond(
+                            to: TurnPermissionResponse(
+                                correlationID: permission.correlationID,
+                                timelineID: timelineID,
+                                clientTurnID: clientTurnID,
+                                approved: true
+                            ),
+                            providerID: providerID
+                        )
+                    }
+                } catch {
+                    // The Turn's own result reports a lost stream.
+                }
+            }
+            defer { responder.cancel() }
+            let result = try await client.run(
+                message: "[fixture:workspace-tool]",
+                timelineID: timelineID,
+                clientTurnID: clientTurnID,
+                providerID: providerID
+            )
+            return .success(result.text)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Repeats the Workspace tool Turn until it succeeds or 40 seconds pass.
+    /// Returns the number of attempts.
+    @MainActor
+    private func pollForWorkspaceToolResult(
+        client: GnosticTurnClient,
+        timelineID: UUID,
+        providerID: String,
+        label: String
+    ) async throws -> Int {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(40)
+        var attempts = 0
+        var last: Result<String, any Error>?
+        while clock.now < deadline {
+            attempts += 1
+            let outcome = await attemptWorkspaceToolTurn(
+                client: client, timelineID: timelineID, providerID: providerID,
+                clientTurnID: "recovered-\(label)-\(attempts)"
+            )
+            last = outcome
+            if case let .success(text) = outcome, text.contains("remote workspace result: fixture") { return attempts }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        Issue.record(Comment(rawValue: "The attached Workspace tool never answered after \(attempts) attempts. Last outcome: \(String(describing: last))"))
+        throw TwoNodeIntegrationError.nodeFailedToStart("resolved Workspace tool")
+    }
+
     // Each ACP Runtime holds threads in blocking reads of its stdout and stderr
     // pipes. If those reads ran on the Swift cooperative pool, whose width is the
     // CPU count, these Runtimes would occupy all of it and the Node would hang
@@ -1446,12 +1667,14 @@ struct TwoNodeMQTTIntegrationTests {
         workspaceURI: String,
         workspaceKind: String = "test-revocable-peer",
         serveBinary: String,
-        agentFixture: String
+        agentFixture: String,
+        restarting: Bool = false
     ) async throws -> WorkspaceNodeProcess {
         let configDirectory = scratch.appendingPathComponent("workspace-owner", isDirectory: true)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         let store = CLIConfigurationStore(baseDirectory: configDirectory, environment: [:])
-        _ = try store.initializeManifest()
+        // A Workspace Node started again keeps its manifest, health, and invocation count.
+        if !restarting { _ = try store.initializeManifest() }
         try store.mutateManifest { manifest in
             let fixtureState = configDirectory.appendingPathComponent("fixture-sessions.json")
             let fixturePID = configDirectory.appendingPathComponent("fixture-process.pid")
@@ -1472,8 +1695,10 @@ struct TwoNodeMQTTIntegrationTests {
 
         let healthURL = configDirectory.appendingPathComponent("workspace-health.txt")
         let invocationURL = configDirectory.appendingPathComponent("workspace-invocations.txt")
-        try "available".write(to: healthURL, atomically: true, encoding: .utf8)
-        try "0".write(to: invocationURL, atomically: true, encoding: .utf8)
+        if !restarting {
+            try "available".write(to: healthURL, atomically: true, encoding: .utf8)
+            try "0".write(to: invocationURL, atomically: true, encoding: .utf8)
+        }
         let logURL = configDirectory.appendingPathComponent("serve.log")
         #expect(FileManager.default.createFile(atPath: logURL.path, contents: nil))
         let log = try FileHandle(forWritingTo: logURL)

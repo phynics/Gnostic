@@ -53,6 +53,31 @@ public actor NodeRegistry {
         }
     }
 
+    /// A recovered attachment whose URI differs from the URI the Node already
+    /// holds for the same Workspace.
+    struct WorkspaceAttachmentConflict: Sendable, Equatable {
+        enum Source: Sendable, Equatable {
+            case configuration
+            case recoveredAttachment
+        }
+
+        let timelineID: UUID
+        let workspaceID: UUID
+        let attachedURI: String
+        let recordedURI: String
+        let recordedBy: Source
+
+        /// The operator-facing warning. It names no Runtime content.
+        var warning: String {
+            let winner = recordedBy == .configuration ? "the configured URI" : "another recovered attachment's URI"
+            // A URI can carry credentials, so the warning shows only its log form.
+            return "Workspace \(workspaceID.uuidString) is attached to Timeline \(timelineID.uuidString) with URI "
+                + "\(WorkspaceURILogForm.redacted(attachedURI)), which differs from \(winner) "
+                + "\(WorkspaceURILogForm.redacted(recordedURI)). The Node ignores the "
+                + "attachment and its tool calls fail. Detach the Workspace from the Timeline, or correct the URI."
+        }
+    }
+
     public struct WorkspaceRecord: Sendable, Equatable {
         public let id: UUID
         public let uri: String
@@ -97,6 +122,7 @@ public actor NodeRegistry {
     private var timelineMutationLocks: Set<UUID> = []
     private var timelineMutationWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     private var lifecycleGeneration: UInt64 = 0
+    private var attachmentConflicts: [WorkspaceAttachmentConflict] = []
 
     public init(
         plan: NodeLaunchPlan,
@@ -237,12 +263,56 @@ public actor NodeRegistry {
         for workspace in plan.workspaces {
             workspaces[workspace.id] = .init(id: workspace.id, uri: workspace.uri, status: .available, toolIDs: [])
         }
-        for attachment in plan.timelines.flatMap(\.attachments) where attachment.scope == .network {
-            guard let uri = attachment.uri else { continue }
-            if let existing = workspaces[attachment.workspaceID], existing.uri != uri {
-                throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
+
+        // Manifest attachments are configuration. Two of them that name one
+        // Workspace with different URIs are an error the operator fixes in the
+        // manifest, so they fail startup.
+        var configuredURIs = Dictionary(uniqueKeysWithValues: plan.workspaces.map { ($0.id, $0.uri) })
+        for timeline in plan.timelines {
+            for attachment in timeline.attachments where attachment.scope == .network {
+                guard let uri = attachment.uri else { continue }
+                // A manifest attachment the journal later detached configures
+                // nothing, so it cannot conflict with anything either. Decide
+                // that before comparing, so the order of the Timelines in the
+                // manifest does not matter.
+                guard attachmentIntents[timeline.id]?.contains(attachment) == true else { continue }
+                if let existing = configuredURIs[attachment.workspaceID], existing != uri {
+                    throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
+                }
+                configuredURIs[attachment.workspaceID] = uri
             }
-            workspaces[attachment.workspaceID] = .init(id: attachment.workspaceID, uri: uri, status: .unavailable, toolIDs: [])
+        }
+
+        // Seed one unresolved record for each network attachment the Node now
+        // holds: manifest attachments, and attachments rebuilt from the journal
+        // for Timelines a Runtime created or a client attached after launch.
+        // Resolution fetches their tool pages once the owning Node is
+        // discoverable. A detached Workspace has no intent and gets no record.
+        //
+        // A recovered attachment is stored data, not configuration, so one that
+        // names a different URI than the Workspace's record must not stop the
+        // Node: the operator needs a running Node to detach it. The configured
+        // URI wins. Between recovered attachments the first one wins, in
+        // Timeline UUID order, then attachment order. The loser keeps its
+        // intent so a detach can remove it, but it never resolves.
+        var recordedURIs = configuredURIs
+        for (timelineID, intents) in attachmentIntents.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            for attachment in intents where attachment.scope == .network {
+                guard let uri = attachment.uri else { continue }
+                if let recorded = recordedURIs[attachment.workspaceID], recorded != uri {
+                    attachmentConflicts.append(.init(
+                        timelineID: timelineID,
+                        workspaceID: attachment.workspaceID,
+                        attachedURI: uri,
+                        recordedURI: recorded,
+                        recordedBy: configuredURIs[attachment.workspaceID] == nil ? .recoveredAttachment : .configuration
+                    ))
+                    continue
+                }
+                recordedURIs[attachment.workspaceID] = uri
+                if let existing = workspaces[attachment.workspaceID], existing.status != .available { continue }
+                workspaces[attachment.workspaceID] = .init(id: attachment.workspaceID, uri: uri, status: .unavailable, toolIDs: [])
+            }
         }
     }
 
@@ -379,9 +449,11 @@ public actor NodeRegistry {
             intents.removeAll { $0.workspaceID == attachment.workspaceID }
             intents.append(attachment)
             attachmentIntents[timeline.id] = intents
+            attachmentConflicts.removeAll { $0.timelineID == timeline.id && $0.workspaceID == attachment.workspaceID }
         }
         if let removingWorkspaceID {
             attachmentIntents[timeline.id, default: []].removeAll { $0.workspaceID == removingWorkspaceID }
+            attachmentConflicts.removeAll { $0.timelineID == timeline.id && $0.workspaceID == removingWorkspaceID }
         }
         bumpRevision(for: ascendantID)
         return record
@@ -494,6 +566,7 @@ public actor NodeRegistry {
         intents.removeAll { $0.workspaceID == attachment.workspaceID }
         intents.append(attachment)
         attachmentIntents[timelineID] = intents
+        attachmentConflicts.removeAll { $0.timelineID == timelineID && $0.workspaceID == attachment.workspaceID }
         if let ascendantID = timelines[timelineID]?.operatorID { bumpRevision(for: ascendantID) }
     }
 
@@ -506,6 +579,7 @@ public actor NodeRegistry {
         guard attachmentIntents[timelineID]?.contains(where: { $0.workspaceID == workspaceID }) == true else { return }
         try await appendJournalEvents(timelineID: timelineID, payloads: [.workspaceDetached(workspaceID: workspaceID)])
         attachmentIntents[timelineID, default: []].removeAll { $0.workspaceID == workspaceID }
+        attachmentConflicts.removeAll { $0.timelineID == timelineID && $0.workspaceID == workspaceID }
         if let ascendantID = timelines[timelineID]?.operatorID { bumpRevision(for: ascendantID) }
     }
 
@@ -543,6 +617,7 @@ public actor NodeRegistry {
     public func attachmentTargets(for workspaceID: UUID) -> [WorkspaceAttachmentTarget] {
         timelines.values.compactMap { record in
             guard let ascendantID = record.operatorID,
+                  !hasAttachmentConflict(timelineID: record.id, workspaceID: workspaceID),
                   attachmentIntents[record.id]?.contains(where: {
                       $0.workspaceID == workspaceID && $0.scope == .network
                   }) == true else { return nil }
@@ -552,6 +627,18 @@ public actor NodeRegistry {
             ($0.timelineID.uuidString, $0.ascendantID.uuidString)
                 < ($1.timelineID.uuidString, $1.ascendantID.uuidString)
         }
+    }
+
+    /// The recovered attachments that conflict with the Node's Workspace
+    /// records, in Timeline order.
+    func recoveredAttachmentConflicts() -> [WorkspaceAttachmentConflict] { attachmentConflicts }
+
+    func attachmentConflict(timelineID: UUID, workspaceID: UUID) -> WorkspaceAttachmentConflict? {
+        attachmentConflicts.first { $0.timelineID == timelineID && $0.workspaceID == workspaceID }
+    }
+
+    func hasAttachmentConflict(timelineID: UUID, workspaceID: UUID) -> Bool {
+        attachmentConflict(timelineID: timelineID, workspaceID: workspaceID) != nil
     }
 
     public func unresolvedWorkspaceIDs() -> [UUID] {
