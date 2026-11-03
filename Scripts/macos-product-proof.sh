@@ -49,6 +49,13 @@ expected_skips=(
     # RLMChibiWorkerSessionTests.fileDescriptorsAbsent reads /proc, which macOS
     # does not have.
     'the worker process holds only its standard file descriptors'
+    # Opt-in diagnostics for the #738 shutdown hang, which run only when their
+    # environment variable is set (GNOSTIC_RECONNECT_SHUTDOWN_REPEAT and
+    # GNOSTIC_PROCESS_EXIT_PROBE). They are skipped on every platform by default.
+    'Suite "ReconnectShutdownRepeat" skipped'
+    'Test "the shutdown scenarios repeat in one process" skipped'
+    'Suite "ProcessExitProbe" skipped'
+    'Test "waitUntilExit after an immediate SIGKILL" skipped'
 )
 
 swift_flags=(
