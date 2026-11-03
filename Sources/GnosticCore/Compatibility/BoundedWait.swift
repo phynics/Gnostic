@@ -10,6 +10,10 @@ import Foundation
 /// cancellation holds the caller. This helper does not join the operation. It
 /// resumes the caller from whichever of the operation or the timer finishes
 /// first and abandons the other.
+///
+/// The timer is a Dispatch work item, not a Swift task. A Swift task timer
+/// runs on the cooperative pool, so a pool whose threads are all blocked would
+/// stop the timer that is meant to bound the blocked caller.
 enum BoundedWait {
     /// Returns the operation's value, or `nil` once `timeout` has elapsed.
     ///
@@ -21,11 +25,10 @@ enum BoundedWait {
     ) async -> Value? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
             let once = ResumeOnce(continuation)
-            // The timer runs outside any actor, so a busy actor cannot delay it.
-            once.timer = Task.detached {
-                try? await Task.sleep(for: timeout)
-                once.resume(nil)
-            }
+            let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+            let timer = DispatchWorkItem { once.resume(nil) }
+            once.timer = timer
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: timer)
             Task.detached { once.resume(await operation()) }
         }
     }
@@ -36,11 +39,11 @@ enum BoundedWait {
         private let lock = NSLock()
         private var continuation: CheckedContinuation<Value?, Never>?
         private var cancelsTimer = false
-        private var storedTimer: Task<Void, Never>?
+        private var storedTimer: DispatchWorkItem?
 
         init(_ continuation: CheckedContinuation<Value?, Never>) { self.continuation = continuation }
 
-        var timer: Task<Void, Never>? {
+        var timer: DispatchWorkItem? {
             get { lock.withLock { storedTimer } }
             set {
                 let cancel = lock.withLock { () -> Bool in
@@ -52,7 +55,7 @@ enum BoundedWait {
         }
 
         func resume(_ value: Value?) {
-            let (pending, timer) = lock.withLock { () -> (CheckedContinuation<Value?, Never>?, Task<Void, Never>?) in
+            let (pending, timer) = lock.withLock { () -> (CheckedContinuation<Value?, Never>?, DispatchWorkItem?) in
                 let pending = continuation
                 continuation = nil
                 if value != nil { cancelsTimer = true }

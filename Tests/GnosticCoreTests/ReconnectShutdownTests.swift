@@ -20,6 +20,8 @@ struct ReconnectShutdownTests {
     @Test("shutdown joins a reconnect attempt that resumes after the runtime stopped", .timeLimit(.minutes(1)))
     @MainActor
     func shutdownJoinsAttemptResumingAfterStop() async throws {
+        let watchdog = Watchdog.arm("shutdownJoinsAttemptResumingAfterStop", seconds: 40)
+        defer { watchdog.disarm() }
         let proxy = try await BrokerProxy.launch()
         defer { proxy.terminate() }
         let manager = try makeManager(port: proxy.port)
@@ -56,6 +58,8 @@ struct ReconnectShutdownTests {
     @Test("a reconnect that never returns does not hold shutdown past its bound", .timeLimit(.minutes(1)))
     @MainActor
     func attemptThatNeverReturnsDoesNotHoldShutdown() async throws {
+        let watchdog = Watchdog.arm("attemptThatNeverReturnsDoesNotHoldShutdown", seconds: 40)
+        defer { watchdog.disarm() }
         let proxy = try await BrokerProxy.launch()
         defer { proxy.terminate() }
         let manager = try makeManager(port: proxy.port)
@@ -72,20 +76,29 @@ struct ReconnectShutdownTests {
         try await poll("reconnect attempt began") { attempt.began }
 
         let started = ContinuousClock.now
+        trace("stopAndWait begins")
         try await within("stopAndWait", .seconds(10)) { await manager.stopAndWait() }
+        trace("stopAndWait returned")
         #expect(ContinuousClock.now - started < .seconds(3), "Shutdown waited past its bound")
         #expect(attempt.active, "The attempt should still be suspended at the bound")
 
         // Release it. The late attempt closes the transport it opens.
+        trace("opening the gate")
         await attempt.gate.open()
+        trace("gate opened")
         try await poll("late attempt returned", timeout: .seconds(3)) { !attempt.active }
+        trace("late attempt returned")
         try await poll("late transport closed", timeout: .seconds(3)) { proxy.counts()?.open == 0 }
+        trace("late transport closed")
         try await expectQuiet(proxy, for: .seconds(1))
+        trace("quiet")
     }
 
     @Test("a teardown call that never returns does not hold stopAndWait", .timeLimit(.minutes(1)))
     @MainActor
     func teardownThatNeverReturnsDoesNotHoldShutdown() async throws {
+        let watchdog = Watchdog.arm("teardownThatNeverReturnsDoesNotHoldShutdown", seconds: 40)
+        defer { watchdog.disarm() }
         let proxy = try await BrokerProxy.launch()
         defer { proxy.terminate() }
         let manager = try makeManager(port: proxy.port)
@@ -99,6 +112,17 @@ struct ReconnectShutdownTests {
         try await within("stopAndWait", .seconds(10)) { await manager.stopAndWait() }
         #expect(ContinuousClock.now - started < .seconds(3), "stopAndWait() was not bounded")
         await stuck.open()
+    }
+
+    @Test("the watchdog fires while the main actor is blocked")
+    @MainActor
+    func watchdogFiresWhileMainActorIsBlocked() {
+        let fired = DispatchSemaphore(value: 0)
+        let watchdog = Watchdog.arm("self-test", seconds: 0.2) { _ in fired.signal() }
+        defer { watchdog.disarm() }
+        // Block this thread, the main actor, without suspending.
+        let result = fired.wait(timeout: .now() + 5)
+        #expect(result == .success, "The watchdog did not fire on its own thread")
     }
 
     @Test("a bounded wait returns although its operation ignores cancellation and never finishes")
@@ -119,6 +143,8 @@ struct ReconnectShutdownTests {
     @Test("shutdown unblocks a real reconnect stalled in the MQTT handshake", .timeLimit(.minutes(1)))
     @MainActor
     func shutdownDuringReconnectHandshake() async throws {
+        let watchdog = Watchdog.arm("shutdownDuringReconnectHandshake", seconds: 40)
+        defer { watchdog.disarm() }
         let proxy = try await BrokerProxy.launch()
         defer { proxy.terminate() }
         let manager = try makeManager(port: proxy.port)
@@ -198,6 +224,60 @@ struct ReconnectShutdownTests {
 }
 
 private struct TestHang: Error { let what: String }
+
+/// Prints a progress line so a CI log shows where a stalled test stopped.
+private func trace(_ message: String) {
+    print("TRACE \(Date().timeIntervalSince1970) \(message)")
+    fflush(nil)
+}
+
+/// Ends the process, with diagnostics, when a test does not finish in time.
+///
+/// Swift Testing cannot kill a hung test, and a stalled run holds the CI job
+/// until the harness timeout. The watchdog runs on its own thread, not on the
+/// Swift cooperative pool or the main actor, so a blocked pool cannot stop it.
+private final class Watchdog: @unchecked Sendable { // SAFETY: the only state is a semaphore, which is thread safe.
+    private let finished = DispatchSemaphore(value: 0)
+
+    static func arm(_ name: String, seconds: Double, onExpiry: @escaping @Sendable (String) -> Void = Watchdog.terminate) -> Watchdog {
+        let watchdog = Watchdog()
+        let thread = Thread {
+            if watchdog.finished.wait(timeout: .now() + seconds) == .timedOut { onExpiry(name) }
+        }
+        thread.name = "watchdog-\(name)"
+        thread.start()
+        return watchdog
+    }
+
+    func disarm() { finished.signal() }
+
+    private static func terminate(_ name: String) {
+        print("WATCHDOG: test \(name) did not finish in time; dumping threads and ending the process")
+        fflush(nil)
+        dumpThreads()
+        fflush(nil)
+        _exit(70)
+    }
+
+    /// Prints every thread's stack with the platform's sampler, when there is one.
+    private static func dumpThreads() {
+        let pid = String(getpid())
+        #if os(Linux)
+        let command = ["/usr/bin/env", "gdb", "-p", pid, "-batch", "-ex", "thread apply all bt 25"]
+        #else
+        let command = ["/usr/bin/sample", pid, "2"]
+        #endif
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command[0])
+        process.arguments = Array(command.dropFirst())
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do { try process.run() } catch { print("WATCHDOG: could not run \(command[0]): \(error)"); return }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        print(String(decoding: data, as: UTF8.self).split(separator: "\n").prefix(400).joined(separator: "\n"))
+    }
+}
 
 /// Records one stand-in reconnect attempt.
 @MainActor
