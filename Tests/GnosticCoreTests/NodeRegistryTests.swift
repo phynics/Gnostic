@@ -289,6 +289,61 @@ struct NodeRegistryTests {
         }
     }
 
+    @Test("the conflict warning shows no credential from either URI")
+    func conflictWarningRedactsCredentials() async throws {
+        let fixture = try Fixture()
+        let journal = try await RecoveredJournal(fixture: fixture)
+        let timelineID = try await journal.createTimeline(title: "Secret")
+        try await journal.attach(
+            .network(fixture.networkWorkspaceID, uri: "workspace://user:s3cr3t@host.example/path?token=hunter2"),
+            to: timelineID
+        )
+
+        let restarted = try await journal.restart()
+        let warning = try #require(await restarted.recoveredAttachmentConflicts().first).warning
+        for secret in ["s3cr3t", "hunter2", "user:"] { #expect(!warning.contains(secret)) }
+        #expect(warning.contains("workspace://host.example/path"))
+        #expect(warning.contains("workspace://expected"))
+    }
+
+    @Test("a detached manifest attachment cannot conflict with an active one, in either manifest order", arguments: [true, false])
+    func detachedManifestAttachmentIsNotValidatedAgainstActiveOne(activeFirst: Bool) async throws {
+        let fixture = try Fixture()
+        let active = UUID(uuidString: "D21D0000-0000-4000-8000-000000000001")!
+        let detached = UUID(uuidString: "D21D0000-0000-4000-8000-000000000002")!
+        let timelines: [NodeManifest.Timeline] = [
+            .init(id: active, title: "Active", attachments: [.network(fixture.networkWorkspaceID, uri: "workspace://a")]),
+            .init(id: detached, title: "Detached", attachments: [.network(fixture.networkWorkspaceID, uri: "workspace://b")]),
+        ]
+        let plan = try NodeManifest(
+            broker: .init(host: "127.0.0.1", port: 1883, namespace: "node-registry-tests"),
+            node: .init(id: UUID()),
+            ascendants: [],
+            timelines: activeFirst ? timelines : timelines.reversed()
+        ).compileLaunchPlan()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("node-registry-detached-order-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let journals = TimelineJournalStore(directoryURL: directory)
+        for timeline in plan.timelines {
+            try await journals.ensureTimelineCreated(
+                timelineID: timeline.id, title: timeline.title, runtimeInstanceID: nil, attachments: timeline.attachments
+            )
+        }
+        try await journals.journal(for: detached).append(.workspaceDetached(workspaceID: fixture.networkWorkspaceID))
+
+        let reader = TimelineJournalStore(directoryURL: directory)
+        let restarted = try NodeRegistry(
+            plan: plan,
+            operatedTimelines: [],
+            timelineJournals: reader,
+            timelineJournalProjections: try await reader.timelineProjections()
+        )
+        #expect(await restarted.workspace(id: fixture.networkWorkspaceID)?.uri == "workspace://a")
+        #expect(await restarted.attachmentIntent(for: detached).isEmpty)
+        #expect(await restarted.recoveredAttachmentConflicts().isEmpty)
+    }
+
     @Test("a detached Workspace is not seeded after restart")
     func detachedWorkspaceIsNotRecovered() async throws {
         let fixture = try Fixture()

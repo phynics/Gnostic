@@ -3,6 +3,7 @@
 import Axoloty
 import Foundation
 import GnosticProtocol
+import Logging
 
 /// Builds the immutable host resources needed by a NodeRuntime. The runtime
 /// facade consumes these products and owns only public delegation and service
@@ -129,7 +130,8 @@ struct NodeAssembly {
         projectionRelay: NodeProjectionRelay,
         retirementSupervisor: BackendRetirementSupervisor,
         runtimeTimelineDirectory: URL? = nil,
-        timelineJournals: TimelineJournalStore? = nil
+        timelineJournals: TimelineJournalStore? = nil,
+        logger: Logger = ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).workspace")
     ) async throws -> BackendProducts {
         var operatedTimelines: [AscendantRuntimeTimeline] = []
         var identities: [RuntimeInstanceIdentity] = []
@@ -239,7 +241,7 @@ struct NodeAssembly {
                 timelineJournalProjections: journalProjections
             )
             for conflict in await registry.recoveredAttachmentConflicts() {
-                ServeLogging.warn(conflict.warning, component: "workspace")
+                logger.warning("\(conflict.warning)")
             }
             infrastructure.backendWorkspaceService.attachmentConflict = { [registry] timelineID, workspaceID in
                 await registry.attachmentConflict(timelineID: timelineID, workspaceID: workspaceID)

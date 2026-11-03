@@ -70,8 +70,10 @@ public actor NodeRegistry {
         /// The operator-facing warning. It names no Runtime content.
         var warning: String {
             let winner = recordedBy == .configuration ? "the configured URI" : "another recovered attachment's URI"
+            // A URI can carry credentials, so the warning shows only its log form.
             return "Workspace \(workspaceID.uuidString) is attached to Timeline \(timelineID.uuidString) with URI "
-                + "\(attachedURI), which differs from \(winner) \(recordedURI). The Node ignores the "
+                + "\(WorkspaceURILogForm.redacted(attachedURI)), which differs from \(winner) "
+                + "\(WorkspaceURILogForm.redacted(recordedURI)). The Node ignores the "
                 + "attachment and its tool calls fail. Detach the Workspace from the Timeline, or correct the URI."
         }
     }
@@ -269,14 +271,15 @@ public actor NodeRegistry {
         for timeline in plan.timelines {
             for attachment in timeline.attachments where attachment.scope == .network {
                 guard let uri = attachment.uri else { continue }
+                // A manifest attachment the journal later detached configures
+                // nothing, so it cannot conflict with anything either. Decide
+                // that before comparing, so the order of the Timelines in the
+                // manifest does not matter.
+                guard attachmentIntents[timeline.id]?.contains(attachment) == true else { continue }
                 if let existing = configuredURIs[attachment.workspaceID], existing != uri {
                     throw NodeRuntimeError.invalidWorkspaceURI(attachment.workspaceID)
                 }
-                // A manifest attachment the journal later detached no longer
-                // configures anything.
-                if attachmentIntents[timeline.id]?.contains(attachment) == true {
-                    configuredURIs[attachment.workspaceID] = uri
-                }
+                configuredURIs[attachment.workspaceID] = uri
             }
         }
 
