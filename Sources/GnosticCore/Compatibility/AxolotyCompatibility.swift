@@ -492,13 +492,7 @@ public final class CommunicationManager {
     var shutdownTimeout: Duration = .seconds(10)
     /// The teardown phase that is running, for the log when the bound trips.
     private var drainPhase = "not started"
-    /// Receives one line at the start and end of every teardown phase and
-    /// reconnect attempt. A test uses it to leave a trail when a run stalls.
-    var traceForTesting: (@Sendable (String) -> Void)?
-    private func phase(_ name: String) {
-        drainPhase = name
-        traceForTesting?("manager: \(name)")
-    }
+    private func phase(_ name: String) { drainPhase = name }
     /// Runs inside the teardown, where Axoloty's `runtime.stop()` runs. A test
     /// uses it to stand in for a call that never returns.
     var drainHookForTesting: (@MainActor () async -> Void)?
@@ -644,13 +638,11 @@ public final class CommunicationManager {
             ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker reconnect attempt started")
             let runtime = self.runtime
             let transport = self.transport
-            traceForTesting?("manager: reconnect attempt begin")
             await reconnectAttempt(.init(
                 reconnect: { await runtime.reconnect() },
                 openTransport: { try? await transport.start(receive: { _ in }, lastWill: nil) },
                 runtimeHasStopped: { await runtime.state() == .stopped }
             ))
-            traceForTesting?("manager: reconnect attempt returned (isStarted \(isStarted))")
             guard isStarted && !Task.isCancelled else {
                 // Shutdown overtook the attempt. Axoloty's `reconnect()` can
                 // resume after the runtime stopped and open the transport,
@@ -658,9 +650,7 @@ public final class CommunicationManager {
                 // it here, once the attempt has returned, and keep closing
                 // for `reconnectLinger` for a connect still in flight.
                 closeTransportUntil = ContinuousClock.now + reconnectLinger
-                traceForTesting?("manager: late cleanup stop begin")
                 await transport.stop()
-                traceForTesting?("manager: late cleanup stop end")
                 return
             }
             if await runtime.state() == .running {
@@ -727,7 +717,6 @@ public final class CommunicationManager {
         supervisionTask?.cancel()
         supervisionTask = nil
         emitState(.offline)
-        traceForTesting?("manager: stopAndWait begin (runtimeWasReady \(runtimeWasReady))")
         let teardown = beginStop(runtimeWasReady: runtimeWasReady)
         let finished = await BoundedWait.run(timeout: shutdownTimeout) { () -> Bool in
             await teardown.value
@@ -737,7 +726,6 @@ public final class CommunicationManager {
             let phase = drainPhase
             ServeLogging.warn("shutdown did not finish within \(shutdownTimeout); abandoning it while in phase \"\(phase)\"", component: "transport")
         }
-        traceForTesting?("manager: stopAndWait end (\(finished == nil ? "bound hit" : "teardown finished"))")
     }
 
     /// Starts one shared teardown or joins the in-flight one. The handle is

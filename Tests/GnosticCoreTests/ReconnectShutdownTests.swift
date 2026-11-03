@@ -84,6 +84,19 @@ struct ReconnectShutdownTests {
         #expect(Budget.watchdog >= 1.5 * Budget.worstSuccessfulPath)
     }
 
+    @Test("cleanup reports and goes on when a killed process never reports its exit")
+    func cleanupIsBoundedWhenNoExitIsReported() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        // No termination handler is installed, so no exit is ever reported.
+        try process.run()
+        let started = ContinuousClock.now
+        let reported = await BrokerProxy.killAndWait(process, ExitLatch(), bound: .milliseconds(300), recordsIssue: false)
+        #expect(!reported)
+        #expect(ContinuousClock.now - started < .seconds(3), "The cleanup was not bounded")
+    }
+
     @Test("a bounded wait returns although its operation ignores cancellation and never finishes")
     func boundedWaitDoesNotJoinItsOperation() async {
         let never = Gate()
@@ -148,6 +161,79 @@ struct ReconnectShutdownRepeatTests {
     }
 }
 
+/// Isolates the call that hung macOS CI (#738): `Process.waitUntilExit()` right
+/// after SIGKILL. Off by default; set `GNOSTIC_PROCESS_EXIT_PROBE=<n>` to run
+/// `n` iterations of each variant:
+///
+///     GNOSTIC_PROCESS_EXIT_PROBE=500 swift test --filter ProcessExitProbe
+///
+/// 1. the termination handler, awaited with a bound (what the tests use now);
+/// 2. `waitUntilExit()` on a dedicated thread, bounded;
+/// 3. `waitUntilExit()` on the main thread under the watchdog. If it hangs, the
+///    watchdog prints the stacks and ends the process, so it runs last.
+private let probeCount = Int(ProcessInfo.processInfo.environment["GNOSTIC_PROCESS_EXIT_PROBE"] ?? "") ?? 0
+
+@Suite("ProcessExitProbe", .serialized, .enabled(if: probeCount > 0))
+struct ProcessExitProbeTests {
+    @Test("waitUntilExit after an immediate SIGKILL", .timeLimit(.minutes(max(1, probeCount / 20 + 1))))
+    @MainActor
+    func probesWaitUntilExit() async {
+        var handlerMisses = 0
+        var threadMisses = 0
+        for iteration in 1...probeCount {
+            let latch = ExitLatch()
+            let process = spawnSleeper { latch.markExited() }
+            _ = kill(process.processIdentifier, SIGKILL)
+            let exited = await BoundedWait.run(timeout: .seconds(10)) { () -> Bool in
+                await latch.wait()
+                return true
+            }
+            if exited == nil { handlerMisses += 1; trace("probe: termination handler missed on iteration \(iteration)") }
+        }
+        trace("probe: termination handler missed \(handlerMisses) of \(probeCount)")
+
+        for iteration in 1...probeCount {
+            let process = ProcessBox(spawnSleeper { })
+            _ = kill(process.process.processIdentifier, SIGKILL)
+            let exited = await BoundedWait.run(timeout: .seconds(10)) { () -> Bool in
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                    let thread = Thread { process.process.waitUntilExit(); done.resume() }
+                    thread.start()
+                }
+                return true
+            }
+            if exited == nil { threadMisses += 1; trace("probe: waitUntilExit on a dedicated thread missed on iteration \(iteration)") }
+        }
+        trace("probe: waitUntilExit on a dedicated thread missed \(threadMisses) of \(probeCount)")
+        #expect(handlerMisses == 0)
+        #expect(threadMisses == 0)
+
+        for iteration in 1...probeCount {
+            let process = spawnSleeper { }
+            let watchdog = Watchdog.arm("probe-main-thread-waitUntilExit-\(iteration)", seconds: 20)
+            _ = kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()   // the shape that hung: the main thread, right after SIGKILL
+            watchdog.disarm()
+        }
+        trace("probe: waitUntilExit on the main thread returned \(probeCount) of \(probeCount) times")
+    }
+
+    @MainActor
+    private func spawnSleeper(onExit: @escaping @Sendable () -> Void) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        process.terminationHandler = { _ in onExit() }
+        do { try process.run() } catch { Issue.record("could not run /bin/sleep: \(error)") }
+        return process
+    }
+}
+
+private final class ProcessBox: @unchecked Sendable { // SAFETY: the process is only used by the one task that owns the box.
+    let process: Process
+    init(_ process: Process) { self.process = process }
+}
+
 // MARK: - Scenarios
 
 /// Runs a scenario body under a watchdog, with trace lines at its edges.
@@ -167,25 +253,23 @@ private func watched(_ name: String, _ body: @MainActor () async throws -> Void)
     trace("\(name): body returned")
 }
 
-/// Starts a proxy and arranges for its cleanup, with trace lines at the edges
-/// of the `defer`. The cleanup runs `Process.waitUntilExit()` on the main
-/// actor; that call is kept as it is while its cause is under investigation.
+/// Starts a proxy and always terminates it afterwards, with trace lines at
+/// the edges of the cleanup. Cleanup is `async` because it waits for the
+/// proxy's exit without `Process.waitUntilExit()` (see `BrokerProxy.terminate`).
 @MainActor
 private func withProxy(_ name: String, _ body: @MainActor (BrokerProxy) async throws -> Void) async throws {
     let proxy = try await BrokerProxy.launch()
-    defer {
-        trace("\(name): defer begin (proxy cleanup)")
-        proxy.terminate()
-        trace("\(name): defer end (proxy cleanup)")
+    do {
+        try await body(proxy)
+    } catch {
+        trace("\(name): cleanup begin (body threw)")
+        await proxy.terminate()
+        trace("\(name): cleanup end")
+        throw error
     }
-    try await body(proxy)
-}
-
-@MainActor
-private func tracedManager(port: UInt16) throws -> CommunicationManager {
-    let manager = try makeManager(port: port)
-    manager.traceForTesting = { trace($0) }
-    return manager
+    trace("\(name): cleanup begin")
+    await proxy.terminate()
+    trace("\(name): cleanup end")
 }
 
 @MainActor
@@ -193,7 +277,7 @@ private func scenarioJoinsAttemptResumingAfterStop() async throws {
     let name = "joinsAttemptResumingAfterStop"
     try await watched(name) {
         try await withProxy(name) { proxy in
-            let manager = try tracedManager(port: proxy.port)
+            let manager = try makeManager(port: proxy.port)
             let attempt = AttemptProbe()
             manager.reconnectAttempt = { controls in
                 attempt.begin(controls)
@@ -233,7 +317,7 @@ private func scenarioAttemptNeverReturns() async throws {
     let name = "attemptNeverReturns"
     try await watched(name) {
         try await withProxy(name) { proxy in
-            let manager = try tracedManager(port: proxy.port)
+            let manager = try makeManager(port: proxy.port)
             manager.reconnectSettleTimeout = .milliseconds(300)
             let attempt = AttemptProbe()
             manager.reconnectAttempt = { controls in
@@ -271,7 +355,7 @@ private func scenarioTeardownNeverReturns() async throws {
     let name = "teardownNeverReturns"
     try await watched(name) {
         try await withProxy(name) { proxy in
-            let manager = try tracedManager(port: proxy.port)
+            let manager = try makeManager(port: proxy.port)
             manager.shutdownTimeout = .milliseconds(500)
             let stuck = Gate()
             // Stands in for an Axoloty or MQTT call that never returns.
@@ -292,7 +376,7 @@ private func scenarioHandshakeStall() async throws {
     let name = "handshakeStall"
     try await watched(name) {
         try await withProxy(name) { proxy in
-            let manager = try tracedManager(port: proxy.port)
+            let manager = try makeManager(port: proxy.port)
             try await start(manager)
             proxy.switchToBlackhole()
             // The first reconnect connects a socket that never answers CONNACK.
@@ -410,7 +494,7 @@ private enum Budget {
         ("stopAndWait (1 s linger and the teardown)", 7),
         ("late connection closes", 1),
         ("quiet window", 2),
-        ("proxy cleanup (SIGKILL and waitUntilExit)", 2),
+        ("proxy cleanup (SIGKILL and the termination handler)", 2),
     ]
     /// 3 + 5 + 2 + 3 + 7 + 1 + 2 + 2 = 25.
     static var worstSuccessfulPath: Double { stages.reduce(0) { $0 + $1.seconds } }
@@ -600,6 +684,33 @@ private actor Gate {
     }
 }
 
+/// Reports a process's exit to async callers, from its termination handler.
+private final class ExitLatch: @unchecked Sendable { // SAFETY: `exited` and `waiters` are only accessed while holding the lock.
+    private let lock = NSLock()
+    private var exited = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func markExited() {
+        let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            exited = true
+            defer { waiters = [] }
+            return waiters
+        }
+        pending.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let alreadyExited = lock.withLock { () -> Bool in
+                if exited { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if alreadyExited { continuation.resume() }
+        }
+    }
+}
+
 /// A TCP proxy in front of the container's broker. After `switchToBlackhole()`
 /// it drops every connection and then accepts new ones without answering.
 private final class BrokerProxy: @unchecked Sendable {
@@ -613,9 +724,10 @@ private final class BrokerProxy: @unchecked Sendable {
     let port: UInt16
     private let directory: URL
     private let process: Process
+    private let exit: ExitLatch
 
-    private init(port: UInt16, directory: URL, process: Process) {
-        self.port = port; self.directory = directory; self.process = process
+    private init(port: UInt16, directory: URL, process: Process, exit: ExitLatch) {
+        self.port = port; self.directory = directory; self.process = process; self.exit = exit
     }
 
     static func launch() async throws -> BrokerProxy {
@@ -628,23 +740,25 @@ private final class BrokerProxy: @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["node", script.path, directory.path]
+        let exit = ExitLatch()
+        process.terminationHandler = { _ in exit.markExited() }
         try process.run()
         trace("proxy: node started, pid \(process.processIdentifier)")
         let portFile = directory.appendingPathComponent("port")
         let deadline = ContinuousClock.now + .seconds(10)
         while !FileManager.default.fileExists(atPath: portFile.path) {
             guard ContinuousClock.now < deadline else {
-                _ = kill(process.processIdentifier, SIGKILL); process.waitUntilExit()
+                await killAndWait(process, exit)
                 throw ProxyError.didNotStart
             }
             try await Task.sleep(for: .milliseconds(20))
         }
         guard let port = UInt16((try String(contentsOf: portFile, encoding: .utf8)).trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            _ = kill(process.processIdentifier, SIGKILL); process.waitUntilExit()
+            await killAndWait(process, exit)
             throw ProxyError.didNotStart
         }
         trace("proxy: ready on port \(port)")
-        return BrokerProxy(port: port, directory: directory, process: process)
+        return BrokerProxy(port: port, directory: directory, process: process, exit: exit)
     }
 
     func switchToBlackhole() {
@@ -658,16 +772,40 @@ private final class BrokerProxy: @unchecked Sendable {
         return Counts(accepted: values[0], closed: values[1])
     }
 
-    func terminate() {
+    /// Kills the proxy and waits for the termination handler, never for
+    /// `Process.waitUntilExit()`.
+    ///
+    /// `waitUntilExit()` runs the calling thread's run loop until the task
+    /// reports that it ended. Called on the main thread right after SIGKILL, it
+    /// has parked the main run loop in `mach_msg` for good on macOS CI (#738,
+    /// job 125746974356), holding the main actor with it. The termination
+    /// handler runs on a Foundation queue and needs no run loop of ours. The
+    /// wait is also bounded: if the handler never fires, report and go on.
+    func terminate() async {
         trace("proxy: terminate begin (running \(process.isRunning))")
         if process.isRunning {
-            _ = kill(process.processIdentifier, SIGKILL)
-            trace("proxy: SIGKILL sent; waitUntilExit begin")
-            process.waitUntilExit()
-            trace("proxy: waitUntilExit end")
+            await Self.killAndWait(process, exit)
         }
         try? FileManager.default.removeItem(at: directory)
         trace("proxy: terminate end (directory removed)")
+    }
+
+    /// Returns whether the exit was reported within `bound`.
+    @discardableResult
+    fileprivate static func killAndWait(_ process: Process, _ exit: ExitLatch, bound: Duration = .seconds(5), recordsIssue: Bool = true) async -> Bool {
+        _ = kill(process.processIdentifier, SIGKILL)
+        trace("proxy: SIGKILL sent; waiting for the termination handler")
+        let exited = await BoundedWait.run(timeout: bound) { () -> Bool in
+            await exit.wait()
+            return true
+        }
+        if exited == nil {
+            trace("proxy: no termination report within \(bound)")
+            if recordsIssue { Issue.record("The proxy process reported no termination within \(bound) after SIGKILL", severity: .warning) }
+        } else {
+            trace("proxy: termination reported")
+        }
+        return exited != nil
     }
 
     enum ProxyError: Error { case didNotStart }
