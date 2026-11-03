@@ -32,7 +32,7 @@ struct ReconnectShutdownTests {
             await controls.openTransport()
             attempt.end()
         }
-        try await manager.startAndWaitUntilReady()
+        try await start(manager)
         proxy.switchToBlackhole()
         try await poll("reconnect attempt began") { attempt.began }
 
@@ -45,7 +45,7 @@ struct ReconnectShutdownTests {
         }
         try await poll("runtime stopped") { await attempt.runtimeStopped() }
         await attempt.gate.open()
-        let activeAtReturn = await stopper.value
+        let activeAtReturn = try await within("stopAndWait") { await stopper.value }
 
         #expect(!activeAtReturn, "stopAndWait() returned while a reconnect attempt was active")
         // Anything the late attempt opened must already be closed.
@@ -53,9 +53,9 @@ struct ReconnectShutdownTests {
         try await expectQuiet(proxy, for: .seconds(1))
     }
 
-    @Test("a reconnect that outlives the shutdown bound closes its own transport", .timeLimit(.minutes(1)))
+    @Test("a reconnect that never returns does not hold shutdown past its bound", .timeLimit(.minutes(1)))
     @MainActor
-    func lateAttemptClosesItsOwnTransport() async throws {
+    func attemptThatNeverReturnsDoesNotHoldShutdown() async throws {
         let proxy = try await BrokerProxy.launch()
         defer { proxy.terminate() }
         let manager = try makeManager(port: proxy.port)
@@ -63,25 +63,57 @@ struct ReconnectShutdownTests {
         let attempt = AttemptProbe()
         manager.reconnectAttempt = { controls in
             attempt.begin(controls)
-            await attempt.gate.wait()
+            await attempt.gate.wait()   // never opened while the test asserts
             await controls.openTransport()
             attempt.end()
         }
-        try await manager.startAndWaitUntilReady()
+        try await start(manager)
         proxy.switchToBlackhole()
         try await poll("reconnect attempt began") { attempt.began }
 
         let started = ContinuousClock.now
-        await manager.stopAndWait()
+        try await within("stopAndWait", .seconds(10)) { await manager.stopAndWait() }
         #expect(ContinuousClock.now - started < .seconds(3), "Shutdown waited past its bound")
         #expect(attempt.active, "The attempt should still be suspended at the bound")
 
+        // Release it. The late attempt closes the transport it opens.
         await attempt.gate.open()
-        // Shutdown closes the late connection at once. Without that, the
-        // attempt would sit in the 10 s handshake timeout.
         try await poll("late attempt returned", timeout: .seconds(3)) { !attempt.active }
         try await poll("late transport closed", timeout: .seconds(3)) { proxy.counts()?.open == 0 }
         try await expectQuiet(proxy, for: .seconds(1))
+    }
+
+    @Test("a teardown call that never returns does not hold stopAndWait", .timeLimit(.minutes(1)))
+    @MainActor
+    func teardownThatNeverReturnsDoesNotHoldShutdown() async throws {
+        let proxy = try await BrokerProxy.launch()
+        defer { proxy.terminate() }
+        let manager = try makeManager(port: proxy.port)
+        manager.shutdownTimeout = .milliseconds(500)
+        let stuck = Gate()
+        // Stands in for an Axoloty or MQTT call that never returns.
+        manager.drainHookForTesting = { await stuck.wait() }
+        try await start(manager)
+
+        let started = ContinuousClock.now
+        try await within("stopAndWait", .seconds(10)) { await manager.stopAndWait() }
+        #expect(ContinuousClock.now - started < .seconds(3), "stopAndWait() was not bounded")
+        await stuck.open()
+    }
+
+    @Test("a bounded wait returns although its operation ignores cancellation and never finishes")
+    func boundedWaitDoesNotJoinItsOperation() async {
+        let never = Gate()
+        let started = ContinuousClock.now
+        let result: Int? = await BoundedWait.run(timeout: .milliseconds(200)) {
+            await never.wait()
+            return 1
+        }
+        #expect(result == nil)
+        #expect(ContinuousClock.now - started < .seconds(3))
+        let value: Int? = await BoundedWait.run(timeout: .seconds(5)) { 7 }
+        #expect(value == 7)
+        await never.open()
     }
 
     @Test("shutdown unblocks a real reconnect stalled in the MQTT handshake", .timeLimit(.minutes(1)))
@@ -90,7 +122,7 @@ struct ReconnectShutdownTests {
         let proxy = try await BrokerProxy.launch()
         defer { proxy.terminate() }
         let manager = try makeManager(port: proxy.port)
-        try await manager.startAndWaitUntilReady()
+        try await start(manager)
         proxy.switchToBlackhole()
         // The first reconnect connects a socket that never answers CONNACK.
         try await poll("reconnect handshake suspended") {
@@ -99,7 +131,7 @@ struct ReconnectShutdownTests {
         }
 
         let started = ContinuousClock.now
-        await manager.stopAndWait()
+        try await within("stopAndWait", .seconds(10)) { await manager.stopAndWait() }
         #expect(ContinuousClock.now - started < .seconds(3), "Shutdown did not promptly unblock the MQTT handshake")
         try await poll("no broker connection left open", timeout: .seconds(3)) { proxy.counts()?.open == 0 }
         try await expectQuiet(proxy, for: .seconds(2))
@@ -116,11 +148,38 @@ struct ReconnectShutdownTests {
         )
     }
 
+    private func start(_ manager: CommunicationManager) async throws {
+        let started = try await within("manager start") { (try? await manager.startAndWaitUntilReady()) != nil }
+        try #require(started, "The manager did not start")
+    }
+
+    /// Runs `operation` and fails the test, instead of hanging it, when the
+    /// operation does not finish in time. Swift Testing cannot kill a hung
+    /// test, so no test body may wait on the product without this.
+    private func within<Value: Sendable>(
+        _ what: String,
+        _ timeout: Duration = .seconds(15),
+        _ operation: @escaping @Sendable () async -> Value
+    ) async throws -> Value {
+        guard let value = await BoundedWait.run(timeout: timeout, operation) else {
+            Issue.record("Timed out after \(timeout) waiting for: \(what)")
+            throw TestHang(what: what)
+        }
+        return value
+    }
+
     /// Fails unless `condition` holds within the bound. Polls; never sleeps for a fixed time.
-    private func poll(_ what: String, timeout: Duration = .seconds(15), _ condition: @MainActor () async -> Bool) async throws {
+    /// Each evaluation is itself bounded, because the condition can call into the product.
+    private func poll(_ what: String, timeout: Duration = .seconds(15), _ condition: @escaping @Sendable @MainActor () async -> Bool) async throws {
         let deadline = ContinuousClock.now + timeout
-        while await !condition() {
-            try #require(ContinuousClock.now < deadline, "Timed out waiting for: \(what)")
+        while true {
+            let remaining = deadline - ContinuousClock.now
+            guard remaining > .zero,
+                  let holds = await BoundedWait.run(timeout: remaining, { await condition() }) else {
+                Issue.record("Timed out waiting for: \(what)")
+                throw TestHang(what: what)
+            }
+            if holds { return }
             try await Task.sleep(for: .milliseconds(20))
         }
     }
@@ -137,6 +196,8 @@ struct ReconnectShutdownTests {
         }
     }
 }
+
+private struct TestHang: Error { let what: String }
 
 /// Records one stand-in reconnect attempt.
 @MainActor
@@ -172,7 +233,7 @@ private actor Gate {
 
 /// A TCP proxy in front of the container's broker. After `switchToBlackhole()`
 /// it drops every connection and then accepts new ones without answering.
-private final class BrokerProxy {
+private final class BrokerProxy: @unchecked Sendable {
     struct Counts: CustomStringConvertible {
         var accepted: Int
         var closed: Int

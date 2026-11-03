@@ -462,6 +462,9 @@ public final class CommunicationManager {
     private var eventTasks: [Task<Void, Never>] = []
     private static let reconnectInitialDelay: Duration = .milliseconds(250)
     private static let reconnectMaximumDelay: Duration = .seconds(10)
+    /// The longest the transport closer runs. Axoloty's own timeouts are 10 s,
+    /// so an attempt still running after this is stuck.
+    private static let closerHardLimit: Duration = .seconds(60)
     private var supervisionTask: Task<Void, Never>?
     /// True from the moment the supervisor commits to a recovery until it has
     /// returned. Shutdown joins on this flag because Axoloty's `reconnect()`
@@ -481,6 +484,17 @@ public final class CommunicationManager {
     var reconnectLinger: Duration = .seconds(1)
     /// How long shutdown waits for an in-flight reconnect attempt to return.
     var reconnectSettleTimeout: Duration = .seconds(5)
+    /// How long `stopAndWait()` waits for the whole teardown. Every call it
+    /// makes into Axoloty and MQTT (`transport.stop()`, `runtime.stop()`) can
+    /// in principle suspend without end, so this bound does not depend on
+    /// them returning. At the bound, `stopAndWait()` logs the phase that was
+    /// running and returns; the teardown keeps running unowned.
+    var shutdownTimeout: Duration = .seconds(10)
+    /// The teardown phase that is running, for the log when the bound trips.
+    private var drainPhase = "not started"
+    /// Runs inside the teardown, where Axoloty's `runtime.stop()` runs. A test
+    /// uses it to stand in for a call that never returns.
+    var drainHookForTesting: (@MainActor () async -> Void)?
     /// The operations of one reconnect attempt, so a test can stand in for
     /// Axoloty's `reconnect()` and replay its suspensions deterministically.
     struct ReconnectAttemptControls {
@@ -702,7 +716,15 @@ public final class CommunicationManager {
         supervisionTask?.cancel()
         supervisionTask = nil
         emitState(.offline)
-        await beginStop(runtimeWasReady: runtimeWasReady).value
+        let teardown = beginStop(runtimeWasReady: runtimeWasReady)
+        let finished = await BoundedWait.run(timeout: shutdownTimeout) { () -> Bool in
+            await teardown.value
+            return true
+        }
+        if finished == nil {
+            let phase = drainPhase
+            ServeLogging.warn("shutdown did not finish within \(shutdownTimeout); abandoning it while in phase \"\(phase)\"", component: "transport")
+        }
     }
 
     /// Starts one shared teardown or joins the in-flight one. The handle is
@@ -727,8 +749,11 @@ public final class CommunicationManager {
         // broker handshake cannot hold the lifecycle owner until its
         // deadline.
         if runtimeWasReady && !recoveryActive {
+            drainPhase = "runtime stop"
+            await drainHookForTesting?()
             await runtime.stop()
         } else {
+            drainPhase = "first transport stop"
             await transport.stop()
             // Axoloty's `reconnect()` ignores cancellation and can reach
             // `transport.start()` after `runtime.stop()` has returned. Keep
@@ -737,22 +762,31 @@ public final class CommunicationManager {
             // handshake. If the attempt outlives the settle bound, this task
             // outlives the drain and ends `reconnectLinger` after the attempt.
             closingTransport = true
+            // A hard limit stops the closer if an attempt never returns.
+            let closerLimit = ContinuousClock.now + Self.closerHardLimit
             let closer = Task { @MainActor [weak self] in
-                while let self, self.closingTransport || self.recoveryActive
-                    || self.closeTransportUntil.map({ ContinuousClock.now < $0 }) == true {
+                while let self, ContinuousClock.now < closerLimit,
+                      self.closingTransport || self.recoveryActive
+                        || self.closeTransportUntil.map({ ContinuousClock.now < $0 }) == true {
                     await self.transport.stop()
                     try? await Task.sleep(for: .milliseconds(10))
                 }
             }
+            drainPhase = "runtime stop"
+            await drainHookForTesting?()
             await runtime.stop()
+            drainPhase = "waiting for the reconnect attempt"
             await settleReconnectAttempt()
             closingTransport = false
             // Join the closer unless the attempt outlived the bound; then it
             // ends by itself after the attempt returns.
+            drainPhase = "joining the transport closer"
             if !recoveryActive { await closer.value }
         }
         // Final cleanup: no connection outlives shutdown.
+        drainPhase = "final transport stop"
         await transport.stop()
+        drainPhase = "finished"
         eventTasks.forEach { $0.cancel() }
         eventTasks.removeAll()
     }
