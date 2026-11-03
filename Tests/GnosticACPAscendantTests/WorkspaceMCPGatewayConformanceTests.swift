@@ -9,6 +9,11 @@ import GnosticACPWire
 @_spi(RuntimeHost) import GnosticCore
 import GnosticProtocol
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Exercises the Workspace MCP gateway at its authenticated HTTP seam.
 ///
@@ -31,16 +36,34 @@ struct WorkspaceMCPGatewayConformanceTests {
         }
     }
 
+    /// The steps a gateway call has reached, for the report of a call that does not finish.
+    private final class PhaseLog: @unchecked Sendable { // SAFETY: Every access holds the lock.
+        private let lock = NSLock()
+        private var entries: [String] = []
+
+        func note(_ phase: String) {
+            lock.withLock { entries.append(phase) }
+        }
+
+        var report: String {
+            lock.withLock { entries.isEmpty ? "no phase reached" : entries.joined(separator: " -> ") }
+        }
+    }
+
     /// Runs a state change while the approval prompt is pending, then approves.
     private actor ChangingPermissionService: AscendantBackendPermissionService {
         private let change: @MainActor @Sendable () -> Void
+        private let phases: PhaseLog?
 
-        init(change: @escaping @MainActor @Sendable () -> Void) {
+        init(phases: PhaseLog? = nil, change: @escaping @MainActor @Sendable () -> Void) {
+            self.phases = phases
             self.change = change
         }
 
         func requestApproval(for request: BackendPermissionRequest) async -> AscendantPermissionDecision {
+            phases?.note("approval requested")
             await change()
+            phases?.note("state change applied")
             return .approved
         }
     }
@@ -80,6 +103,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         let gateway: WorkspaceMCPGateway
         let endpoint: URL
         let authorization: String
+        var phases = PhaseLog()
 
         var toolName: String { toolName(for: "search") }
 
@@ -102,12 +126,32 @@ struct WorkspaceMCPGatewayConformanceTests {
         func post(_ body: Data) async throws -> (status: Int, message: ACPJSONRPCResponse?) {
             var request = URLRequest(url: endpoint)
             request.httpMethod = "POST"
+            request.timeoutInterval = 20
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
             request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
             request.setValue(authorization, forHTTPHeaderField: "Authorization")
             request.httpBody = body
-            let (data, response) = try await URLSession.shared.data(for: request)
+            // A request that is only slow fails at `timeoutInterval` with an error. The
+            // watchdog is for a call that never returns even then, such as a blocked
+            // main thread. A Dispatch timer does not depend on the Swift task pool or the
+            // main actor, so it can still report and end the run instead of holding the job.
+            let phases = phases
+            let watchdog = DispatchWorkItem {
+                let report = "Gateway call did not finish within 60 s. Phases: \(phases.report)"
+                FileHandle.standardError.write(Data((report + "\n").utf8))
+                Issue.record(Comment(rawValue: report))
+                fatalError(report)
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 60, execute: watchdog)
+            defer { watchdog.cancel() }
+            phases.note("request sent")
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 20
+            let session = URLSession(configuration: configuration)
+            defer { session.finishTasksAndInvalidate() }
+            let (data, response) = try await session.data(for: request)
+            phases.note("reply received")
             let status = try #require(response as? HTTPURLResponse).statusCode
             return (status, try? JSONDecoder().decode(ACPJSONRPCResponse.self, from: data))
         }
@@ -574,6 +618,44 @@ struct WorkspaceMCPGatewayConformanceTests {
         #expect(fixture.service.invocations.isEmpty)
     }
 
+    @Test("a connection that sends nothing does not block later requests")
+    @MainActor
+    func stalledConnectionDoesNotBlockLaterRequests() async throws {
+        let base = try makeFixture()
+        let fixture = try rewire(
+            base, permission: base.permission, connectionTimeout: 1, turn: MutableTurn()
+        )
+        defer { fixture.gateway.stop() }
+        let stalled = try openIdleConnection(to: fixture.endpoint)
+        defer { close(stalled) }
+
+        // The gateway serves one connection at a time, so it must give up on a
+        // client that sends nothing. Without a bound, this request waits behind it.
+        #expect(try await fixture.listedTools()[fixture.toolName] != nil)
+    }
+
+    private func openIdleConnection(to endpoint: URL) throws -> Int32 {
+        let descriptor = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        guard descriptor >= 0 else { throw ProviderOffline() }
+        var address = sockaddr_in()
+        #if canImport(Darwin)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = UInt16(try #require(endpoint.port)).bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard result == 0 else {
+            close(descriptor)
+            throw ProviderOffline()
+        }
+        return descriptor
+    }
+
     @Test("a Workspace whose tools resolve after the Session started becomes listed and callable")
     @MainActor
     func toolsResolvedAfterSessionStart() async throws {
@@ -646,6 +728,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         timelineID: UUID,
         permission: any AscendantBackendPermissionService,
         journals: TimelineJournalStore? = nil,
+        connectionTimeout: TimeInterval = 10,
         turn: MutableTurn
     ) throws -> (gateway: WorkspaceMCPGateway, endpoint: URL, authorization: String) {
         let gateway = WorkspaceMCPGateway(
@@ -654,6 +737,7 @@ struct WorkspaceMCPGatewayConformanceTests {
             workspaceService: service,
             permissionService: permission,
             timelineJournalRecorder: journals.map { TimelineJournalRecorder(journals: $0) },
+            connectionTimeout: connectionTimeout,
             activeTurn: { _ in turn.current }
         )
         guard case let .http(_, endpoint, headers, _) = try gateway.start(),
@@ -669,6 +753,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         _ base: Fixture,
         permission: any AscendantBackendPermissionService,
         journals: TimelineJournalStore? = nil,
+        connectionTimeout: TimeInterval = 10,
         turn: MutableTurn
     ) throws -> Fixture {
         base.gateway.stop()
@@ -678,6 +763,7 @@ struct WorkspaceMCPGatewayConformanceTests {
             timelineID: base.timelineID,
             permission: permission,
             journals: journals,
+            connectionTimeout: connectionTimeout,
             turn: turn
         )
         return Fixture(
@@ -688,7 +774,8 @@ struct WorkspaceMCPGatewayConformanceTests {
             permission: base.permission,
             gateway: started.gateway,
             endpoint: started.endpoint,
-            authorization: started.authorization
+            authorization: started.authorization,
+            phases: base.phases
         )
     }
 
@@ -700,7 +787,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         let registry = base.registry
         let workspaceID = base.workspaceID
         let timelineID = base.timelineID
-        let fixture = try rewire(base, permission: ChangingPermissionService {
+        let fixture = try rewire(base, permission: ChangingPermissionService(phases: base.phases) {
             registry.detachWorkspace(workspaceID, from: timelineID)
         }, turn: turn)
         defer { fixture.gateway.stop() }
@@ -718,7 +805,7 @@ struct WorkspaceMCPGatewayConformanceTests {
         let turn = MutableTurn()
         let service = base.service
         let offline = base.reference(status: .unavailable, tools: [Self.searchTool(requiresPermission: true)])
-        let fixture = try rewire(base, permission: ChangingPermissionService {
+        let fixture = try rewire(base, permission: ChangingPermissionService(phases: base.phases) {
             service.workspaceReference = offline
         }, turn: turn)
         defer { fixture.gateway.stop() }
@@ -734,7 +821,7 @@ struct WorkspaceMCPGatewayConformanceTests {
     func turnEndedDuringApproval() async throws {
         let base = try makeFixture(tools: [Self.searchTool(requiresPermission: true)])
         let turn = MutableTurn()
-        let fixture = try rewire(base, permission: ChangingPermissionService {
+        let fixture = try rewire(base, permission: ChangingPermissionService(phases: base.phases) {
             turn.current = ("turn-2", "session-1")
         }, turn: turn)
         defer { fixture.gateway.stop() }
