@@ -274,6 +274,13 @@ public actor NetworkCatalog {
         }
     }
 
+    // Transport loss invalidates all peer presence, including tool pages.
+    func invalidateRemotePresence() {
+        let providers = Set(entries.values.flatMap { $0.keys })
+            .union(workspaceToolOwners.values.map(\.providerID))
+        for provider in providers { evictProvider(provider) }
+    }
+
     /// Removes every record owned by one provider and notifies observers.
     private func evictProvider(_ providerID: String) {
         for (workspaceID, providers) in Array(entries) where providers[providerID]?.objectType == GnosticObjectType.workspace {

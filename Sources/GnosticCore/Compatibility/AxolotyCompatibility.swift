@@ -460,7 +460,54 @@ public final class CommunicationManager {
     private var rawEventContinuations: [UUID: AsyncStream<GnosticRawWireEvent>.Continuation] = [:]
     private let dispatch: CompatibilityDispatch
     private var eventTasks: [Task<Void, Never>] = []
-    private var pendingAdvertisements: [String: [UInt8]] = [:]
+    private static let reconnectInitialDelay: Duration = .milliseconds(250)
+    private static let reconnectMaximumDelay: Duration = .seconds(10)
+    /// The longest the transport closer runs. Axoloty's own timeouts are 10 s,
+    /// so an attempt still running after this is stuck.
+    private static let closerHardLimit: Duration = .seconds(60)
+    private var supervisionTask: Task<Void, Never>?
+    /// True from the moment the supervisor commits to a recovery until it has
+    /// returned. Shutdown joins on this flag because Axoloty's `reconnect()`
+    /// ignores cancellation (see `settleReconnectAttempt`).
+    private var recoveryActive = false
+    /// True while shutdown keeps closing the transport under a reconnect attempt.
+    private var closingTransport = false
+    /// Shutdown keeps closing the transport until this instant. It is set when
+    /// a reconnect attempt returns during shutdown (see `recoverConnection`).
+    private var closeTransportUntil: ContinuousClock.Instant?
+    /// How long shutdown keeps closing the transport after an attempt it
+    /// overlapped has returned. MQTTNIO assigns its connection only once the
+    /// TCP connect completes, so a `disconnect()` that lands earlier throws
+    /// `noConnection` and the connect later finishes unowned. A repeated
+    /// `stop()` closes it once it exists. A connect slower than this window
+    /// is not covered.
+    var reconnectLinger: Duration = .seconds(1)
+    /// How long shutdown waits for an in-flight reconnect attempt to return.
+    var reconnectSettleTimeout: Duration = .seconds(5)
+    /// How long `stopAndWait()` waits for the whole teardown. Every call it
+    /// makes into Axoloty and MQTT (`transport.stop()`, `runtime.stop()`) can
+    /// in principle suspend without end, so this bound does not depend on
+    /// them returning. At the bound, `stopAndWait()` logs the phase that was
+    /// running and returns; the teardown keeps running unowned.
+    var shutdownTimeout: Duration = .seconds(10)
+    /// The teardown phase that is running, for the log when the bound trips.
+    private var drainPhase = "not started"
+    private func phase(_ name: String) { drainPhase = name }
+    /// Runs inside the teardown, where Axoloty's `runtime.stop()` runs. A test
+    /// uses it to stand in for a call that never returns.
+    var drainHookForTesting: (@MainActor () async -> Void)?
+    /// The operations of one reconnect attempt, so a test can stand in for
+    /// Axoloty's `reconnect()` and replay its suspensions deterministically.
+    struct ReconnectAttemptControls {
+        /// Axoloty's `reconnect()`.
+        var reconnect: @MainActor () async -> Void
+        /// What `reconnect()` does when it finally reaches the transport.
+        var openTransport: @MainActor () async -> Void
+        /// Whether the runtime has finished stopping.
+        var runtimeHasStopped: @MainActor () async -> Bool
+    }
+    var reconnectAttempt: @MainActor (ReconnectAttemptControls) async -> Void = { await $0.reconnect() }
+    private var currentAdvertisements: [String: [UInt8]] = [:]
     private var isRuntimeReady = false
     private var isStarted = false
 
@@ -554,17 +601,67 @@ public final class CommunicationManager {
         guard !isStarted else { return }
         isStarted = true
         let runtime = self.runtime
-        startTask = Task { @MainActor in
+        startTask = Task { @MainActor [self] in
             do {
+                let diagnostics = await runtime.diagnostics()
                 try await runtime.start()
                 self.isRuntimeReady = true
                 self.emitState(.online)
                 self.startEventPumps()
                 await self.flushPendingAdvertisements()
+                guard self.isStarted else { return }
+                self.supervisionTask = Task { @MainActor [weak self] in
+                    for await diagnostic in diagnostics {
+                        guard let self, !Task.isCancelled else { return }
+                        guard diagnostic.kind == .transportFailed, self.isStarted else { continue }
+                        await self.recoverConnection()
+                    }
+                }
             } catch {
                 self.emitState(.offline)
                 throw error
             }
+        }
+    }
+
+    private func recoverConnection() async {
+        recoveryActive = true
+        defer { recoveryActive = false }
+        guard isStarted, await runtime.state() == .reconnecting else { return }
+        isRuntimeReady = false
+        emitState(.offline)
+        ServeLogging.warn("broker connection lost", component: "transport")
+        var delay = Self.reconnectInitialDelay
+        while isStarted && !Task.isCancelled {
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard isStarted && !Task.isCancelled else { return }
+            ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker reconnect attempt started")
+            let runtime = self.runtime
+            let transport = self.transport
+            await reconnectAttempt(.init(
+                reconnect: { await runtime.reconnect() },
+                openTransport: { try? await transport.start(receive: { _ in }, lastWill: nil) },
+                runtimeHasStopped: { await runtime.state() == .stopped }
+            ))
+            guard isStarted && !Task.isCancelled else {
+                // Shutdown overtook the attempt. Axoloty's `reconnect()` can
+                // resume after the runtime stopped and open the transport,
+                // then return on its epoch check without closing it. Close
+                // it here, once the attempt has returned, and keep closing
+                // for `reconnectLinger` for a connect still in flight.
+                closeTransportUntil = ContinuousClock.now + reconnectLinger
+                await transport.stop()
+                return
+            }
+            if await runtime.state() == .running {
+                isRuntimeReady = true
+                await flushPendingAdvertisements()
+                emitState(.online)
+                ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker connection regained")
+                return
+            }
+            ServeLogging.warn("broker reconnect attempt failed", component: "transport")
+            delay = min(delay * 2, Self.reconnectMaximumDelay)
         }
     }
 
@@ -602,6 +699,8 @@ public final class CommunicationManager {
         let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
         isStarted = false
+        supervisionTask?.cancel()
+        supervisionTask = nil
         emitState(.offline)
         // Coaty-era compatibility entry point: it must stay synchronous, so
         // it cannot await. The teardown handle is stored on `stopTask` instead
@@ -615,8 +714,18 @@ public final class CommunicationManager {
         let runtimeWasReady = isRuntimeReady
         isRuntimeReady = false
         isStarted = false
+        supervisionTask?.cancel()
+        supervisionTask = nil
         emitState(.offline)
-        await beginStop(runtimeWasReady: runtimeWasReady).value
+        let teardown = beginStop(runtimeWasReady: runtimeWasReady)
+        let finished = await BoundedWait.run(timeout: shutdownTimeout) { () -> Bool in
+            await teardown.value
+            return true
+        }
+        if finished == nil {
+            let phase = drainPhase
+            ServeLogging.warn("shutdown did not finish within \(shutdownTimeout); abandoning it while in phase \"\(phase)\"", component: "transport")
+        }
     }
 
     /// Starts one shared teardown or joins the in-flight one. The handle is
@@ -633,20 +742,77 @@ public final class CommunicationManager {
     }
 
     private func drain(runtimeWasReady: Bool) async {
-        // A ready runtime owns shutdown ordering: it must drain its
-        // deadvertisements before the transport disconnects. A pending start
-        // has no runtime lifecycle to drain, so cancel its transport first to
-        // release the start continuation. MQTTBinding fails that continuation
-        // before it awaits socket teardown, so a broker handshake cannot hold
-        // the lifecycle owner until its deadline.
-        if runtimeWasReady {
+        // A ready runtime with no reconnect in flight owns shutdown ordering:
+        // it must drain its deadvertisements before the transport
+        // disconnects. Otherwise the runtime has no lifecycle to drain, so
+        // close the transport first to release a pending start. MQTTBinding
+        // fails that continuation before it awaits socket teardown, so a
+        // broker handshake cannot hold the lifecycle owner until its
+        // deadline.
+        if runtimeWasReady && !recoveryActive {
+            phase("runtime stop begin")
+            await drainHookForTesting?()
             await runtime.stop()
+            phase("runtime stop end")
         } else {
+            phase("first transport stop begin")
             await transport.stop()
+            phase("first transport stop end")
+            // Axoloty's `reconnect()` ignores cancellation and can reach
+            // `transport.start()` after `runtime.stop()` has returned. Keep
+            // closing the transport until the attempt has returned, so that
+            // a late start fails at once instead of waiting out the broker
+            // handshake. If the attempt outlives the settle bound, this task
+            // outlives the drain and ends `reconnectLinger` after the attempt.
+            closingTransport = true
+            // A hard limit stops the closer if an attempt never returns.
+            let closerLimit = ContinuousClock.now + Self.closerHardLimit
+            let closer = Task { @MainActor [weak self] in
+                while let self, ContinuousClock.now < closerLimit,
+                      self.closingTransport || self.recoveryActive
+                        || self.closeTransportUntil.map({ ContinuousClock.now < $0 }) == true {
+                    await self.transport.stop()
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+            }
+            phase("runtime stop begin")
+            await drainHookForTesting?()
             await runtime.stop()
+            phase("runtime stop end")
+            phase("waiting for the reconnect attempt begin")
+            await settleReconnectAttempt()
+            phase("waiting for the reconnect attempt end (recoveryActive \(recoveryActive))")
+            closingTransport = false
+            // Join the closer unless the attempt outlived the bound; then it
+            // ends by itself after the attempt returns.
+            phase("joining the transport closer begin")
+            if !recoveryActive { await closer.value }
+            phase("joining the transport closer end")
         }
+        // Final cleanup: no connection outlives shutdown.
+        phase("final transport stop begin")
+        await transport.stop()
+        phase("final transport stop end")
+        phase("finished")
         eventTasks.forEach { $0.cancel() }
         eventTasks.removeAll()
+    }
+
+    /// Waits for the supervisor to leave `recoverConnection()`.
+    ///
+    /// The wait is bounded by `reconnectSettleTimeout`. At the bound,
+    /// shutdown logs a warning and returns; the attempt then closes the
+    /// transport itself when it returns, because `recoverConnection()` sees
+    /// that shutdown began.
+    private func settleReconnectAttempt() async {
+        let deadline = ContinuousClock.now + reconnectSettleTimeout
+        while recoveryActive {
+            guard ContinuousClock.now < deadline else {
+                ServeLogging.warn("reconnect attempt still running at shutdown; it closes the transport when it returns", component: "transport")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     public func observeCommunicationStateStream() async -> AsyncStream<CommunicationState> {
@@ -712,7 +878,7 @@ public final class CommunicationManager {
     public func publishAdvertise(_ object: CoatyObject) {
         guard let data = try? jsonRaw(object), let raw = try? JSONSerialization.jsonObject(with: Data(data)) else { return }
         guard let payload = try? jsonObject(["object": raw]) else { return }
-        pendingAdvertisements[object.objectId.string] = payload
+        currentAdvertisements[object.objectId.string] = payload
         Task { await dispatch.storeAdvertisedObject(object) }
         guard isRuntimeReady else { return }
         Task { _ = await runtime.publish(.advertise(payload)) }
@@ -721,20 +887,20 @@ public final class CommunicationManager {
     fileprivate func readvertiseDiscoverableObjectAndWait(_ object: CoatyObject) async {
         guard let data = try? jsonRaw(object), let raw = try? JSONSerialization.jsonObject(with: Data(data)) else { return }
         guard let payload = try? jsonObject(["object": raw]) else { return }
-        pendingAdvertisements[object.objectId.string] = payload
+        currentAdvertisements[object.objectId.string] = payload
         await dispatch.storeAdvertisedObject(object)
         guard isRuntimeReady else { return }
         _ = await runtime.publish(.advertise(payload))
     }
     fileprivate func publishDeadvertise(_ object: CoatyObject) {
-        pendingAdvertisements[object.objectId.string] = nil
+        currentAdvertisements[object.objectId.string] = nil
         Task { await dispatch.removeAdvertisedObject(id: object.objectId.string) }
         guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
         Task { _ = await runtime.publish(.deadvertise(payload)) }
     }
 
     fileprivate func publishDeadvertiseAndWait(_ object: CoatyObject) async {
-        pendingAdvertisements[object.objectId.string] = nil
+        currentAdvertisements[object.objectId.string] = nil
         await dispatch.removeAdvertisedObject(id: object.objectId.string)
         guard let payload = try? jsonObject(["objectIds": [object.objectId.string] as [String]]) else { return }
         _ = await runtime.publish(.deadvertise(payload))
@@ -762,9 +928,11 @@ public final class CommunicationManager {
     private func emitState(_ state: CommunicationState) { stateContinuations.values.forEach { _ = $0.yield(state) } }
 
     private func flushPendingAdvertisements() async {
-        let payloads = pendingAdvertisements.values
-        pendingAdvertisements.removeAll()
-        for payload in payloads {
+        let advertisements = currentAdvertisements
+        for (id, payload) in advertisements {
+            // A withdrawal or replacement may have occurred while another
+            // publication was suspended on the runtime actor.
+            guard currentAdvertisements[id] == payload else { continue }
             _ = await runtime.publish(.advertise(payload))
         }
     }
