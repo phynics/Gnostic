@@ -11,20 +11,34 @@ struct WorkspaceURILogFormTests {
         ("workspace://host.example:8443/repo?token=hunter2", "workspace://host.example:8443/repo"),
         ("workspace://token@host/path", "workspace://host/path"),
         ("workspace://peer-workspace-0123", "workspace://peer-workspace-0123"),
-        ("/srv/workspaces/root", "/srv/workspaces/root"),
+        ("WORKSPACE://Host.Example/Repo", "WORKSPACE://Host.Example/Repo"),
     ])
     func keepsWhatTellsTwoURIsApart(uri: String, expected: String) {
         #expect(WorkspaceURILogForm.redacted(uri) == expected)
     }
 
-    @Test("a URI that does not parse, or that leaves an @ behind, becomes a placeholder", arguments: [
+    @Test("only a scheme://host URI gets a log form; every other text becomes the placeholder", arguments: [
+        // Opaque URIs: no authority, so userinfo and tokens sit in the path.
+        "user:pass",
+        "workspace:token-secret",
+        "workspace:user:pass%40host/repo",
+        "workspace:user:pass@host/repo",
+        // Arbitrary text, which URLComponents would percent-encode instead of reject.
+        "this is secret text",
+        "secret-token-only",
+        // No host.
+        "workspace://",
+        "workspace:///only/a/path",
+        "/srv/workspaces/root",
+        // Not parseable at all, or an @ left behind after decoding.
         "workspace://user:s3cr3t@host with space/path",
-        "workspace:user:s3cr3t@host/path",
+        "workspace://host%40evil/path",
+        "workspace://host/user%40pass",
         "",
     ])
-    func placeholderForUnsafeText(uri: String) {
+    func placeholderForEveryOtherForm(uri: String) {
         let form = WorkspaceURILogForm.redacted(uri)
         #expect(form == WorkspaceURILogForm.placeholder)
-        #expect(!form.contains("s3cr3t"))
+        for secret in ["s3cr3t", "pass", "token-secret", "secret"] { #expect(!form.contains(secret)) }
     }
 }
