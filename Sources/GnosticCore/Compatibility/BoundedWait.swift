@@ -19,15 +19,22 @@ enum BoundedWait {
     ///
     /// On timeout the operation keeps running unowned. The caller decides what
     /// that means and must not depend on the operation finishing.
+    ///
+    /// - Parameter observeState: Receives the wait's internal state object
+    ///   once, so a test can check that it is released.
     static func run<Value: Sendable>(
         timeout: Duration,
+        observeState: (@Sendable (AnyObject) -> Void)? = nil,
         _ operation: @escaping @Sendable () async -> Value
     ) async -> Value? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
             let once = ResumeOnce(continuation)
+            observeState?(once)
             let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
-            let timer = DispatchWorkItem { once.resume(nil) }
-            once.timer = timer
+            // The work item holds `once` weakly. `once` holds the work item
+            // until it resumes, so a strong capture would be a retain cycle.
+            let timer = DispatchWorkItem { [weak once] in once?.resume(nil) }
+            once.attach(timer)
             DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: timer)
             Task.detached { once.resume(await operation()) }
         }
@@ -38,30 +45,31 @@ enum BoundedWait {
     private final class ResumeOnce<Value: Sendable>: @unchecked Sendable { // SAFETY: All mutable state is read or written while holding the lock.
         private let lock = NSLock()
         private var continuation: CheckedContinuation<Value?, Never>?
-        private var cancelsTimer = false
-        private var storedTimer: DispatchWorkItem?
+        private var timer: DispatchWorkItem?
+        private var resumed = false
 
         init(_ continuation: CheckedContinuation<Value?, Never>) { self.continuation = continuation }
 
-        var timer: DispatchWorkItem? {
-            get { lock.withLock { storedTimer } }
-            set {
-                let cancel = lock.withLock { () -> Bool in
-                    storedTimer = newValue
-                    return cancelsTimer
-                }
-                if cancel { newValue?.cancel() }
+        /// Stores the timer, or cancels it at once if the wait already ended.
+        func attach(_ item: DispatchWorkItem) {
+            let alreadyResumed = lock.withLock { () -> Bool in
+                if !resumed { timer = item }
+                return resumed
             }
+            if alreadyResumed { item.cancel() }
         }
 
         func resume(_ value: Value?) {
-            let (pending, timer) = lock.withLock { () -> (CheckedContinuation<Value?, Never>?, DispatchWorkItem?) in
+            // Take and clear both references under the lock, then act outside it.
+            let (pending, item) = lock.withLock { () -> (CheckedContinuation<Value?, Never>?, DispatchWorkItem?) in
+                resumed = true
                 let pending = continuation
+                let item = timer
                 continuation = nil
-                if value != nil { cancelsTimer = true }
-                return (pending, storedTimer)
+                timer = nil
+                return (pending, item)
             }
-            if value != nil { timer?.cancel() }
+            if value != nil { item?.cancel() }
             pending?.resume(returning: value)
         }
     }

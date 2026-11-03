@@ -492,6 +492,13 @@ public final class CommunicationManager {
     var shutdownTimeout: Duration = .seconds(10)
     /// The teardown phase that is running, for the log when the bound trips.
     private var drainPhase = "not started"
+    /// Receives one line at the start and end of every teardown phase and
+    /// reconnect attempt. A test uses it to leave a trail when a run stalls.
+    var traceForTesting: (@Sendable (String) -> Void)?
+    private func phase(_ name: String) {
+        drainPhase = name
+        traceForTesting?("manager: \(name)")
+    }
     /// Runs inside the teardown, where Axoloty's `runtime.stop()` runs. A test
     /// uses it to stand in for a call that never returns.
     var drainHookForTesting: (@MainActor () async -> Void)?
@@ -637,11 +644,13 @@ public final class CommunicationManager {
             ServeLogging.makeLogger(label: "\(ServeLogging.subsystem).transport").info("broker reconnect attempt started")
             let runtime = self.runtime
             let transport = self.transport
+            traceForTesting?("manager: reconnect attempt begin")
             await reconnectAttempt(.init(
                 reconnect: { await runtime.reconnect() },
                 openTransport: { try? await transport.start(receive: { _ in }, lastWill: nil) },
                 runtimeHasStopped: { await runtime.state() == .stopped }
             ))
+            traceForTesting?("manager: reconnect attempt returned (isStarted \(isStarted))")
             guard isStarted && !Task.isCancelled else {
                 // Shutdown overtook the attempt. Axoloty's `reconnect()` can
                 // resume after the runtime stopped and open the transport,
@@ -649,7 +658,9 @@ public final class CommunicationManager {
                 // it here, once the attempt has returned, and keep closing
                 // for `reconnectLinger` for a connect still in flight.
                 closeTransportUntil = ContinuousClock.now + reconnectLinger
+                traceForTesting?("manager: late cleanup stop begin")
                 await transport.stop()
+                traceForTesting?("manager: late cleanup stop end")
                 return
             }
             if await runtime.state() == .running {
@@ -716,6 +727,7 @@ public final class CommunicationManager {
         supervisionTask?.cancel()
         supervisionTask = nil
         emitState(.offline)
+        traceForTesting?("manager: stopAndWait begin (runtimeWasReady \(runtimeWasReady))")
         let teardown = beginStop(runtimeWasReady: runtimeWasReady)
         let finished = await BoundedWait.run(timeout: shutdownTimeout) { () -> Bool in
             await teardown.value
@@ -725,6 +737,7 @@ public final class CommunicationManager {
             let phase = drainPhase
             ServeLogging.warn("shutdown did not finish within \(shutdownTimeout); abandoning it while in phase \"\(phase)\"", component: "transport")
         }
+        traceForTesting?("manager: stopAndWait end (\(finished == nil ? "bound hit" : "teardown finished"))")
     }
 
     /// Starts one shared teardown or joins the in-flight one. The handle is
@@ -749,12 +762,14 @@ public final class CommunicationManager {
         // broker handshake cannot hold the lifecycle owner until its
         // deadline.
         if runtimeWasReady && !recoveryActive {
-            drainPhase = "runtime stop"
+            phase("runtime stop begin")
             await drainHookForTesting?()
             await runtime.stop()
+            phase("runtime stop end")
         } else {
-            drainPhase = "first transport stop"
+            phase("first transport stop begin")
             await transport.stop()
+            phase("first transport stop end")
             // Axoloty's `reconnect()` ignores cancellation and can reach
             // `transport.start()` after `runtime.stop()` has returned. Keep
             // closing the transport until the attempt has returned, so that
@@ -772,21 +787,25 @@ public final class CommunicationManager {
                     try? await Task.sleep(for: .milliseconds(10))
                 }
             }
-            drainPhase = "runtime stop"
+            phase("runtime stop begin")
             await drainHookForTesting?()
             await runtime.stop()
-            drainPhase = "waiting for the reconnect attempt"
+            phase("runtime stop end")
+            phase("waiting for the reconnect attempt begin")
             await settleReconnectAttempt()
+            phase("waiting for the reconnect attempt end (recoveryActive \(recoveryActive))")
             closingTransport = false
             // Join the closer unless the attempt outlived the bound; then it
             // ends by itself after the attempt returns.
-            drainPhase = "joining the transport closer"
+            phase("joining the transport closer begin")
             if !recoveryActive { await closer.value }
+            phase("joining the transport closer end")
         }
         // Final cleanup: no connection outlives shutdown.
-        drainPhase = "final transport stop"
+        phase("final transport stop begin")
         await transport.stop()
-        drainPhase = "finished"
+        phase("final transport stop end")
+        phase("finished")
         eventTasks.forEach { $0.cancel() }
         eventTasks.removeAll()
     }
