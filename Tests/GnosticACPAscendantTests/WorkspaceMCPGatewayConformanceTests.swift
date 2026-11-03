@@ -635,7 +635,12 @@ struct WorkspaceMCPGatewayConformanceTests {
     }
 
     private func openIdleConnection(to endpoint: URL) throws -> Int32 {
-        let descriptor = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #if canImport(Darwin)
+        let socketType = SOCK_STREAM
+        #else
+        let socketType = Int32(SOCK_STREAM.rawValue)
+        #endif
+        let descriptor = socket(AF_INET, socketType, 0)
         guard descriptor >= 0 else { throw ProviderOffline() }
         var address = sockaddr_in()
         #if canImport(Darwin)
