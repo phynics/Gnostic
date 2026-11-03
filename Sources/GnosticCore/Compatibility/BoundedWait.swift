@@ -32,7 +32,7 @@ enum BoundedWait {
 
     /// Resumes a continuation at most once and cancels the timer when the
     /// operation wins.
-    private final class ResumeOnce<Value: Sendable>: @unchecked Sendable {
+    private final class ResumeOnce<Value: Sendable>: @unchecked Sendable { // SAFETY: All mutable state is read or written while holding the lock.
         private let lock = NSLock()
         private var continuation: CheckedContinuation<Value?, Never>?
         private var cancelsTimer = false
