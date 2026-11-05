@@ -27,6 +27,45 @@ the selected backend. `gnostic doctor` checks the manifest and the configured
 local environment before startup. Use `gnostic config validate` after every
 manifest edit; it reports the failing key and its path.
 
+## Configure the reference Runtime
+
+The standalone reference Runtime, `gnostic-pk-runtime`, reads its model
+settings from its environment. Set them with the backend's `env` setting, and
+store the API key as a secret so that it never appears in `env`:
+
+| Variable | Meaning |
+| --- | --- |
+| `GNOSTIC_PK_PROVIDER` | `openai` (default) or `openrouter`. |
+| `GNOSTIC_PK_API_KEY` | The provider's API key. Required unless `GNOSTIC_PK_SCRIPTED=1`. |
+| `GNOSTIC_PK_MODEL` | The model name. Defaults to `gpt-4o-mini` for `openai` and `openai/gpt-4o-mini` for `openrouter`. |
+| `GNOSTIC_PK_ENDPOINT` | An absolute `http` or `https` URL that replaces the provider's default endpoint. |
+| `GNOSTIC_PK_STATE_DIR` | The directory for the Runtime's session file. |
+| `GNOSTIC_PK_SCRIPTED` | `1` selects a scripted model that needs no provider. |
+
+Both providers append `/v1/...` to the endpoint, so a trailing `/v1`, as
+provider documentation writes base URLs, is removed first. Then:
+
+- `openrouter` keeps the rest of the path and adds `/api` unless the path
+  already ends in `/api`. `https://openrouter.ai/api/v1`,
+  `https://openrouter.ai/api`, and `https://openrouter.ai` all reach
+  `https://openrouter.ai/api/v1/chat/completions`. A proxy at
+  `https://gateway.example/openrouter` is reached at
+  `https://gateway.example/openrouter/api/v1/chat/completions`.
+- `openai` sends to the endpoint's root, so it accepts no other path. It
+  rejects one at startup instead of dropping it.
+
+Neither provider sends a query, a fragment, or credentials in the URL, so an
+endpoint with any of them is rejected. The Runtime also stops at startup when
+the provider is unknown or the endpoint is not an absolute URL, and its error
+names the setting without echoing its value.
+
+```sh
+gnostic config backend set <ASCENDANT_UUID> command /path/to/gnostic-pk-runtime
+gnostic config backend set <ASCENDANT_UUID> env '{"GNOSTIC_PK_PROVIDER":"openrouter","GNOSTIC_PK_MODEL":"openrouter/free"}'
+printf '%s' "$OPENROUTER_API_KEY" | gnostic config backend set-secret <ASCENDANT_UUID> env-secret.GNOSTIC_PK_API_KEY
+gnostic config validate
+```
+
 ## Host implementation boundary
 
 `AscendantBackend` is an internal adapter contract used by the Node runtime
