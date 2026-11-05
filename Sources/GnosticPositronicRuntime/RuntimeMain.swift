@@ -272,7 +272,8 @@ private enum RuntimeProvider: String, CaseIterable {
               components.user == nil, components.password == nil else {
             throw RuntimeConfigurationError.endpointPartsUnsupported
         }
-        var path = components.path
+        // Keep the configured encoding: decoding and re-encoding would turn %2F into a separator.
+        var path = components.percentEncodedPath
         while path.hasSuffix("/") { path.removeLast() }
         if path.lowercased().hasSuffix("/v1") { path.removeLast(3) }
         if self == .openAI {
@@ -281,7 +282,7 @@ private enum RuntimeProvider: String, CaseIterable {
             if scheme == "http", components.port == nil { components.port = 80 }
         }
         components.scheme = scheme
-        components.path = path
+        components.percentEncodedPath = path
         guard let endpoint = components.string else { throw RuntimeConfigurationError.invalidEndpoint }
         return endpoint
     }
@@ -308,7 +309,7 @@ private enum RuntimeConfigurationError: Error, CustomStringConvertible {
         case .missingAPIKey:
             "GNOSTIC_PK_API_KEY is required unless GNOSTIC_PK_SCRIPTED=1."
         case .unknownProvider:
-            "GNOSTIC_PK_PROVIDER is not supported; use one of: "
+            "GNOSTIC_PK_PROVIDER has an unsupported value; use one of: "
                 + RuntimeProvider.allCases.map(\.rawValue).joined(separator: ", ") + "."
         case .invalidEndpoint:
             "GNOSTIC_PK_ENDPOINT must be an absolute http or https URL with a host."
