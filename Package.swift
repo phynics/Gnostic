@@ -277,6 +277,7 @@ let package = Package(
                 .product(name: "PositronicKit", package: "PositronicKit"),
                 .product(name: "PKContracts", package: "PositronicKit"),
                 .product(name: "PKOpenAIProvider", package: "PositronicKit"),
+                .product(name: "PKOpenRouterProvider", package: "PositronicKit"),
             ]
         ),
         .executableTarget(
