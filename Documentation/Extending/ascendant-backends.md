@@ -42,12 +42,22 @@ store the API key as a secret so that it never appears in `env`:
 | `GNOSTIC_PK_STATE_DIR` | The directory for the Runtime's session file. |
 | `GNOSTIC_PK_SCRIPTED` | `1` selects a scripted model that needs no provider. |
 
-`openrouter` keeps the endpoint's path, so it works behind a proxy that mounts
-the API under a prefix. `openai` sends every request to `<root>/v1/...`, so it
-accepts an endpoint with no path or with `/v1`. It rejects any other path at
-startup instead of dropping it. The Runtime also stops at startup when the
-provider is unknown or the endpoint is not an absolute URL, and its error names
-the setting.
+Both providers append `/v1/...` to the endpoint, so a trailing `/v1`, as
+provider documentation writes base URLs, is removed first. Then:
+
+- `openrouter` keeps the rest of the path and adds `/api` unless the path
+  already ends in `/api`. `https://openrouter.ai/api/v1`,
+  `https://openrouter.ai/api`, and `https://openrouter.ai` all reach
+  `https://openrouter.ai/api/v1/chat/completions`. A proxy at
+  `https://gateway.example/openrouter` is reached at
+  `https://gateway.example/openrouter/api/v1/chat/completions`.
+- `openai` sends to the endpoint's root, so it accepts no other path. It
+  rejects one at startup instead of dropping it.
+
+Neither provider sends a query, a fragment, or credentials in the URL, so an
+endpoint with any of them is rejected. The Runtime also stops at startup when
+the provider is unknown or the endpoint is not an absolute URL, and its error
+names the setting without echoing its value.
 
 ```sh
 gnostic config backend set <ASCENDANT_UUID> command /path/to/gnostic-pk-runtime

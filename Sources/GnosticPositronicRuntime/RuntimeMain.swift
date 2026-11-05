@@ -241,7 +241,7 @@ private enum RuntimeProvider: String, CaseIterable {
             return
         }
         guard let provider = RuntimeProvider(rawValue: value.lowercased()) else {
-            throw RuntimeConfigurationError.unknownProvider(value)
+            throw RuntimeConfigurationError.unknownProvider
         }
         self = provider
     }
@@ -255,10 +255,12 @@ private enum RuntimeProvider: String, CaseIterable {
 
     /// Returns the endpoint to configure, or nil for the provider's default.
     ///
-    /// The endpoint must be an absolute HTTP or HTTPS URL. OpenRouter keeps its path as a base
-    /// path. The OpenAI client sends to `<root>/v1/...` and cannot honor any other path
-    /// (phynics/PositronicKit#433). A trailing `/v1` therefore means the root, and any other
-    /// path is refused instead of silently cut.
+    /// The endpoint must be an absolute HTTP or HTTPS URL. Both clients append `/v1/...`, so a
+    /// trailing `/v1`, as provider documentation writes the base URL, is removed. OpenRouter
+    /// keeps the rest of the path; PositronicKit then adds `/api` unless the path already ends
+    /// in `/api`. The OpenAI client sends to the root and cannot honor any other path
+    /// (phynics/PositronicKit#433), so that path is refused instead of silently cut. Neither
+    /// client sends a query, a fragment, or URL credentials, so those are refused too.
     func validatedEndpoint(_ value: String?) throws -> String? {
         guard let value, !value.isEmpty else { return nil }
         guard var components = URLComponents(string: value),
@@ -266,16 +268,22 @@ private enum RuntimeProvider: String, CaseIterable {
               let host = components.host, !host.isEmpty else {
             throw RuntimeConfigurationError.invalidEndpoint
         }
-        guard self == .openAI else { return value }
-        switch components.path {
-        case "", "/":
-            return value
-        case "/v1", "/v1/":
-            components.path = ""
-            return components.string ?? value
-        default:
-            throw RuntimeConfigurationError.endpointPathUnsupported
+        guard components.query == nil, components.fragment == nil,
+              components.user == nil, components.password == nil else {
+            throw RuntimeConfigurationError.endpointPartsUnsupported
         }
+        var path = components.path
+        while path.hasSuffix("/") { path.removeLast() }
+        if path.lowercased().hasSuffix("/v1") { path.removeLast(3) }
+        if self == .openAI {
+            guard path.isEmpty else { throw RuntimeConfigurationError.endpointPathUnsupported }
+            // PKOpenAI defaults a missing port to 443 even for http (phynics/PositronicKit#433).
+            if scheme == "http", components.port == nil { components.port = 80 }
+        }
+        components.scheme = scheme
+        components.path = path
+        guard let endpoint = components.string else { throw RuntimeConfigurationError.invalidEndpoint }
+        return endpoint
     }
 
     func makeConfiguredProvider(apiKey: String, model: String, endpoint: String?) -> ConfiguredLLMProvider {
@@ -286,23 +294,27 @@ private enum RuntimeProvider: String, CaseIterable {
     }
 }
 
-/// A startup configuration error. Its description names the setting and never echoes the API
-/// key or the endpoint, which may carry credentials.
+/// A startup configuration error. Its description names the setting and never echoes a
+/// configured value, which could be a misplaced secret or carry credentials.
 private enum RuntimeConfigurationError: Error, CustomStringConvertible {
     case missingAPIKey
-    case unknownProvider(String)
+    case unknownProvider
     case invalidEndpoint
+    case endpointPartsUnsupported
     case endpointPathUnsupported
 
     var description: String {
         switch self {
         case .missingAPIKey:
             "GNOSTIC_PK_API_KEY is required unless GNOSTIC_PK_SCRIPTED=1."
-        case let .unknownProvider(value):
-            "GNOSTIC_PK_PROVIDER '\(value)' is not supported; use one of: "
+        case .unknownProvider:
+            "GNOSTIC_PK_PROVIDER is not supported; use one of: "
                 + RuntimeProvider.allCases.map(\.rawValue).joined(separator: ", ") + "."
         case .invalidEndpoint:
             "GNOSTIC_PK_ENDPOINT must be an absolute http or https URL with a host."
+        case .endpointPartsUnsupported:
+            "GNOSTIC_PK_ENDPOINT must not contain a query, a fragment, or user credentials; "
+                + "the provider clients do not send them."
         case .endpointPathUnsupported:
             "GNOSTIC_PK_ENDPOINT has a path other than /v1, which the openai provider cannot use; it "
                 + "sends to <root>/v1. Remove the path, or set GNOSTIC_PK_PROVIDER=openrouter for OpenRouter."
